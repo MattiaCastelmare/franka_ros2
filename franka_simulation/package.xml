@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypeset="schematron"?>
+<package format="3">
+  <name>franka_simulation</name>
+  <version>1.0.0</version>
+  <description>Franka FR3 simulation with Gazebo, trajectory control and MoveIt integration</description>
+  <maintainer email="mattiacastelmare@gmail.com">Mattia Castelmare</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Core ROS 2 dependencies -->
+  <depend>rclpy</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>control_msgs</depend>
+  
+  <!-- ros2_control stack -->
+  <depend>controller_manager</depend>
+  <depend>joint_state_broadcaster</depend>
+  <depend>joint_trajectory_controller</depend>
+  <depend>ros2_control</depend>
+  <depend>ros2_controllers</depend>
+  
+  <!-- Franka dependencies -->
+  <depend>franka_description</depend>
+  <depend>franka_msgs</depend>
+  <depend>franka_fr3_moveit_config</depend>
+  
+  <!-- MoveIt dependencies -->
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_ros_move_group</depend>
+  <depend>moveit_kinematics</depend>
+  <depend>moveit_planners_ompl</depend>
+  <depend>moveit_ros_visualization</depend>
+  <depend>moveit_simple_controller_manager</depend>
+  
+  <!-- Simulation dependencies -->
+  <depend>ros_gz_sim</depend>
+  <depend>ros_gz_bridge</depend>
+  <depend>xacro</depend>
+  <depend>robot_state_publisher</depend>
+  
+  <!-- Visualization -->
+  <depend>rviz2</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
