@@ -1,0 +1,32 @@
+# MoveToPose.action
+# Action per muovere il robot a una pose target specifica
+#
+# Goal: Pose di destinazione e opzioni di movimento
+# Result: Codice di risultato del movimento
+# Feedback: Stato avanzamento planning/execution
+
+# GOAL - Richiesta di movimento
+geometry_msgs/PoseStamped pose_target         # Pose di destinazione (posizione + orientamento)
+bool cartesian_motion                          # true = traiettoria cartesiana lineare, false = joint space
+float64 max_velocity_scaling_factor           # Fattore scaling velocità (0.0-1.0), default parametro nodo
+float64 max_acceleration_scaling_factor       # Fattore scaling accelerazione (0.0-1.0), default parametro nodo
+float64 tolerance_position                     # Tolleranza posizione [m], default parametro nodo  
+float64 tolerance_orientation                  # Tolleranza orientamento [rad], default parametro nodo
+string planner_id                              # ID del planner OMPL, default parametro nodo
+float64 planning_time                          # Tempo max planning [s], default parametro nodo
+
+---
+# RESULT - Risultato finale del movimento
+moveit_msgs/MoveItErrorCodes result           # Codice risultato MoveIt (SUCCESS, PLANNING_FAILED, etc.)
+geometry_msgs/PoseStamped final_pose          # Pose finale effettivamente raggiunta
+float64 execution_time                         # Tempo totale esecuzione [s]
+float64 planning_time                          # Tempo effettivo planning [s]
+int32 planning_attempts                        # Numero tentativi planning eseguiti
+
+---
+# FEEDBACK - Aggiornamenti durante esecuzione
+string current_state                           # Stato corrente: "planning", "executing", "retrying"
+float64 progress                               # Progresso esecuzione (0.0-1.0)
+geometry_msgs/PoseStamped current_pose        # Pose corrente durante movimento
+int32 current_attempt                          # Tentativo corrente (per retry logic)
+string status_message                          # Messaggio descrittivo stato

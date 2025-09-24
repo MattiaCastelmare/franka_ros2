@@ -1,0 +1,34 @@
+# MoveToJoint.action  
+# Action per muovere il robot a una configurazione joint specifica
+#
+# Goal: Configurazione joint target e opzioni movimento
+# Result: Codice risultato e configurazione finale
+# Feedback: Stato avanzamento esecuzione
+
+# GOAL - Richiesta di movimento joint
+float64[] joint_target                         # Configurazione joint target [rad] - deve avere 7 elementi per FR3
+string[] joint_names                           # Nomi joint (opzionale, default da parametro nodo)
+float64 max_velocity_scaling_factor           # Fattore scaling velocità (0.0-1.0)
+float64 max_acceleration_scaling_factor       # Fattore scaling accelerazione (0.0-1.0)
+float64 tolerance_joint                        # Tolleranza posizione joint [rad], default 0.001
+string planner_id                              # ID del planner, default da parametro nodo
+float64 planning_time                          # Tempo max planning [s]
+bool validate_target                           # true = verifica limiti e collisioni prima di muovere
+
+---
+# RESULT - Risultato movimento joint
+moveit_msgs/MoveItErrorCodes result           # Codice risultato MoveIt
+float64[] final_joint_positions               # Posizioni joint finali effettive [rad]
+geometry_msgs/PoseStamped final_end_effector_pose  # Pose end-effector risultante  
+float64 execution_time                         # Tempo totale esecuzione [s]
+float64 planning_time                          # Tempo planning [s]
+int32 planning_attempts                        # Numero tentativi planning
+
+---
+# FEEDBACK - Stato esecuzione movimento joint  
+string current_state                           # "planning", "executing", "validating"
+float64 progress                               # Progresso esecuzione (0.0-1.0)
+float64[] current_joint_positions             # Posizioni joint correnti [rad]
+geometry_msgs/PoseStamped current_end_effector_pose  # Pose end-effector corrente
+int32 current_attempt                          # Tentativo corrente
+string status_message                          # Messaggio stato dettagliato

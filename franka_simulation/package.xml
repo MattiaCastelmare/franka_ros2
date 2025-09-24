@@ -19,6 +19,11 @@
   <depend>trajectory_msgs</depend>
   <depend>control_msgs</depend>
   
+  <!-- Action interface generation - AGGIUNTO -->
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <depend>action_msgs</depend>
+  
   <!-- ros2_control stack -->
   <depend>controller_manager</depend>
   <depend>joint_state_broadcaster</depend>
@@ -49,8 +54,14 @@
   <!-- Visualization -->
   <depend>rviz2</depend>
 
+  <!-- Python MoveIt - AGGIUNTO -->
+  <exec_depend>python3-pymoveit2</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+
+  <!-- Action interface marker - AGGIUNTO -->
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>
