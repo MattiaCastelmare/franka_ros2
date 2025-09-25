@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="collision_box">
+  
+  <!-- Parametri configurabili -->
+  <xacro:arg name="box_x" default="0.5"/>
+  <xacro:arg name="box_y" default="0.0"/>
+  <xacro:arg name="box_z" default="0.4"/>
+  <xacro:arg name="box_size_x" default="0.15"/>
+  <xacro:arg name="box_size_y" default="0.15"/>
+  <xacro:arg name="box_size_z" default="0.3"/>
+  
+  <!-- Link base fisso al mondo -->
+  <link name="world"/>
+  
+  <!-- Link dell'ostacolo -->
+  <link name="obstacle_box">
+    <!-- Visual per Gazebo e RViz -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="$(arg box_size_x) $(arg box_size_y) $(arg box_size_z)"/>
+      </geometry>
+      <material name="red">
+        <color rgba="1.0 0.0 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <!-- Collision per simulazione fisica -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="$(arg box_size_x) $(arg box_size_y) $(arg box_size_z)"/>
+      </geometry>
+    </collision>
+    
+    <!-- Inertial properties per Gazebo -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.0075" ixy="0.0" ixz="0.0" 
+               iyy="0.0075" iyz="0.0" 
+               izz="0.00375"/>
+    </inertial>
+  </link>
+  
+  <!-- Joint fisso che posiziona l'ostacolo nel mondo -->
+  <joint name="obstacle_to_world" type="fixed">
+    <parent link="world"/>
+    <child link="obstacle_box"/>
+    <origin xyz="$(arg box_x) $(arg box_y) $(arg box_z)" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Gazebo-specific properties -->
+  <gazebo reference="obstacle_box">
+    <material>Gazebo/Red</material>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <static>true</static>
+  </gazebo>
+  
+</robot>

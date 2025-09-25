@@ -17,6 +17,11 @@ Uso:
 import rclpy
 import time
 import math
+import sys
+import os
+
+# Aggiunge ../scripts al path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from franka_motion_client import FrankaMotionClient
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import MoveItErrorCodes

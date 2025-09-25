@@ -92,12 +92,6 @@ install(DIRECTORY rviz/
   FILES_MATCHING PATTERN "*.rviz"
 )
 
-# Install Python scripts
-install(DIRECTORY scripts/
-  DESTINATION share/${PROJECT_NAME}/scripts
-  USE_SOURCE_PERMISSIONS
-  FILES_MATCHING PATTERN "*.py"
-)
 
 # Install action definitions
 install(DIRECTORY action/
@@ -105,17 +99,22 @@ install(DIRECTORY action/
   FILES_MATCHING PATTERN "*.action"
 )
 
-# Install server and client as executables
-install(PROGRAMS
-  scripts/franka_motion_server.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME franka_motion_server
-)
+# Installa tutti gli script Python in scripts/ come nodi eseguibili senza .py
+file(GLOB PYTHON_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.py")
 
-install(PROGRAMS
-  scripts/franka_motion_client.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME franka_motion_client
+foreach(script ${PYTHON_SCRIPTS})
+  get_filename_component(script_name ${script} NAME_WE)
+  install(PROGRAMS ${script}
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME ${script_name})
+endforeach()
+
+
+
+
+# Install URDF files
+install(DIRECTORY urdf/
+  DESTINATION share/${PROJECT_NAME}/urdf
 )
 
 

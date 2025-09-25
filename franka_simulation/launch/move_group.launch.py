@@ -11,6 +11,7 @@ from launch.actions import (
     OpaqueFunction,
     IncludeLaunchDescription,
     TimerAction,
+    ExecuteProcess,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, Command, FindExecutable
@@ -269,6 +270,8 @@ def generate_launch_description():
     arm_id_arg = DeclareLaunchArgument("arm_id", default_value="fr3")
     enable_moveit_arg = DeclareLaunchArgument("enable_moveit", default_value="true", 
                                               description="Enable MoveIt integration")
+    spawn_obstacles_arg = DeclareLaunchArgument('spawn_obstacles',default_value='true',
+                                              description='Spawn collision obstacles in simulation')
 
     load_gripper = LaunchConfiguration("load_gripper")
     franka_hand = LaunchConfiguration("franka_hand")
@@ -302,6 +305,44 @@ def generate_launch_description():
         arguments=["-topic", "/robot_description"],
         output="screen",
     )
+
+    obstacle_urdf_path = os.path.join(
+        get_package_share_directory('franka_simulation'),
+        'urdf', 'obstacles', 'collision_box.urdf.xacro'
+    )
+
+    obstacle_robot_description = Command(['xacro ', obstacle_urdf_path])
+
+    # Robot State Publisher per l'ostacolo (pubblica i TF)
+    obstacle_rsp = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='obstacle_state_publisher',
+        namespace='obstacle',
+        parameters=[{
+            'robot_description': ParameterValue(obstacle_robot_description, value_type=str),
+            'publish_frequency': 30.0,
+            'frame_prefix': 'obstacle/',
+        }],
+        output='screen'
+    )
+    
+    # Spawn dell'ostacolo in Gazebo
+    spawn_obstacle = Node(
+        package='ros_gz_sim',
+        executable='create',
+        name='spawn_obstacle',
+        arguments=[
+            '-name', 'collision_obstacle',
+            '-topic', '/obstacle/robot_description',
+        ],
+        output='screen'
+    )
+    
+    # Timer per spawnare l'ostacolo dopo il robot
+    delayed_obstacle_rsp = TimerAction(period=4.0, actions=[obstacle_rsp])
+    delayed_spawn_obstacle = TimerAction(period=5.0, actions=[spawn_obstacle])
+    
 
     # Spawner dei controller (parlano a /controller_manager dentro Gazebo)
     jsb_spawner = Node(
@@ -342,6 +383,12 @@ def generate_launch_description():
         name="base_to_link0_broadcaster",
         arguments=["0", "0", "0", "0", "0", "0", "base", "fr3_link0"]
     )
+    static_tf_obstacle_world = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="base_to_obstacle_world_broadcaster",
+        arguments=["0", "0", "0", "0", "0", "0", "base", "obstacle/world"]
+    )
     clock_bridge = Node(
     package="ros_gz_bridge",
     executable="parameter_bridge",
@@ -358,6 +405,18 @@ def generate_launch_description():
         args=[arm_id, load_gripper, enable_moveit]
     )
 
+    obstacle_sync = Node(
+        package='franka_simulation',
+        executable='obstacle_synchronizer',
+        name='obstacle_synchronizer',
+        output='screen',
+        parameters=[{
+            'obstacles_namespace': '/obstacle',
+            'update_rate': 2.0
+        }]
+    )
+
+
     # Sequenza temporizzata: spawn -> JSB -> ARM -> RViz (dopo move_group)
     delayed_spawn = TimerAction(period=3.0, actions=[spawn])
     delayed_jsb = TimerAction(period=5.0, actions=[jsb_spawner])
@@ -369,15 +428,20 @@ def generate_launch_description():
             load_gripper_arg,
             franka_hand_arg,
             arm_id_arg,
+            spawn_obstacles_arg,
             enable_moveit_arg,
             gz,
             robot_nodes_delayed,
             delayed_spawn,
             delayed_jsb,
             delayed_arm,
+            delayed_obstacle_rsp,
+            delayed_spawn_obstacle,
             delayed_rviz,
             static_tf_world_base,
             static_tf_base_link0,
+            static_tf_obstacle_world,
             clock_bridge,
+            obstacle_sync,
         ]
     )
