@@ -18,6 +18,7 @@ from launch.substitutions import LaunchConfiguration, Command, FindExecutable
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from launch.conditions import IfCondition
 
 def load_yaml(package_name, file_path):
     """Utility per caricare file YAML - basata su franka_fr3_moveit_config"""
@@ -272,6 +273,8 @@ def generate_launch_description():
                                               description="Enable MoveIt integration")
     spawn_obstacles_arg = DeclareLaunchArgument('spawn_obstacles',default_value='true',
                                               description='Spawn collision obstacles in simulation')
+    spawn_obstacles = LaunchConfiguration("spawn_obstacles")
+
 
     load_gripper = LaunchConfiguration("load_gripper")
     franka_hand = LaunchConfiguration("franka_hand")
@@ -340,8 +343,17 @@ def generate_launch_description():
     )
     
     # Timer per spawnare l'ostacolo dopo il robot
-    delayed_obstacle_rsp = TimerAction(period=4.0, actions=[obstacle_rsp])
-    delayed_spawn_obstacle = TimerAction(period=5.0, actions=[spawn_obstacle])
+    delayed_obstacle_rsp = TimerAction(
+        period=4.0,
+        actions=[obstacle_rsp],
+        condition=IfCondition(spawn_obstacles)
+    )
+
+    delayed_spawn_obstacle = TimerAction(
+        period=5.0,
+        actions=[spawn_obstacle],
+        condition=IfCondition(spawn_obstacles)
+    )
     
 
     # Spawner dei controller (parlano a /controller_manager dentro Gazebo)
@@ -387,7 +399,8 @@ def generate_launch_description():
         package="tf2_ros",
         executable="static_transform_publisher",
         name="base_to_obstacle_world_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "base", "obstacle/world"]
+        arguments=["0", "0", "0", "0", "0", "0", "base", "obstacle/world"],
+        condition=IfCondition(spawn_obstacles)
     )
     clock_bridge = Node(
     package="ros_gz_bridge",
@@ -413,7 +426,8 @@ def generate_launch_description():
         parameters=[{
             'obstacles_namespace': '/obstacle',
             'update_rate': 2.0
-        }]
+        }],
+        condition=IfCondition(spawn_obstacles)
     )
     motion_server = Node(
         package='franka_simulation',
