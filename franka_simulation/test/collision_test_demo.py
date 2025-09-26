@@ -1,101 +1,92 @@
 #!/usr/bin/env python3
 """
-Collision Test Demo - con Franka Motion Client
-==============================================
+Explorative Collision-Free Demo - Franka Motion
+================================================
 
-Script per testare il collision checking con MoveIt, usando il Motion Client.
 Sequenza:
-1. Movimento a HOME
-2. Tentativo di movimento dentro ostacolo
-3. Verifica collision checking
-4. Movimenti sicuri (collision-free)
-
-Uso:
-    python3 collision_test_demo.py
+1. Sposta in HOME
+2. Partenza verso target “dietro” l’ostacolo
+3. Altri target audaci
+4. Ritorno in HOME
 """
 
 import rclpy
 import time
-from moveit_msgs.msg import MoveItErrorCodes
-from geometry_msgs.msg import PoseStamped
-import os
 import sys
-# Aggiunge ../scripts al path
+import os
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from franka_motion_client import FrankaMotionClient
+from moveit_msgs.msg import MoveItErrorCodes
 
 
-def run_demo(client: FrankaMotionClient):
-    print("\n🤖 COLLISION TEST DEMO")
+def main():
+    print("🔍 DEMO EXPLORATIVE COLLISION-FREE")
     print("=" * 60)
 
-    # STEP 1: HOME
-    print("\nSTEP 1: Movimento in HOME")
-    home_joints = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
-    result = client.move_to_joint(home_joints, velocity_scaling=0.2)
-    if result.val == MoveItErrorCodes.SUCCESS:
-        print("✅ Robot in HOME")
-    else:
-        print("❌ Movimento HOME fallito")
-    time.sleep(2.0)
-
-    # STEP 2: Tentativo collisione
-    print("\nSTEP 2: Movimento dentro ostacolo (collision check)")
-    collision_pose = client.create_pose_stamped(
-        x=0.5, y=0.0, z=0.4,
-        qx=1.0, qy=0.0, qz=0.0, qw=0.0,
-        frame_id="world"
-    )
-    result = client.move_to_pose(collision_pose, cartesian_motion=False, velocity_scaling=0.1)
-    if result.val == MoveItErrorCodes.SUCCESS:
-        print("⚠️ Planner ha trovato un percorso (forse aggira l’ostacolo)")
-    else:
-        print("✅ Collisione rilevata, pianificazione fallita come previsto")
-    time.sleep(2.0)
-
-    # STEP 3: Ritorno HOME
-    print("\nSTEP 3: Ritorno in HOME")
-    result = client.move_to_joint(home_joints, velocity_scaling=0.2)
-    if result.val == MoveItErrorCodes.SUCCESS:
-        print("✅ Robot in HOME")
-    else:
-        print("❌ Ritorno HOME fallito")
-    time.sleep(2.0)
-
-    # STEP 4: Movimenti collision-free
-    print("\nSTEP 4: Movimenti sicuri vicino all'ostacolo")
-    safe_targets = [
-        {"x": 0.5, "y": 0.0, "z": 0.6, "name": "sopra ostacolo"},
-        {"x": 0.3, "y": -0.3, "z": 0.4, "name": "a lato ostacolo"},
-        {"x": 0.35, "y": 0.0, "z": 0.4, "name": "davanti ostacolo"},
-    ]
-
-    for target in safe_targets:
-        print(f"\n➡️ Movimento verso posizione sicura: {target['name']}")
-        pose = client.create_pose_stamped(
-            x=target["x"], y=target["y"], z=target["z"],
-            qx=1.0, qy=0.0, qz=0.0, qw=0.0,
-            frame_id="world"
-        )
-        result = client.move_to_pose(pose, cartesian_motion=False, velocity_scaling=0.2)
-        if result.val == MoveItErrorCodes.SUCCESS:
-            print(f"✅ Raggiunta posizione sicura: {target['name']}")
-        else:
-            print(f"❌ Fallito movimento a {target['name']}")
-
-    print("\n🎉 DEMO COMPLETATA!")
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    client = FrankaMotionClient(timeout_sec=45.0)
+    rclpy.init()
 
     try:
-        run_demo(client)
+        client = FrankaMotionClient(timeout_sec=30.0)
+        time.sleep(2.0)
+        print("✅ Client pronto!")
+
+        # HOME position
+        home_joints = [0.0, 0.0, -0.785, -2.356, 0.0, 1.571, 0.785]
+        result = client.move_to_joint(home_joints, velocity_scaling=0.2, tolerance=0.02)
+        if result.val != MoveItErrorCodes.SUCCESS:
+            print(f"❌ Errore movimento home: {client._error_code_to_string(result.val)}")
+            return
+        print("✅ Robot in HOME")
+
+        input("\n👉 Premi INVIO per partire con i target esplorativi...")
+
+        # Lista di target “dietro l’ostacolo” o “di passaggio difficile”
+        targets = [
+            {"x": 0.6, "y": 0.0, "z": 0.7, "name": "dietro ostacolo avanti"},      # direttamente avanti ma sopra
+            {"x": 0.55, "y": 0.25, "z": 0.6, "name": "a destra dietro ostacolo"},  # spostato lateralmente
+            {"x": 0.55, "y": -0.25, "z": 0.2, "name": "a sinistra dietro ostacolo"},# spostato lateralmente opposto
+            {"x": 0.45, "y": 0.0, "z": 0.1, "name": "sopra ostacolo"},               # sopra centrale
+        ]
+
+        for t in targets:
+            print(f"\n➡️ Target “ambizioso”: {t['name']} → x={t['x']:.2f}, y={t['y']:.2f}, z={t['z']:.2f}")
+            pose = client.create_pose_stamped(
+                x=t["x"], y=t["y"], z=t["z"],
+                qx=1.0, qy=0.0, qz=0.0, qw=0.0,
+                frame_id="world"
+            )
+            result = client.move_to_pose(
+                pose_target=pose,
+                cartesian_motion=False,    # planning in joint space con collision checking
+                velocity_scaling=0.2
+            )
+            if result.val == MoveItErrorCodes.SUCCESS:
+                print(f"✅ {t['name']} raggiunto senza collisioni")
+            else:
+                print(f"❌ Fallito {t['name']}: {client._error_code_to_string(result.val)}")
+                break
+            time.sleep(2.0)
+
+        # Ritorno in HOME
+        print("\n🏠 Ritorno a HOME...")
+        result = client.move_to_joint(home_joints, velocity_scaling=0.2, tolerance=0.02)
+        if result.val == MoveItErrorCodes.SUCCESS:
+            print("✅ Robot tornato in HOME")
+        else:
+            print(f"❌ Errore ritorno home: {client._error_code_to_string(result.val)}")
+
+        print("\n🎉 DEMO ESPLORATIVO COMPLETATO!")
+        print("=" * 60)
+
     except KeyboardInterrupt:
-        print("\n⏹️ Interrotto dall'utente")
+        print("\n⏹️ Demo interrotto dall’utente")
+    except Exception as e:
+        print(f"\n❌ Errore demo: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        client.destroy_node()
+        print("\n🏁 Shutdown...")
         rclpy.shutdown()
 
 

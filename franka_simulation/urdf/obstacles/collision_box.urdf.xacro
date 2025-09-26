@@ -4,7 +4,7 @@
   <!-- Parametri configurabili -->
   <xacro:arg name="box_x" default="0.5"/>
   <xacro:arg name="box_y" default="0.0"/>
-  <xacro:arg name="box_z" default="0.4"/>
+  <xacro:arg name="box_z" default="0.15"/>
   <xacro:arg name="box_size_x" default="0.15"/>
   <xacro:arg name="box_size_y" default="0.15"/>
   <xacro:arg name="box_size_z" default="0.3"/>
