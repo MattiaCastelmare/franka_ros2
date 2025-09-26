@@ -415,6 +415,25 @@ def generate_launch_description():
             'update_rate': 2.0
         }]
     )
+    motion_server = Node(
+        package='franka_simulation',
+        executable='franka_motion_server',
+        name='franka_motion_server',
+        output='screen',
+        parameters=[{
+            'move_group_name': 'fr3_arm',
+            'base_link_name': 'fr3_link0',
+            'end_effector_name': 'fr3_link8',
+            'planner_id': 'RRTConnect',
+            'allowed_planning_time': 5.0,
+            'max_velocity_scaling_factor': 0.1,
+            'max_acceleration_scaling_factor': 0.1,
+            'max_motion_retries': 3,
+            'max_ik_retries': 5,
+            'ik_timeout': 10.0
+        }]
+    )
+
 
 
     # Sequenza temporizzata: spawn -> JSB -> ARM -> RViz (dopo move_group)
@@ -422,6 +441,8 @@ def generate_launch_description():
     delayed_jsb = TimerAction(period=5.0, actions=[jsb_spawner])
     delayed_arm = TimerAction(period=7.0, actions=[arm_spawner])
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
+    delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
+
 
     return LaunchDescription(
         [
@@ -443,5 +464,6 @@ def generate_launch_description():
             static_tf_obstacle_world,
             clock_bridge,
             obstacle_sync,
+            delayed_motion_server,
         ]
     )
