@@ -43,10 +43,10 @@ def main():
 
         # Lista di target “dietro l’ostacolo” o “di passaggio difficile”
         targets = [
-            {"x": 0.6, "y": 0.0, "z": 0.7, "name": "dietro ostacolo avanti"},      # direttamente avanti ma sopra
-            {"x": 0.55, "y": 0.25, "z": 0.6, "name": "a destra dietro ostacolo"},  # spostato lateralmente
-            {"x": 0.55, "y": -0.25, "z": 0.2, "name": "a sinistra dietro ostacolo"},# spostato lateralmente opposto
-            {"x": 0.45, "y": 0.0, "z": 0.1, "name": "sopra ostacolo"},               # sopra centrale
+            {"x": 0.3, "y": 0.0, "z": 0.7, "name": "dietro ostacolo avanti"},      # direttamente avanti ma sopra
+            {"x": 0.3, "y": 0.45, "z": 0.2, "name": "a destra dietro ostacolo"},  # spostato lateralmente
+            {"x": 0.55, "y": -0.35, "z": 0.2, "name": "a sinistra dietro ostacolo"},# spostato lateralmente opposto
+            {"x": 0.45, "y": 0.45, "z": 0.1, "name": "sopra ostacolo"},               # sopra centrale
         ]
 
         for t in targets:

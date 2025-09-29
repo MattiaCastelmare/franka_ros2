@@ -146,6 +146,9 @@ def make_rsp_and_moveit_nodes(context: LaunchContext, arm_id, load_gripper, fran
             'publish_geometry_updates': True,
             'publish_state_updates': True,
             'publish_transforms_updates': True,
+            'default_robot_padding': 0.04,     
+            'default_object_padding': 0.1,    
+            'default_attached_padding': 0.02
         }
 
         # MoveIt move_group node - pattern esatto da franka_fr3_moveit_config/launch/moveit.launch.py
@@ -438,7 +441,7 @@ def generate_launch_description():
             'move_group_name': 'fr3_arm',
             'base_link_name': 'fr3_link0',
             'end_effector_name': 'fr3_link8',
-            'planner_id': 'RRTConnect',
+            'planner_id': 'RRTstar',
             'allowed_planning_time': 5.0,
             'max_velocity_scaling_factor': 0.1,
             'max_acceleration_scaling_factor': 0.1,

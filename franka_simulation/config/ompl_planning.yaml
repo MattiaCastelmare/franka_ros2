@@ -123,6 +123,12 @@ planner_configs:
   TrajOptDefault:
     type: geometric::TrajOpt
 
+  BITstarkConfigDefault:
+    type: geometric::BITstar
+    range: 0.3  # distanza massima per l’estensione (0.2–0.5 va bene)
+    samples: 1000  # numero di campioni da usare (puoi aumentare se vuoi più qualità)
+
+
 panda_arm:
   planner_configs:
     - SBLkConfigDefault
@@ -149,6 +155,7 @@ panda_arm:
     - SPARSkConfigDefault
     - SPARStwokConfigDefault
     - TrajOptDefault
+    - BITstarkConfigDefault
 panda_arm_hand:
   planner_configs:
     - SBLkConfigDefault
@@ -175,4 +182,5 @@ panda_arm_hand:
     - SPARSkConfigDefault
     - SPARStwokConfigDefault
     - TrajOptDefault
+    - BITstarkConfigDefault
 

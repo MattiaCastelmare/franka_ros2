@@ -78,7 +78,7 @@ class FrankaMotionServer(Node):
         ])
         
         # Planning
-        self.declare_parameter('planner_id', 'RRTConnect')
+        self.declare_parameter('planner_id', 'BITstar')
         self.declare_parameter('allowed_planning_time', 5.0)
         self.declare_parameter('max_velocity_scaling_factor', 0.1)
         self.declare_parameter('max_acceleration_scaling_factor', 0.1)
