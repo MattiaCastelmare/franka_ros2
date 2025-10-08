@@ -77,7 +77,7 @@ RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws \
     && vcs import src < src/franka.repos --recursive --skip-existing \
     && sudo apt-get update \
     && rosdep update \
-    && rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y \
+    && rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y --skip-keys=pymoveit2 \
     && sudo apt-get clean \
     && sudo rm -rf /var/lib/apt/lists/* \
     && rm -rf /home/$USERNAME/.ros \
