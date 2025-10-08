@@ -71,7 +71,7 @@ This repository contains a `.repos` file that helps you clone the required depen
    ```
 3. **Clone the Repositories:**
    ```bash
-   git clone --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git 
+   git clone --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git src
     ```
 4. **Install the dependencies**
     ```bash
@@ -99,7 +99,7 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
 
 1. **Clone the Repositories:**
     ```bash
-    git clone https://github.com/frankarobotics/franka_ros2.git
+    git clone --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git 
     cd franka_ros2
     ```
     We provide separate instructions for using Docker with Visual Studio Code or the command line. Choose one of the following options:
