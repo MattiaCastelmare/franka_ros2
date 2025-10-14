@@ -1,3 +1,7 @@
 [submodule "pymoveit2"]
 	path = pymoveit2
 	url = https://github.com/MattiaCastelmare/pymoveit2.git
+[submodule "moveit2"]
+	path = moveit2
+	url = https://github.com/ros-planning/moveit2.git
+	branch = humble
