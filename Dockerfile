@@ -62,6 +62,7 @@ RUN sudo apt-get update \
         ros-humble-moveit-kinematics \
         ros-humble-moveit-planners-ompl \
         ros-humble-moveit-ros-visualization \
+        ros-humble-moveit-servo \
         ros-humble-joint-trajectory-controller \
         ros-humble-moveit-simple-controller-manager \
         ros-humble-rviz2 \
