@@ -5,3 +5,7 @@
 	path = moveit2
 	url = https://github.com/ros-planning/moveit2.git
 	branch = humble
+[submodule "external/moveit2"]
+	path = external/moveit2
+	url = https://github.com/ros-planning/moveit2.git
+	branch = humble

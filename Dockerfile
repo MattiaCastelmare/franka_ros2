@@ -1,4 +1,3 @@
-# Start with an official ROS 2 base image for the desired distribution
 FROM ros:humble-ros-base
 
 # Set environment variables
@@ -24,21 +23,21 @@ RUN apt-get update && \
         python3-colcon-common-extensions \
         sudo \
         vim \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Setup user configuration
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
-    && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
-    && echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc \
-    && echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> /home/$USERNAME/.bashrc
-    
+RUN groupadd --gid $USER_GID $USERNAME && \
+    useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc && \
+    echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> /home/$USERNAME/.bashrc
+
 USER $USERNAME
 
 # Install some ROS 2 dependencies to create a cache layer
-RUN sudo apt-get update \
-    && sudo apt-get install -y --no-install-recommends \
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends \
         ros-humble-ros-gz \
         ros-humble-sdformat-urdf \
         ros-humble-joint-state-publisher-gui \
@@ -67,23 +66,26 @@ RUN sudo apt-get update \
         ros-humble-moveit-simple-controller-manager \
         ros-humble-rviz2 \
         ros-humble-xacro \
-    && sudo apt-get clean \
-    && sudo rm -rf /var/lib/apt/lists/*
+        ros-humble-ros-testing \
+        ros-humble-ros2test \
+        freeglut3-dev \
+    && sudo apt-get clean && \
+    sudo rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
 
 # Install the missing ROS 2 dependencies
 COPY . /ros2_ws/src
-RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws \
-    && vcs import src < src/franka.repos --recursive --skip-existing \
-    && sudo apt-get update \
-    && rosdep update \
-    && rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y --skip-keys=pymoveit2 \
-    && sudo apt-get clean \
-    && sudo rm -rf /var/lib/apt/lists/* \
-    && rm -rf /home/$USERNAME/.ros \
-    && rm -rf src \
-    && mkdir -p src
+RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws && \
+    vcs import src < src/franka.repos --recursive --skip-existing && \
+    sudo apt-get update && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y --skip-keys=pymoveit2 && \
+    sudo apt-get clean && \
+    sudo rm -rf /var/lib/apt/lists/* && \
+    rm -rf /home/$USERNAME/.ros && \
+    rm -rf src && \
+    mkdir -p src
 
 COPY ./franka_entrypoint.sh /franka_entrypoint.sh
 RUN sudo chmod +x /franka_entrypoint.sh
@@ -92,4 +94,5 @@ RUN sudo chmod +x /franka_entrypoint.sh
 SHELL [ "/bin/bash", "-c" ]
 ENTRYPOINT [ "/franka_entrypoint.sh" ]
 CMD [ "/bin/bash" ]
+
 WORKDIR /ros2_ws

@@ -129,7 +129,7 @@ planner_configs:
     samples: 1000  # numero di campioni da usare (puoi aumentare se vuoi più qualità)
 
 
-panda_arm:
+fr3_arm:
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault
@@ -156,7 +156,7 @@ panda_arm:
     - SPARStwokConfigDefault
     - TrajOptDefault
     - BITstarkConfigDefault
-panda_arm_hand:
+fr3_arm_hand:
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault

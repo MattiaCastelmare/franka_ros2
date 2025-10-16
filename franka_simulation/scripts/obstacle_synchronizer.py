@@ -9,7 +9,8 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 from urdf_parser_py.urdf import URDF
 import numpy as np
-
+import time
+from rclpy.time import Time
 
 class ObstacleSynchronizer(Node):
     def __init__(self):
@@ -26,6 +27,15 @@ class ObstacleSynchronizer(Node):
         
         # TF buffer e listener
         self.tf_buffer = Buffer()
+        timeout = 10.0  # secondi max di attesa
+        start = time.time()
+        while not self.tf_buffer.can_transform('world', 'obstacle/world', Time()):
+            if time.time() - start > timeout:
+                self.get_logger().warn("Timeout: TF 'world->obstacle/world' non disponibile, procedo comunque.")
+                break
+            self.get_logger().info("Aspettando TF 'world->obstacle/world'...")
+            time.sleep(0.5)
+            
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
         # Publisher per planning scene

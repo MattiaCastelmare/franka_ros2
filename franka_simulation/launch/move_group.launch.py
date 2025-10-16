@@ -16,7 +16,11 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, Command, FindExecutable
 from launch_ros.actions import Node
+from launch.actions import RegisterEventHandler
+
 from launch_ros.parameter_descriptions import ParameterValue
+from launch.event_handlers import OnProcessStart
+from launch.events.process import ProcessStarted
 
 from launch.conditions import IfCondition
 
@@ -291,6 +295,25 @@ def generate_launch_description():
             args=[arm_id, load_gripper, franka_hand, enable_moveit]
         )
     ])
+    obstacle_sync = Node(
+        package='franka_simulation',
+        executable='obstacle_synchronizer',
+        name='obstacle_synchronizer',
+        output='screen',
+        parameters=[{
+            'obstacles_namespace': '/obstacle',
+            'update_rate': 2.0
+        }],
+        condition=IfCondition(spawn_obstacles)
+    )
+    delayed_obstacle_sync = TimerAction(
+        period=10.0,  # o quanto vuoi dopo l'avvio del move_group
+        actions=[obstacle_sync],
+        condition=IfCondition(spawn_obstacles)
+    )
+
+
+
 
     # Gazebo (Ignition/GZ) mondo vuoto
     os.environ["GZ_SIM_RESOURCE_PATH"] = os.path.dirname(
@@ -421,17 +444,7 @@ def generate_launch_description():
         args=[arm_id, load_gripper, enable_moveit]
     )
 
-    obstacle_sync = Node(
-        package='franka_simulation',
-        executable='obstacle_synchronizer',
-        name='obstacle_synchronizer',
-        output='screen',
-        parameters=[{
-            'obstacles_namespace': '/obstacle',
-            'update_rate': 2.0
-        }],
-        condition=IfCondition(spawn_obstacles)
-    )
+
     motion_server = Node(
         package='franka_simulation',
         executable='franka_motion_server',
@@ -468,6 +481,9 @@ def generate_launch_description():
             arm_id_arg,
             spawn_obstacles_arg,
             enable_moveit_arg,
+            static_tf_world_base,
+            static_tf_base_link0,
+            static_tf_obstacle_world,
             gz,
             robot_nodes_delayed,
             delayed_spawn,
@@ -476,11 +492,8 @@ def generate_launch_description():
             delayed_obstacle_rsp,
             delayed_spawn_obstacle,
             delayed_rviz,
-            static_tf_world_base,
-            static_tf_base_link0,
-            static_tf_obstacle_world,
             clock_bridge,
-            obstacle_sync,
+            delayed_obstacle_sync,
             delayed_motion_server,
         ]
     )

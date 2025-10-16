@@ -25,6 +25,8 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+from launch.substitutions import Command, FindExecutable
 
 
 def load_yaml(package_name, file_path):
@@ -74,18 +76,55 @@ def generate_launch_description():
     servo_config = load_yaml('franka_simulation', 'config/servo.yaml')
 
     # MoveIt Servo Node (Local Planner)
+    arm_id = LaunchConfiguration('arm_id')
+    load_gripper = LaunchConfiguration('load_gripper')
+
+    # Percorsi ai file XACRO e SRDF (senza .perform)
+    xacro_file = os.path.join(
+        get_package_share_directory("franka_description"),
+        "robots", "fr3", "fr3.urdf.xacro"
+    )
+
+    semantic_xacro_file = os.path.join(
+        get_package_share_directory("franka_description"),
+        "robots", "fr3", "fr3.srdf.xacro"
+    )
+
+    # Genera robot_description (URDF)
+    robot_description = {'robot_description': ParameterValue(
+        Command([
+            FindExecutable(name='xacro'), ' ', xacro_file,
+            ' ros2_control:=false',
+            ' hand:=', LaunchConfiguration('load_gripper'),
+            ' arm_id:=', LaunchConfiguration('arm_id')
+        ]),
+        value_type=str
+    )}
+
+    # Genera robot_description_semantic (SRDF)
+    robot_description_semantic = {'robot_description_semantic': ParameterValue(
+        Command([
+            FindExecutable(name='xacro'), ' ', semantic_xacro_file,
+            ' hand:=', LaunchConfiguration('load_gripper')
+        ]),
+        value_type=str
+    )}
+
+
+    # Nodo Servo
     servo_node = Node(
         package='moveit_servo',
-        executable='servo_node',
+        executable='servo_node_main',
         name='servo_node',
+        namespace='moveit_servo',
         output='screen',
         parameters=[
             servo_config,
-            {
-                'use_sim_time': True,
-                'robot_description': LaunchConfiguration('robot_description', default=''),
-                'robot_description_semantic': LaunchConfiguration('robot_description_semantic', default=''),
-            }
+            robot_description,
+            robot_description_semantic,
+            {'use_sim_time': True,
+            'move_group_name': 'fr3_arm',
+            'command_out_topic': '/fr3_arm_controller/joint_trajectory'}
         ],
         remappings=[
             ('/servo_node/delta_twist_cmds', '/servo_server/delta_twist_cmds'),
@@ -93,6 +132,7 @@ def generate_launch_description():
             ('/servo_node/status', '/servo_server/status'),
         ]
     )
+
 
     # Placeholder for Hybrid Planning Coordinator (Step 2)
     # Will be replaced with actual coordinator node

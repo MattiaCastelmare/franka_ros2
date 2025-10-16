@@ -37,13 +37,13 @@
       check_collisions: true
       collision_check_rate: 10.0  # Hz
       collision_check_type: "threshold_distance"
-      self_collision_proximity_threshold: 0.01  # meters
-      scene_collision_proximity_threshold: 0.02  # meters
+      self_collision_proximity_threshold: 0.015  # meters
+      scene_collision_proximity_threshold: 0.03  # meters
 
       ## Collision avoidance behavior
-      self_collision_avoidance_scale: 0.5  # 0.0-1.0
-      scene_collision_avoidance_scale: 0.3  # 0.0-1.0
-      collision_velocity_scale: 0.0  # Scale velocity near collision (0=stop)
+      self_collision_avoidance_scale: 0.7 # 0.0-1.0
+      scene_collision_avoidance_scale: 0.5  # 0.0-1.0
+      collision_velocity_scale: 0.2  # Scale velocity near collision (0=stop)
 
       ## Singularity avoidance
       lower_singularity_threshold: 17.0  # degrees
