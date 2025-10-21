@@ -39,6 +39,8 @@ USER $USERNAME
 RUN sudo apt-get update && \
     sudo apt-get install -y --no-install-recommends \
         ros-humble-ros-gz \
+        ros-humble-ros-gz-sim \
+        ros-humble-ros-gz-bridge \
         ros-humble-sdformat-urdf \
         ros-humble-joint-state-publisher-gui \
         ros-humble-ros2controlcli \
@@ -72,6 +74,7 @@ RUN sudo apt-get update && \
     && sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/*
 
+
 WORKDIR /ros2_ws
 
 # Install the missing ROS 2 dependencies
@@ -89,6 +92,12 @@ RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws && \
 
 COPY ./franka_entrypoint.sh /franka_entrypoint.sh
 RUN sudo chmod +x /franka_entrypoint.sh
+
+# Set Gazebo environment
+ENV GZ_VERSION=fortress
+ENV IGN_GAZEBO_RESOURCE_PATH=/usr/share/gazebo_models:${IGN_GAZEBO_RESOURCE_PATH}
+ENV GZ_SIM_RESOURCE_PATH=/usr/share/gazebo_models:${GZ_SIM_RESOURCE_PATH}
+
 
 # Set the default shell to bash and the workdir to the source directory
 SHELL [ "/bin/bash", "-c" ]

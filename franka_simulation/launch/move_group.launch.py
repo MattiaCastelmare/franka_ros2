@@ -307,8 +307,24 @@ def generate_launch_description():
         condition=IfCondition(spawn_obstacles)
     )
     delayed_obstacle_sync = TimerAction(
-        period=10.0,  # o quanto vuoi dopo l'avvio del move_group
+        period=3.0,  # o quanto vuoi dopo l'avvio del move_group
         actions=[obstacle_sync],
+        condition=IfCondition(spawn_obstacles)
+    )
+        # Spawn dell'ostacolo in Gazebo
+    spawn_obstacle = Node(
+        package='ros_gz_sim',
+        executable='create',
+        name='spawn_obstacle',
+        arguments=[
+            '-name', 'collision_obstacle',
+            '-topic', '/obstacle/robot_description',
+        ],
+        output='screen'
+    )
+    delayed_spawn_obstacle = TimerAction(
+        period=4.5,
+        actions=[spawn_obstacle],
         condition=IfCondition(spawn_obstacles)
     )
 
@@ -356,17 +372,6 @@ def generate_launch_description():
         output='screen'
     )
     
-    # Spawn dell'ostacolo in Gazebo
-    spawn_obstacle = Node(
-        package='ros_gz_sim',
-        executable='create',
-        name='spawn_obstacle',
-        arguments=[
-            '-name', 'collision_obstacle',
-            '-topic', '/obstacle/robot_description',
-        ],
-        output='screen'
-    )
     
     # Timer per spawnare l'ostacolo dopo il robot
     delayed_obstacle_rsp = TimerAction(
@@ -374,13 +379,7 @@ def generate_launch_description():
         actions=[obstacle_rsp],
         condition=IfCondition(spawn_obstacles)
     )
-
-    delayed_spawn_obstacle = TimerAction(
-        period=5.0,
-        actions=[spawn_obstacle],
-        condition=IfCondition(spawn_obstacles)
-    )
-    
+   
 
     # Spawner dei controller (parlano a /controller_manager dentro Gazebo)
     jsb_spawner = Node(
@@ -424,8 +423,8 @@ def generate_launch_description():
     static_tf_obstacle_world = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
-        name="base_to_obstacle_world_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "base", "obstacle/world"],
+        name="world_to_obstacle_world_broadcaster",
+        arguments=["0", "0", "0", "0", "0", "0", "world", "obstacle/world"],
         condition=IfCondition(spawn_obstacles)
     )
     clock_bridge = Node(
@@ -471,7 +470,8 @@ def generate_launch_description():
     delayed_jsb = TimerAction(period=5.0, actions=[jsb_spawner])
     delayed_arm = TimerAction(period=7.0, actions=[arm_spawner])
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
-    delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
+    #delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
+    motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
 
 
     return LaunchDescription(
@@ -494,6 +494,7 @@ def generate_launch_description():
             delayed_rviz,
             clock_bridge,
             delayed_obstacle_sync,
-            delayed_motion_server,
+            #delayed_motion_server,
+            motion_server_action,
         ]
     )
