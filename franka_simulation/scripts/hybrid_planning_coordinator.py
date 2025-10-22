@@ -41,16 +41,39 @@ from sensor_msgs.msg import JointState
 # Actions
 from franka_simulation.action import ExecuteHybridMotion, PlanGlobalPath
 
+from dataclasses import dataclass
+from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import ColorRGBA
+# Quaternion math utilities (for full 3D orientation control)
+import math
+
+import asyncio
+
 
 class HybridState(Enum):
-    """Stati del coordinator"""
+    """Stati del coordinator estesi"""
     IDLE = 0
     GLOBAL_PLANNING = 1
     LOCAL_EXECUTION = 2
     REPLANNING = 3
     COLLISION_AVOIDANCE = 4
-    COMPLETED = 5
-    FAILED = 6
+    RECOVERY = 5       # nuovo stato intermedio
+    COMPLETED = 6
+    FAILED = 7
+
+@dataclass
+class HybridMetrics:
+    """Metriche di performance Hybrid Planning"""
+    planning_time: float = 0.0
+    execution_time: float = 0.0
+    replans_count: int = 0
+    waypoints_reached: int = 0
+    total_waypoints: int = 0
+    max_position_error: float = 0.0
+    max_orientation_error: float = 0.0
+    avg_control_frequency: float = 0.0
+    collision_stops: int = 0
+
 
 
 class HybridPlanningCoordinator(Node):
@@ -94,6 +117,13 @@ class HybridPlanningCoordinator(Node):
         self._init_publishers()
         self._init_subscribers()
         self._init_timers()
+
+        # Metriche e controllo avanzato
+        self.metrics = HybridMetrics()
+        self.control_loop_times = []
+        self.replanning_in_progress = False
+        self.stuck_counter = 0
+        self.last_position = None
         
         self.get_logger().info("🤖 Hybrid Planning Coordinator ready!")
         self._log_configuration()
@@ -192,6 +222,13 @@ class HybridPlanningCoordinator(Node):
             '/hybrid_planning/waypoints',
             10
         )
+        # Visualization markers
+        self.marker_pub = self.create_publisher(
+            MarkerArray,
+            '/hybrid_planning/visualization',
+            10
+        )
+
         
         self.get_logger().info("✅ Publishers ready")
         
@@ -223,6 +260,19 @@ class HybridPlanningCoordinator(Node):
             self.monitor_servo_activity,
             callback_group=self.callback_group
         )
+        # Stuck detection (5 Hz)
+        self.stuck_timer = self.create_timer(
+            0.2,  # 5 Hz
+            self.check_stuck_condition,
+            callback_group=self.callback_group
+        )
+        # Marker visualization (10 Hz)
+        self.marker_timer = self.create_timer(
+            0.1,
+            self.publish_visualization_markers,
+            callback_group=self.callback_group
+        )
+
         
     def _log_configuration(self):
         """Log configurazione"""
@@ -295,6 +345,49 @@ class HybridPlanningCoordinator(Node):
                 self.get_logger().warn("⚠️ Servo timeout — stopping motion")
                 self.current_state = HybridState.FAILED
 
+    # ========================================================================
+    # STUCK DETECTION & REPLANNING
+    # ========================================================================
+    def check_stuck_condition(self):
+        """Verifica se il robot è bloccato (nessun movimento per troppo tempo)."""
+        if self.current_state != HybridState.LOCAL_EXECUTION:
+            self.stuck_counter = 0
+            self.last_position = None
+            return
+        
+        if self.current_pose is None:
+            return
+        
+        if self.last_position is None:
+            self.last_position = self.current_pose
+            return
+        
+        dx = self.current_pose.position.x - self.last_position.position.x
+        dy = self.current_pose.position.y - self.last_position.position.y
+        dz = self.current_pose.position.z - self.last_position.position.z
+        movement = math.sqrt(dx**2 + dy**2 + dz**2)
+        
+        if movement < 0.005:  # 5 mm threshold
+            self.stuck_counter += 1
+            if self.stuck_counter > 100:  # ~2s a 50Hz
+                self.get_logger().warn("⚠️ Robot appears stuck — triggering replanning...")
+                self.trigger_replanning()
+        else:
+            self.stuck_counter = 0
+        
+        self.last_position = self.current_pose
+
+    def trigger_replanning(self):
+        """Richiede un nuovo global plan (placeholder logico)."""
+        if self.replanning_in_progress:
+            return
+        
+        self.replanning_in_progress = True
+        self.metrics.replans_count += 1
+        self.get_logger().info("🔄 Replanning triggered (Step 3 extension)")
+        self._publish_stop_twist()
+        # In futuro: chiamata automatica a global planner
+
     
     # ========================================================================
     # ACTION CALLBACK: ExecuteHybridMotion
@@ -343,40 +436,29 @@ class HybridPlanningCoordinator(Node):
         plan_goal.planning_time = self.global_planning_time
         plan_goal.max_attempts = self.global_max_attempts
         
-        plan_future = self.global_plan_client.send_goal_async(plan_goal)
-        
-        # Wait for goal acceptance
-        rclpy.spin_until_future_complete(self, plan_future, timeout_sec=5.0)
-        
-        if not plan_future.done() or not plan_future.result().accepted:
-            self.get_logger().error("❌ Global planning rejected or timeout!")
+        # Invia la richiesta di pianificazione globale (asincrona)
+        plan_goal_handle = await self.global_plan_client.send_goal_async(plan_goal)
+
+        # Controlla se il server ha accettato la richiesta
+        if not plan_goal_handle.accepted:
+            self.get_logger().error("❌ Global planning goal rejected!")
             result.error_code = ExecuteHybridMotion.Result.PLANNING_FAILED
             result.error_message = "Global planning goal rejected"
             goal_handle.abort()
             return result
-        
-        plan_goal_handle = plan_future.result()
-        
-        # Wait for planning result
-        plan_result_future = plan_goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, plan_result_future, timeout_sec=15.0)
-        
-        if not plan_result_future.done():
-            self.get_logger().error("❌ Global planning result timeout!")
-            result.error_code = ExecuteHybridMotion.Result.PLANNING_FAILED
-            result.error_message = "Global planning timeout"
-            goal_handle.abort()
-            return result
-        
-        plan_result = plan_result_future.result().result
-        
-        if plan_result.error_code != 1:  # MoveIt SUCCESS = 1
+
+        # Attendi il risultato della pianificazione (senza bloccare l'executor)
+        plan_result = (await plan_goal_handle.get_result_async()).result
+
+        # Controlla eventuali errori dal planner
+        if plan_result.error_code != 1:  # 1 = SUCCESS
             self.get_logger().error(f"❌ Planning failed: MoveIt code {plan_result.error_code}")
             result.error_code = ExecuteHybridMotion.Result.PLANNING_FAILED
             result.error_message = f"MoveIt error code: {plan_result.error_code}"
             goal_handle.abort()
             return result
-        
+
+                
         # Estrai waypoints
         self.waypoints = plan_result.waypoints_path.poses
         result.planning_time = plan_result.planning_time
@@ -460,7 +542,7 @@ class HybridPlanningCoordinator(Node):
                 
                 goal_handle.publish_feedback(feedback)
             
-            time.sleep(0.1)
+            await time.sleep(0.1)
         
         # ----------------------------------------------------------------
         # COMPLETAMENTO
@@ -470,7 +552,7 @@ class HybridPlanningCoordinator(Node):
         result.error_code = ExecuteHybridMotion.Result.SUCCESS
         result.error_message = "Hybrid motion completed successfully"
         result.execution_time = time.time() - self.execution_start_time
-        result.replans_count = 0
+        result.replans_count = self.metrics.replans_count
         
         if self.current_pose:
             result.final_pose = self.current_pose
@@ -568,24 +650,30 @@ class HybridPlanningCoordinator(Node):
             twist.twist.linear.z *= scale
         
         # Angular velocity - calcola errore orientamento
-        # Quaternion difference (semplificato: solo yaw)
+        # ================================================================
+        # STEP 3: Orientamento 3D (errore quaternion completo)
+        # ================================================================
         target_quat = target_waypoint.pose.orientation
         current_quat = self.current_pose.orientation
-        
-        # Estrai yaw da quaternion (semplificato)
-        target_yaw = self._quaternion_to_yaw(target_quat)
-        current_yaw = self._quaternion_to_yaw(current_quat)
-        
-        yaw_error = self._normalize_angle(target_yaw - current_yaw)
-        twist.twist.angular.z = self.kp_angular * yaw_error
-        
+
+        q_target = np.array([target_quat.x, target_quat.y, target_quat.z, target_quat.w])
+        q_current = np.array([current_quat.x, current_quat.y, current_quat.z, current_quat.w])
+
+        angular_error = self._quaternion_error(q_current, q_target)
+
+        twist.twist.angular.x = self.kp_angular * angular_error[0]
+        twist.twist.angular.y = self.kp_angular * angular_error[1]
+        twist.twist.angular.z = self.kp_angular * angular_error[2]
+
         # Clip angular velocity
-        if abs(twist.twist.angular.z) > self.max_angular_velocity:
-            twist.twist.angular.z = np.sign(twist.twist.angular.z) * self.max_angular_velocity
-        
+        twist.twist.angular.x = np.clip(twist.twist.angular.x, -self.max_angular_velocity, self.max_angular_velocity)
+        twist.twist.angular.y = np.clip(twist.twist.angular.y, -self.max_angular_velocity, self.max_angular_velocity)
+        twist.twist.angular.z = np.clip(twist.twist.angular.z, -self.max_angular_velocity, self.max_angular_velocity)
+
         # Pubblica comando
         self.twist_pub.publish(twist)
         self.last_twist_time = time.time()
+
     
     def _quaternion_to_yaw(self, quat) -> float:
         """Estrai yaw (rotazione Z) da quaternion"""
@@ -614,6 +702,82 @@ class HybridPlanningCoordinator(Node):
             time.sleep(0.01)
         
         self.get_logger().info("🛑 Stop command sent to Servo")
+
+    def publish_visualization_markers(self):
+        """Pubblica marker per path, EE e goal (debug RViz)."""
+        marker_array = MarkerArray()
+
+        # 1) Waypoints (LINE_STRIP verde)
+        if self.waypoints:
+            m = Marker()
+            m.header.frame_id = self.base_frame
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.ns = "waypoints"
+            m.id = 0
+            m.type = Marker.LINE_STRIP
+            m.action = Marker.ADD
+            m.scale.x = 0.01
+            m.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)
+            for wp in self.waypoints:
+                m.points.append(wp.pose.position)
+            marker_array.markers.append(m)
+
+        # 2) End-effector (SPHERE blu)
+        if self.current_pose:
+            ee = Marker()
+            ee.header.frame_id = self.base_frame
+            ee.header.stamp = self.get_clock().now().to_msg()
+            ee.ns = "ee_pose"
+            ee.id = 1
+            ee.type = Marker.SPHERE
+            ee.action = Marker.ADD
+            ee.pose = self.current_pose
+            ee.scale.x = ee.scale.y = ee.scale.z = 0.02
+            ee.color = ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.8)
+            marker_array.markers.append(ee)
+
+        # 3) Goal (ARROW rosso)
+        if self.target_pose:
+            goal = Marker()
+            goal.header.frame_id = self.base_frame
+            goal.header.stamp = self.get_clock().now().to_msg()
+            goal.ns = "goal_pose"
+            goal.id = 2
+            goal.type = Marker.ARROW
+            goal.action = Marker.ADD
+            goal.pose = self.target_pose
+            goal.scale.x = 0.05
+            goal.scale.y = 0.02
+            goal.scale.z = 0.02
+            goal.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.9)
+            marker_array.markers.append(goal)
+
+        if marker_array.markers:
+            self.marker_pub.publish(marker_array)
+    def _quaternion_multiply(self, q1, q2):
+        x1, y1, z1, w1 = q1
+        x2, y2, z2, w2 = q2
+        return np.array([
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2,
+            w1*w2 - x1*x2 - y1*y2 - z1*z2
+        ])
+
+    def _quaternion_error(self, q_current, q_target):
+        """Errore angolare tra due quaternioni come vettore 3D."""
+        qc_inv = np.array([-q_current[0], -q_current[1], -q_current[2], q_current[3]])
+        q_err = self._quaternion_multiply(q_target, qc_inv)
+        angle = 2.0 * np.arccos(np.clip(q_err[3], -1.0, 1.0))
+        if abs(angle) < 1e-6:
+            return (0.0, 0.0, 0.0)
+        sin_half = np.sin(angle / 2.0)
+        if abs(sin_half) < 1e-6:
+            return (0.0, 0.0, 0.0)
+        axis = q_err[:3] / sin_half
+        return tuple(axis * angle)
+
+
 
 
 def main(args=None):

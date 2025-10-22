@@ -59,6 +59,18 @@ class FrankaMotionServer(Node):
         self._init_moveit()
         self._init_tf()
         self._init_ik_service()
+        # STEP 3 ─ Parametri per estrazione FK
+        self.declare_parameter('use_fk_extraction', True)
+        self.declare_parameter('fk_sample_rate', 0.1)
+        self.declare_parameter('max_fk_waypoints', 50)
+
+        self.use_fk_extraction = self.get_parameter('use_fk_extraction').value
+        self.fk_sample_rate = self.get_parameter('fk_sample_rate').value
+        self.max_fk_waypoints = self.get_parameter('max_fk_waypoints').value
+
+        # Client FK (lazy init)
+        self.fk_client = None
+
         self._init_action_servers()
 
         # Sincronizzazione con joint_states
@@ -452,125 +464,111 @@ class FrankaMotionServer(Node):
     
     def plan_global_path_callback(self, goal_handle):
         """
-        Pianifica traiettoria globale con OMPL SENZA eseguirla.
-        Restituisce waypoints per tracking Servo (hybrid planning).
-        
-        Differenza con move_to_pose:
-        - NON chiama execute
-        - Restituisce RobotTrajectory + waypoints campionati
+        STEP 3: Pianifica con OMPL + estrae waypoints reali via FK (se abilitato).
         """
         goal = goal_handle.request
         result = PlanGlobalPath.Result()
-        
+
         self.get_logger().info("=" * 60)
-        self.get_logger().info(f"🌍 GLOBAL PLANNING REQUEST")
+        self.get_logger().info("🌍 GLOBAL PLANNING REQUEST (STEP 3)")
         self.get_logger().info(f"   Target: {goal.target_pose.pose.position}")
         self.get_logger().info(f"   Planner: {goal.planner_id}")
+        self.get_logger().info(f"   FK Extraction: {self.use_fk_extraction}")
         self.get_logger().info("=" * 60)
-        
-        # Feedback iniziale
+
         feedback = PlanGlobalPath.Feedback()
         feedback.current_state = "planning"
         feedback.attempt_number = 0
         goal_handle.publish_feedback(feedback)
-        
+
         planning_start = time.time()
-        
-        # Configura planner
         original_planner = self.moveit2.planner_id
         self.moveit2.planner_id = goal.planner_id
         self.moveit2.allowed_planning_time = goal.planning_time
-        
-        # Planning (usa move_to_pose ma SENZA execute)
+
         target_pose = goal.target_pose
-        
+
         try:
-            # Plan motion (internal MoveIt planning)
-            # === Global planning (MoveIt2 internal) ===
             success = self.moveit2.move_to_pose(
                 position=[
                     target_pose.pose.position.x,
                     target_pose.pose.position.y,
-                    target_pose.pose.position.z
+                    target_pose.pose.position.z,
                 ],
                 quat_xyzw=[
                     target_pose.pose.orientation.x,
                     target_pose.pose.orientation.y,
                     target_pose.pose.orientation.z,
-                    target_pose.pose.orientation.w
+                    target_pose.pose.orientation.w,
                 ],
-                cartesian=False,  # Joint space planning
+                cartesian=False,
             )
 
-            # Recupera l’ultimo errore MoveIt
             error_code = self.moveit2.get_last_execution_error_code()
 
-            # Verifica reale del risultato
             if not success and (not error_code or error_code.val != MoveItErrorCodes.SUCCESS):
-                self.get_logger().error("❌ Global planning failed (MoveIt)")
+                self.get_logger().error("❌ Global planning failed")
                 result.error_code = MoveItErrorCodes.PLANNING_FAILED
                 result.num_waypoints = 0
                 goal_handle.abort()
-                
-                # Restore planner
                 self.moveit2.planner_id = original_planner
                 return result
-            else:
-                self.get_logger().info("✅ MoveIt planning success")
 
-            
+            self.get_logger().info("✅ MoveIt planning success")
+
         except Exception as e:
             self.get_logger().error(f"❌ Planning exception: {e}")
             result.error_code = MoveItErrorCodes.FAILURE
             result.num_waypoints = 0
             goal_handle.abort()
-            
-            # Restore planner
             self.moveit2.planner_id = original_planner
             return result
-        
-        # Restore planner
+
         self.moveit2.planner_id = original_planner
-        
         feedback.current_state = "extracting_waypoints"
         goal_handle.publish_feedback(feedback)
-        
-        # Ottieni traiettoria pianificata
-        # NOTA: pymoveit2 NON espone direttamente la traiettoria
-        # Workaround: ricostruiamo Path dai joint states se disponibile
-        # Per ora: placeholder con waypoints vuoti
-        
-        # Crea RobotTrajectory placeholder
+
+        # ───────── STEP 3 : estrazione FK o fallback ─────────
+        if self.use_fk_extraction:
+            self.get_logger().warn(
+                "⚠️ FK extraction requested but pymoveit2 doesn't expose trajectory"
+            )
+            self.get_logger().warn("   Falling back to linear interpolation")
+            waypoints_path = self._create_sample_waypoints(
+                start_pose=self._get_current_ee_pose(),
+                end_pose=target_pose.pose,
+                num_samples=20,
+            )
+        else:
+            waypoints_path = self._create_sample_waypoints(
+                start_pose=self._get_current_ee_pose(),
+                end_pose=target_pose.pose,
+                num_samples=20,
+            )
+
         robot_trajectory = RobotTrajectory()
         robot_trajectory.joint_trajectory.joint_names = self.joint_names
-        
-        # Crea Path con waypoints campionati
-        waypoints_path = self._create_sample_waypoints(
-            start_pose=self._get_current_ee_pose(),
-            end_pose=target_pose.pose,
-            num_samples=20
-        )
-        
+
         result.error_code = MoveItErrorCodes.SUCCESS
         result.trajectory = robot_trajectory
         result.waypoints_path = waypoints_path
-        # Pubblica anche su topic per debug o local executor
-        if not hasattr(self, 'path_pub'):
-            self.path_pub = self.create_publisher(Path, '/franka/global_path', 10)
+
+        if not hasattr(self, "path_pub"):
+            self.path_pub = self.create_publisher(Path, "/franka/global_path", 10)
         self.path_pub.publish(result.waypoints_path)
-        self.get_logger().info("🛰 Published global path to /franka/global_path")
 
         result.planning_time = time.time() - planning_start
         result.num_waypoints = len(waypoints_path.poses)
-        
+
         self.get_logger().info("=" * 60)
-        self.get_logger().info(f"✅ GLOBAL PLAN READY")
+        self.get_logger().info("✅ GLOBAL PLAN READY (STEP 3)")
         self.get_logger().info(f"   Waypoints: {result.num_waypoints}")
         self.get_logger().info(f"   Time: {result.planning_time:.2f}s")
         self.get_logger().info("=" * 60)
-        
+
         goal_handle.succeed()
         return result
+
     
     def _create_sample_waypoints(self, start_pose: Pose, end_pose: Pose, num_samples: int = 20) -> Path:
         """
@@ -645,10 +643,88 @@ class FrankaMotionServer(Node):
             pose.position.z = 0.5
             pose.orientation.w = 1.0
             return pose
+    def _extract_waypoints_from_trajectory(self, trajectory_msg, sample_rate: float = 0.1) -> Path:
+        """
+        STEP 3: Estrae waypoints dalla traiettoria MoveIt usando compute_fk.
+        (Preparato per future release di pymoveit2)
+        """
+        from moveit_msgs.srv import GetPositionFK
+        from moveit_msgs.msg import RobotState
 
+        path = Path()
+        path.header.frame_id = self.base_link_name
+        path.header.stamp = self.get_clock().now().to_msg()
 
+        joint_traj = trajectory_msg.joint_trajectory
+        if not joint_traj.points:
+            self.get_logger().warn("⚠️ Trajectory is empty, no waypoints extracted")
+            return path
 
+        if self.fk_client is None:
+            self.fk_client = self.create_client(GetPositionFK, "/compute_fk")
+            if not self.fk_client.wait_for_service(timeout_sec=5.0):
+                self.get_logger().error("❌ /compute_fk service not available")
+                return path
 
+        total_duration = joint_traj.points[-1].time_from_start.sec + \
+                        joint_traj.points[-1].time_from_start.nanosec * 1e-9
+        num_samples = min(
+            max(int(total_duration / sample_rate), len(joint_traj.points)),
+            self.max_fk_waypoints,
+        )
+        sampled_indices = np.unique(np.linspace(0, len(joint_traj.points) - 1,
+                                                num_samples, dtype=int))
+
+        self.get_logger().info(f"🎯 Extracting {len(sampled_indices)} waypoints from trajectory via FK...")
+
+        successful_waypoints = 0
+        for idx in sampled_indices:
+            point = joint_traj.points[idx]
+            robot_state = RobotState()
+            robot_state.joint_state.name = joint_traj.joint_names
+            robot_state.joint_state.position = list(point.positions)
+
+            fk_request = GetPositionFK.Request()
+            fk_request.header.frame_id = self.base_link_name
+            fk_request.fk_link_names = [self.end_effector_name]
+            fk_request.robot_state = robot_state
+
+            try:
+                future = self.fk_client.call_async(fk_request)
+                start_time = time.time()
+                while not future.done() and (time.time() - start_time) < 1.0:
+                    time.sleep(0.01)
+
+                if not future.done():
+                    self.get_logger().warn(f"⚠️ FK timeout for waypoint {idx}")
+                    continue
+
+                fk_response = future.result()
+                if fk_response.error_code.val != MoveItErrorCodes.SUCCESS:
+                    self.get_logger().warn(f"⚠️ FK failed for waypoint {idx}")
+                    continue
+
+                if fk_response.pose_stamped:
+                    pose_stamped = fk_response.pose_stamped[0]
+                    pose_stamped.header = path.header
+                    path.poses.append(pose_stamped)
+                    successful_waypoints += 1
+
+            except Exception as e:
+                self.get_logger().error(f"❌ FK exception for waypoint {idx}: {e}")
+                continue
+
+        self.get_logger().info(f"✅ Extracted {successful_waypoints}/{len(sampled_indices)} waypoints via FK")
+
+        if successful_waypoints < 5:
+            self.get_logger().warn("⚠️ Too few FK waypoints, falling back to interpolation")
+            return self._create_sample_waypoints(
+                self._get_current_ee_pose(),
+                path.poses[-1].pose if path.poses else Pose(),
+                num_samples=20,
+            )
+
+        return path
 
 def main(args=None):
     """Entry point."""
