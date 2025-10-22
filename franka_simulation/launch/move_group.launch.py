@@ -302,7 +302,13 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'obstacles_namespace': '/obstacle',
-            'update_rate': 2.0
+            'update_rate': 2.0,
+            'reference_frame': 'base',
+            # ✅ percorso del file .xacro da cui leggere automaticamente
+            'urdf_xacro_path': os.path.join(
+                get_package_share_directory('franka_simulation'),
+                'urdf', 'obstacles', 'collision_box.urdf.xacro'
+            ),
         }],
         condition=IfCondition(spawn_obstacles)
     )
