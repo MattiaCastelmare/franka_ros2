@@ -52,16 +52,20 @@ find_package(robot_state_publisher REQUIRED)
 # Visualization
 find_package(rviz2 REQUIRED)
 
-# Generate action interfaces - NUOVO
+# Generate all custom action interfaces (for motion + hybrid planning)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveToPose.action"
   "action/MoveToJoint.action"
+  "action/PlanGlobalPath.action"
+  "action/ExecuteHybridMotion.action"
   DEPENDENCIES 
+    builtin_interfaces
     geometry_msgs 
-    sensor_msgs 
     moveit_msgs
+    nav_msgs
     std_msgs
 )
+
 
 # Make sure the action generation is available for the targets
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")

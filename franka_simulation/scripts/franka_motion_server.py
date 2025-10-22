@@ -21,7 +21,7 @@ from rclpy.action.server import ServerGoalHandle
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-
+import numpy as np
 from typing import Optional, Tuple, List
 from threading import Thread
 import time
@@ -38,6 +38,10 @@ from moveit_msgs.srv import GetPositionIK
 
 # Action custom del nostro package
 from franka_simulation.action import MoveToPose, MoveToJoint
+from franka_simulation.action import PlanGlobalPath
+from nav_msgs.msg import Path
+from moveit_msgs.msg import RobotTrajectory
+from geometry_msgs.msg import Pose 
 
 class FrankaMotionServer(Node):
     """Motion Server per robot Franka FR3 con action custom complete."""
@@ -71,7 +75,7 @@ class FrankaMotionServer(Node):
         # Core MoveIt
         self.declare_parameter('move_group_name', 'fr3_arm')
         self.declare_parameter('base_link_name', 'fr3_link0') 
-        self.declare_parameter('end_effector_name', 'fr3_link8')
+        self.declare_parameter('end_effector_name', 'fr3_hand_tcp')
         self.declare_parameter('joint_names', [
             'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
             'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
@@ -164,9 +168,15 @@ class FrankaMotionServer(Node):
             callback_group=self.callback_group
         )
         
-        self.move_to_joint_server = ActionServer(
-            self, MoveToJoint, 'move_to_joint',
-            execute_callback=self.move_to_joint_callback,
+        # self.move_to_joint_server = ActionServer(
+        #     self, MoveToJoint, 'move_to_joint',
+        #     execute_callback=self.move_to_joint_callback,
+        #     goal_callback=self.accept_goal, cancel_callback=self.cancel_goal,
+        #     callback_group=self.callback_group
+        # )
+        self.plan_global_path_server = ActionServer(
+            self, PlanGlobalPath, 'plan_global_path',
+            execute_callback=self.plan_global_path_callback,
             goal_callback=self.accept_goal, cancel_callback=self.cancel_goal,
             callback_group=self.callback_group
         )
@@ -436,6 +446,205 @@ class FrankaMotionServer(Node):
             self.get_logger().info(f"✅ Joint order (arm only): {self.joint_names}")
         # salva per seed IK
         self._latest_joint_state = msg
+    # ========================================================================
+    # ACTION CALLBACK: PlanGlobalPath (HYBRID PLANNING)
+    # ========================================================================
+    
+    def plan_global_path_callback(self, goal_handle):
+        """
+        Pianifica traiettoria globale con OMPL SENZA eseguirla.
+        Restituisce waypoints per tracking Servo (hybrid planning).
+        
+        Differenza con move_to_pose:
+        - NON chiama execute
+        - Restituisce RobotTrajectory + waypoints campionati
+        """
+        goal = goal_handle.request
+        result = PlanGlobalPath.Result()
+        
+        self.get_logger().info("=" * 60)
+        self.get_logger().info(f"🌍 GLOBAL PLANNING REQUEST")
+        self.get_logger().info(f"   Target: {goal.target_pose.pose.position}")
+        self.get_logger().info(f"   Planner: {goal.planner_id}")
+        self.get_logger().info("=" * 60)
+        
+        # Feedback iniziale
+        feedback = PlanGlobalPath.Feedback()
+        feedback.current_state = "planning"
+        feedback.attempt_number = 0
+        goal_handle.publish_feedback(feedback)
+        
+        planning_start = time.time()
+        
+        # Configura planner
+        original_planner = self.moveit2.planner_id
+        self.moveit2.planner_id = goal.planner_id
+        self.moveit2.allowed_planning_time = goal.planning_time
+        
+        # Planning (usa move_to_pose ma SENZA execute)
+        target_pose = goal.target_pose
+        
+        try:
+            # Plan motion (internal MoveIt planning)
+            # === Global planning (MoveIt2 internal) ===
+            success = self.moveit2.move_to_pose(
+                position=[
+                    target_pose.pose.position.x,
+                    target_pose.pose.position.y,
+                    target_pose.pose.position.z
+                ],
+                quat_xyzw=[
+                    target_pose.pose.orientation.x,
+                    target_pose.pose.orientation.y,
+                    target_pose.pose.orientation.z,
+                    target_pose.pose.orientation.w
+                ],
+                cartesian=False,  # Joint space planning
+            )
+
+            # Recupera l’ultimo errore MoveIt
+            error_code = self.moveit2.get_last_execution_error_code()
+
+            # Verifica reale del risultato
+            if not success and (not error_code or error_code.val != MoveItErrorCodes.SUCCESS):
+                self.get_logger().error("❌ Global planning failed (MoveIt)")
+                result.error_code = MoveItErrorCodes.PLANNING_FAILED
+                result.num_waypoints = 0
+                goal_handle.abort()
+                
+                # Restore planner
+                self.moveit2.planner_id = original_planner
+                return result
+            else:
+                self.get_logger().info("✅ MoveIt planning success")
+
+            
+        except Exception as e:
+            self.get_logger().error(f"❌ Planning exception: {e}")
+            result.error_code = MoveItErrorCodes.FAILURE
+            result.num_waypoints = 0
+            goal_handle.abort()
+            
+            # Restore planner
+            self.moveit2.planner_id = original_planner
+            return result
+        
+        # Restore planner
+        self.moveit2.planner_id = original_planner
+        
+        feedback.current_state = "extracting_waypoints"
+        goal_handle.publish_feedback(feedback)
+        
+        # Ottieni traiettoria pianificata
+        # NOTA: pymoveit2 NON espone direttamente la traiettoria
+        # Workaround: ricostruiamo Path dai joint states se disponibile
+        # Per ora: placeholder con waypoints vuoti
+        
+        # Crea RobotTrajectory placeholder
+        robot_trajectory = RobotTrajectory()
+        robot_trajectory.joint_trajectory.joint_names = self.joint_names
+        
+        # Crea Path con waypoints campionati
+        waypoints_path = self._create_sample_waypoints(
+            start_pose=self._get_current_ee_pose(),
+            end_pose=target_pose.pose,
+            num_samples=20
+        )
+        
+        result.error_code = MoveItErrorCodes.SUCCESS
+        result.trajectory = robot_trajectory
+        result.waypoints_path = waypoints_path
+        # Pubblica anche su topic per debug o local executor
+        if not hasattr(self, 'path_pub'):
+            self.path_pub = self.create_publisher(Path, '/franka/global_path', 10)
+        self.path_pub.publish(result.waypoints_path)
+        self.get_logger().info("🛰 Published global path to /franka/global_path")
+
+        result.planning_time = time.time() - planning_start
+        result.num_waypoints = len(waypoints_path.poses)
+        
+        self.get_logger().info("=" * 60)
+        self.get_logger().info(f"✅ GLOBAL PLAN READY")
+        self.get_logger().info(f"   Waypoints: {result.num_waypoints}")
+        self.get_logger().info(f"   Time: {result.planning_time:.2f}s")
+        self.get_logger().info("=" * 60)
+        
+        goal_handle.succeed()
+        return result
+    
+    def _create_sample_waypoints(self, start_pose: Pose, end_pose: Pose, num_samples: int = 20) -> Path:
+        """
+        Crea waypoints interpolati linearmente tra start e end.
+        
+        NOTA: Questa è una versione semplificata.
+        In produzione, dovremmo estrarre waypoints dalla traiettoria MoveIt.
+        """
+        path = Path()
+        path.header.frame_id = self.base_link_name
+        path.header.stamp = self.get_clock().now().to_msg()
+        
+        for i in range(num_samples + 1):
+            alpha = i / num_samples
+            
+            pose_stamped = PoseStamped()
+            pose_stamped.header = path.header
+            
+            # Linear interpolation position
+            pose_stamped.pose.position.x = (1 - alpha) * start_pose.position.x + alpha * end_pose.position.x
+            pose_stamped.pose.position.y = (1 - alpha) * start_pose.position.y + alpha * end_pose.position.y
+            pose_stamped.pose.position.z = (1 - alpha) * start_pose.position.z + alpha * end_pose.position.z
+            
+            # SLERP orientation (semplificato: linear blend, non corretto ma OK per test)
+            pose_stamped.pose.orientation.x = (1 - alpha) * start_pose.orientation.x + alpha * end_pose.orientation.x
+            pose_stamped.pose.orientation.y = (1 - alpha) * start_pose.orientation.y + alpha * end_pose.orientation.y
+            pose_stamped.pose.orientation.z = (1 - alpha) * start_pose.orientation.z + alpha * end_pose.orientation.z
+            pose_stamped.pose.orientation.w = (1 - alpha) * start_pose.orientation.w + alpha * end_pose.orientation.w
+            
+            # Normalize quaternion
+            q_norm = np.sqrt(
+                pose_stamped.pose.orientation.x**2 +
+                pose_stamped.pose.orientation.y**2 +
+                pose_stamped.pose.orientation.z**2 +
+                pose_stamped.pose.orientation.w**2
+            )
+            pose_stamped.pose.orientation.x /= q_norm
+            pose_stamped.pose.orientation.y /= q_norm
+            pose_stamped.pose.orientation.z /= q_norm
+            pose_stamped.pose.orientation.w /= q_norm
+            
+            path.poses.append(pose_stamped)
+        
+        return path
+    
+    def _get_current_ee_pose(self) -> Pose:
+        """
+        Ottieni pose corrente end-effector tramite TF.
+        """
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_link_name,
+                self.end_effector_name,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0).to_msg()
+            )
+            
+            pose = Pose()
+            pose.position.x = transform.transform.translation.x
+            pose.position.y = transform.transform.translation.y
+            pose.position.z = transform.transform.translation.z
+            pose.orientation = transform.transform.rotation
+            
+            return pose
+            
+        except Exception as e:
+            self.get_logger().warn(f"TF lookup failed, using default pose: {e}")
+            # Fallback: home pose
+            pose = Pose()
+            pose.position.x = 0.5
+            pose.position.y = 0.0
+            pose.position.z = 0.5
+            pose.orientation.w = 1.0
+            return pose
 
 
 

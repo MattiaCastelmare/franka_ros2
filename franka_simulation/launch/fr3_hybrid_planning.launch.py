@@ -55,6 +55,11 @@ def generate_launch_description():
         'spawn_obstacles', default_value='true',
         description='Spawn collision obstacles in simulation'
     )
+    use_sim_time_arg = DeclareLaunchArgument(
+    'use_sim_time',
+    default_value='true',
+    description='Use simulated clock (from Gazebo)'
+    )
 
     # Include base move_group launch (has Gazebo + MoveGroup + Controllers)
     pkg_franka_sim = get_package_share_directory("franka_simulation")
@@ -66,10 +71,12 @@ def generate_launch_description():
             'load_gripper': LaunchConfiguration('load_gripper'),
             'franka_hand': LaunchConfiguration('franka_hand'),
             'arm_id': LaunchConfiguration('arm_id'),
-            'enable_moveit': 'true',  # Force MoveIt ON for hybrid
+            'enable_moveit': 'true',
             'spawn_obstacles': LaunchConfiguration('spawn_obstacles'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),  # ✅ aggiunto qui
         }.items(),
     )
+
 
     # Load hybrid planning configuration
     hybrid_config = load_yaml('franka_simulation', 'config/hybrid_planning.yaml')
@@ -134,21 +141,42 @@ def generate_launch_description():
     )
 
 
-    # Placeholder for Hybrid Planning Coordinator (Step 2)
-    # Will be replaced with actual coordinator node
-    coordinator_placeholder = Node(
+    # Hybrid Planning Coordinator (ATTIVO)
+    coordinator_node = Node(
         package='franka_simulation',
-        executable='hybrid_planning_coordinator_placeholder',
+        executable='hybrid_planning_coordinator',
         name='hybrid_planning_coordinator',
         output='screen',
-        parameters=[hybrid_config, {'use_sim_time': True}],
-        condition=lambda context: False  # Disabled for Step 1
+        parameters=[
+            hybrid_config,
+            {
+                'use_sim_time': True,
+                'base_frame': 'fr3_link0',
+                'ee_frame': 'fr3_hand_tcp',
+                'planning_group': 'fr3_arm',
+                'global_planner_id': 'RRTConnect',
+                'global_planning_time' : 5.0,
+                'servo_control_rate': 50.0,
+                'waypoint_tolerance': 0.02,
+                'goal_tolerance': 0.01,
+                'kp_linear': 1.5,
+                'kp_angular': 2.0,
+                'max_linear_velocity': 0.3,
+                'max_angular_velocity': 0.5
+            }
+        ]
     )
 
     # Delay Servo start after MoveGroup is ready
     delayed_servo = TimerAction(
         period=10.0,  # Wait for move_group + controllers
         actions=[servo_node]
+    )
+
+    # Delay Coordinator start after Servo is running
+    delayed_coordinator = TimerAction(
+        period=12.0,  # 2 secondi dopo Servo
+        actions=[coordinator_node]
     )
 
     return LaunchDescription([
@@ -158,11 +186,11 @@ def generate_launch_description():
         arm_id_arg,
         enable_moveit_arg,
         spawn_obstacles_arg,
+        use_sim_time_arg,
         
         # Base system (Gazebo + MoveIt + Controllers)
         move_group_launch,
         
-        # Hybrid Planning components
         delayed_servo,
-        # coordinator_placeholder,  # Disabled for Step 1
+        delayed_coordinator
     ])
