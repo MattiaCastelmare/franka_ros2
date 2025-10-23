@@ -180,12 +180,12 @@ class FrankaMotionServer(Node):
             callback_group=self.callback_group
         )
         
-        # self.move_to_joint_server = ActionServer(
-        #     self, MoveToJoint, 'move_to_joint',
-        #     execute_callback=self.move_to_joint_callback,
-        #     goal_callback=self.accept_goal, cancel_callback=self.cancel_goal,
-        #     callback_group=self.callback_group
-        # )
+        self.move_to_joint_server = ActionServer(
+            self, MoveToJoint, 'move_to_joint',
+            execute_callback=self.move_to_joint_callback,
+            goal_callback=self.accept_goal, cancel_callback=self.cancel_goal,
+            callback_group=self.callback_group
+        )
         self.plan_global_path_server = ActionServer(
             self, PlanGlobalPath, 'plan_global_path',
             execute_callback=self.plan_global_path_callback,
