@@ -135,7 +135,7 @@ class HybridPlanningCoordinator(Node):
         self.declare_parameter('planning_group', 'fr3_arm')
         
         # Global planner params
-        self.declare_parameter('global_planner_id', 'RRTConnect')
+        self.declare_parameter('global_planner.id', 'RRTConnect')
         self.declare_parameter('global_planning_time', 5.0)
         self.declare_parameter('global_max_attempts', 3)
         
@@ -161,7 +161,7 @@ class HybridPlanningCoordinator(Node):
         self.ee_frame = self.get_parameter('ee_frame').value
         self.planning_group = self.get_parameter('planning_group').value
         
-        self.global_planner_id = self.get_parameter('global_planner_id').value
+        self.global_planner_id = self.get_parameter('global_planner.id').value
         self.global_planning_time = self.get_parameter('global_planning_time').value
         self.global_max_attempts = self.get_parameter('global_max_attempts').value
         

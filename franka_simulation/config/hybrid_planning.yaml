@@ -8,10 +8,11 @@ use_sim_time: true
       # Planning groups
       planning_group: "fr3_arm"
       base_frame: "fr3_link0"
-      end_effector_frame: "fr3_link8"
+      end_effector_frame: "fr3_hand_tcp"
       
       # Global planner (OMPL) configuration
       global_planner:
+        id: "RRTConnect"
         plugin: "ompl_interface/OMPLPlanner"
         planning_time: 5.0
         max_planning_attempts: 3

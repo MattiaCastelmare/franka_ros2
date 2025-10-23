@@ -13,6 +13,7 @@ Novità:
 - Gestione retry robusta per IK e planning
 - Metriche temporali accurate
 - Error handling completo
+- ✅ Aggiunta validazione ground clearance modulare (Claude Step 3.2)
 """
 
 import rclpy
@@ -34,11 +35,10 @@ from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 # MoveIt related imports
 from pymoveit2 import MoveIt2
 from moveit_msgs.msg import MoveItErrorCodes
-from moveit_msgs.srv import GetPositionIK
-
+from moveit_msgs.srv import GetPositionIK, GetPositionFK
+   
 # Action custom del nostro package
-from franka_simulation.action import MoveToPose, MoveToJoint
-from franka_simulation.action import PlanGlobalPath
+from franka_simulation.action import MoveToPose, MoveToJoint, PlanGlobalPath
 from nav_msgs.msg import Path
 from moveit_msgs.msg import RobotTrajectory
 from geometry_msgs.msg import Pose 
@@ -59,17 +59,7 @@ class FrankaMotionServer(Node):
         self._init_moveit()
         self._init_tf()
         self._init_ik_service()
-        # STEP 3 ─ Parametri per estrazione FK
-        self.declare_parameter('use_fk_extraction', True)
-        self.declare_parameter('fk_sample_rate', 0.1)
-        self.declare_parameter('max_fk_waypoints', 50)
-
-        self.use_fk_extraction = self.get_parameter('use_fk_extraction').value
-        self.fk_sample_rate = self.get_parameter('fk_sample_rate').value
-        self.max_fk_waypoints = self.get_parameter('max_fk_waypoints').value
-
-        # Client FK (lazy init)
-        self.fk_client = None
+        self._init_fk_service()
 
         self._init_action_servers()
 
@@ -94,7 +84,11 @@ class FrankaMotionServer(Node):
         ])
         
         # Planning
-        self.declare_parameter('planner_id', 'BITstar')
+        # Carica planner da hybrid_planning.yaml se disponibile
+        self.declare_parameter('planner_id', 'RRTConnect')
+        planner_from_yaml = self.get_parameter_or('global_planner.id', 'RRTConnect')
+        self.set_parameters([rclpy.parameter.Parameter('planner_id', rclpy.Parameter.Type.STRING, planner_from_yaml)])
+
         self.declare_parameter('allowed_planning_time', 5.0)
         self.declare_parameter('max_velocity_scaling_factor', 0.1)
         self.declare_parameter('max_acceleration_scaling_factor', 0.1)
@@ -103,6 +97,11 @@ class FrankaMotionServer(Node):
         self.declare_parameter('max_motion_retries', 3)
         self.declare_parameter('max_ik_retries', 5)
         self.declare_parameter('ik_timeout', 10.0)
+        self.declare_parameter('min_ground_clearance', 0.08)  
+
+        self.declare_parameter('use_fk_extraction', True)
+        self.declare_parameter('fk_sample_rate', 0.1)
+        self.declare_parameter('max_fk_waypoints', 50)
         
     def _load_parameters(self):
         """Carica parametri in variabili di istanza."""
@@ -120,7 +119,13 @@ class FrankaMotionServer(Node):
         self.max_motion_retries = self.get_parameter('max_motion_retries').get_parameter_value().integer_value
         self.max_ik_retries = self.get_parameter('max_ik_retries').get_parameter_value().integer_value
         self.ik_timeout = self.get_parameter('ik_timeout').get_parameter_value().double_value
-        
+        self.min_ground_clearance = self.get_parameter('min_ground_clearance').get_parameter_value().double_value
+
+        self.use_fk_extraction = self.get_parameter('use_fk_extraction').get_parameter_value().bool_value
+        self.fk_sample_rate = self.get_parameter('fk_sample_rate').get_parameter_value().double_value
+        self.max_fk_waypoints = self.get_parameter('max_fk_waypoints').get_parameter_value().integer_value
+
+
     def _init_moveit(self):
         """Inizializza MoveIt2 con pymoveit2."""
         
@@ -169,7 +174,21 @@ class FrankaMotionServer(Node):
         if not self.ik_client.wait_for_service(timeout_sec=10.0):
             raise RuntimeError("IK service not available")
         self.get_logger().info("✅ IK service connected")
-    
+
+    def _init_fk_service(self):
+        """
+        Inizializza servizio Forward Kinematics (compute_fk) per l’estrazione waypoint.
+        """
+     
+        self.fk_client = self.create_client(GetPositionFK, 'compute_fk', callback_group=self.callback_group)
+
+        if not self.fk_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn("⚠️ FK service not available, fallback interpolation enabled.")
+            self.use_fk_extraction = False
+        else:
+            self.get_logger().info("✅ FK service connected")
+
+
     def _init_action_servers(self):
         """Inizializza action servers con action custom."""
         
@@ -212,6 +231,13 @@ class FrankaMotionServer(Node):
         
         # Estrazione parametri goal
         goal_pose = goal_handle.request.pose_target
+        is_valid, msg = self._validate_ground_clearance(goal_pose.pose)
+        if not is_valid:
+            result = MoveToPose.Result()
+            result.result.val = MoveItErrorCodes.INVALID_MOTION_PLAN
+            goal_handle.abort()
+            return result
+
         cartesian_motion = goal_handle.request.cartesian_motion
         velocity_scaling = goal_handle.request.max_velocity_scaling_factor or self.max_velocity
         
@@ -392,7 +418,33 @@ class FrankaMotionServer(Node):
             self.moveit2.max_velocity = original_velocity
             
         return result
-    
+
+    # ========================================================================
+    # VALIDAZIONE GROUND CLEARANCE
+    # ========================================================================
+    def _validate_ground_clearance(self, pose: Pose) -> Tuple[bool, str]:
+        """
+        ✅ Verifica che la pose rispetti la distanza minima dal suolo.
+        """
+        z = pose.position.z
+        if z < self.min_ground_clearance:
+            msg = (
+                f"⛔ GROUND CLEARANCE VIOLATION: z={z:.3f}m < "
+                f"min_clearance={self.min_ground_clearance:.3f}m. "
+                "Goal rejected for safety."
+            )
+            self.get_logger().error(msg)
+            return False, msg
+
+        if z < 1.5 * self.min_ground_clearance:
+            self.get_logger().warn(
+                f"⚠️ LOW CLEARANCE WARNING: z={z:.3f}m "
+                f"(soglia sicurezza: {self.min_ground_clearance:.3f}m)"
+            )
+
+        self.get_logger().info(f"✅ Ground clearance OK: z={z:.3f}m")
+        return True, ""
+
     def compute_ik(self, goal_pose: PoseStamped) -> Tuple[Optional[List[float]], MoveItErrorCodes]:
         """Calcola IK per pose target con gestione robusta errori."""
         
@@ -475,6 +527,12 @@ class FrankaMotionServer(Node):
         self.get_logger().info(f"   Planner: {goal.planner_id}")
         self.get_logger().info(f"   FK Extraction: {self.use_fk_extraction}")
         self.get_logger().info("=" * 60)
+        is_valid, msg = self._validate_ground_clearance(goal.target_pose.pose)
+        if not is_valid:
+            result.error_code = MoveItErrorCodes.INVALID_MOTION_PLAN
+            result.num_waypoints = 0
+            goal_handle.abort()
+            return result
 
         feedback = PlanGlobalPath.Feedback()
         feedback.current_state = "planning"
@@ -487,6 +545,14 @@ class FrankaMotionServer(Node):
         self.moveit2.allowed_planning_time = goal.planning_time
 
         target_pose = goal.target_pose
+# ───────── STEP: Safety ground clearance ─────────
+        min_clearance = 0.08  # 8 cm minimo sopra il suolo
+        if target_pose.pose.position.z < min_clearance:
+            self.get_logger().warn(
+                f"⚠️ Target z={target_pose.pose.position.z:.3f} troppo basso, imposto a {min_clearance:.2f} m per evitare collisioni col suolo."
+            )
+            target_pose.pose.position.z = min_clearance
+
 
         try:
             success = self.moveit2.move_to_pose(
@@ -529,22 +595,31 @@ class FrankaMotionServer(Node):
         goal_handle.publish_feedback(feedback)
 
         # ───────── STEP 3 : estrazione FK o fallback ─────────
-        if self.use_fk_extraction:
-            self.get_logger().warn(
-                "⚠️ FK extraction requested but pymoveit2 doesn't expose trajectory"
-            )
-            self.get_logger().warn("   Falling back to linear interpolation")
+        try:
+            trajectory_msg = self.moveit2.get_last_trajectory()
+
+            if self.use_fk_extraction and trajectory_msg:
+                self.get_logger().info("🎯 Extracting waypoints via FK from MoveIt trajectory")
+                waypoints_path = self._extract_waypoints_from_trajectory(
+                    trajectory_msg,
+                    sample_rate=self.fk_sample_rate,
+                )
+            else:
+                self.get_logger().warn("⚠️ Falling back to linear interpolation")
+                waypoints_path = self._create_sample_waypoints(
+                    start_pose=self._get_current_ee_pose(),
+                    end_pose=target_pose.pose,
+                    num_samples=20,
+                )
+
+        except Exception as e:
+            self.get_logger().error(f"❌ FK extraction failed ({e}), fallback to linear interpolation")
             waypoints_path = self._create_sample_waypoints(
                 start_pose=self._get_current_ee_pose(),
                 end_pose=target_pose.pose,
                 num_samples=20,
             )
-        else:
-            waypoints_path = self._create_sample_waypoints(
-                start_pose=self._get_current_ee_pose(),
-                end_pose=target_pose.pose,
-                num_samples=20,
-            )
+
 
         robot_trajectory = RobotTrajectory()
         robot_trajectory.joint_trajectory.joint_names = self.joint_names
@@ -660,11 +735,10 @@ class FrankaMotionServer(Node):
             self.get_logger().warn("⚠️ Trajectory is empty, no waypoints extracted")
             return path
 
-        if self.fk_client is None:
-            self.fk_client = self.create_client(GetPositionFK, "/compute_fk")
-            if not self.fk_client.wait_for_service(timeout_sec=5.0):
-                self.get_logger().error("❌ /compute_fk service not available")
-                return path
+        if self.fk_client is None or not self.fk_client.service_is_ready():
+            self.get_logger().warn("⚠️ FK client not ready → caller will handle fallback.")
+            return Path()
+
 
         total_duration = joint_traj.points[-1].time_from_start.sec + \
                         joint_traj.points[-1].time_from_start.nanosec * 1e-9

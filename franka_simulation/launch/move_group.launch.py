@@ -458,7 +458,7 @@ def generate_launch_description():
         parameters=[{
             'move_group_name': 'fr3_arm',
             'base_link_name': 'fr3_link0',
-            'end_effector_name': 'fr3_link8',
+            'end_effector_name': 'fr3_hand_tcp',
             'planner_id': 'RRTstar',
             'allowed_planning_time': 5.0,
             'max_velocity_scaling_factor': 0.1,

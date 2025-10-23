@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="multi_obstacle_scene">
+  
+  <!-- 
+  Multi-Obstacle Scene per FR3 Hybrid Planning Demo
+  ==================================================
+  Contiene 3 ostacoli statici:
+  1. Box Centrale (rosso)
+  2. Box Laterale (giallo)
+  3. Pavimento (grigio)
+  -->
+  
+  <!-- Link base fisso al mondo -->
+  <link name="world"/>
+
+  <!-- ========================================== -->
+  <!-- OSTACOLO 1: BOX CENTRALE (Rosso)           -->
+  <!-- ========================================== -->
+  <xacro:arg name="box1_x" default="0.5"/>
+  <xacro:arg name="box1_y" default="-0.3"/>
+  <xacro:arg name="box1_z" default="0.15"/>
+  <xacro:arg name="box1_size_x" default="0.15"/>
+  <xacro:arg name="box1_size_y" default="0.15"/>
+  <xacro:arg name="box1_size_z" default="0.55"/>
+  
+  <link name="obstacle_box_central" >
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="$(arg box1_size_x) $(arg box1_size_y) $(arg box1_size_z)"/>
+      </geometry>
+      <material name="red">
+        <color rgba="1.0 0.0 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <geometry>
+        <box size="$(arg box1_size_x) $(arg box1_size_y) $(arg box1_size_z)"/>
+      </geometry>
+    </collision>
+    
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-6" iyy="1e-6" izz="1e-6" ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="box_central_to_world" type="fixed">
+    <parent link="world"/>
+    <child link="obstacle_box_central"/>
+    <origin xyz="$(arg box1_x) $(arg box1_y) $(arg box1_z)" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="obstacle_box_central">
+    <material>Gazebo/Red</material>
+    <static>true</static>
+  </gazebo>
+
+  <!-- ========================================== -->
+  <!-- OSTACOLO 2: BOX LATERALE (Giallo)          -->
+  <!-- ========================================== -->
+  <xacro:arg name="box2_x" default="0.4"/>
+  <xacro:arg name="box2_y" default="0.3"/>
+  <xacro:arg name="box2_z" default="0.20"/>
+  <xacro:arg name="box2_size_x" default="0.10"/>
+  <xacro:arg name="box2_size_y" default="0.10"/>
+  <xacro:arg name="box2_size_z" default="0.60"/>
+  
+  <link name="obstacle_box_lateral" >
+    <visual>
+      <geometry>
+        <box size="$(arg box2_size_x) $(arg box2_size_y) $(arg box2_size_z)"/>
+      </geometry>
+      <material name="yellow">
+        <color rgba="1.0 1.0 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <geometry>
+        <box size="$(arg box2_size_x) $(arg box2_size_y) $(arg box2_size_z)"/>
+      </geometry>
+    </collision>
+    
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-6" iyy="1e-6" izz="1e-6" ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="box_lateral_to_world" type="fixed">
+    <parent link="world"/>
+    <child link="obstacle_box_lateral"/>
+    <origin xyz="$(arg box2_x) $(arg box2_y) $(arg box2_z)" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="obstacle_box_lateral">
+    <material>Gazebo/Yellow</material>
+    <static>true</static>
+  </gazebo>
+
+  <!-- ========================================== -->
+  <!-- OSTACOLO 3: PAVIMENTO (Grigio)             -->
+  <!-- ========================================== -->
+  <xacro:arg name="ground_x" default="0.0"/>
+  <xacro:arg name="ground_y" default="0.0"/>
+  <xacro:arg name="ground_z" default="-0.005"/>
+  <xacro:arg name="ground_size_x" default="5.0"/>
+  <xacro:arg name="ground_size_y" default="5.0"/>
+  <xacro:arg name="ground_size_z" default="0.01"/>
+  
+  <link name="ground_plane" >
+    <visual>
+      <geometry>
+        <box size="$(arg ground_size_x) $(arg ground_size_y) $(arg ground_size_z)"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 0.8"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <geometry>
+        <box size="$(arg ground_size_x) $(arg ground_size_y) $(arg ground_size_z)"/>
+      </geometry>
+    </collision>
+    
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-6" iyy="1e-6" izz="1e-6" ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="ground_to_world" type="fixed">
+    <parent link="world"/>
+    <child link="ground_plane"/>
+    <origin xyz="$(arg ground_x) $(arg ground_y) $(arg ground_z)" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="ground_plane">
+    <material>Gazebo/Grey</material>
+    <static>true</static>
+  </gazebo>
+
+</robot>
