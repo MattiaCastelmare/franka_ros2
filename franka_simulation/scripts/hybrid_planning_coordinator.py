@@ -111,12 +111,6 @@ class HybridPlanningCoordinator(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
-        # Inizializzazione componenti
-        self._init_action_servers()
-        self._init_action_clients()
-        self._init_publishers()
-        self._init_subscribers()
-        self._init_timers()
 
         # Metriche e controllo avanzato
         self.metrics = HybridMetrics()
@@ -124,6 +118,13 @@ class HybridPlanningCoordinator(Node):
         self.replanning_in_progress = False
         self.stuck_counter = 0
         self.last_position = None
+
+        # Inizializzazione componenti
+        self._init_action_servers()
+        self._init_action_clients()
+        self._init_publishers()
+        self._init_subscribers()
+        self._init_timers()
         
         self.get_logger().info("🤖 Hybrid Planning Coordinator ready!")
         self._log_configuration()
@@ -542,7 +543,7 @@ class HybridPlanningCoordinator(Node):
                 
                 goal_handle.publish_feedback(feedback)
             
-            await time.sleep(0.1)
+            time.sleep(0.1)
         
         # ----------------------------------------------------------------
         # COMPLETAMENTO

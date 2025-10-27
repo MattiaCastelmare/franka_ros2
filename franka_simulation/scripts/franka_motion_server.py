@@ -555,7 +555,8 @@ class FrankaMotionServer(Node):
 
 
         try:
-            success = self.moveit2.move_to_pose(
+            # Plan without execution
+            self.moveit2.plan_async(
                 position=[
                     target_pose.pose.position.x,
                     target_pose.pose.position.y,
@@ -569,11 +570,19 @@ class FrankaMotionServer(Node):
                 ],
                 cartesian=False,
             )
-
-            error_code = self.moveit2.get_last_execution_error_code()
-
-            if not success and (not error_code or error_code.val != MoveItErrorCodes.SUCCESS):
-                self.get_logger().error("❌ Global planning failed")
+            
+            # Wait for planning to complete
+  
+            time.sleep(0.5)  # Give MoveIt time to plan
+            
+            # Get the computed trajectory
+            trajectory_msg = None
+            if hasattr(self.moveit2, '_MoveIt2__joint_trajectory'):
+                trajectory_msg = self.moveit2._MoveIt2__joint_trajectory
+                self.get_logger().info(f"✅ Retrieved trajectory with {len(trajectory_msg.points) if trajectory_msg and hasattr(trajectory_msg, 'points') else 0} points")
+            
+            if not trajectory_msg or not hasattr(trajectory_msg, 'points') or len(trajectory_msg.points) == 0:
+                self.get_logger().error("❌ No valid trajectory computed")
                 result.error_code = MoveItErrorCodes.PLANNING_FAILED
                 result.num_waypoints = 0
                 goal_handle.abort()
@@ -595,9 +604,8 @@ class FrankaMotionServer(Node):
         goal_handle.publish_feedback(feedback)
 
         # ───────── STEP 3 : estrazione FK o fallback ─────────
+     
         try:
-            trajectory_msg = self.moveit2.get_last_trajectory()
-
             if self.use_fk_extraction and trajectory_msg:
                 self.get_logger().info("🎯 Extracting waypoints via FK from MoveIt trajectory")
                 waypoints_path = self._extract_waypoints_from_trajectory(
@@ -605,12 +613,20 @@ class FrankaMotionServer(Node):
                     sample_rate=self.fk_sample_rate,
                 )
             else:
-                self.get_logger().warn("⚠️ Falling back to linear interpolation")
-                waypoints_path = self._create_sample_waypoints(
-                    start_pose=self._get_current_ee_pose(),
-                    end_pose=target_pose.pose,
-                    num_samples=20,
-                )
+                self.get_logger().error("❌ No trajectory available - cannot proceed without valid OMPL path")
+                result.error_code = MoveItErrorCodes.PLANNING_FAILED
+                result.num_waypoints = 0
+                goal_handle.abort()
+                self.moveit2.planner_id = original_planner
+                return result
+
+        except Exception as e:
+            self.get_logger().error(f"❌ FK extraction failed: {e}")
+            result.error_code = MoveItErrorCodes.PLANNING_FAILED
+            result.num_waypoints = 0
+            goal_handle.abort()
+            self.moveit2.planner_id = original_planner
+            return result
 
         except Exception as e:
             self.get_logger().error(f"❌ FK extraction failed ({e}), fallback to linear interpolation")
@@ -698,7 +714,7 @@ class FrankaMotionServer(Node):
                 self.base_link_name,
                 self.end_effector_name,
                 rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=1.0).to_msg()
+                timeout=rclpy.duration.Duration(seconds=1.0)
             )
             
             pose = Pose()

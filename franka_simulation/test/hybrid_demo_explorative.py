@@ -207,16 +207,16 @@ class HybridPlanningTest(Node):
         
         # Quaternion per end-effector pointing down
         # (equivalente a rotation di 180° attorno a Y)
-        quat_down = [0.0, 1.0, 0.0, 0.0]  # [qx, qy, qz, qw]
+        quat_down = [1.0, 0.0, 0.0, 0.0]  # [qx, qy, qz, qw]
         
         # Target 1: Centro workspace (safe)
-        targets.append(self._make_pose(0.4, 0.0, 0.3, *quat_down))
+        targets.append(self._make_pose(0.4, 0.3, 0.3, *quat_down))
         
         # Target 2: Destra
-        targets.append(self._make_pose(0.5, 0.25, 0.35, *quat_down))
+        targets.append(self._make_pose(0.4, -0.25, 0.35, *quat_down))
         
         # Target 3: Sinistra
-        targets.append(self._make_pose(0.5, -0.25, 0.35, *quat_down))
+        targets.append(self._make_pose(0.5, 0.25, 0.35, *quat_down))
         
         # Target 4: Alto (sopra ostacolo potenziale)
         targets.append(self._make_pose(0.45, 0.0, 0.55, *quat_down))
