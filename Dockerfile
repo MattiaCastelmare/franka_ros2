@@ -71,6 +71,7 @@ RUN sudo apt-get update && \
         ros-humble-ros-testing \
         ros-humble-ros2test \
         freeglut3-dev \
+        ros-humble-ros2-control \
     && sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/*
 
