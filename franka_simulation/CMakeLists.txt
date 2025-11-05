@@ -56,8 +56,6 @@ find_package(rviz2 REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveToPose.action"
   "action/MoveToJoint.action"
-  "action/PlanGlobalPath.action"
-  "action/ExecuteHybridMotion.action"
   DEPENDENCIES 
     builtin_interfaces
     geometry_msgs 

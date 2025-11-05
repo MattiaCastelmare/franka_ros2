@@ -307,7 +307,7 @@ def generate_launch_description():
             # ✅ percorso del file .xacro da cui leggere automaticamente
             'urdf_xacro_path': os.path.join(
                 get_package_share_directory('franka_simulation'),
-                'urdf', 'obstacles', 'collision_box.urdf.xacro'
+                'urdf', 'obstacles', 'multi_obstacle_scene.urdf.xacro'
             ),
         }],
         condition=IfCondition(spawn_obstacles)
@@ -359,7 +359,7 @@ def generate_launch_description():
 
     obstacle_urdf_path = os.path.join(
         get_package_share_directory('franka_simulation'),
-        'urdf', 'obstacles', 'collision_box.urdf.xacro'
+        'urdf', 'obstacles', 'multi_obstacle_scene.urdf.xacro'
     )
 
     obstacle_robot_description = Command(['xacro ', obstacle_urdf_path])
