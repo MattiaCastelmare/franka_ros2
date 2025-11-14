@@ -1,0 +1,39 @@
+online_avoidance_controller:
+  ros__parameters:
+    # --- Frequenza controllo ---
+    control_rate: 50.0  # Hz (20ms ciclo)
+    
+    # --- Control points sul robot ---
+    # Nomi dei link da monitorare per distanza ostacoli
+    control_points:
+      - fr3_link3  # Spalla
+      - fr3_link5  # Gomito
+      - fr3_link7  # Polso
+      - fr3_link8  # Flange
+    
+    # --- Soglie distanza ---
+    influence_distance: 0.25      # [m] Distanza oltre la quale ignoriamo l'ostacolo
+    safety_margin: 0.05           # [m] Distanza minima di sicurezza
+    
+    # --- Gain repulsivi ---
+    repulsive_gain: 0.3           # Forza repulsiva (q_dot_avoid)
+    
+    # --- Damping per singolarità ---
+    damping_max: 0.05             # λ_max per Damped Least Squares
+    singularity_threshold: 0.05   # Soglia σ_min
+    
+    # --- Limiti velocità joint ---
+    max_joint_velocity: 1.0       # [rad/s] Limite saturazione
+    
+    # --- Task velocity (se presente task primario) ---
+    task_velocity_scale: 1.0      # Scala velocità task primario
+    
+    # --- Planning Scene ---
+    planning_scene_topic: "/planning_scene"
+    monitor_planning_scene: true
+    
+    # --- Robot model ---
+    robot_description_param: "robot_description"
+    
+    # --- Logging ---
+    verbose_logging: false

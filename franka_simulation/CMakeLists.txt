@@ -30,6 +30,9 @@ find_package(tf2_ros REQUIRED)
 # Action support - NUOVO per action custom
 find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(moveit_msgs REQUIRED)
 
 # ros2_control stack
 find_package(controller_manager REQUIRED)
@@ -56,6 +59,7 @@ find_package(rviz2 REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveToPose.action"
   "action/MoveToJoint.action"
+  "action/PlanGlobalPath.action"
   DEPENDENCIES 
     builtin_interfaces
     geometry_msgs 

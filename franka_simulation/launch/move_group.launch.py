@@ -469,6 +469,26 @@ def generate_launch_description():
         }]
     )
 
+    # ========== NUOVO: Online Avoidance Controller ==========
+    # Parametri da config/avoidance_params.yaml
+    avoidance_params_file = os.path.join(
+        get_package_share_directory('franka_simulation'),
+        'config', 'avoidance_params.yaml'
+    )
+    
+    online_avoidance = Node(
+        package='franka_simulation',
+        executable='online_avoidance_controller',
+        name='online_avoidance_controller',
+        output='screen',
+        parameters=[avoidance_params_file]
+    )
+    
+    # Ritarda l'avvio dopo move_group e planning scene
+    delayed_avoidance = TimerAction(
+        period=11.0,  # Dopo RViz (10s) per assicurare che tutto sia pronto
+        actions=[online_avoidance]
+    )
 
 
     # Sequenza temporizzata: spawn -> JSB -> ARM -> RViz (dopo move_group)
@@ -502,5 +522,6 @@ def generate_launch_description():
             delayed_obstacle_sync,
             #delayed_motion_server,
             motion_server_action,
+            delayed_avoidance,
         ]
     )

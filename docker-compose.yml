@@ -9,7 +9,7 @@ services:
     container_name: franka_ros2
     network_mode: "host"
     privileged: true
-    runtime: nvidia
+    gpus: all                     # ✅ abilita GPU in modo moderno
     command: /bin/bash
     tty: true
     stdin_open: true
@@ -21,8 +21,8 @@ services:
     environment:
       QT_X11_NO_MITSHM: 1
       DISPLAY: $DISPLAY
-      NVIDIA_VISIBLE_DEVICES: all           # 🔹 mostra tutte le GPU all’interno del container
-      NVIDIA_DRIVER_CAPABILITIES: all 
+      NVIDIA_VISIBLE_DEVICES: all     # ✅ mostrate GPU
+      NVIDIA_DRIVER_CAPABILITIES: all # ✅ abilita CUDA, GL, NVENC ecc.
     cap_add:
       - SYS_NICE
     ulimits:

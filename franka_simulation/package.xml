@@ -29,6 +29,7 @@
   <depend>controller_manager</depend>
   <depend>joint_state_broadcaster</depend>
   <depend>joint_trajectory_controller</depend>
+  <depend>velocity_controllers</depend>  
   <depend>ros2_control</depend>
   <depend>ros2_controllers</depend>
   
@@ -57,6 +58,11 @@
 
   <!-- Python MoveIt - AGGIUNTO -->
   <exec_depend>pymoveit2</exec_depend>
+  
+  <!-- KDL for kinematics -->
+  <!-- <depend>python3-pykdl</depend> -->
+  <!-- <depend>python3-kdl-parser-py</depend> -->
+  <!-- <depend>kdl_parser</depend> -->
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -11,6 +11,10 @@ controller_manager:
     fr3_gripper:
       type: position_controllers/GripperActionController
 
+   # NUOVO: Controller velocità per obstacle avoidance
+   fr3_velocity_controller:
+     type: velocity_controllers/JointGroupVelocityController
+
 # --- Controller braccio (FollowJointTrajectory) per MoveIt
 fr3_arm_controller:
   ros__parameters:
@@ -41,6 +45,25 @@ fr3_arm_controller:
       fr3_joint5: {trajectory: 0.05, goal: 0.02}
       fr3_joint6: {trajectory: 0.05, goal: 0.02}
       fr3_joint7: {trajectory: 0.05, goal: 0.02}
+
+# --- NUOVO: Controller velocità per obstacle avoidance in real-time
+fr3_velocity_controller:
+  ros__parameters:
+    joints:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7
+    
+    command_interfaces:
+      - velocity
+    
+    state_interfaces:
+      - position
+      - velocity
 
 # Configurazione joint_state_broadcaster  
 joint_state_broadcaster:
