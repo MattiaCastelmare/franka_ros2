@@ -5,7 +5,7 @@ Online Avoidance Controller - Jacobian-based Null-Space Obstacle Avoidance
 
 Versione con Pinocchio (FK/Jacobiani da URDF di robot_state_publisher).
 
-Author: Maurizio
+Author: Mattia
 Package: franka_simulation
 """
 
@@ -28,7 +28,17 @@ from rcl_interfaces.srv import GetParameters
 # Pinocchio
 import pinocchio as pin
 from pinocchio.utils import zero
+from rclpy.parameter import Parameter
 
+import yaml
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+
+PLANNING_SCENE_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 class OnlineAvoidanceController(Node):
     """Controller reattivo per obstacle avoidance basato su Jacobiani (Pinocchio)."""
@@ -37,7 +47,7 @@ class OnlineAvoidanceController(Node):
         super().__init__("online_avoidance_controller")
 
         # PARAMETRI
-        self.declare_parameters()
+        self.declare_parameters_avoidance()
         self.load_parameters()
 
         # STATO INTERNO
@@ -57,14 +67,27 @@ class OnlineAvoidanceController(Node):
             JointState, "/joint_states", self.joint_state_callback, 10
         )
 
-        planning_scene_qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+
+        ps_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
         )
+
         self.planning_scene_sub = self.create_subscription(
-            PlanningScene, self.planning_scene_topic, self.planning_scene_callback, planning_scene_qos
+            PlanningScene,
+            '/planning_scene',
+            self.planning_scene_callback,
+            qos_profile=QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1
+            ),
         )
+
+
 
         # PUBLISHER
         self.velocity_cmd_pub = self.create_publisher(
@@ -114,21 +137,62 @@ class OnlineAvoidanceController(Node):
                 f.write(robot_description)
                 urdf_path = f.name
 
-            # 3) Costruisce modello e data
-            # Nota: per sole cinematiche non servono pacchetti mesh; package_dirs può essere vuoto.
-            self.model = pin.buildModelFromUrdf(urdf_path)
+            
+            ###############################################
+            # 3) Modello completo
+            ###############################################
+            model_full = pin.buildModelFromUrdf(urdf_path)
+
+            ###############################################
+            # 4) Giunti da BLOCCARE (solo il gripper)
+            ###############################################
+            joints_to_lock = []
+            for jn in model_full.names:
+                if "finger" in jn:   # blocca giunti del gripper
+                    jid = model_full.getJointId(jn)
+                    joints_to_lock.append(jid)
+
+            ###############################################
+            # 5) Configurazione di riferimento
+            ###############################################
+            q0 = pin.neutral(model_full)
+
+            ###############################################
+            # 6) Crea il modello ridotto
+            ###############################################
+            self.model = pin.buildReducedModel(
+                model_full,
+                joints_to_lock,   # giunti da BLOCCARE
+                q0
+            )
+
             self.data = self.model.createData()
 
-            # 4) Frame IDs utili (EE e punti di controllo)
+            ###############################################
+            # 7) Controlla DOF
+            ###############################################
+            self.nq = self.model.nq
+            self.nv = self.model.nv
+            self.get_logger().info(f"Pinocchio reduced model DOF: nq={self.nq}, nv={self.nv}")
+
             def frame_id(name: str) -> int:
                 fid = self.model.getFrameId(name)
                 if fid == len(self.model.frames):
-                    raise ValueError(f"Frame '{name}' non trovato nel modello Pinocchio.")
+                    raise ValueError(f"Frame '{name}' non trovato nel modello ridotto.")
                 return fid
+
+
 
             self.ee_fid = frame_id(self.ee_frame)
             self.cp_fids: Dict[str, int] = {ln: frame_id(ln) for ln in self.control_points}
 
+            self.cp_offsets = {}
+            for ln in self.control_points:
+                raw_offs = self.control_points_offsets.get(ln, [])
+                if not raw_offs:
+                    raw_offs = [[0.0, 0.0, 0.0]]
+                self.cp_offsets[ln] = [np.array(o, dtype=float).reshape(3) for o in raw_offs]
+                
             # 5) Dimensioni configurazione
             self.nq = self.model.nq
             self.nv = self.model.nv
@@ -161,9 +225,13 @@ class OnlineAvoidanceController(Node):
     # PARAMETRI
     # ================================================================
 
-    def declare_parameters(self):
+    def declare_parameters_avoidance(self):
         self.declare_parameter("control_rate", 50.0)
-        self.declare_parameter("control_points", ["fr3_link3", "fr3_link5", "fr3_link7", "fr3_link8"])
+        # Default più ricco, ma verrà sovrascritto dal YAML
+        self.declare_parameter("control_points", [
+            "fr3_link1", "fr3_link2", "fr3_link3", "fr3_link4",
+            "fr3_link5", "fr3_link6", "fr3_link7", "fr3_link8"
+        ])
         self.declare_parameter("influence_distance", 0.25)
         self.declare_parameter("safety_margin", 0.05)
         self.declare_parameter("repulsive_gain", 0.3)
@@ -175,6 +243,9 @@ class OnlineAvoidanceController(Node):
         self.declare_parameter("verbose_logging", False)
         self.declare_parameter("base_frame", "fr3_link0")
         self.declare_parameter("ee_frame", "fr3_link8")
+        # 🔹 Nuovo parametro: mappa link → lista di offset [x,y,z]
+        self.declare_parameter("control_points_offsets", "")
+        self.declare_parameter("control_points_offsets_yaml", "")
 
     def load_parameters(self):
         self.control_rate = self.get_parameter("control_rate").value
@@ -190,6 +261,26 @@ class OnlineAvoidanceController(Node):
         self.verbose_logging = self.get_parameter("verbose_logging").value
         self.base_frame = self.get_parameter("base_frame").value
         self.ee_frame = self.get_parameter("ee_frame").value
+        # 🔹 Nuovo: offsets per link (dict)
+        # 🔹 Nuovo: offsets per link, definiti come YAML testuale
+        offsets_yaml_str = self.get_parameter("control_points_offsets_yaml").value
+        self.control_points_offsets = {}
+
+        if offsets_yaml_str:
+            try:
+                parsed = yaml.safe_load(offsets_yaml_str)
+                if isinstance(parsed, dict):
+                    self.control_points_offsets = parsed
+                else:
+                    self.get_logger().warn(
+                        "control_points_offsets_yaml non contiene un dict valido, uso solo [0,0,0] per ogni link."
+                    )
+            except Exception as e:
+                self.get_logger().error(f"Errore nel parsing di control_points_offsets_yaml: {e}")
+        else:
+            self.get_logger().warn(
+                "Parametro control_points_offsets_yaml vuoto, uso solo [0,0,0] per ogni link."
+            )
 
     # ================================================================
     # CALLBACKS
@@ -205,6 +296,9 @@ class OnlineAvoidanceController(Node):
     def planning_scene_callback(self, msg: PlanningScene):
         if self.monitor_planning_scene:
             self.obstacles = msg.world.collision_objects
+        
+        num_objs = len(msg.world.collision_objects)
+        self.get_logger().info(f"PlanningScene ricevuto: {num_objs} ostacoli nel world")
 
     # ================================================================
     # CONTROL LOOP
@@ -261,37 +355,79 @@ class OnlineAvoidanceController(Node):
         except Exception:
             return None
 
-    def get_link_position(self, link_name: str) -> Optional[np.ndarray]:
+    def get_link_pose(self, link_name: str):
+        """
+        Ritorna posizione e rotazione del frame del link in WORLD.
+        """
         try:
             fid = self.cp_fids[link_name]
-            oMf = self.data.oMf[fid]  # posa del frame nel mondo
-            return np.array(oMf.translation).reshape(3)
+            oMf = self.data.oMf[fid]  # SE3 pose
+            p = np.array(oMf.translation).reshape(3)
+            R = np.array(oMf.rotation)
+            return p, R
         except Exception:
-            return None
+            return None, None
+
+    def get_link_sample_points(self, link_name: str):
+        """
+        Ritorna la lista di punti di controllo (in WORLD) per un dato link,
+        applicando gli offset locali definiti in self.cp_offsets.
+        """
+        p, R = self.get_link_pose(link_name)
+        if p is None or R is None:
+            return []
+
+        offsets = self.cp_offsets.get(link_name, [np.zeros(3)])
+        points = []
+        for off in offsets:
+            # WORLD point = p + R * off
+            points.append(p + R @ off)
+        return points
+
 
     # ================================================================
     # DISTANZE
     # ================================================================
 
     def compute_control_point_distances(self) -> Dict:
-        distances = {}
-        if not self.obstacles:
-            return {ln: (float("inf"), Point(), Point()) for ln in self.control_points}
+        """
+        Calcola, per ogni punto di controllo (link + offset),
+        la distanza minima dall'insieme degli ostacoli.
 
-        for link_name in self.control_points:
-            pos = self.get_link_position(link_name)
-            if pos is None:
+        Ritorna un dict:
+            key = f"{link_name}#{idx_offset}"
+            value = (min_dist, closest_point, normal)
+        """
+        distances = {}
+
+        # Nessun ostacolo → distanza infinita
+        if not self.obstacles:
+            for ln in self.control_points:
+                sample_points = self.get_link_sample_points(ln)
+                for i, _ in enumerate(sample_points):
+                    key = f"{ln}#{i}"
+                    distances[key] = (float("inf"), Point(), Point())
+            return distances
+
+        # Con ostacoli
+        for ln in self.control_points:
+            sample_points = self.get_link_sample_points(ln)
+            if not sample_points:
                 continue
 
-            min_dist, closest_pt, normal = float("inf"), Point(), Point()
-            for i_obs, obs in enumerate(self.obstacles):
-                d, pt, n = self.compute_distance_to_obstacle(pos, obs)
-                if d < min_dist:
-                    min_dist, closest_pt, normal = d, pt, n
+            for i, pos in enumerate(sample_points):
+                min_dist, closest_pt, normal = self.compute_distance_to_obstacle(pos, obs=self.obstacles[0])
+                # Cerca il minimo su tutti gli ostacoli
+                for obs in self.obstacles[1:]:
+                    d, pt, n = self.compute_distance_to_obstacle(pos, obs)
+                    if d < min_dist:
+                        min_dist, closest_pt, normal = d, pt, n
 
-            distances[link_name] = (min_dist, closest_pt, normal)
+                key = f"{ln}#{i}"
+                distances[key] = (min_dist, closest_pt, normal)
 
         return distances
+
 
     def compute_distance_to_obstacle(self, point: np.ndarray, obs: CollisionObject):
         min_dist, closest_pt, normal = float("inf"), Point(), Point()
@@ -352,13 +488,20 @@ class OnlineAvoidanceController(Node):
 
     def compute_repulsive_velocity(self, distances: Dict, q: np.ndarray) -> np.ndarray:
         q_dot = np.zeros(self.nv)
+        active_points = 0
 
-        for link, (dist, _, normal) in distances.items():
+        for key, (dist, _, normal) in distances.items():
             if dist > self.influence_distance:
-                continue
+                continue  # punto “lontano”, ignora
 
+            active_points += 1
             d = max(dist, self.safety_margin)
-            intensity = self.repulsive_gain * ((1.0 / d) - (1.0 / self.influence_distance)) ** 2
+
+            # Intensità campo repulsivo (stessa legge, leggermente più robusta)
+            try:
+                intensity = self.repulsive_gain * ((1.0 / d) - (1.0 / self.influence_distance)) ** 2
+            except ZeroDivisionError:
+                intensity = self.repulsive_gain * (1.0 / self.safety_margin) ** 2
 
             norm_vec = np.array([normal.x, normal.y, normal.z], dtype=float)
             norm_len = np.linalg.norm(norm_vec)
@@ -367,15 +510,22 @@ class OnlineAvoidanceController(Node):
 
             v_rep = intensity * norm_vec / norm_len
 
-            # Twist cartesiano target (solo linear)
+            # Twist cartesiano (solo parte lineare)
             x_dot = np.zeros(6)
             x_dot[:3] = v_rep
 
-            J_link = self.get_link_jacobian(link, q)
+            # Usa il Jacobiano del link originale (prima della #)
+            link_name = key.split("#")[0]
+            J_link = self.get_link_jacobian(link_name, q)
             if J_link is not None:
-                q_dot += J_link.T @ x_dot  # proiezione cartesiano->giunti
+                q_dot += J_link.T @ x_dot
+
+        # Se più punti sono attivi, normalizza per evitare saturazioni troppo aggressive
+        if active_points > 1:
+            q_dot /= float(active_points)
 
         return q_dot
+
 
     def compute_damped_pseudoinverse(self, J: np.ndarray) -> np.ndarray:
         # J: 6 x nv
@@ -406,7 +556,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+    
 
 
 if __name__ == "__main__":

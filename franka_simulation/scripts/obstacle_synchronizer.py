@@ -12,8 +12,15 @@ from ament_index_python.packages import get_package_share_directory
 import numpy as np
 import os
 import subprocess
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 
+PLANNING_SCENE_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 class ObstacleSynchronizer(Node):
     def __init__(self):
         super().__init__('obstacle_synchronizer')
@@ -44,7 +51,12 @@ class ObstacleSynchronizer(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # === Publisher per la scena ===
-        self.scene_pub = self.create_publisher(PlanningScene, '/planning_scene', 10)
+        self.planning_scene_pub = self.create_publisher(
+                                            PlanningScene,
+                                            '/planning_scene',
+                                            PLANNING_SCENE_QOS,
+                                        )
+
 
         # === Timer per pubblicare periodicamente ===
         self.timer = self.create_timer(self.update_rate, self.publish_obstacle_from_xacro)
@@ -100,7 +112,8 @@ class ObstacleSynchronizer(Node):
             planning_scene.world.collision_objects.append(collision_obj)
             count += 1
 
-        self.scene_pub.publish(planning_scene)
+        self.planning_scene_pub.publish(planning_scene)
+
         self.get_logger().info(f"🔄 Pubblicati {count} ostacoli dalla scena {self.urdf_xacro_path}")
 
     # ---------------------------------------------------------------------

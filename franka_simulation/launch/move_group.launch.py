@@ -407,10 +407,34 @@ def generate_launch_description():
             "fr3_arm_controller",
             "--controller-manager", "/controller_manager",
             "--param-file",
-            os.path.join(get_package_share_directory("franka_simulation"), "config", "fr3_arm_controller.yaml"),
+            os.path.join(
+                get_package_share_directory("franka_simulation"),
+                "config", "fr3_arm_controller.yaml"
+            ),
         ],
         output="screen",
     )
+
+    vel_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        name="spawn_fr3_velocity_controller",
+        arguments=[
+            "fr3_velocity_controller",
+            "--inactive",
+            "--controller-manager", "/controller_manager",
+            "--param-file",
+            os.path.join(
+                get_package_share_directory("franka_simulation"),
+                "config",
+                "fr3_velocity_controller.yaml"
+            ),
+        ],
+        output="screen",
+    )
+
+
+
         # Static TF publisher: world -> base
     static_tf_world_base = Node(
         package="tf2_ros",
@@ -495,6 +519,8 @@ def generate_launch_description():
     delayed_spawn = TimerAction(period=3.0, actions=[spawn])
     delayed_jsb = TimerAction(period=5.0, actions=[jsb_spawner])
     delayed_arm = TimerAction(period=7.0, actions=[arm_spawner])
+    delayed_vel = TimerAction(period=8.0, actions=[vel_spawner])
+
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
     #delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
     motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
@@ -515,6 +541,7 @@ def generate_launch_description():
             delayed_spawn,
             delayed_jsb,
             delayed_arm,
+            delayed_vel,
             delayed_obstacle_rsp,
             delayed_spawn_obstacle,
             delayed_rviz,
