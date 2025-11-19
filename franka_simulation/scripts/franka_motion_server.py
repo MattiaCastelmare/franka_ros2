@@ -42,6 +42,7 @@ from franka_simulation.action import MoveToPose, MoveToJoint, PlanGlobalPath
 from nav_msgs.msg import Path
 from moveit_msgs.msg import RobotTrajectory
 from geometry_msgs.msg import Pose 
+from trajectory_msgs.msg import JointTrajectory
 
 class FrankaMotionServer(Node):
     """Motion Server per robot Franka FR3 con action custom complete."""
@@ -70,6 +71,8 @@ class FrankaMotionServer(Node):
         
         self.get_logger().info("🚀 Franka Motion Server pronto!")
         self._log_configuration()
+        self.trajectory_pub = self.create_publisher(JointTrajectory, '/velocity_blender/trajectory', 10)
+
         
     def _declare_parameters(self):
         """Parametri configurabili completi."""
@@ -269,6 +272,31 @@ class FrankaMotionServer(Node):
                 
                 success = self.moveit2.wait_until_executed()
                 error_code = self.moveit2.get_last_execution_error_code()
+
+                # ========== PUBBLICAZIONE TRAIETTORIA VELOCITY-BASED ==========
+                trajectory_msg = None
+
+                # Pymoveit2 salva la JointTrajectory interna qui
+                if hasattr(self.moveit2, '_MoveIt2__joint_trajectory'):
+                    trajectory_msg = self.moveit2._MoveIt2__joint_trajectory
+
+                if trajectory_msg is not None:
+                    # Se è RobotTrajectory → estrai la JointTrajectory interna
+                    if hasattr(trajectory_msg, "joint_trajectory"):
+                        jt = trajectory_msg.joint_trajectory
+                    else:
+                        jt = trajectory_msg  # già JointTrajectory
+
+                    if jt.points:
+                        self.get_logger().info(f"📤 Pubblico JointTrajectory (cartesian) con {len(jt.points)} punti")
+                        self.trajectory_pub.publish(jt)
+                    else:
+                        self.get_logger().warn("⚠️ JointTrajectory vuota dopo move_to_pose")
+
+
+                else:
+                    self.get_logger().warn("⚠️ Nessuna JointTrajectory trovata dopo move_to_pose")
+
                 
                 if success and error_code and error_code.val == MoveItErrorCodes.SUCCESS:
                     result.result.val = MoveItErrorCodes.SUCCESS
@@ -316,6 +344,23 @@ class FrankaMotionServer(Node):
                 
                 success = self.moveit2.wait_until_executed()
                 error_code = self.moveit2.get_last_execution_error_code()
+            
+                # ========== PUBBLICAZIONE TRAIETTORIA VELOCITY-BASED ==========
+                trajectory_msg = None
+
+                # Pymoveit2 salva la JointTrajectory interna qui
+                if hasattr(self.moveit2, '_MoveIt2__joint_trajectory'):
+                    trajectory_msg = self.moveit2._MoveIt2__joint_trajectory
+
+                if trajectory_msg is not None and len(trajectory_msg.points) > 0:
+                    self.get_logger().info(f"📤 Pubblico JointTrajectory (pose) con {len(trajectory_msg.points)} punti")
+
+                    joint_traj = trajectory_msg
+                    self.trajectory_pub.publish(joint_traj)
+
+                else:
+                    self.get_logger().warn("⚠️ Nessuna JointTrajectory trovata dopo move_to_pose")
+
                 
                 if success and error_code and error_code.val == MoveItErrorCodes.SUCCESS:
                     result.result.val = MoveItErrorCodes.SUCCESS
@@ -350,12 +395,14 @@ class FrankaMotionServer(Node):
         return result
     
     def move_to_joint_callback(self, goal_handle: ServerGoalHandle):
-        """Callback per movimento a configurazione joint."""
+        """Callback per movimento a configurazione joint (SOLO PLANNING, no esecuzione MoveIt)."""
         
-        self.get_logger().info("🔧 Starting joint movement...")
+        self.get_logger().info("🔧 [move_to_joint] Starting JOINT-SPACE GLOBAL PLANNING (no execution)...")
         
         joint_target = goal_handle.request.joint_target
-        velocity_scaling = goal_handle.request.max_velocity_scaling_factor or self.max_velocity
+        velocity_scaling = (
+            goal_handle.request.max_velocity_scaling_factor or self.max_velocity
+        )
         
         result = MoveToJoint.Result()
         result.result.val = MoveItErrorCodes.FAILURE
@@ -363,11 +410,13 @@ class FrankaMotionServer(Node):
         
         # Validazione input
         if len(joint_target) != len(self.joint_names):
-            self.get_logger().error(f"❌ Invalid joint target length: {len(joint_target)} != {len(self.joint_names)}")
+            self.get_logger().error(
+                f"❌ Invalid joint target length: {len(joint_target)} != {len(self.joint_names)}"
+            )
             goal_handle.abort()
             return result
         
-        # Configurazione temporanea
+        # Configurazione temporanea (usata solo per il planning)
         original_velocity = self.moveit2.max_velocity
         self.moveit2.max_velocity = velocity_scaling
         
@@ -376,48 +425,57 @@ class FrankaMotionServer(Node):
             feedback.current_state = "joint_planning"
             feedback.progress = 0.3
             goal_handle.publish_feedback(feedback)
-            
+
+            # 🔹 SOLO PLANNING, senza esecuzione
             planning_start = time.time()
-            self.moveit2.move_to_configuration(joint_target, self.joint_names)
-            
-            feedback.current_state = "executing"
-            feedback.progress = 0.7
-            goal_handle.publish_feedback(feedback)
-            
-            success = self.moveit2.wait_until_executed()
-            error_code = self.moveit2.get_last_execution_error_code()
-            
-            if success and error_code and error_code.val == MoveItErrorCodes.SUCCESS:
-                result.result.val = MoveItErrorCodes.SUCCESS
-                result.final_joint_positions = joint_target  # Placeholder
-                self.get_logger().info("✅ Joint movement completed")
-            else:
-                self.get_logger().warning(f"⚠️ Joint movement failed: {error_code.val if error_code else 'Unknown'}")
-            
-            # Metriche
-            total_time = time.time() - start_time
-            result.planning_time = time.time() - planning_start
-            result.execution_time = total_time - result.planning_time
-            
-            # Feedback finale
+            self.get_logger().info("🧠 [move_to_joint] Calling MoveIt2.plan(joint_positions=...)")
+            trajectory = self.moveit2.plan(
+                joint_positions=list(joint_target)
+            )
+            planning_time = time.time() - planning_start
+
+            if trajectory is None or not trajectory.points:
+                self.get_logger().error("❌ [move_to_joint] Planning failed: no trajectory returned by MoveIt2")
+                result.result.val = MoveItErrorCodes.PLANNING_FAILED
+                result.planning_time = planning_time
+                result.execution_time = 0.0
+                goal_handle.abort()
+                return result
+
+            self.get_logger().info(
+                f"✅ [move_to_joint] Planning success: {len(trajectory.points)} punti nella JointTrajectory"
+            )
+
+            # 🔹 Pubblica la traiettoria per il velocity blender
+            self.get_logger().info("📤 [move_to_joint] Publishing trajectory to /velocity_blender/trajectory")
+            self.trajectory_pub.publish(trajectory)
+
+            # Aggiorna feedback: il "global plan" è pronto
             feedback.current_state = "completed"
             feedback.progress = 1.0
-            feedback.current_joint_positions = joint_target
+            feedback.current_joint_positions = list(joint_target)
             goal_handle.publish_feedback(feedback)
+
+            # Compila il result come SUCCESS (il planning è andato bene)
+            total_time = time.time() - start_time
+            result.result.val = MoveItErrorCodes.SUCCESS
+            result.final_joint_positions = list(joint_target)
+            result.planning_time = planning_time
+            result.execution_time = total_time - planning_time  # qui è solo "overhead", non vera esecuzione
+
+            goal_handle.succeed()
+            self.get_logger().info("🏁 [move_to_joint] GLOBAL PLAN READY (published to /velocity_blender/trajectory)")
             
-            if result.result.val == MoveItErrorCodes.SUCCESS:
-                goal_handle.succeed()
-            else:
-                goal_handle.abort()
-                
         except Exception as e:
-            self.get_logger().error(f"❌ Joint movement error: {e}")
+            self.get_logger().error(f"❌ [move_to_joint] Exception during planning: {e}")
             goal_handle.abort()
             
         finally:
+            # Ripristina configurazione
             self.moveit2.max_velocity = original_velocity
             
         return result
+
 
     # ========================================================================
     # VALIDAZIONE GROUND CLEARANCE
@@ -502,13 +560,7 @@ class FrankaMotionServer(Node):
         self.get_logger().info(f"  • Planner: {self.planner_id}")
 
     def _joint_state_callback(self, msg: JointState):
-        if not self._joint_state_ready:
-            # filtra i nomi, togli “finger” se vuoi ignorarlo
-            arm_joint_names = [name for name in msg.name if not name.startswith('fr3_finger')]
-            self.joint_names = arm_joint_names
-            self._joint_state_ready = True
-            self.get_logger().info(f"✅ Joint order (arm only): {self.joint_names}")
-        # salva per seed IK
+
         self._latest_joint_state = msg
     # ========================================================================
     # ACTION CALLBACK: PlanGlobalPath (HYBRID PLANNING)
@@ -637,11 +689,18 @@ class FrankaMotionServer(Node):
             )
 
 
-        robot_trajectory = RobotTrajectory()
-        robot_trajectory.joint_trajectory.joint_names = self.joint_names
-
         result.error_code = MoveItErrorCodes.SUCCESS
-        result.trajectory = robot_trajectory
+        if hasattr(trajectory_msg, "joint_trajectory"):
+            jt = trajectory_msg.joint_trajectory
+        else:
+            jt = trajectory_msg
+
+        if jt.points:
+            self.trajectory_pub.publish(jt)
+        else:
+            self.get_logger().warn("⚠️ JointTrajectory vuota nel global plan")
+
+
         result.waypoints_path = waypoints_path
 
         if not hasattr(self, "path_pub"):

@@ -405,6 +405,7 @@ def generate_launch_description():
         name="spawn_fr3_arm_controller",
         arguments=[
             "fr3_arm_controller",
+            "--inactive",
             "--controller-manager", "/controller_manager",
             "--param-file",
             os.path.join(
@@ -421,7 +422,6 @@ def generate_launch_description():
         name="spawn_fr3_velocity_controller",
         arguments=[
             "fr3_velocity_controller",
-            "--inactive",
             "--controller-manager", "/controller_manager",
             "--param-file",
             os.path.join(
@@ -507,6 +507,14 @@ def generate_launch_description():
         output='screen',
         parameters=[avoidance_params_file]
     )
+
+    velocity_control_blender = Node(
+        package='franka_simulation',
+        executable='velocity_control_blender',
+        name='velocity_control_blender',
+        output='screen'
+    )
+
     
     # Ritarda l'avvio dopo move_group e planning scene
     delayed_avoidance = TimerAction(
@@ -524,6 +532,9 @@ def generate_launch_description():
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
     #delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
     motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
+
+    delayed_blender = TimerAction(period=13.0, actions=[velocity_control_blender])
+
 
 
     return LaunchDescription(
@@ -550,5 +561,6 @@ def generate_launch_description():
             #delayed_motion_server,
             motion_server_action,
             delayed_avoidance,
+            delayed_blender,
         ]
     )

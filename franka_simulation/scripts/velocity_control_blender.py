@@ -85,7 +85,7 @@ class VelocityControlBlender(Node):
         # Traiettoria di riferimento
         self.create_subscription(
             JointTrajectory,
-            "/franka/velocity_trajectory",
+            "/velocity_blender/trajectory",
             self.trajectory_callback,
             qos1,
         )

@@ -43,6 +43,8 @@ from franka_simulation.action import MoveToPose, MoveToJoint
 # TF per trasformazioni coordinate
 from tf2_ros import Buffer, TransformListener
 import tf2_geometry_msgs
+from franka_simulation.action import PlanGlobalPath
+
 
 
 class FrankaMotionClient(Node):
@@ -113,6 +115,15 @@ class FrankaMotionClient(Node):
             callback_group=self.callback_group
         )
         
+        # NEW — Plan Global Path client
+        self.plan_global_path_client = ActionClient(
+            self, PlanGlobalPath, 'plan_global_path',
+            callback_group=self.callback_group
+        )
+
+        if not self.plan_global_path_client.wait_for_server(timeout_sec=10.0):
+            raise RuntimeError("Action server 'plan_global_path' non disponibile")
+
         # Attesa disponibilità action servers
         self.get_logger().info("⏳ Attesa action servers...")
         
@@ -242,6 +253,58 @@ class FrankaMotionClient(Node):
             self.get_logger().warning(f"⚠️ Movimento fallito: {self._error_code_to_string(result.result.val)}")
             
         return result.result
+
+    def plan_global_path(self, pose_target: PoseStamped,
+                         planner_id: str = "RRTConnect",
+                         planning_time: float = 5.0,
+                         timeout_sec: Optional[float] = None):
+        """
+        Pianifica un path globale con OMPL usando l'action plan_global_path.
+
+        Restituisce:
+            result.robot_trajectory  (RobotTrajectory MoveIt)
+            result.waypoints_path    (Path per RViz)
+            result.error_code        (MoveItErrorCodes)
+        """
+
+        self.get_logger().info("🌍 Richiesta di Global Planning...")
+
+        goal_msg = PlanGlobalPath.Goal()
+        goal_msg.target_pose = pose_target
+        goal_msg.planner_id = planner_id
+        goal_msg.planning_time = planning_time
+
+        # Invio goal
+        send_future = self.plan_global_path_client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, send_future)
+        goal_handle = send_future.result()
+
+        if not goal_handle.accepted:
+            raise RuntimeError("Goal plan_global_path rifiutato dal server")
+
+        # Attesa risultato
+        result_future = goal_handle.get_result_async()
+        timeout = timeout_sec or self.default_timeout
+
+        start_time = time.time()
+        while not result_future.done():
+            if time.time() - start_time > timeout:
+                cancel_future = goal_handle.cancel_goal_async()
+                rclpy.spin_until_future_complete(self, cancel_future)
+                raise TimeoutError("Timeout durante global planning")
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        result = result_future.result().result
+
+        if result.error_code == MoveItErrorCodes.SUCCESS:
+            self.get_logger().info("✅ Global Planning completato con successo!")
+        else:
+            self.get_logger().warn(
+                f"⚠️ Global Planning fallito: {self._error_code_to_string(result.error_code)}"
+            )
+
+        return result
+
     
     def move_to_joint(self,
                      joint_target: List[float],

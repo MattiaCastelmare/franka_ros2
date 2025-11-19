@@ -91,7 +91,7 @@ class OnlineAvoidanceController(Node):
 
         # PUBLISHER
         self.velocity_cmd_pub = self.create_publisher(
-            Float64MultiArray, "/fr3_velocity_controller/commands", 10
+            Float64MultiArray, "/avoidance/velocity", 10
         )
 
         # TIMER CONTROLLO
