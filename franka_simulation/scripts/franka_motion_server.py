@@ -228,171 +228,90 @@ class FrankaMotionServer(Node):
         return CancelResponse.ACCEPT
     
     def move_to_pose_callback(self, goal_handle: ServerGoalHandle):
-        """Callback completo per movimento a pose target."""
+        """Callback completo SOLO PLANNING per movimento a pose target."""
         
-        self.get_logger().info("📍 Starting pose movement...")
-        
-        # Estrazione parametri goal
-        goal_pose = goal_handle.request.pose_target
-        is_valid, msg = self._validate_ground_clearance(goal_pose.pose)
-        if not is_valid:
-            result = MoveToPose.Result()
-            result.result.val = MoveItErrorCodes.INVALID_MOTION_PLAN
-            goal_handle.abort()
-            return result
+        self.get_logger().info("📍 [move_to_pose] START (PLANNING ONLY)")
 
+        goal_pose = goal_handle.request.pose_target
         cartesian_motion = goal_handle.request.cartesian_motion
         velocity_scaling = goal_handle.request.max_velocity_scaling_factor or self.max_velocity
-        
-        # Preparazione risultato
+
         result = MoveToPose.Result()
         result.result.val = MoveItErrorCodes.FAILURE
         start_time = time.time()
-        
-        # Configurazione temporanea velocità
+
+        # Salva stato velocità
         original_velocity = self.moveit2.max_velocity
         self.moveit2.max_velocity = velocity_scaling
-        
+
         try:
-            if cartesian_motion:
-                # Movimento cartesiano
-                self.get_logger().info("🔄 Cartesian planning...")
-                
-                feedback = MoveToPose.Feedback()
-                feedback.current_state = "cartesian_planning"
-                feedback.progress = 0.3
-                goal_handle.publish_feedback(feedback)
-                
-                planning_start = time.time()
-                self.moveit2.move_to_pose(pose=goal_pose, cartesian=True)
-                
-                feedback.current_state = "executing"
-                feedback.progress = 0.7
-                goal_handle.publish_feedback(feedback)
-                
-                success = self.moveit2.wait_until_executed()
-                error_code = self.moveit2.get_last_execution_error_code()
+            # =======================
+            # 1) COMPUTE IK SE NON CARTESIAN
+            # =======================
+            if not cartesian_motion:
+                self.get_logger().info("🧮 [move_to_pose] IK-only planning")
 
-                # ========== PUBBLICAZIONE TRAIETTORIA VELOCITY-BASED ==========
-                trajectory_msg = None
-
-                # Pymoveit2 salva la JointTrajectory interna qui
-                if hasattr(self.moveit2, '_MoveIt2__joint_trajectory'):
-                    trajectory_msg = self.moveit2._MoveIt2__joint_trajectory
-
-                if trajectory_msg is not None:
-                    # Se è RobotTrajectory → estrai la JointTrajectory interna
-                    if hasattr(trajectory_msg, "joint_trajectory"):
-                        jt = trajectory_msg.joint_trajectory
-                    else:
-                        jt = trajectory_msg  # già JointTrajectory
-
-                    if jt.points:
-                        self.get_logger().info(f"📤 Pubblico JointTrajectory (cartesian) con {len(jt.points)} punti")
-                        self.trajectory_pub.publish(jt)
-                    else:
-                        self.get_logger().warn("⚠️ JointTrajectory vuota dopo move_to_pose")
-
-
-                else:
-                    self.get_logger().warn("⚠️ Nessuna JointTrajectory trovata dopo move_to_pose")
-
-                
-                if success and error_code and error_code.val == MoveItErrorCodes.SUCCESS:
-                    result.result.val = MoveItErrorCodes.SUCCESS
-                    self.get_logger().info("✅ Cartesian movement completed")
-                else:
-                    self.get_logger().warning(f"⚠️ Cartesian movement failed: {error_code.val if error_code else 'Unknown'}")
-                    
-            else:
-                # Planning joint space via IK
-                self.get_logger().info("🧮 Computing IK...")
-                
-                feedback = MoveToPose.Feedback()
-                feedback.current_state = "ik_calculation"
-                feedback.progress = 0.2
-                goal_handle.publish_feedback(feedback)
-                
-                # Calcolo IK con retry
-                joint_positions = None
-                for attempt in range(1, self.max_ik_retries + 1):
-                    if goal_handle.is_cancel_requested:
-                        goal_handle.canceled()
-                        return result
-                        
-                    joint_positions, ik_error = self.compute_ik(goal_pose)
-                    if joint_positions is not None:
-                        break
-                    time.sleep(0.5)
-                
+                joint_positions, ik_error = self.compute_ik(goal_pose)
                 if joint_positions is None:
-                    self.get_logger().error("❌ IK failed after all retries")
+                    self.get_logger().error("❌ IK failed")
                     goal_handle.abort()
                     return result
-                
-                # Planning e esecuzione
-                feedback.current_state = "joint_planning"
-                feedback.progress = 0.5
-                goal_handle.publish_feedback(feedback)
-                
-                planning_start = time.time()
-                self.moveit2.move_to_configuration(joint_positions, self.joint_names)
-                
-                feedback.current_state = "executing"
-                feedback.progress = 0.8
-                goal_handle.publish_feedback(feedback)
-                
-                success = self.moveit2.wait_until_executed()
-                error_code = self.moveit2.get_last_execution_error_code()
-            
-                # ========== PUBBLICAZIONE TRAIETTORIA VELOCITY-BASED ==========
-                trajectory_msg = None
 
-                # Pymoveit2 salva la JointTrajectory interna qui
-                if hasattr(self.moveit2, '_MoveIt2__joint_trajectory'):
-                    trajectory_msg = self.moveit2._MoveIt2__joint_trajectory
+                # =========================
+                # 2) SOLO PLANNING (NO EXECUTE)
+                # =========================
+                self.get_logger().info("🧠 Calling MoveIt2.plan(...)")
+                trajectory = self.moveit2.plan(joint_positions=list(joint_positions))
 
-                if trajectory_msg is not None and len(trajectory_msg.points) > 0:
-                    self.get_logger().info(f"📤 Pubblico JointTrajectory (pose) con {len(trajectory_msg.points)} punti")
+                if trajectory is None or not trajectory.points:
+                    self.get_logger().error("❌ Planning failed")
+                    goal_handle.abort()
+                    return result
 
-                    joint_traj = trajectory_msg
-                    self.trajectory_pub.publish(joint_traj)
+                self.get_logger().info(
+                    f"📤 Publishing planned JointTrajectory ({len(trajectory.points)} points)"
+                )
+                self.trajectory_pub.publish(trajectory)
 
-                else:
-                    self.get_logger().warn("⚠️ Nessuna JointTrajectory trovata dopo move_to_pose")
-
-                
-                if success and error_code and error_code.val == MoveItErrorCodes.SUCCESS:
-                    result.result.val = MoveItErrorCodes.SUCCESS
-                    self.get_logger().info("✅ Joint movement completed")
-                else:
-                    self.get_logger().warning(f"⚠️ Joint movement failed: {error_code.val if error_code else 'Unknown'}")
-            
-            # Calcolo metriche
-            total_time = time.time() - start_time
-            result.planning_time = time.time() - planning_start if 'planning_start' in locals() else 0.0
-            result.execution_time = total_time - result.planning_time
-            result.final_pose = goal_pose  # Placeholder
-            
-            # Feedback finale
-            feedback.current_state = "completed"
-            feedback.progress = 1.0
-            goal_handle.publish_feedback(feedback)
-            
-            if result.result.val == MoveItErrorCodes.SUCCESS:
-                goal_handle.succeed()
+            # =======================
+            # CARTESIAN PLANNING
+            # =======================
             else:
-                goal_handle.abort()
-                
+                self.get_logger().info("🔄 Cartesian planning (PLANNING ONLY)...")
+                self.moveit2.plan_to_pose(
+                    pose=goal_pose,
+                    cartesian=True
+                )
+
+                traj_msg = self.moveit2._MoveIt2__joint_trajectory
+
+                if traj_msg is None or not traj_msg.points:
+                    self.get_logger().error("❌ Cartesian planning returned no trajectory")
+                    goal_handle.abort()
+                    return result
+
+                self.get_logger().info(
+                    f"📤 Publishing Cartesian JointTrajectory ({len(traj_msg.points)} points)"
+                )
+                self.trajectory_pub.publish(traj_msg)
+
+            # =========================
+            # SUCCESS
+            # =========================
+            result.result.val = MoveItErrorCodes.SUCCESS
+            result.final_pose = goal_pose
+
+            goal_handle.succeed()
+
         except Exception as e:
-            self.get_logger().error(f"❌ Movement error: {e}")
+            self.get_logger().error(f"❌ move_to_pose exception: {e}")
             goal_handle.abort()
-            
+
         finally:
-            # Ripristino configurazione
             self.moveit2.max_velocity = original_velocity
-            
+
         return result
+
     
     def move_to_joint_callback(self, goal_handle: ServerGoalHandle):
         """Callback per movimento a configurazione joint (SOLO PLANNING, no esecuzione MoveIt)."""

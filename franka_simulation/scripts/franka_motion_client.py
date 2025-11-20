@@ -296,7 +296,7 @@ class FrankaMotionClient(Node):
 
         result = result_future.result().result
 
-        if result.error_code == MoveItErrorCodes.SUCCESS:
+        if result.error_code.val == MoveItErrorCodes.SUCCESS:
             self.get_logger().info("✅ Global Planning completato con successo!")
         else:
             self.get_logger().warn(
@@ -505,9 +505,15 @@ class FrankaMotionClient(Node):
         
         return pose
     
-    def _error_code_to_string(self, error_code: int) -> str:
-        """Converte MoveItErrorCode in stringa leggibile."""
-        
+    def _error_code_to_string(self, error_code) -> str:
+        """Converte MoveItErrorCodes (oggetto o int) in stringa leggibile."""
+
+        # Se mi arriva un oggetto MoveItErrorCodes, estraggo .val
+        if isinstance(error_code, MoveItErrorCodes):
+            code_val = error_code.val
+        else:
+            code_val = int(error_code)
+
         error_map = {
             MoveItErrorCodes.SUCCESS: "SUCCESS",
             MoveItErrorCodes.FAILURE: "FAILURE", 
@@ -532,10 +538,11 @@ class FrankaMotionClient(Node):
             MoveItErrorCodes.COLLISION_CHECKING_UNAVAILABLE: "COLLISION_CHECKING_UNAVAILABLE",
             MoveItErrorCodes.ROBOT_STATE_STALE: "ROBOT_STATE_STALE",
             MoveItErrorCodes.SENSOR_INFO_STALE: "SENSOR_INFO_STALE",
-            MoveItErrorCodes.NO_IK_SOLUTION: "NO_IK_SOLUTION"
+            MoveItErrorCodes.NO_IK_SOLUTION: "NO_IK_SOLUTION",
         }
-        
-        return error_map.get(error_code, f"UNKNOWN_ERROR_{error_code}")
+
+        return error_map.get(code_val, f"UNKNOWN_ERROR_{code_val}")
+
     
     def _log_configuration(self):
         """Log configurazione client per debug."""
