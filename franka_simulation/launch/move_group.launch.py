@@ -516,11 +516,7 @@ def generate_launch_description():
     )
 
     
-    # Ritarda l'avvio dopo move_group e planning scene
-    delayed_avoidance = TimerAction(
-        period=11.0,  # Dopo RViz (10s) per assicurare che tutto sia pronto
-        actions=[online_avoidance]
-    )
+
 
 
     # Sequenza temporizzata: spawn -> JSB -> ARM -> RViz (dopo move_group)
@@ -530,10 +526,22 @@ def generate_launch_description():
     delayed_vel = TimerAction(period=8.0, actions=[vel_spawner])
 
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
+    delayed_avoidance = TimerAction(period=11.0, actions=[online_avoidance])
     #delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
     motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
 
-    delayed_blender = TimerAction(period=13.0, actions=[velocity_control_blender])
+    delayed_blender = TimerAction(period=13.0, actions=[Node(
+        package='franka_simulation',
+        executable='velocity_control_blender',
+        name='velocity_control_blender',
+        output='screen',
+        parameters=[{
+            'kp_tracking': 0.4,     # Riduciamo Kp a 0.4 (era 0.8) per massima inerzia/smoothness.
+            'max_joint_vel': 0.15,  # Riduciamo il limite di velocità (era 0.3)
+            'smoothing_alpha': 0.8  # Aumentiamo l'inerzia dello smoothing (era 0.6)
+                    }]
+                )
+            ])
 
 
 

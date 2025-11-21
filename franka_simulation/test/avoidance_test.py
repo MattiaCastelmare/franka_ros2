@@ -424,17 +424,17 @@ def main():
         # DEFINE SAFE TRAJECTORY
         waypoints = [
             Waypoint(0.30, 0.0, 0.45, "WP0_Home", "Safe starting position", "None", False),
-            Waypoint(0.30, -0.55, 0.30, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
-            Waypoint(0.35, 0.55, 0.30, "WP2_RedPass", "Pass red box at close distance", "Strong lateral avoidance", True),
-            Waypoint(0.25, -0.55, 0.50, "WP3_PreGap", "Position above gap", "Minimal", False),
-            Waypoint(0.38, 0.55, 0.35, "WP4_EnterGap", "Enter gap zone", "Bilateral avoidance starts", False),
-            Waypoint(0.45, -0.55, 0.55, "WP5_GapCenter", "Gap center - CRITICAL", "Strong bilateral avoidance", True),
+            Waypoint(0.20, -0.65, 0.20, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
+            Waypoint(0.15, 0.75, 0.40, "WP2_RedPass", "Pass red box at close distance", "Strong lateral avoidance", True),
+            Waypoint(0.10, -0.55, 0.50, "WP3_PreGap", "Position above gap", "Minimal", False),
+            Waypoint(0.38, 0.75, 0.25, "WP4_EnterGap", "Enter gap zone", "Bilateral avoidance starts", False),
+            Waypoint(0.3, -0.55, 0.3, "WP5_GapCenter", "Gap center - CRITICAL", "Strong bilateral avoidance", True),
             Waypoint(0.55, 0.55, 0.15, "WP6_ExitGap", "Exit gap zone", "Reducing avoidance", False),
             Waypoint(0.40, -0.55, 0.40, "WP7_YellowApproach", "Approach yellow box", "Lateral push north", True),
             Waypoint(0.40, 0.50, 0.55, "WP8_YellowOverhead", "Above yellow box", "Upward push", False),
             Waypoint(0.50, -0.50, 0.25, "WP9_Diagonal", "Diagonal approach red", "Multi-axis avoidance", False),
-            Waypoint(0.60, 0.50, 0.40, "WP10_FarCorner", "Safe far position", "None", False),
-            Waypoint(0.30, 0.5, 0.3, "WP11_FinalHome", "Return home", "None", False),
+            Waypoint(0.30, 0.60, 0.40, "WP10_FarCorner", "Safe far position", "None", False),
+            Waypoint(0.00, -0.7, 0.1, "WP11_FinalHome", "Return home", "None", False),
         ]
         
         velocity_scaling = 0.06  # Slow for observation

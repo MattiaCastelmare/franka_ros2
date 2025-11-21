@@ -39,7 +39,7 @@ def main():
         # ============================================================
         # CHECK HOME POSITION
         # ============================================================
-        home_joints = [0.0, 0.0, -0.785, -2.356, 0.0, 1.571, 0.785]  # Home desiderata
+        home_joints = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]  # Home desiderata
         tol = 0.05  # tolleranza rad
 
         current_joints = client.get_current_joints()
@@ -52,7 +52,7 @@ def main():
                 print("➡️  Robot non in home, spostamento in corso...")
                 result = client.move_to_joint(
                     joint_target=home_joints,
-                    velocity_scaling=0.2,
+                    velocity_scaling=0.08,
                     tolerance=0.02
                 )
                 if result.val == MoveItErrorCodes.SUCCESS:
@@ -94,8 +94,8 @@ def main():
             print(f"  📍 Movimento {i}: x={x:.2f}, y={y:.2f}, z={z:.2f}")
             result = client.move_to_pose(
                 pose_target=target_pose,
-                cartesian_motion=True,
-                velocity_scaling=0.2
+                cartesian_motion=False,
+                velocity_scaling=0.08
             )
             if result.val == MoveItErrorCodes.SUCCESS:
                 print(f"    ✅ Movimento {i} completato")

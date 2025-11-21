@@ -13,7 +13,7 @@ Novità:
 - Gestione retry robusta per IK e planning
 - Metriche temporali accurate
 - Error handling completo
-- ✅ Aggiunta validazione ground clearance modulare (Claude Step 3.2)
+
 """
 
 import rclpy
