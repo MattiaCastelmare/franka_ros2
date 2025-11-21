@@ -53,10 +53,10 @@ online_avoidance_controller:
         - [-0.03, 0.0, 0.0]
 
 
-    influence_distance: 0.30
+    influence_distance: 0.20
     safety_margin: 0.08
 
-    repulsive_gain: 1.0
+    repulsive_gain: 5
 
     damping_max: 0.05
     singularity_threshold: 0.05
