@@ -1,6 +1,14 @@
 Changelog for package franka_ros2
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+v2.1.0 (2025-10-24)
+-------------------
+Requires libfranka >= 0.18.0 and franka_description >= 1.2.0 requires ROS 2 Humble
+
+* BREAKING CHANGE: only one move group called `(arm_id)_arm` is available. If Franka Hand is set, the TCP is placed as in the former `(arm_id)_manipulator`. Otherwise, its location corresponds to the one from the former `(arm_id)_arm`.
+* Refactor: ee_id and load_gripper arguments added in moveit launch file
+* Updated dependencies: libfranka to 0.18.0 and franka_description to 1.2.0
+
 v2.0.3 (2025-09-18)
 -------------------
 Requires libfranka >= 0.15.0 and franka_description >= 1.0.0 requires ROS 2 Humble

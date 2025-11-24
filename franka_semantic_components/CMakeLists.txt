@@ -32,6 +32,7 @@ endforeach()
 
 find_package(Franka 0.13.0 REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(controller_interface REQUIRED)
 
 add_library(
   franka_semantic_components SHARED
@@ -48,7 +49,7 @@ target_include_directories(
 target_link_libraries(franka_semantic_components Franka::Franka Eigen3::Eigen)
 
 ament_target_dependencies(franka_semantic_components Franka sensor_msgs
-                          geometry_msgs ${THIS_PACKAGE_INCLUDE_DEPENDS})
+                          geometry_msgs controller_interface ${THIS_PACKAGE_INCLUDE_DEPENDS})
 
 install(TARGETS franka_semantic_components DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include)
@@ -63,7 +64,6 @@ if(BUILD_TESTING)
   find_package(ament_cmake_xmllint REQUIRED)
   find_package(franka_msgs REQUIRED)
   find_package(ament_cmake_gmock REQUIRED)
-  find_package(controller_interface REQUIRED)
 
   set(CPP_DIRECTORIES src include)
   ament_clang_format(CONFIG_FILE ../.clang-format ${CPP_DIRECTORIES})

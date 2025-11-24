@@ -56,12 +56,16 @@ def generate_launch_description():
     use_fake_hardware_parameter_name = 'use_fake_hardware'
     fake_sensor_commands_parameter_name = 'fake_sensor_commands'
     namespace_parameter_name = 'namespace'
+    load_gripper_parameter_name = 'load_gripper'
+    ee_id_parameter_name = 'ee_id'
 
     robot_ip = LaunchConfiguration(robot_ip_parameter_name)
     use_fake_hardware = LaunchConfiguration(use_fake_hardware_parameter_name)
     fake_sensor_commands = LaunchConfiguration(
         fake_sensor_commands_parameter_name)
     namespace = LaunchConfiguration(namespace_parameter_name)
+    load_gripper = LaunchConfiguration(load_gripper_parameter_name)
+    ee_id = LaunchConfiguration(ee_id_parameter_name)
 
     # Command-line arguments
 
@@ -76,8 +80,8 @@ def generate_launch_description():
     )
 
     robot_description_config = Command(
-        [FindExecutable(name='xacro'), ' ', franka_xacro_file, ' hand:=true',
-         ' robot_ip:=', robot_ip, ' use_fake_hardware:=', use_fake_hardware,
+        [FindExecutable(name='xacro'), ' ', franka_xacro_file, ' hand:=', load_gripper,
+         ' robot_ip:=', robot_ip, ' ee_id:=', ee_id, ' use_fake_hardware:=', use_fake_hardware,
          ' fake_sensor_commands:=', fake_sensor_commands, ' ros2_control:=true'])
 
     robot_description = {'robot_description': ParameterValue(
@@ -90,7 +94,7 @@ def generate_launch_description():
 
     robot_description_semantic_config = Command(
         [FindExecutable(name='xacro'), ' ',
-         franka_semantic_xacro_file, ' hand:=true']
+         franka_semantic_xacro_file, ' hand:=', load_gripper, ' ee_id:=', ee_id]
     )
 
     robot_description_semantic = {'robot_description_semantic': ParameterValue(
@@ -248,6 +252,16 @@ def generate_launch_description():
         default_value='',
         description='Namespace for the robot.'
     )
+    load_gripper_arg = DeclareLaunchArgument(
+        load_gripper_parameter_name,
+        default_value='true',
+        description='Whether to load the gripper or not (true or false)'
+    )
+    ee_id_arg = DeclareLaunchArgument(
+        ee_id_parameter_name,
+        default_value='franka_hand',
+        description='The end-effector id to use. Available options: none, franka_hand, cobot_pump'
+    )
     use_fake_hardware_arg = DeclareLaunchArgument(
         use_fake_hardware_parameter_name,
         default_value='false',
@@ -267,6 +281,8 @@ def generate_launch_description():
     return LaunchDescription(
         [robot_arg,
          namespace_arg,
+         load_gripper_arg,
+         ee_id_arg,
          use_fake_hardware_arg,
          fake_sensor_commands_arg,
          db_arg,
