@@ -517,9 +517,9 @@ def main():
         waypoints = [
             Waypoint(0.30, 0.0, 0.45, "WP0_Home", "Safe starting position", "None", False),
             Waypoint(0.20, -0.65, 0.20, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
-            Waypoint(0.20, 0.65, 0.20, "WP2_OtherSide", "Other side", "Lateral push away", False),
-            Waypoint(0.20, -0.65, 0.20, "WP3_Back", "Back to first side", "Lateral push away", False),
-            Waypoint(0.20, 0.65, 0.20, "WP4_OtherSideAgain", "Other side again", "Lateral push away", False),
+            Waypoint(0.30, 0.65, 0.20, "WP2_OtherSide", "Other side", "Lateral push away", False),
+            Waypoint(0.20, -0.35, 0.30, "WP3_Back", "Back to first side", "Lateral push away", False),
+            Waypoint(0.1, 0.1, 0.50, "WP4_OtherSideAgain", "Other side again", "Lateral push away", False),
         ]
         
         velocity_scaling = 0.06  # Slow for observation
