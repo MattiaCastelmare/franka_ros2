@@ -14,6 +14,9 @@ Novità:
 - Metriche temporali accurate
 - Error handling completo
 
+MODIFICA v2: avoid_collisions = False in compute_ik()
+             L'evitamento collisioni è delegato all'online_avoidance_controller
+
 """
 
 import rclpy
@@ -70,6 +73,8 @@ class FrankaMotionServer(Node):
 
         
         self.get_logger().info("🚀 Franka Motion Server pronto!")
+        self.get_logger().info("   ⚠️  Collision checking DISABILITATO in IK")
+        self.get_logger().info("   🛡️  Avoidance gestito da online_avoidance_controller")
         self._log_configuration()
         self.trajectory_pub = self.create_publisher(JointTrajectory, '/velocity_blender/trajectory', 10)
 
@@ -180,7 +185,7 @@ class FrankaMotionServer(Node):
 
     def _init_fk_service(self):
         """
-        Inizializza servizio Forward Kinematics (compute_fk) per l’estrazione waypoint.
+        Inizializza servizio Forward Kinematics (compute_fk) per l'estrazione waypoint.
         """
      
         self.fk_client = self.create_client(GetPositionFK, 'compute_fk', callback_group=self.callback_group)
@@ -249,7 +254,7 @@ class FrankaMotionServer(Node):
             # 1) COMPUTE IK SE NON CARTESIAN
             # =======================
             if not cartesian_motion:
-                self.get_logger().info("🧮 [move_to_pose] IK-only planning")
+                self.get_logger().info("🧮 [move_to_pose] IK-only planning (collision checking DISABLED)")
 
                 joint_positions, ik_error = self.compute_ik(goal_pose)
                 if joint_positions is None:
@@ -423,12 +428,25 @@ class FrankaMotionServer(Node):
         return True, ""
 
     def compute_ik(self, goal_pose: PoseStamped) -> Tuple[Optional[List[float]], MoveItErrorCodes]:
-        """Calcola IK per pose target con gestione robusta errori."""
+        """
+        Calcola IK per pose target con gestione robusta errori.
+        
+        ⚠️ MODIFICA v2: avoid_collisions = False
+        L'evitamento collisioni è delegato all'online_avoidance_controller.
+        Questo permette di pianificare verso pose che attraversano ostacoli.
+        """
         
         ik_request = GetPositionIK.Request()
         ik_request.ik_request.group_name = self.move_group_name
         ik_request.ik_request.pose_stamped = goal_pose
-        ik_request.ik_request.avoid_collisions = True
+        
+        # ════════════════════════════════════════════════════════════════
+        # MODIFICA CHIAVE: avoid_collisions = False
+        # Permette IK anche se la pose finale è "dentro" un ostacolo
+        # L'online_avoidance_controller eviterà la collisione durante il moto
+        # ════════════════════════════════════════════════════════════════
+        ik_request.ik_request.avoid_collisions = False  # ERA: True
+        
         ik_request.ik_request.ik_link_name = self.end_effector_name
         ik_request.ik_request.timeout.sec = int(self.ik_timeout)
         
@@ -477,6 +495,7 @@ class FrankaMotionServer(Node):
         self.get_logger().info(f"  • Joints: {self.joint_names}")
         self.get_logger().info(f"  • End Effector: {self.end_effector_name}")
         self.get_logger().info(f"  • Planner: {self.planner_id}")
+        self.get_logger().info(f"  • Collision checking in IK: DISABLED")
 
     def _joint_state_callback(self, msg: JointState):
 
@@ -592,14 +611,6 @@ class FrankaMotionServer(Node):
                 return result
 
         except Exception as e:
-            self.get_logger().error(f"❌ FK extraction failed: {e}")
-            result.error_code = MoveItErrorCodes.PLANNING_FAILED
-            result.num_waypoints = 0
-            goal_handle.abort()
-            self.moveit2.planner_id = original_planner
-            return result
-
-        except Exception as e:
             self.get_logger().error(f"❌ FK extraction failed ({e}), fallback to linear interpolation")
             waypoints_path = self._create_sample_waypoints(
                 start_pose=self._get_current_ee_pose(),
@@ -712,6 +723,7 @@ class FrankaMotionServer(Node):
             pose.position.z = 0.5
             pose.orientation.w = 1.0
             return pose
+
     def _extract_waypoints_from_trajectory(self, trajectory_msg, sample_rate: float = 0.1) -> Path:
         """
         STEP 3: Estrae waypoints dalla traiettoria MoveIt usando compute_fk.
@@ -798,6 +810,8 @@ def main(args=None):
     """Entry point."""
     
     print("🚀 Starting Franka Motion Server...")
+    print("   ⚠️  Collision checking in IK: DISABLED")
+    print("   🛡️  Avoidance handled by online_avoidance_controller")
     rclpy.init(args=args)
     
     try:

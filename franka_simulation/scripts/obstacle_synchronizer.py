@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""
+Obstacle Synchronizer v3 - Pubblica su entrambi i topic
+========================================================
+
+Pubblica gli ostacoli su:
+1. /obstacle_scene - per l'online_avoidance_controller
+2. /planning_scene - per la visualizzazione in RViz
+
+MoveIt NON usa più /planning_scene per il collision checking perché
+abbiamo disabilitato avoid_collisions nel motion server.
+
+Author: Modificato per architettura collision avoidance dinamica
+"""
 
 import rclpy
 from rclpy.node import Node
@@ -21,6 +34,8 @@ PLANNING_SCENE_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
+
+
 class ObstacleSynchronizer(Node):
     def __init__(self):
         super().__init__('obstacle_synchronizer')
@@ -30,17 +45,20 @@ class ObstacleSynchronizer(Node):
         self.declare_parameter('update_rate', 2.0)
         self.declare_parameter('reference_frame', 'base')
         self.declare_parameter('urdf_xacro_path', '')
+        self.declare_parameter('obstacle_scene_topic', '/obstacle_scene')
+        self.declare_parameter('publish_to_planning_scene', True)  # Per RViz
 
         self.namespace = self.get_parameter('obstacles_namespace').value
         self.update_rate = self.get_parameter('update_rate').value
         self.reference_frame = self.get_parameter('reference_frame').value
+        self.obstacle_scene_topic = self.get_parameter('obstacle_scene_topic').value
+        self.publish_to_planning_scene = self.get_parameter('publish_to_planning_scene').value
 
-        # Percorso del file Xacro da cui generare l'URDF
+        # Percorso del file Xacro
         urdf_xacro_param = self.get_parameter('urdf_xacro_path').get_parameter_value().string_value
         if urdf_xacro_param:
             self.urdf_xacro_path = urdf_xacro_param
         else:
-            # default (collision_box)
             self.urdf_xacro_path = os.path.join(
                 get_package_share_directory('franka_simulation'),
                 'urdf', 'obstacles', 'collision_box.urdf.xacro'
@@ -50,23 +68,35 @@ class ObstacleSynchronizer(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # === Publisher per la scena ===
-        self.planning_scene_pub = self.create_publisher(
-                                            PlanningScene,
-                                            '/planning_scene',
-                                            PLANNING_SCENE_QOS,
-                                        )
+        # === Publisher 1: per online_avoidance_controller ===
+        self.obstacle_scene_pub = self.create_publisher(
+            PlanningScene,
+            self.obstacle_scene_topic,
+            PLANNING_SCENE_QOS,
+        )
 
+        # === Publisher 2: per RViz (visualizzazione) ===
+        if self.publish_to_planning_scene:
+            self.planning_scene_pub = self.create_publisher(
+                PlanningScene,
+                '/planning_scene',
+                PLANNING_SCENE_QOS,
+            )
+        else:
+            self.planning_scene_pub = None
 
         # === Timer per pubblicare periodicamente ===
-        self.timer = self.create_timer(self.update_rate, self.publish_obstacle_from_xacro)
+        self.timer = self.create_timer(1.0 / self.update_rate, self.publish_obstacles)
 
         self.robot = None
-        self.get_logger().info(f"🚀 ObstacleSynchronizer avviato (file: {self.urdf_xacro_path})")
+        self.get_logger().info(f"🚀 ObstacleSynchronizer v3 avviato")
+        self.get_logger().info(f"   📁 File: {self.urdf_xacro_path}")
+        self.get_logger().info(f"   📤 Avoidance topic: {self.obstacle_scene_topic}")
+        self.get_logger().info(f"   📺 RViz topic: /planning_scene ({'enabled' if self.publish_to_planning_scene else 'disabled'})")
+        self.get_logger().info(f"   🔄 Update rate: {self.update_rate} Hz")
 
-    # ---------------------------------------------------------------------
-    def publish_obstacle_from_xacro(self):
-        """Carica l'URDF dal file .xacro, interpreta le pose e pubblica la scena"""
+    def publish_obstacles(self):
+        """Carica l'URDF e pubblica su entrambi i topic."""
         try:
             urdf_xml = subprocess.check_output(['xacro', self.urdf_xacro_path], text=True)
             self.robot = URDF.from_xml_string(urdf_xml)
@@ -112,11 +142,13 @@ class ObstacleSynchronizer(Node):
             planning_scene.world.collision_objects.append(collision_obj)
             count += 1
 
-        self.planning_scene_pub.publish(planning_scene)
+        # Pubblica su /obstacle_scene (per avoidance controller)
+        self.obstacle_scene_pub.publish(planning_scene)
 
-        self.get_logger().info(f"🔄 Pubblicati {count} ostacoli dalla scena {self.urdf_xacro_path}")
+        # Pubblica su /planning_scene (per RViz)
+        if self.planning_scene_pub is not None:
+            self.planning_scene_pub.publish(planning_scene)
 
-    # ---------------------------------------------------------------------
     def extract_pose_from_urdf(self, link):
         pose = Pose()
         for joint in self.robot.joints:
@@ -138,7 +170,6 @@ class ObstacleSynchronizer(Node):
         pose.orientation.w = 1.0
         return pose
 
-    # ---------------------------------------------------------------------
     def rpy_to_quaternion(self, roll, pitch, yaw):
         cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
         cp, sp = np.cos(pitch * 0.5), np.sin(pitch * 0.5)

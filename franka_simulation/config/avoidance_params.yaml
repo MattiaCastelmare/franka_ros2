@@ -1,8 +1,21 @@
+# Parametri per Online Avoidance Controller v3
+# =============================================
+# PRIORITÀ: EVITARE COLLISIONI
+
 online_avoidance_controller:
   ros__parameters:
-
-    control_rate: 50.0
-
+    # Frequenza di controllo (alta per reattività)
+    control_rate: 100.0  # Hz
+    
+    # Topic da cui leggere gli ostacoli
+    obstacle_scene_topic: "/obstacle_scene"
+    
+    excluded_obstacles:
+      - "ground_plane"
+      - "ground"
+      - "floor"
+      - "plane"
+    # Control points (tutti i link del braccio)
     control_points:
       - fr3_link1
       - fr3_link2
@@ -12,62 +25,62 @@ online_avoidance_controller:
       - fr3_link6
       - fr3_link7
       - fr3_link8
-
+    
+    # Offsets per ogni control point
     control_points_offsets_yaml: |
       fr3_link1:
         - [0.0, 0.0, 0.0]
-
       fr3_link2:
         - [0.0, 0.0, 0.0]
-        - [0.05, 0.0, 0.0]
-        - [-0.05, 0.0, 0.0]
-
+        - [0.0, 0.05, 0.0]
+        - [0.0, -0.05, 0.0]
       fr3_link3:
         - [0.0, 0.0, 0.0]
-        - [0.06, 0.0, 0.0]
-        - [-0.06, 0.0, 0.0]
-
+        - [0.0, 0.0, 0.05]
+        - [0.0, 0.0, -0.05]
       fr3_link4:
-        - [0.0, 0.0, 0.0]
-        - [0.06, 0.0, 0.0]
-        - [-0.06, 0.0, 0.0]
-
-      fr3_link5:
-        - [0.0, 0.0, 0.0]
-        - [0.06, 0.0, 0.0]
-        - [-0.06, 0.0, 0.0]
-
-      fr3_link6:
         - [0.0, 0.0, 0.0]
         - [0.05, 0.0, 0.0]
         - [-0.05, 0.0, 0.0]
-
-      fr3_link7:
+      fr3_link5:
         - [0.0, 0.0, 0.0]
-        - [0.04, 0.0, 0.0]
-        - [-0.04, 0.0, 0.0]
-
-      fr3_link8:
+        - [0.0, 0.05, 0.0]
+        - [0.0, -0.05, 0.0]
+      fr3_link6:
+        - [0.0, 0.0, 0.0]
+        - [0.0, 0.0, 0.05]
+        - [0.0, 0.0, -0.05]
+      fr3_link7:
         - [0.0, 0.0, 0.0]
         - [0.03, 0.0, 0.0]
         - [-0.03, 0.0, 0.0]
-
-
-    influence_distance: 0.7
-    safety_margin: 0.08
-
-    repulsive_gain: 10.0
-
+      fr3_link8:
+        - [0.0, 0.0, 0.0]
+        - [0.0, 0.0, 0.05]
+        - [0.0, 0.0, -0.05]
+    
+    # ============================================
+    # PARAMETRI CAMPO REPULSIVO - MOLTO AGGRESSIVI
+    # ============================================
+    influence_distance: 0.10   # m - inizia la repulsione a 50cm (aumentato!)
+    safety_margin: 0.08        # m - distanza minima assoluta
+    repulsive_gain: 0.2        # gain del campo repulsivo (molto aumentato!)
+    
+    # Cinematica
     damping_max: 0.05
     singularity_threshold: 0.05
-
-    max_joint_velocity: 1.0
-
-    planning_scene_topic: "/planning_scene"
-    monitor_planning_scene: true
-
-    robot_description_param: "robot_description"
+    max_joint_velocity: 0.8    # rad/s - limitato per movimenti lenti
+    
+    # Frame
     base_frame: "fr3_link0"
     ee_frame: "fr3_link8"
-
-    verbose_logging: false
+    
+    # ============================================
+    # IMPORTANTE: Disabilita proiezione null-space
+    # ============================================
+    # Se true, l'avoidance può solo usare la ridondanza del robot
+    # Se false, l'avoidance ha priorità sul tracking (RACCOMANDATO)
+    use_null_space: false
+    
+    # Debug (abilitato per vedere cosa succede)
+    verbose_logging: true

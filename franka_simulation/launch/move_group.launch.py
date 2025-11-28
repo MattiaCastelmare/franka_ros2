@@ -335,8 +335,6 @@ def generate_launch_description():
     )
 
 
-
-
     # Gazebo (Ignition/GZ) mondo vuoto
     os.environ["GZ_SIM_RESOURCE_PATH"] = os.path.dirname(
         get_package_share_directory("franka_description")
@@ -435,7 +433,7 @@ def generate_launch_description():
 
 
 
-        # Static TF publisher: world -> base
+    # Static TF publisher: world -> base
     static_tf_world_base = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -465,8 +463,6 @@ def generate_launch_description():
     output="screen",
     )
 
-
-
     # RViz con parametri MoveIt se abilitato
     rviz_node = OpaqueFunction(
         function=make_rviz_node,
@@ -493,7 +489,6 @@ def generate_launch_description():
         }]
     )
 
-    # ========== NUOVO: Online Avoidance Controller ==========
     # Parametri da config/avoidance_params.yaml
     avoidance_params_file = os.path.join(
         get_package_share_directory('franka_simulation'),
@@ -514,10 +509,6 @@ def generate_launch_description():
         name='velocity_control_blender',
         output='screen'
     )
-
-    
-
-
 
     # Sequenza temporizzata: spawn -> JSB -> ARM -> RViz (dopo move_group)
     delayed_spawn = TimerAction(period=3.0, actions=[spawn])

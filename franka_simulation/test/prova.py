@@ -1,199 +1,238 @@
 #!/usr/bin/env python3
 """
-Online Avoidance Controller Test Demo
-======================================
+TEST SEMPLICE CON WAYPOINT SICURI
+=================================
 
-Testa il controller Jacobian-based con null-space repulsion.
+Questo test usa waypoint al centro del workspace per verificare
+il tracking senza complicazioni di IK.
 
-Sequenza:
-1. Avvia e verifica che il controller sia attivo
-2. Movimento lento verso ostacolo per verificare repulsione
-3. Test con target multipli vicini a ostacoli
-4. Visualizza metriche di performance
+Waypoint scelti:
+- Tutti in un'area centrale (0.3-0.5m davanti, ±0.3m laterale, 0.3-0.5m alto)
+- Orientamento sempre gripper verso il basso
+- Nessun ostacolo vicino
+
+Author: Test semplificato
 """
 
 import rclpy
-import time
-import sys
-import os
-
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
-from franka_motion_client import FrankaMotionClient
-from moveit_msgs.msg import MoveItErrorCodes
 from rclpy.node import Node
+from rclpy.action import ActionClient
+import numpy as np
+import time
+
+from franka_simulation.action import MoveToPose
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
+from moveit_msgs.srv import GetPositionFK
+from moveit_msgs.msg import MoveItErrorCodes
 
 
-class AvoidanceTestMonitor(Node):
-    """Nodo ausiliario per monitorare comandi velocità."""
-    
+class SimpleWaypointTest(Node):
     def __init__(self):
-        super().__init__('avoidance_test_monitor')
-        self.last_velocity_cmd = None
-        self.velocity_sub = self.create_subscription(
-            Float64MultiArray,
+        super().__init__('simple_waypoint_test')
+        
+        # Action client
+        self.move_client = ActionClient(self, MoveToPose, 'move_to_pose')
+        
+        # FK service
+        self.fk_client = self.create_client(GetPositionFK, 'compute_fk')
+        
+        # Joint state
+        self.joint_positions = None
+        self.create_subscription(JointState, '/joint_states', self.joint_cb, 10)
+        
+        # Velocity monitoring
+        self.last_cmd_vel = None
+        self.create_subscription(
+            Float64MultiArray, 
             '/fr3_velocity_controller/commands',
-            self.velocity_callback,
-            10
+            self.vel_cb, 10
         )
         
-    def velocity_callback(self, msg):
-        self.last_velocity_cmd = msg.data
+        self.joint_names = [
+            'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
+            'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
+        ]
+        
+        self.get_logger().info("🎯 Simple Waypoint Test ready")
+    
+    def joint_cb(self, msg):
+        positions = []
+        for name in self.joint_names:
+            if name in msg.name:
+                idx = msg.name.index(name)
+                positions.append(msg.position[idx])
+        if len(positions) == 7:
+            self.joint_positions = np.array(positions)
+    
+    def vel_cb(self, msg):
+        self.last_cmd_vel = np.array(msg.data)
+    
+    def compute_fk(self):
+        """Calcola posizione EE corrente."""
+        if not self.fk_client.wait_for_service(timeout_sec=2.0):
+            return None
+        
+        request = GetPositionFK.Request()
+        request.header.frame_id = 'fr3_link0'
+        request.fk_link_names = ['fr3_hand_tcp']
+        request.robot_state.joint_state.name = self.joint_names
+        request.robot_state.joint_state.position = self.joint_positions.tolist()
+        
+        future = self.fk_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        
+        if future.result() and future.result().error_code.val == MoveItErrorCodes.SUCCESS:
+            pose = future.result().pose_stamped[0].pose
+            return (pose.position.x, pose.position.y, pose.position.z)
+        return None
+    
+    def move_to_pose(self, x, y, z, timeout=30.0):
+        """Muove il robot a una posa cartesiana."""
+        if not self.move_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error("❌ Move action server not available")
+            return False
+        
+        goal = MoveToPose.Goal()
+        goal.pose_target.header.frame_id = 'fr3_link0'
+        goal.pose_target.pose.position.x = x
+        goal.pose_target.pose.position.y = y
+        goal.pose_target.pose.position.z = z
+        # Gripper verso il basso
+        goal.pose_target.pose.orientation.x = 1.0
+        goal.pose_target.pose.orientation.y = 0.0
+        goal.pose_target.pose.orientation.z = 0.0
+        goal.pose_target.pose.orientation.w = 0.0
+        
+        goal.cartesian_motion = False
+        goal.max_velocity_scaling_factor = 0.3
+        
+        future = self.move_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+        
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error("❌ Goal rejected")
+            return False
+        
+        # Aspetta completamento
+        result_future = goal_handle.get_result_async()
+        
+        start_time = time.time()
+        while not result_future.done() and time.time() - start_time < timeout:
+            rclpy.spin_once(self, timeout_sec=0.5)
+            
+            # Monitora velocità
+            if self.last_cmd_vel is not None:
+                vel_norm = np.linalg.norm(self.last_cmd_vel)
+                
+                # Verifica se siamo fermi (settling completato)
+                if vel_norm < 0.001:
+                    # Calcola errore
+                    current_pos = self.compute_fk()
+                    if current_pos:
+                        error = np.sqrt(
+                            (current_pos[0] - x)**2 + 
+                            (current_pos[1] - y)**2 + 
+                            (current_pos[2] - z)**2
+                        )
+                        if error < 0.01:  # < 1cm
+                            self.get_logger().info(f"✅ Target reached! Error: {error*100:.1f} cm")
+                            return True
+        
+        return result_future.done()
 
 
 def main():
-    print("🧪 ONLINE AVOIDANCE CONTROLLER - TEST DEMO")
-    print("=" * 60)
+    print("\n" + "="*70)
+    print("🎯 TEST WAYPOINT SEMPLICI")
+    print("="*70)
+    print("""
+Questo test usa waypoint sicuri al centro del workspace:
+- Posizioni facili da raggiungere
+- Nessun ostacolo
+- Orientamento sempre gripper-giù
 
+I waypoint sono:
+1. Centro alto:     (0.40, 0.00, 0.45)
+2. Sinistra:        (0.40, 0.20, 0.40)
+3. Destra:          (0.40, -0.20, 0.40)
+4. Avanti basso:    (0.50, 0.00, 0.30)
+5. Ritorno centro:  (0.40, 0.00, 0.45)
+
+""")
+    
     rclpy.init()
-
+    node = SimpleWaypointTest()
+    
+    # Aspetta joint state
+    print("Attendo joint_states...")
+    while node.joint_positions is None:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    print("✅ Joint state ricevuto\n")
+    
+    # Waypoint sicuri
+    waypoints = [
+        ("Centro Alto", 0.40, 0.00, 0.45),
+        ("Sinistra", 0.40, 0.20, 0.40),
+        ("Destra", 0.40, -0.20, 0.40),
+        ("Avanti Basso", 0.50, 0.00, 0.30),
+        ("Ritorno Centro", 0.40, 0.00, 0.45),
+    ]
+    
     try:
-        # Client per movimenti
-        client = FrankaMotionClient(timeout_sec=30.0)
-        
-        # Monitor per velocità avoidance
-        monitor = AvoidanceTestMonitor()
-        
-        time.sleep(3.0)
-        print("✅ Client e monitor pronti!")
-
-        # ========== TEST 1: Movimento Home ==========
-        print("\n" + "=" * 60)
-        print("TEST 1: Movimento verso HOME")
-        print("=" * 60)
-        
-        home_joints = [0.0, 0.0, -0.785, -2.356, 0.0, 1.571, 0.785]
-        result = client.move_to_joint(home_joints, velocity_scaling=0.1, tolerance=0.02)
-        
-        if result.val != MoveItErrorCodes.SUCCESS:
-            print(f"❌ Errore movimento home: {client._error_code_to_string(result.val)}")
-            return
-        print("✅ Robot in HOME")
-        
-        input("\n👉 Premi INVIO per TEST 2 (movimento vicino a ostacolo)...")
-
-        # ========== TEST 2: Target vicino a ostacolo ==========
-        print("\n" + "=" * 60)
-        print("TEST 2: Target VICINO a ostacolo (verifica repulsione)")
-        print("=" * 60)
-        
-        # Target strategico vicino all'ostacolo ma non in collisione
-        target_near_obstacle = {
-            "x": 0.2, "y": -0.5, "z": 0.2,
-            "name": "Vicino ostacolo frontale"
-        }
-        
-        print(f"\n➡️ Target: {target_near_obstacle['name']}")
-        print(f"   Coordinate: x={target_near_obstacle['x']:.2f}, "
-              f"y={target_near_obstacle['y']:.2f}, z={target_near_obstacle['z']:.2f}")
-        
-        pose = client.create_pose_stamped(
-            x=target_near_obstacle["x"],
-            y=target_near_obstacle["y"],
-            z=target_near_obstacle["z"],
-            qx=1.0, qy=0.0, qz=0.0, qw=0.0,
-            frame_id="world"
-        )
-        
-        result = client.move_to_pose(
-            pose_target=pose,
-            cartesian_motion=False,
-            velocity_scaling=0.05  # MOLTO lento per vedere l'avoidance
-        )
-        
-        if result.val == MoveItErrorCodes.SUCCESS:
-            print(f"✅ Target raggiunto!")
+        for i, (name, x, y, z) in enumerate(waypoints):
+            print(f"\n{'='*60}")
+            print(f"[{i+1}/{len(waypoints)}] {name}")
+            print(f"   Target: ({x:.2f}, {y:.2f}, {z:.2f})")
+            print(f"{'='*60}")
             
-            # Monitora comandi velocità avoidance
-            rclpy.spin_once(monitor, timeout_sec=0.1)
-            if monitor.last_velocity_cmd:
-                vel_norm = sum(abs(v) for v in monitor.last_velocity_cmd)
-                print(f"📊 Ultimo comando velocità avoidance: |q_dot| = {vel_norm:.4f} rad/s")
-            else:
-                print("⚠️ Nessun comando velocità rilevato")
-        else:
-            print(f"❌ Fallito: {client._error_code_to_string(result.val)}")
-
-        input("\n👉 Premi INVIO per TEST 3 (target multipli)...")
-
-        # ========== TEST 3: Target multipli ==========
-        print("\n" + "=" * 60)
-        print("TEST 3: Sequenza target multipli vicini a ostacoli")
-        print("=" * 60)
-        
-        targets = [
-            {"x": 0.35, "y": 0.3, "z": 0.7, "name": "Laterale destro"},
-            {"x": 0.35, "y": -0.3, "z": 0.4, "name": "Laterale sinistro"},
-            {"x": 0.5, "y": 0.0, "z": 0.6, "name": "Alto centrale"},
-            {"x": 0.3, "y": 0.4, "z": 0.2, "name": "Alto centrale"},
-            {"x": 0.3, "y": -0.4, "z": 0.6, "name": "Alto centrale"},
-        ]
-
-        for i, t in enumerate(targets, 1):
-            print(f"\n[{i}/{len(targets)}] Target: {t['name']}")
-            print(f"    Coordinate: x={t['x']:.2f}, y={t['y']:.2f}, z={t['z']:.2f}")
+            # Posizione iniziale
+            initial_pos = node.compute_fk()
+            if initial_pos:
+                print(f"   Posizione attuale: ({initial_pos[0]:.3f}, {initial_pos[1]:.3f}, {initial_pos[2]:.3f})")
             
-            pose = client.create_pose_stamped(
-                x=t["x"], y=t["y"], z=t["z"],
-                qx=1.0, qy=0.0, qz=0.0, qw=0.0,
-                frame_id="world"
-            )
+            input("   Premi ENTER per muovere...")
             
-            result = client.move_to_pose(
-                pose_target=pose,
-                cartesian_motion=False,
-                velocity_scaling=0.1
-            )
+            # Movimento
+            print(f"   🚀 Movimento in corso...")
+            success = node.move_to_pose(x, y, z, timeout=20.0)
             
-            if result.val == MoveItErrorCodes.SUCCESS:
-                print(f"    ✅ Raggiunto")
+            # Aspetta settling
+            time.sleep(2.0)
+            for _ in range(20):
+                rclpy.spin_once(node, timeout_sec=0.1)
+            
+            # Verifica posizione finale
+            final_pos = node.compute_fk()
+            if final_pos:
+                error_x = final_pos[0] - x
+                error_y = final_pos[1] - y
+                error_z = final_pos[2] - z
+                error_total = np.sqrt(error_x**2 + error_y**2 + error_z**2)
                 
-                # Verifica comando avoidance
-                rclpy.spin_once(monitor, timeout_sec=0.1)
-                if monitor.last_velocity_cmd:
-                    vel_norm = sum(abs(v) for v in monitor.last_velocity_cmd)
-                    if vel_norm > 0.01:
-                        print(f"    🛡️ Avoidance attivo: |q_dot| = {vel_norm:.4f} rad/s")
-                    else:
-                        print(f"    ℹ️ Nessuna repulsione necessaria")
-            else:
-                print(f"    ❌ Fallito: {client._error_code_to_string(result.val)}")
-                break
-            
-            time.sleep(1.5)
-
-        # ========== TEST 4: Ritorno Home ==========
-        print("\n" + "=" * 60)
-        print("TEST 4: Ritorno a HOME")
-        print("=" * 60)
+                print(f"\n   📍 RISULTATO:")
+                print(f"      Target:   ({x:.4f}, {y:.4f}, {z:.4f})")
+                print(f"      Raggiunto: ({final_pos[0]:.4f}, {final_pos[1]:.4f}, {final_pos[2]:.4f})")
+                print(f"      Errore: ΔX={error_x*100:+.1f}cm, ΔY={error_y*100:+.1f}cm, ΔZ={error_z*100:+.1f}cm")
+                print(f"      Errore totale: {error_total*100:.1f} cm")
+                
+                if error_total < 0.02:  # < 2cm
+                    print(f"      ✅ SUCCESSO (errore < 2cm)")
+                elif error_total < 0.05:
+                    print(f"      ⚠️ ACCETTABILE (errore < 5cm)")
+                else:
+                    print(f"      ❌ ERRORE TROPPO GRANDE")
         
-        result = client.move_to_joint(home_joints, velocity_scaling=0.1, tolerance=0.02)
-        if result.val == MoveItErrorCodes.SUCCESS:
-            print("✅ Robot tornato in HOME")
-        else:
-            print(f"❌ Errore ritorno: {client._error_code_to_string(result.val)}")
-
-        print("\n" + "=" * 60)
-        print("🎉 TEST COMPLETATO!")
-        print("=" * 60)
-        print("\n📊 RIEPILOGO:")
-        print("   - Verifica visiva in RViz: il robot evita ostacoli?")
-        print("   - Comandi velocità pubblicati: sì/no")
-        print("   - Movimenti completati senza collisioni")
-        print("\n💡 Suggerimenti tuning:")
-        print("   - Aumenta repulsive_gain per repulsione più forte")
-        print("   - Aumenta influence_distance per campo repulsivo più ampio")
-        print("   - Riduci safety_margin per avvicinarsi di più")
-
+        print("\n" + "="*60)
+        print("TEST COMPLETATO")
+        print("="*60)
+        
     except KeyboardInterrupt:
-        print("\n⏹️ Test interrotto dall'utente")
-    except Exception as e:
-        print(f"\n❌ Errore test: {e}")
-        import traceback
-        traceback.print_exc()
+        print("\n⏹️ Test interrotto")
     finally:
-        print("\n🏁 Shutdown...")
-        monitor.destroy_node()
+        node.destroy_node()
         rclpy.shutdown()
 
 

@@ -1,562 +1,345 @@
 #!/usr/bin/env python3
 """
-Online Avoidance Controller - Jacobian-based Null-Space Obstacle Avoidance
-===========================================================================
+Online Avoidance Controller - VERSIONE DEBUG v2
+================================================
 
-Versione con Pinocchio (FK/Jacobiani da URDF di robot_state_publisher).
+Modifiche:
+1. Si attiva SOLO se distanza < 0.25m (molto vicino)
+2. Pubblica SEMPRE zero se non in pericolo
+3. Log della posizione HOME per verificare che sia corretta
+4. Verifica che obstacle_box_lateral sia dove ci aspettiamo
 
-Author: Mattia
-Package: franka_simulation
 """
 
 import os
 import tempfile
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
-# ROS messages
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from moveit_msgs.msg import PlanningScene, CollisionObject
 from geometry_msgs.msg import Point
 from rcl_interfaces.srv import GetParameters
 
-# Pinocchio
 import pinocchio as pin
 from pinocchio.utils import zero
-from rclpy.parameter import Parameter
 
-import yaml
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
-PLANNING_SCENE_QOS = QoSProfile(
-    history=HistoryPolicy.KEEP_LAST,
-    depth=1,
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-)
-
-class OnlineAvoidanceController(Node):
-    """Controller reattivo per obstacle avoidance basato su Jacobiani (Pinocchio)."""
+class SimpleAvoidanceController(Node):
+    """Controller SEMPLICE per debug."""
 
     def __init__(self):
         super().__init__("online_avoidance_controller")
 
-        # PARAMETRI
-        self.declare_parameters_avoidance()
-        self.load_parameters()
+        # Parametri MOLTO CONSERVATIVI per debug
+        self.control_rate = 50.0  # Hz
+        self.influence_distance = 0.25  # m - RIDOTTO! Solo quando molto vicino
+        self.safety_margin = 0.03  # m
+        self.repulsive_gain = 0.5  # RIDOTTO per movimenti più lenti
+        self.max_joint_velocity = 0.2  # rad/s - molto lento per debug
+        
+        # Ostacoli da escludere
+        self.excluded_names = ["ground", "plane", "floor"]
 
-        # STATO INTERNO
-        self.current_joint_positions: Optional[np.ndarray] = None
-        self.current_joint_velocities: Optional[np.ndarray] = None
-        self.obstacles = []
+        # Stato
+        self.joint_positions: Optional[np.ndarray] = None
+        self.obstacles: List[CollisionObject] = []
         self.pin_initialized = False
+        
+        self.loop_count = 0
+        self.logged_home = False
 
-        # MODELLO PINOCCHIO
-        self.get_logger().info("🤖 Inizializzazione modello Pinocchio da robot_description...")
-        if not self.initialize_pin():
-            self.get_logger().error("❌ Errore inizializzazione Pinocchio")
+        # Inizializza Pinocchio
+        self.get_logger().info("🤖 Inizializzazione Pinocchio...")
+        if not self._init_pinocchio():
+            self.get_logger().error("❌ Errore Pinocchio")
             return
 
-        # SUBSCRIBERS
-        self.joint_state_sub = self.create_subscription(
-            JointState, "/joint_states", self.joint_state_callback, 10
-        )
-
-
-        ps_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
+        # Subscribers
+        self.create_subscription(JointState, "/joint_states", self._joint_cb, 10)
+        
+        obstacle_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
+        self.create_subscription(PlanningScene, "/obstacle_scene", self._obstacle_cb, obstacle_qos)
 
-        self.planning_scene_sub = self.create_subscription(
-            PlanningScene,
-            '/planning_scene',
-            self.planning_scene_callback,
-            qos_profile=QoSProfile(
-                reliability=ReliabilityPolicy.RELIABLE,
-                durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                history=HistoryPolicy.KEEP_LAST,
-                depth=1
-            ),
-        )
+        # Publisher
+        self.vel_pub = self.create_publisher(Float64MultiArray, "/avoidance/velocity", 10)
 
+        # Timer
+        self.create_timer(1.0 / self.control_rate, self._control_loop)
 
+        self.get_logger().info("=" * 60)
+        self.get_logger().info("🚀 SIMPLE Avoidance Controller v2 READY")
+        self.get_logger().info(f"   Influence: {self.influence_distance} m (SOLO molto vicino)")
+        self.get_logger().info(f"   Gain: {self.repulsive_gain}")
+        self.get_logger().info(f"   Max vel: {self.max_joint_velocity} rad/s")
+        self.get_logger().info("=" * 60)
 
-        # PUBLISHER
-        self.velocity_cmd_pub = self.create_publisher(
-            Float64MultiArray, "/avoidance/velocity", 10
-        )
-
-        # TIMER CONTROLLO
-        control_period = 1.0 / self.control_rate
-        self.control_timer = self.create_timer(control_period, self.control_loop)
-
-        self.get_logger().info(f"🚀 Online Avoidance Controller attivo @ {self.control_rate} Hz")
-        self.get_logger().info(f"📍 Control points: {self.control_points}")
-
-    # ================================================================
-    # INIZIALIZZAZIONE PINOCCHIO
-    # ================================================================
-
-    def initialize_pin(self) -> bool:
-        """Costruisce il modello Pinocchio dal robot_description (URDF) ottenuto da RSP."""
+    def _init_pinocchio(self) -> bool:
+        """Inizializza Pinocchio dal robot_description."""
         try:
-            import time
-
-            # 1) Preleva robot_description da robot_state_publisher
-            max_wait = 10.0
-            start_time = time.time()
-            robot_description = None
-
             cli = self.create_client(GetParameters, "/robot_state_publisher/get_parameters")
-            while (time.time() - start_time) < max_wait:
-                if cli.wait_for_service(timeout_sec=1.0):
-                    req = GetParameters.Request()
-                    req.names = ["robot_description"]
-                    future = cli.call_async(req)
-                    rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
-                    if future.result() and len(future.result().values) > 0:
-                        robot_description = future.result().values[0].string_value
-                        if robot_description:
-                            break
-                time.sleep(0.2)
-
-            if not robot_description:
-                self.get_logger().error("❌ Impossibile ottenere robot_description")
+            if not cli.wait_for_service(timeout_sec=10.0):
                 return False
-
-            # 2) Scrive l'URDF in un file temporaneo (Pinocchio accetta path file)
+                
+            req = GetParameters.Request()
+            req.names = ["robot_description"]
+            future = cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+            
+            if not future.result() or not future.result().values:
+                return False
+                
+            urdf_str = future.result().values[0].string_value
+            
             with tempfile.NamedTemporaryFile(delete=False, suffix=".urdf", mode="w") as f:
-                f.write(robot_description)
+                f.write(urdf_str)
                 urdf_path = f.name
 
-            
-            ###############################################
-            # 3) Modello completo
-            ###############################################
             model_full = pin.buildModelFromUrdf(urdf_path)
-
-            ###############################################
-            # 4) Giunti da BLOCCARE (solo il gripper)
-            ###############################################
-            joints_to_lock = []
-            for jn in model_full.names:
-                if "finger" in jn:   # blocca giunti del gripper
-                    jid = model_full.getJointId(jn)
-                    joints_to_lock.append(jid)
-
-            ###############################################
-            # 5) Configurazione di riferimento
-            ###############################################
-            q0 = pin.neutral(model_full)
-
-            ###############################################
-            # 6) Crea il modello ridotto
-            ###############################################
-            self.model = pin.buildReducedModel(
-                model_full,
-                joints_to_lock,   # giunti da BLOCCARE
-                q0
-            )
-
+            
+            # Lock finger joints
+            joints_to_lock = [model_full.getJointId(n) for n in model_full.names if "finger" in n]
+            self.model = pin.buildReducedModel(model_full, joints_to_lock, pin.neutral(model_full))
             self.data = self.model.createData()
-
-            ###############################################
-            # 7) Controlla DOF
-            ###############################################
-            self.nq = self.model.nq
-            self.nv = self.model.nv
-            self.get_logger().info(f"Pinocchio reduced model DOF: nq={self.nq}, nv={self.nv}")
-
-            def frame_id(name: str) -> int:
-                fid = self.model.getFrameId(name)
-                if fid == len(self.model.frames):
-                    raise ValueError(f"Frame '{name}' non trovato nel modello ridotto.")
-                return fid
-
-
-
-            self.ee_fid = frame_id(self.ee_frame)
-            self.cp_fids: Dict[str, int] = {ln: frame_id(ln) for ln in self.control_points}
-
-            self.cp_offsets = {}
-            for ln in self.control_points:
-                raw_offs = self.control_points_offsets.get(ln, [])
-                if not raw_offs:
-                    raw_offs = [[0.0, 0.0, 0.0]]
-                self.cp_offsets[ln] = [np.array(o, dtype=float).reshape(3) for o in raw_offs]
-                
-            # 5) Dimensioni configurazione
-            self.nq = self.model.nq
-            self.nv = self.model.nv
-            if self.nq != 7 or self.nv != 7:
-                self.get_logger().warn(f"Atteso manipolatore a 7 dof, ma model: nq={self.nq}, nv={self.nv}")
-
-            # 6) Stato q default
-            self.q = zero(self.nq)
+            
+            # Frame ID per end-effector
+            self.ee_frame_id = self.model.getFrameId("fr3_link8")
+            
+            os.unlink(urdf_path)
+            
             self.pin_initialized = True
-
-            # Cleanup file temporaneo
-            try:
-                os.unlink(urdf_path)
-            except Exception:
-                pass
-
-            self.get_logger().info(
-                f"✅ Pinocchio: modello caricato (nq={self.nq}, nv={self.nv}) | base={self.base_frame} ee={self.ee_frame}"
-            )
+            self.get_logger().info(f"✅ Pinocchio OK: {self.model.nq} DOF")
             return True
-
+            
         except Exception as e:
-            self.get_logger().error(f"❌ Errore Pinocchio: {e}")
+            self.get_logger().error(f"❌ Pinocchio error: {e}")
             import traceback
-
             traceback.print_exc()
             return False
 
-    # ================================================================
-    # PARAMETRI
-    # ================================================================
+    def _joint_cb(self, msg: JointState):
+        """Callback joint states."""
+        indices = [i for i, n in enumerate(msg.name) if "fr3_joint" in n and "finger" not in n]
+        if len(indices) == 7:
+            self.joint_positions = np.array([msg.position[i] for i in indices])
 
-    def declare_parameters_avoidance(self):
-        self.declare_parameter("control_rate", 50.0)
-        # Default più ricco, ma verrà sovrascritto dal YAML
-        self.declare_parameter("control_points", [
-            "fr3_link1", "fr3_link2", "fr3_link3", "fr3_link4",
-            "fr3_link5", "fr3_link6", "fr3_link7", "fr3_link8"
-        ])
-        self.declare_parameter("influence_distance", 0.25)
-        self.declare_parameter("safety_margin", 0.05)
-        self.declare_parameter("repulsive_gain", 0.3)
-        self.declare_parameter("damping_max", 0.05)
-        self.declare_parameter("singularity_threshold", 0.05)
-        self.declare_parameter("max_joint_velocity", 1.0)
-        self.declare_parameter("planning_scene_topic", "/planning_scene")
-        self.declare_parameter("monitor_planning_scene", True)
-        self.declare_parameter("verbose_logging", False)
-        self.declare_parameter("base_frame", "fr3_link0")
-        self.declare_parameter("ee_frame", "fr3_link8")
-        # 🔹 Nuovo parametro: mappa link → lista di offset [x,y,z]
-        self.declare_parameter("control_points_offsets", "")
-        self.declare_parameter("control_points_offsets_yaml", "")
-
-    def load_parameters(self):
-        self.control_rate = self.get_parameter("control_rate").value
-        self.control_points = self.get_parameter("control_points").value
-        self.influence_distance = self.get_parameter("influence_distance").value
-        self.safety_margin = self.get_parameter("safety_margin").value
-        self.repulsive_gain = self.get_parameter("repulsive_gain").value
-        self.damping_max = self.get_parameter("damping_max").value
-        self.singularity_threshold = self.get_parameter("singularity_threshold").value
-        self.max_joint_velocity = self.get_parameter("max_joint_velocity").value
-        self.planning_scene_topic = self.get_parameter("planning_scene_topic").value
-        self.monitor_planning_scene = self.get_parameter("monitor_planning_scene").value
-        self.verbose_logging = self.get_parameter("verbose_logging").value
-        self.base_frame = self.get_parameter("base_frame").value
-        self.ee_frame = self.get_parameter("ee_frame").value
-        # 🔹 Nuovo: offsets per link (dict)
-        # 🔹 Nuovo: offsets per link, definiti come YAML testuale
-        offsets_yaml_str = self.get_parameter("control_points_offsets_yaml").value
-        self.control_points_offsets = {}
-
-        if offsets_yaml_str:
-            try:
-                parsed = yaml.safe_load(offsets_yaml_str)
-                if isinstance(parsed, dict):
-                    self.control_points_offsets = parsed
-                else:
-                    self.get_logger().warn(
-                        "control_points_offsets_yaml non contiene un dict valido, uso solo [0,0,0] per ogni link."
-                    )
-            except Exception as e:
-                self.get_logger().error(f"Errore nel parsing di control_points_offsets_yaml: {e}")
-        else:
-            self.get_logger().warn(
-                "Parametro control_points_offsets_yaml vuoto, uso solo [0,0,0] per ogni link."
-            )
-
-    # ================================================================
-    # CALLBACKS
-    # ================================================================
-
-    def joint_state_callback(self, msg: JointState):
-        # Prende solo i 7 giunti del braccio (esclude le dita)
-        fr3_indices = [i for i, n in enumerate(msg.name) if "fr3_joint" in n and "finger" not in n]
-        if len(fr3_indices) == 7:
-            self.current_joint_positions = np.array([msg.position[i] for i in fr3_indices], dtype=float)
-            self.current_joint_velocities = np.array([msg.velocity[i] for i in fr3_indices], dtype=float)
-
-    def planning_scene_callback(self, msg: PlanningScene):
-        if self.monitor_planning_scene:
-            self.obstacles = msg.world.collision_objects
+    def _obstacle_cb(self, msg: PlanningScene):
+        """Callback ostacoli."""
+        all_obs = msg.world.collision_objects
+        self.obstacles = []
         
-        num_objs = len(msg.world.collision_objects)
-        self.get_logger().info(f"PlanningScene ricevuto: {num_objs} ostacoli nel world")
+        for obs in all_obs:
+            name_lower = obs.id.lower()
+            is_excluded = any(excl in name_lower for excl in self.excluded_names)
+            if not is_excluded:
+                self.obstacles.append(obs)
+        
+        # Log ostacoli solo una volta
+        if self.loop_count == 0:
+            self.get_logger().info(f"📦 Obstacles loaded: {len(self.obstacles)}")
+            for obs in self.obstacles:
+                if obs.primitive_poses:
+                    p = obs.primitive_poses[0].position
+                    if obs.primitives:
+                        dims = obs.primitives[0].dimensions
+                        self.get_logger().info(
+                            f"   - {obs.id}: center=({p.x:.2f}, {p.y:.2f}, {p.z:.2f}), "
+                            f"dims=({dims[0]:.2f}, {dims[1]:.2f}, {dims[2]:.2f})"
+                        )
 
-    # ================================================================
-    # CONTROL LOOP
-    # ================================================================
-
-    def control_loop(self):
-        if not self.pin_initialized or self.current_joint_positions is None:
+    def _control_loop(self):
+        """Loop di controllo."""
+        self.loop_count += 1
+        
+        # Default: pubblica ZERO
+        zero_vel = Float64MultiArray()
+        zero_vel.data = [0.0] * 7
+        
+        if not self.pin_initialized or self.joint_positions is None:
+            self.vel_pub.publish(zero_vel)
             return
 
-        # Aggiorna stato in Pinocchio
-        q = np.asarray(self.current_joint_positions, dtype=float)
-        if q.shape[0] != self.nq:
-            return
-
+        q = self.joint_positions
+        
+        # Forward kinematics
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
-
-        # Jacobiano all'EE (per proiettore di spazio nullo)
-        J = self.compute_jacobian(q, self.ee_fid)
-        if J is None:
-            return
-
-        # Campo repulsivo (sommatoria per link di controllo)
-        distances = self.compute_control_point_distances()
-        q_dot_avoid = self.compute_repulsive_velocity(distances, q)
-
-        # Proiezione in spazio nullo rispetto al task EE
-        J_pinv = self.compute_damped_pseudoinverse(J)
-        N = np.eye(self.nv) - J_pinv @ J
-        q_dot_null = N @ q_dot_avoid
-
-        q_dot_total = self.saturate_velocity(q_dot_null)
-        self.publish_velocity_command(q_dot_total)
-
-    # ================================================================
-    # JACOBIAN E FK (Pinocchio)
-    # ================================================================
-
-    def compute_jacobian(self, q: np.ndarray, frame_id: int) -> Optional[np.ndarray]:
-        try:
-            # Jacobiano di frame in riferimento al mondo
-            J6xN = pin.computeFrameJacobian(
-                self.model, self.data, q, frame_id, pin.ReferenceFrame.WORLD
+        
+        # Posizione end-effector
+        ee_pose = self.data.oMf[self.ee_frame_id]
+        ee_pos = np.array(ee_pose.translation).flatten()
+        
+        # Log posizione HOME solo una volta all'inizio
+        if not self.logged_home:
+            self.logged_home = True
+            self.get_logger().info("=" * 60)
+            self.get_logger().info(f"🏠 HOME POSITION:")
+            self.get_logger().info(f"   EE: ({ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f})")
+            self.get_logger().info(f"   Joints: [{', '.join([f'{j:.2f}' for j in q])}]")
+            self.get_logger().info("=" * 60)
+        
+        # Trova ostacolo più vicino
+        min_dist = float('inf')
+        repulsion_direction = np.zeros(3)
+        closest_name = "none"
+        
+        for obs in self.obstacles:
+            dist, direction = self._distance_to_obstacle(ee_pos, obs)
+            if dist < min_dist:
+                min_dist = dist
+                repulsion_direction = direction
+                closest_name = obs.id
+        
+        # Log periodico della distanza (ogni 2 sec)
+        if self.loop_count % 100 == 0:
+            self.get_logger().info(
+                f"📏 EE: ({ee_pos[0]:.2f}, {ee_pos[1]:.2f}, {ee_pos[2]:.2f}) | "
+                f"Closest: {closest_name} @ {min_dist:.3f}m | "
+                f"Threshold: {self.influence_distance}m"
             )
-            # Assicura (6 x nv)
-            return np.asarray(J6xN)
-        except Exception:
-            return None
-
-    def get_link_jacobian(self, link_name: str, q: np.ndarray) -> Optional[np.ndarray]:
-        try:
-            fid = self.cp_fids[link_name]
-            return self.compute_jacobian(q, fid)
-        except Exception:
-            return None
-
-    def get_link_pose(self, link_name: str):
-        """
-        Ritorna posizione e rotazione del frame del link in WORLD.
-        """
-        try:
-            fid = self.cp_fids[link_name]
-            oMf = self.data.oMf[fid]  # SE3 pose
-            p = np.array(oMf.translation).reshape(3)
-            R = np.array(oMf.rotation)
-            return p, R
-        except Exception:
-            return None, None
-
-    def get_link_sample_points(self, link_name: str):
-        """
-        Ritorna la lista di punti di controllo (in WORLD) per un dato link,
-        applicando gli offset locali definiti in self.cp_offsets.
-        """
-        p, R = self.get_link_pose(link_name)
-        if p is None or R is None:
-            return []
-
-        offsets = self.cp_offsets.get(link_name, [np.zeros(3)])
-        points = []
-        for off in offsets:
-            # WORLD point = p + R * off
-            points.append(p + R @ off)
-        return points
-
-
-    # ================================================================
-    # DISTANZE
-    # ================================================================
-
-    def compute_control_point_distances(self) -> Dict:
-        """
-        Calcola, per ogni punto di controllo (link + offset),
-        la distanza minima dall'insieme degli ostacoli.
-
-        Ritorna un dict:
-            key = f"{link_name}#{idx_offset}"
-            value = (min_dist, closest_point, normal)
-        """
-        distances = {}
-
-        # Nessun ostacolo → distanza infinita
-        if not self.obstacles:
-            for ln in self.control_points:
-                sample_points = self.get_link_sample_points(ln)
-                for i, _ in enumerate(sample_points):
-                    key = f"{ln}#{i}"
-                    distances[key] = (float("inf"), Point(), Point())
-            return distances
-
-        # Con ostacoli
-        for ln in self.control_points:
-            sample_points = self.get_link_sample_points(ln)
-            if not sample_points:
-                continue
-
-            for i, pos in enumerate(sample_points):
-                min_dist, closest_pt, normal = self.compute_distance_to_obstacle(pos, obs=self.obstacles[0])
-                # Cerca il minimo su tutti gli ostacoli
-                for obs in self.obstacles[1:]:
-                    d, pt, n = self.compute_distance_to_obstacle(pos, obs)
-                    if d < min_dist:
-                        min_dist, closest_pt, normal = d, pt, n
-
-                key = f"{ln}#{i}"
-                distances[key] = (min_dist, closest_pt, normal)
-
-        return distances
-
-
-    def compute_distance_to_obstacle(self, point: np.ndarray, obs: CollisionObject):
-        min_dist, closest_pt, normal = float("inf"), Point(), Point()
-
-        for i, prim in enumerate(obs.primitives):
-            pos = obs.primitive_poses[i].position
-            center = np.array([pos.x, pos.y, pos.z])
-
-            if prim.type == prim.BOX:
-                d, pt, n = self._dist_box(point, center, prim.dimensions)
-            elif prim.type == prim.SPHERE:
-                d, pt, n = self._dist_sphere(point, center, prim.dimensions[0])
-            else:
-                d = np.linalg.norm(point - center)
-                pt = Point(x=center[0], y=center[1], z=center[2])
-                n = Point(x=1.0, y=0.0, z=0.0)
-
-            if d < min_dist:
-                min_dist, closest_pt, normal = d, pt, n
-
-        return min_dist, closest_pt, normal
-
-    def _dist_box(self, pt, center, dims):
-        half = np.array(dims) / 2.0
-        rel = pt - center
-        closest = center + np.clip(rel, -half, half)
-        dist = np.linalg.norm(pt - closest)
-
-        if dist > 1e-6:
-            norm_vec = (pt - closest) / dist
+        
+        # SOLO se MOLTO vicino, attiva avoidance
+        if min_dist < self.influence_distance and min_dist > 0.001:
+            d = max(min_dist, self.safety_margin)
+            
+            # Intensità
+            intensity = self.repulsive_gain * (1.0/d - 1.0/self.influence_distance)
+            
+            # Velocità cartesiana (LONTANO dall'ostacolo)
+            v_cartesian = intensity * repulsion_direction
+            
+            # Jacobiano
+            J = pin.computeFrameJacobian(
+                self.model, self.data, q, self.ee_frame_id, 
+                pin.ReferenceFrame.WORLD
+            )
+            J_pos = J[:3, :]
+            
+            # Joint velocity
+            J_pinv = np.linalg.pinv(J_pos)
+            q_dot = J_pinv @ v_cartesian
+            
+            # Saturazione
+            q_dot = np.clip(q_dot, -self.max_joint_velocity, self.max_joint_velocity)
+            
+            # Log quando avoidance attivo
+            if self.loop_count % 10 == 0:
+                self.get_logger().warn(
+                    f"⚠️  AVOIDANCE ACTIVE! dist={min_dist:.3f}m to {closest_name} | "
+                    f"|q_dot|={np.linalg.norm(q_dot):.4f}"
+                )
+            
+            # Pubblica velocità di avoidance
+            msg = Float64MultiArray()
+            msg.data = q_dot.tolist()
+            self.vel_pub.publish(msg)
         else:
-            axis = np.argmin(half - np.abs(rel))
-            norm_vec = np.zeros(3)
-            norm_vec[axis] = np.sign(rel[axis]) if np.sign(rel[axis]) != 0 else 1.0
+            # NESSUN avoidance - pubblica zero
+            self.vel_pub.publish(zero_vel)
 
-        return dist, Point(x=closest[0], y=closest[1], z=closest[2]), Point(
-            x=norm_vec[0], y=norm_vec[1], z=norm_vec[2]
-        )
-
-    def _dist_sphere(self, pt, center, radius):
-        vec = pt - center
-        dist_center = np.linalg.norm(vec)
-
-        if dist_center < 1e-6:
-            return radius, Point(x=center[0] + radius, y=center[1], z=center[2]), Point(
-                x=1.0, y=0.0, z=0.0
-            )
-
-        direction = vec / dist_center
-        closest = center + direction * radius
-        return abs(dist_center - radius), Point(x=closest[0], y=closest[1], z=closest[2]), Point(
-            x=direction[0], y=direction[1], z=direction[2]
-        )
-
-    # ================================================================
-    # VELOCITÀ REPULSIVE
-    # ================================================================
-
-    def compute_repulsive_velocity(self, distances: Dict, q: np.ndarray) -> np.ndarray:
-        q_dot = np.zeros(self.nv)
-        active_points = 0
-
-        for key, (dist, _, normal) in distances.items():
-            if dist > self.influence_distance:
-                continue  # punto “lontano”, ignora
-
-            active_points += 1
-            d = max(dist, self.safety_margin)
-
-            # Intensità campo repulsivo (stessa legge, leggermente più robusta)
-            try:
-                intensity = self.repulsive_gain * ((1.0 / d) - (1.0 / self.influence_distance)) ** 2
-            except ZeroDivisionError:
-                intensity = self.repulsive_gain * (1.0 / self.safety_margin) ** 2
-
-            norm_vec = np.array([normal.x, normal.y, normal.z], dtype=float)
-            norm_len = np.linalg.norm(norm_vec)
-            if norm_len < 1e-6:
-                continue
-
-            v_rep = intensity * norm_vec / norm_len
-
-            # Twist cartesiano (solo parte lineare)
-            x_dot = np.zeros(6)
-            x_dot[:3] = v_rep
-
-            # Usa il Jacobiano del link originale (prima della #)
-            link_name = key.split("#")[0]
-            J_link = self.get_link_jacobian(link_name, q)
-            if J_link is not None:
-                q_dot += J_link.T @ x_dot
-
-        # Se più punti sono attivi, normalizza per evitare saturazioni troppo aggressive
-        if active_points > 1:
-            q_dot /= float(active_points)
-
-        return q_dot
-
-
-    def compute_damped_pseudoinverse(self, J: np.ndarray) -> np.ndarray:
-        # J: 6 x nv
-        try:
-            _, sigma, _ = np.linalg.svd(J, full_matrices=False)
-            sigma_min = np.min(sigma) if sigma.size > 0 else 0.0
-            lam = self.damping_max * np.exp(-sigma_min / self.singularity_threshold) if sigma_min < self.singularity_threshold else 1e-6
-            return J.T @ np.linalg.inv(J @ J.T + (lam ** 2) * np.eye(6))
-        except Exception:
-            return np.linalg.pinv(J)
-
-    def saturate_velocity(self, q_dot: np.ndarray) -> np.ndarray:
-        return np.clip(q_dot, -self.max_joint_velocity, self.max_joint_velocity)
-
-    def publish_velocity_command(self, q_dot: np.ndarray):
-        msg = Float64MultiArray()
-        msg.data = q_dot.tolist()
-        self.velocity_cmd_pub.publish(msg)
+    def _distance_to_obstacle(self, point: np.ndarray, obs: CollisionObject) -> tuple:
+        """Calcola distanza e direzione di repulsione."""
+        min_dist = float('inf')
+        best_direction = np.array([1.0, 0.0, 0.0])
+        
+        for i, prim in enumerate(obs.primitives):
+            pose = obs.primitive_poses[i]
+            center = np.array([pose.position.x, pose.position.y, pose.position.z])
+            
+            if prim.type == prim.BOX:
+                half_size = np.array(prim.dimensions) / 2.0
+                rel = point - center
+                closest_on_box = center + np.clip(rel, -half_size, half_size)
+                diff = point - closest_on_box
+                dist = np.linalg.norm(diff)
+                
+                if dist > 1e-6:
+                    direction = diff / dist
+                else:
+                    face_dists = half_size - np.abs(rel)
+                    closest_face = np.argmin(face_dists)
+                    direction = np.zeros(3)
+                    direction[closest_face] = np.sign(rel[closest_face]) if rel[closest_face] != 0 else 1.0
+                    dist = 0.001
+                
+            elif prim.type == prim.SPHERE:
+                radius = prim.dimensions[0]
+                diff = point - center
+                dist_to_center = np.linalg.norm(diff)
+                
+                if dist_to_center > 1e-6:
+                    direction = diff / dist_to_center
+                    dist = max(0, dist_to_center - radius)
+                else:
+                    direction = np.array([1.0, 0.0, 0.0])
+                    dist = 0.001
+                    
+            elif prim.type == prim.CYLINDER:
+                height, radius = prim.dimensions[0], prim.dimensions[1]
+                half_h = height / 2.0
+                rel = point - center
+                xy_dist = np.sqrt(rel[0]**2 + rel[1]**2)
+                z_clamped = np.clip(rel[2], -half_h, half_h)
+                
+                if xy_dist > 1e-6:
+                    xy_dir = np.array([rel[0], rel[1], 0]) / xy_dist
+                else:
+                    xy_dir = np.array([1.0, 0.0, 0.0])
+                
+                closest = center + np.array([0, 0, z_clamped])
+                if xy_dist > radius:
+                    closest += xy_dir * radius
+                else:
+                    closest += xy_dir * xy_dist
+                
+                diff = point - closest
+                dist = np.linalg.norm(diff)
+                
+                if dist > 1e-6:
+                    direction = diff / dist
+                else:
+                    direction = xy_dir
+                    dist = 0.001
+            else:
+                diff = point - center
+                dist = np.linalg.norm(diff)
+                direction = diff / max(dist, 1e-6)
+            
+            if dist < min_dist:
+                min_dist = dist
+                best_direction = direction
+        
+        return min_dist, best_direction
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = OnlineAvoidanceController()
-
+    
+    print("=" * 60)
+    print("🚀 SIMPLE Avoidance Controller v2")
+    print("   - Influence distance: 0.25m (SOLO molto vicino)")
+    print("   - Pubblica ZERO se non in pericolo")
+    print("=" * 60)
+    
+    node = SimpleAvoidanceController()
+    
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-    
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -44,6 +44,12 @@ from moveit_msgs.msg import MoveItErrorCodes
 # Actions
 from franka_simulation.action import MoveToPose
 
+# Per FK
+from moveit_msgs.srv import GetPositionFK
+from moveit_msgs.msg import RobotState
+
+import math
+
 # Terminal colors
 class Colors:
     HEADER = '\033[95m'
@@ -151,6 +157,9 @@ class SafeAvoidanceTest(Node):
             callback_group=self.action_callback_group
         )
         
+        # FK client per calcolare la posizione cartesiana
+        self.fk_client = self.create_client(GetPositionFK, 'compute_fk')
+        
         # Subscribers
         self.create_subscription(
             JointState, '/joint_states',
@@ -173,6 +182,12 @@ class SafeAvoidanceTest(Node):
         # Timers
         self.create_timer(0.5, self.debug_output_callback,
                          callback_group=self.monitor_callback_group)
+        
+        # Joint names per FK
+        self.joint_names = [
+            'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
+            'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
+        ]
         
         self.get_logger().info(f"{Colors.BOLD}{Colors.CYAN}{'='*70}{Colors.END}")
         self.get_logger().info(f"{Colors.BOLD}{Colors.CYAN}Safe Avoidance Test Node Initialized{Colors.END}")
@@ -236,6 +251,82 @@ class SafeAvoidanceTest(Node):
                     if len(self.debug_history) > self.max_history:
                         self.debug_history.pop(0)
     
+    def compute_fk_position(self) -> Optional[Tuple[float, float, float]]:
+        """Calcola la posizione cartesiana dell'end-effector usando FK."""
+        if not self.fk_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn("FK service not available")
+            return None
+        
+        request = GetPositionFK.Request()
+        request.header.frame_id = 'fr3_link0'
+        request.fk_link_names = ['fr3_link8']  # End-effector
+        
+        robot_state = RobotState()
+        robot_state.joint_state.name = self.joint_names
+        robot_state.joint_state.position = self.joint_positions.tolist()
+        request.robot_state = robot_state
+        
+        future = self.fk_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        
+        if future.result() is None:
+            self.get_logger().warn("FK call failed")
+            return None
+        
+        response = future.result()
+        if response.error_code.val != MoveItErrorCodes.SUCCESS:
+            self.get_logger().warn(f"FK error: {response.error_code.val}")
+            return None
+        
+        if response.pose_stamped:
+            pose = response.pose_stamped[0].pose
+            return (pose.position.x, pose.position.y, pose.position.z)
+        
+        return None
+    
+    def log_reached_position(self, waypoint: Waypoint):
+        """Logga la posizione raggiunta e calcola l'errore rispetto al target."""
+        print(f"\n{Colors.BOLD}{Colors.HEADER}{'='*70}{Colors.END}")
+        print(f"{Colors.BOLD}{Colors.HEADER}📍 POSITION REACHED - {waypoint.name}{Colors.END}")
+        print(f"{Colors.BOLD}{Colors.HEADER}{'='*70}{Colors.END}")
+        
+        # Target
+        print(f"\n{Colors.BOLD}🎯 TARGET:{Colors.END}")
+        print(f"   X: {waypoint.x:.4f} m")
+        print(f"   Y: {waypoint.y:.4f} m")
+        print(f"   Z: {waypoint.z:.4f} m")
+        
+        # Calcola FK
+        reached_pos = self.compute_fk_position()
+        
+        if reached_pos:
+            rx, ry, rz = reached_pos
+            print(f"\n{Colors.BOLD}📌 REACHED (FK):{Colors.END}")
+            print(f"   X: {rx:.4f} m")
+            print(f"   Y: {ry:.4f} m")
+            print(f"   Z: {rz:.4f} m")
+            
+            # Errore
+            error_x = rx - waypoint.x
+            error_y = ry - waypoint.y
+            error_z = rz - waypoint.z
+            error_total = np.sqrt(error_x**2 + error_y**2 + error_z**2)
+            
+            print(f"\n{Colors.BOLD}❌ ERROR:{Colors.END}")
+            print(f"   ΔX: {error_x:+.4f} m")
+            print(f"   ΔY: {error_y:+.4f} m")
+            print(f"   ΔZ: {error_z:+.4f} m")
+            print(f"   {Colors.YELLOW}Total: {error_total:.4f} m{Colors.END}")
+        else:
+            print(f"\n{Colors.RED}⚠️  FK calculation failed{Colors.END}")
+        
+        # Joint positions
+        print(f"\n{Colors.BOLD}🔧 JOINT POSITIONS (rad):{Colors.END}")
+        for i, pos in enumerate(self.joint_positions):
+            print(f"   Joint {i+1}: {pos:+.4f} rad ({np.degrees(pos):+.2f}°)")
+        
+        print(f"{Colors.BOLD}{Colors.HEADER}{'='*70}{Colors.END}\n")
+    
     def plan_and_execute_waypoint(self, waypoint: Waypoint,
                                    velocity_scaling: float = 0.08) -> bool:
         """Plan and execute motion to waypoint"""
@@ -266,6 +357,7 @@ class SafeAvoidanceTest(Node):
         goal.pose_target.pose.orientation.y = 0.0
         goal.pose_target.pose.orientation.z = 0.0
         goal.pose_target.pose.orientation.w = 0.0
+
         goal.cartesian_motion = False
         goal.max_velocity_scaling_factor = velocity_scaling
         
@@ -425,16 +517,9 @@ def main():
         waypoints = [
             Waypoint(0.30, 0.0, 0.45, "WP0_Home", "Safe starting position", "None", False),
             Waypoint(0.20, -0.65, 0.20, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
-            Waypoint(0.15, 0.75, 0.40, "WP2_RedPass", "Pass red box at close distance", "Strong lateral avoidance", True),
-            Waypoint(0.10, -0.55, 0.50, "WP3_PreGap", "Position above gap", "Minimal", False),
-            Waypoint(0.38, 0.75, 0.25, "WP4_EnterGap", "Enter gap zone", "Bilateral avoidance starts", False),
-            Waypoint(0.3, -0.55, 0.3, "WP5_GapCenter", "Gap center - CRITICAL", "Strong bilateral avoidance", True),
-            Waypoint(0.55, 0.55, 0.15, "WP6_ExitGap", "Exit gap zone", "Reducing avoidance", False),
-            Waypoint(0.40, -0.55, 0.40, "WP7_YellowApproach", "Approach yellow box", "Lateral push north", True),
-            Waypoint(0.40, 0.50, 0.55, "WP8_YellowOverhead", "Above yellow box", "Upward push", False),
-            Waypoint(0.50, -0.50, 0.25, "WP9_Diagonal", "Diagonal approach red", "Multi-axis avoidance", False),
-            Waypoint(0.30, 0.60, 0.40, "WP10_FarCorner", "Safe far position", "None", False),
-            Waypoint(0.00, -0.7, 0.1, "WP11_FinalHome", "Return home", "None", False),
+            Waypoint(0.20, 0.65, 0.20, "WP2_OtherSide", "Other side", "Lateral push away", False),
+            Waypoint(0.20, -0.65, 0.20, "WP3_Back", "Back to first side", "Lateral push away", False),
+            Waypoint(0.20, 0.65, 0.20, "WP4_OtherSideAgain", "Other side again", "Lateral push away", False),
         ]
         
         velocity_scaling = 0.06  # Slow for observation
@@ -446,10 +531,18 @@ def main():
         for i, wp in enumerate(waypoints, 1):
             print(f"\n{Colors.BOLD}[{i}/{len(waypoints)}]{Colors.END}")
             success = test_node.plan_and_execute_waypoint(wp, velocity_scaling)
+            
             if not success:
                 print(f"{Colors.RED}❌ Failed at {wp.name}{Colors.END}")
                 break
-            time.sleep(1.0)
+            
+            # ========================================
+            # LOG POSIZIONE RAGGIUNTA E ATTENDI INVIO
+            # ========================================
+            test_node.log_reached_position(wp)
+            
+            if i < len(waypoints):
+                input(f"{Colors.YELLOW}Press ENTER to continue to next waypoint...{Colors.END}\n")
         
         test_node.state = ExecutionState.COMPLETED
         time.sleep(2.0)
