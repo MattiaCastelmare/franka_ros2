@@ -192,6 +192,16 @@ class SafeAvoidanceTest(Node):
         self.get_logger().info(f"{Colors.BOLD}{Colors.CYAN}{'='*70}{Colors.END}")
         self.get_logger().info(f"{Colors.BOLD}{Colors.CYAN}Safe Avoidance Test Node Initialized{Colors.END}")
         self.get_logger().info(f"{Colors.BOLD}{Colors.CYAN}{'='*70}{Colors.END}")
+
+        # ==== Tracking log (EE position real-time) ====
+        self.ee_log_times = []
+        self.ee_log_real = []
+        self.ee_log_target = []
+
+        self.base_frame = 'base'   # frame di riferimento della base robot
+        self.ee_link = 'fr3_link8'      # end-effector link
+
+
     
     def joint_state_callback(self, msg: JointState):
         positions = []
@@ -258,8 +268,9 @@ class SafeAvoidanceTest(Node):
             return None
         
         request = GetPositionFK.Request()
-        request.header.frame_id = 'fr3_link0'
-        request.fk_link_names = ['fr3_link8']  # End-effector
+        request.header.frame_id = self.base_frame
+        request.fk_link_names = [self.ee_link]
+
         
         robot_state = RobotState()
         robot_state.joint_state.name = self.joint_names
@@ -404,7 +415,18 @@ class SafeAvoidanceTest(Node):
         
         while time.time() - start_time < duration:
             rclpy.spin_once(self, timeout_sec=0.1)
-            
+            # Log EE pose for tracking
+            pos = self.compute_fk_position()
+            if pos is not None and self.current_waypoint is not None:
+                self.ee_log_times.append(time.time())
+                self.ee_log_real.append(pos)
+                self.ee_log_target.append((
+                    self.current_waypoint.x,
+                    self.current_waypoint.y,
+                    self.current_waypoint.z
+                ))
+
+
             vel_norm = np.linalg.norm(self.joint_velocities)
             if vel_norm > 0.01:
                 last_motion = time.time()
@@ -481,6 +503,33 @@ class SafeAvoidanceTest(Node):
         print(f"\n{Colors.BOLD}{Colors.GREEN}✅ Test Complete{Colors.END}")
         print(f"{Colors.BOLD}{Colors.HEADER}{'='*70}{Colors.END}\n")
 
+    def plot_tracking(self):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        if not self.ee_log_real:
+            print("⚠️ No EE data logged")
+            return
+
+        real = np.array(self.ee_log_real)
+        target = np.array(self.ee_log_target)
+        t = np.array(self.ee_log_times)
+        t = t - t[0]
+
+        fig, ax = plt.subplots(3,1, figsize=(8,10))
+        labels = ["X", "Y", "Z"]
+
+        for i in range(3):
+            ax[i].plot(t, real[:, i], 'b', label="Real")
+            ax[i].plot(t, target[:, i], 'r--', label="Target")
+            ax[i].set_ylabel(labels[i])
+            ax[i].grid()
+            ax[i].legend()
+
+        ax[-1].set_xlabel("Time (s)")
+        plt.tight_layout()
+        plt.show()
+
 
 def main():
     """Main test execution"""
@@ -516,12 +565,22 @@ def main():
         # DEFINE SAFE TRAJECTORY
         waypoints = [
             Waypoint(0.30, 0.0, 0.45, "WP0_Home", "Safe starting position", "None", False),
-            Waypoint(0.20, -0.65, 0.20, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
-            Waypoint(0.30, 0.65, 0.20, "WP2_OtherSide", "Other side", "Lateral push away", False),
-            Waypoint(0.20, -0.35, 0.30, "WP3_Back", "Back to first side", "Lateral push away", False),
+            Waypoint(0.20, -0.65, 0.40, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
+            Waypoint(0.30, 0.65, 0.40, "WP2_OtherSide", "Other side", "Lateral push away", False),
+            Waypoint(0.20, -0.35, 0.40, "WP3_Back", "Back to first side", "Lateral push away", False),
             Waypoint(0.1, 0.1, 0.50, "WP4_OtherSideAgain", "Other side again", "Lateral push away", False),
+            Waypoint(0.3, -0.55, 0.3, "WP5_GapCenter", "Gap center - CRITICAL", "Strong bilateral avoidance", True),
+            Waypoint(0.3, 0.55, 0.45, "WP6_ExitGap", "Exit gap zone", "Reducing avoidance", False),
+            Waypoint(0.40, -0.55, 0.40, "WP7_YellowApproach", "Approach yellow box", "Lateral push north", True),
+            Waypoint(0.40, 0.50, 0.55, "WP8_YellowOverhead", "Above yellow box", "Upward push", False),
+            Waypoint(0.50, -0.50, 0.25, "WP9_Diagonal", "Diagonal approach red", "Multi-axis avoidance", False),
+            Waypoint(0.40, 0.50, 0.20, "WP10_FarCorner", "Safe far position", "None", False),
+            Waypoint(0.30, 0.5, 0.3, "WP11_FinalHome", "Return home", "None", False),
+            Waypoint(0.30, 0.60, 0.40, "WP10_FarCorner", "Safe far position", "None", False),
+            Waypoint(0.00, -0.7, 0.1, "WP11_FinalHome", "Return home", "None", False),
         ]
-        
+
+                
         velocity_scaling = 0.06  # Slow for observation
         
         print(f"\n{Colors.BOLD}Executing {len(waypoints)} waypoints...{Colors.END}\n")
@@ -548,6 +607,8 @@ def main():
         time.sleep(2.0)
         
         test_node.print_final_report()
+        test_node.plot_tracking()
+
         
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}Test interrupted{Colors.END}")

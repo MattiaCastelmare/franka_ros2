@@ -21,7 +21,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Float64MultiArray
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
-
+import yaml
 
 class SimpleVelocityBlender(Node):
 
@@ -35,11 +35,17 @@ class SimpleVelocityBlender(Node):
         ]
         self.n_dof = 7
         
-        # ===== PARAMETRI (semplici) =====
-        self.kp = 30.0                    # Guadagno proporzionale
-        self.max_vel = 0.5               # Velocità massima rad/s
-        self.waypoint_threshold = 0.05   # Distanza per considerare raggiunto un punto (rad)
-        self.final_threshold = 0.01      # Precisione finale (rad)
+              # ===== PARAMETRI (da ROS/YAML) =====
+        self.declare_parameter('kp', 30.0)
+        self.declare_parameter('max_vel', 0.5)
+        self.declare_parameter('waypoint_threshold', 0.05)
+        self.declare_parameter('final_threshold', 0.01)
+
+        self.kp = self.get_parameter('kp').value
+        self.max_vel = self.get_parameter('max_vel').value
+        self.waypoint_threshold = self.get_parameter('waypoint_threshold').value
+        self.final_threshold = self.get_parameter('final_threshold').value
+
         
         # ===== STATO =====
         self.q = np.zeros(self.n_dof)              # Posizione corrente

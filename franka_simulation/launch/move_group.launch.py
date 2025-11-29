@@ -521,18 +521,26 @@ def generate_launch_description():
     #delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
     motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
 
-    delayed_blender = TimerAction(period=13.0, actions=[Node(
-        package='franka_simulation',
-        executable='velocity_control_blender',
-        name='velocity_control_blender',
-        output='screen',
-        parameters=[{
-            'kp_tracking': 0.4,     # Riduciamo Kp a 0.4 (era 0.8) per massima inerzia/smoothness.
-            'max_joint_vel': 0.15,  # Riduciamo il limite di velocità (era 0.3)
-            'smoothing_alpha': 0.8  # Aumentiamo l'inerzia dello smoothing (era 0.6)
-                    }]
-                )
-            ])
+    # File dei parametri del velocity blender
+    velocity_blender_params_file = os.path.join(
+        get_package_share_directory('franka_simulation'),
+        'config',
+        'velocity_blender_params.yaml'
+    )
+
+    delayed_blender = TimerAction(
+        period=13.0,
+        actions=[
+            Node(
+                package='franka_simulation',
+                executable='velocity_control_blender',
+                name='velocity_control_blender',
+                output='screen',
+                parameters=[velocity_blender_params_file]
+            )
+        ]
+    )
+
 
 
 
