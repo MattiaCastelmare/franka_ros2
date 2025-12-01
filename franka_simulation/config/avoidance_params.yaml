@@ -62,9 +62,9 @@ online_avoidance_controller:
     # ============================================
     # PARAMETRI CAMPO REPULSIVO - MOLTO AGGRESSIVI
     # ============================================
-    influence_distance: 0.15   # m 
+    influence_distance: 0.1   # m 
     safety_margin: 0.08        # m - distanza minima assoluta
-    repulsive_gain: 10.0        # gain del campo repulsivo (molto aumentato!)
+    repulsive_gain: 0.2      
     
     # Cinematica
     damping_max: 0.05
@@ -80,7 +80,7 @@ online_avoidance_controller:
     # ============================================
     # Se true, l'avoidance può solo usare la ridondanza del robot
     # Se false, l'avoidance ha priorità sul tracking (RACCOMANDATO)
-    use_null_space: false
+    use_null_space: true
     
     # Debug (abilitato per vedere cosa succede)
     verbose_logging: true

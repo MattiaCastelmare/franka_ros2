@@ -160,18 +160,40 @@ class SimpleVelocityBlender(Node):
                 self.get_logger().info(f"📍 Punto {self.current_index}/{len(self.trajectory_points)-1}")
                 q_target = self.trajectory_points[self.current_index]
                 error = q_target - self.q
+                error_norm = np.linalg.norm(error)
         
-        # Calcola velocità: semplice controllo P
-        qdot = self.kp * error
-        
-        # Aggiungi avoidance
-        qdot = qdot + self.qdot_avoid
-        
-        # Limita velocità
+        # ===== 1) Tracking "puro"
+        qdot_tracking = self.kp * error
+
+        # ===== 2) Norma dell'avoidance
+        avoid_norm = np.linalg.norm(self.qdot_avoid)
+
+        # Soglie (puoi ritoccarle da qui)
+        weak_thresh   = 0.02   # sotto questo: avoidance praticamente spento
+        strong_thresh = 0.15   # sopra questo: solo avoidance
+
+        # ===== 3) Modalità in funzione della forza di avoidance =====
+        if avoid_norm < weak_thresh:
+            # Lontano dagli ostacoli → solo tracking
+            qdot = qdot_tracking
+
+        elif avoid_norm < strong_thresh:
+            # Zona di influenza → tracking indebolito + avoidance
+            alpha = 0.3  # peso del tracking (più basso = più sicuro, più lento)
+            qdot = alpha * qdot_tracking + self.qdot_avoid
+
+        else:
+            # Zona pericolosa → SOLO avoidance (tracking spento)
+            qdot = self.qdot_avoid
+            # (opzionale) limita anche la velocità in modo più conservativo:
+            # qdot = np.clip(qdot, -0.3, 0.3)
+
+        # ===== 4) Limita velocità complessiva =====
         qdot = np.clip(qdot, -self.max_vel, self.max_vel)
         
         # Pubblica
         self.publish_velocity(qdot)
+
 
     def publish_velocity(self, qdot: np.ndarray):
         """Pubblica comando di velocità."""

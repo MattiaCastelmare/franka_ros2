@@ -1,6 +1,6 @@
 velocity_control_blender:
   ros__parameters:
-    kp: 30.0
-    max_vel: 0.5        # rad/s
+    kp: 10.0
+    max_vel: 0.3        # rad/s
     waypoint_threshold: 0.05
     final_threshold: 0.01
