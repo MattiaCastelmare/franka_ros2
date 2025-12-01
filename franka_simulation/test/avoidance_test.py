@@ -40,6 +40,7 @@ from trajectory_msgs.msg import JointTrajectory
 from std_msgs.msg import Float64MultiArray
 from sensor_msgs.msg import JointState
 from moveit_msgs.msg import MoveItErrorCodes
+from moveit_msgs.msg import PlanningScene, CollisionObject
 
 # Actions
 from franka_simulation.action import MoveToPose
@@ -148,7 +149,10 @@ class SafeAvoidanceTest(Node):
         self.avoidance_activations: Dict[str, int] = {}
         self.max_avoidance_per_waypoint: Dict[str, float] = {}
         self.min_distance_achieved = float('inf')
-        
+
+        # Obstacle storage
+        self.obstacles = []  # List of dicts: {'id': str, 'center': np.array, 'dims': np.array}
+
         # Action client
         self.move_action_client = ActionClient(
             self,
@@ -178,6 +182,15 @@ class SafeAvoidanceTest(Node):
             self.controller_commands_callback, 10,
             callback_group=self.monitor_callback_group
         )
+
+        self.create_subscription(
+            PlanningScene,
+            '/obstacle_scene',
+            self.obstacle_scene_callback,
+            10,
+            callback_group=self.monitor_callback_group
+        )
+
         
         # Timers
         self.create_timer(0.5, self.debug_output_callback,
@@ -456,7 +469,31 @@ class SafeAvoidanceTest(Node):
             state_color = Colors.YELLOW if self.state == ExecutionState.AVOIDANCE_ACTIVE else Colors.CYAN
             print(f"\n{Colors.BOLD}Waypoint:{Colors.END} {state_color}{self.current_waypoint.name}{Colors.END}")
             print(f"{Colors.BOLD}State:{Colors.END} {state_color}{self.state.value.upper()}{Colors.END}")
-        
+
+        # ================================
+        # OBSTACLE LOGGER
+        # ================================
+        if self.obstacles:
+            print(f"{Colors.BOLD}🧱 Obstacles in scene:{Colors.END}")
+            for obs in self.obstacles:
+                cx, cy, cz = obs["center"]
+                dx, dy, dz = obs["dims"]
+
+                print(f"  • {Colors.YELLOW}{obs['id']}{Colors.END}")
+                print(f"       Center: ({cx:+.3f}, {cy:+.3f}, {cz:+.3f}) m")
+                print(f"       Size:   ({dx:.3f}, {dy:.3f}, {dz:.3f}) m")
+
+                if self.current_waypoint:
+                    wp = self.current_waypoint
+                    dist = np.sqrt(
+                        (wp.x - cx)**2 + (wp.y - cy)**2 + (wp.z - cz)**2
+                    )
+                    print(f"       Dist to WP {wp.name}: {dist:.3f} m")
+
+        else:
+            print(f"{Colors.YELLOW}⚠️ No obstacles received yet!{Colors.END}")
+
+
         print(f"\n{Colors.BOLD}Velocities (rad/s):{Colors.END}")
         print(f"  📊 Tracking:  {Colors.BLUE}{tracking_norm:>8.4f}{Colors.END}")
         print(f"  🛡️  Avoidance: {Colors.YELLOW}{avoidance_norm:>8.4f}{Colors.END}")
@@ -529,6 +566,29 @@ class SafeAvoidanceTest(Node):
         ax[-1].set_xlabel("Time (s)")
         plt.tight_layout()
         plt.show()
+    def obstacle_scene_callback(self, msg: PlanningScene):
+        """Extract obstacle positions and sizes from PlanningScene."""
+        self.obstacles = []
+
+        for obj in msg.world.collision_objects:
+            # Ignora terreno o oggetti esclusi
+            if obj.id.lower() in ["ground", "plane", "floor"]:
+                continue
+
+            for i, prim in enumerate(obj.primitives):
+                if prim.type != prim.BOX:
+                    continue
+
+                pose = obj.primitive_poses[i]
+                dims = np.array(prim.dimensions)
+                center = np.array([pose.position.x, pose.position.y, pose.position.z])
+
+                self.obstacles.append({
+                    "id": obj.id,
+                    "center": center,
+                    "dims": dims
+                })
+
 
 
 def main():

@@ -445,7 +445,7 @@ class FrankaMotionServer(Node):
         # Permette IK anche se la pose finale è "dentro" un ostacolo
         # L'online_avoidance_controller eviterà la collisione durante il moto
         # ════════════════════════════════════════════════════════════════
-        ik_request.ik_request.avoid_collisions = False  # ERA: True
+        ik_request.ik_request.avoid_collisions = True  # ERA: True
         
         ik_request.ik_request.ik_link_name = self.end_effector_name
         ik_request.ik_request.timeout.sec = int(self.ik_timeout)
