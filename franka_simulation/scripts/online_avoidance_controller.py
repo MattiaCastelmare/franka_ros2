@@ -45,9 +45,12 @@ class Baseline1Avoidance(Node):
         self.declare_parameter("control_rate", 100.0)
         self.declare_parameter("influence_distance", 0.30)   # d_infl (d fuori capsula)
         self.declare_parameter("safety_margin", 0.08)        # d_safe (d fuori capsula)
-        self.declare_parameter("repulsive_gain", 1.0)
-        self.declare_parameter("max_joint_velocity", 1.2)
+        self.declare_parameter("repulsive_gain", 0.4)
+        self.declare_parameter("max_joint_velocity", 0.4)
         self.declare_parameter("excluded_obstacles", ["ground", "plane", "floor"])
+        # componente tangenziale del campo (deviazione laterale attorno agli ostacoli)
+        self.declare_parameter("tangential_gain", 0.3)
+
 
         # Lettura parametri
         self.rate = float(self.get_parameter("control_rate").value)
@@ -56,6 +59,8 @@ class Baseline1Avoidance(Node):
         self.K = float(self.get_parameter("repulsive_gain").value)
         self.max_qdot = float(self.get_parameter("max_joint_velocity").value)
         self.excluded = list(self.get_parameter("excluded_obstacles").value)
+        self.tangential_gain = float(self.get_parameter("tangential_gain").value)
+
 
         # ===== GEOMETRIA CAPSULE (LINK PAIRS + RAGGI) =====
         # Coppie (parent_link, child_link)
@@ -71,14 +76,14 @@ class Baseline1Avoidance(Node):
 
         # Raggio per ogni link (m) — conservativo
         self.link_radius = {
-            "fr3_link1": 0.06,
-            "fr3_link2": 0.05,
-            "fr3_link3": 0.05,
-            "fr3_link4": 0.045,
-            "fr3_link5": 0.04,
-            "fr3_link6": 0.04,
-            "fr3_link7": 0.035,
-            "fr3_link8": 0.035,
+            "fr3_link1": 0.08,
+            "fr3_link2": 0.08,
+            "fr3_link3": 0.08,
+            "fr3_link4": 0.08,
+            "fr3_link5": 0.08,
+            "fr3_link6": 0.08,
+            "fr3_link7": 0.08,
+            "fr3_link8": 0.08,
         }
 
         # Dizionario finale: parent_link -> {"p0": np.array(3), "p1": np.array(3), "radius": float}
@@ -313,24 +318,58 @@ class Baseline1Avoidance(Node):
     # ============================================================
     def potential_force(self, d, dir_vec):
         """
-        Campo potenziale continuo (Khatib-style).
+        Campo potenziale continuo (Khatib-style) con componente tangenziale.
 
         d       = distanza effettiva capsula–box (>=0 fuori, ~0 contatto)
         dir_vec = direzione normalizzata (dal box verso la capsula)
 
         Ritorna F (3D) in WORLD frame.
         """
+        # fuori zona di influenza → nessuna forza
         if d >= self.d_infl:
             return np.zeros(3)
 
-        # se siamo dentro / troppo vicini, saturiamo d
+        # se siamo dentro / troppo vicini, saturiamo d per evitare esplosioni
         if d <= self.d_safe:
             d = self.d_safe + 1e-3
 
-        term = (1.0 / (d - self.d_safe) - 1.0 / (self.d_infl - self.d_safe))
-        dU_dd = self.K * term * (1.0 / ((d - self.d_safe) ** 2))
+        # Parte normale (radiale) come prima
+        term   = (1.0 / (d - self.d_safe) - 1.0 / (self.d_infl - self.d_safe))
+        dU_dd  = self.K * term * (1.0 / ((d - self.d_safe) ** 2))
+        F_norm = dU_dd * dir_vec
 
-        return dU_dd * dir_vec
+        # ==========================
+        # Parte tangenziale (NUOVA)
+        # ==========================
+        # Asse fisso del mondo per generare una direzione tangenziale consistente.
+        # Puoi cambiare l'asse se vuoi far "girare" attorno ad un’altra direzione.
+        # Scegli un asse non allineato con dir_vec
+        world_axis = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(world_axis, dir_vec)) > 0.9:
+            world_axis = np.array([1.0, 0.0, 0.0])
+
+        # Direzione tangenziale = world_axis × dir_vec  (perpendicolare al gradiente)
+        tang_dir = np.cross(world_axis, dir_vec)
+        norm_tang = np.linalg.norm(tang_dir)
+
+        if norm_tang > 1e-6 and self.tangential_gain > 0.0:
+            tang_dir /= norm_tang
+            # stessa "scala" di dU_dd, modulata da un guadagno tangenziale
+            F_tan = self.tangential_gain * dU_dd * tang_dir
+        else:
+            F_tan = np.zeros(3)
+
+        # Forza totale = normale + tangenziale
+        F = F_norm + F_tan
+
+        # Clip "soft" per evitare forze enormi vicino a d_safe
+        F_max = 20.0  # [N] equivalente
+        norm_F = np.linalg.norm(F)
+        if norm_F > F_max:
+            F = F / norm_F * F_max
+
+        return F
+
 
 
     # ============================================================

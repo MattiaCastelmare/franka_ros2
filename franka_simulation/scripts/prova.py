@@ -51,14 +51,14 @@ class RobotCapsuleVisualizer(Node):
         # Raggio "ragionevole" per ogni link (metri)
         # (leggermente sovrastimato per sicurezza)
         self.link_radius = {
-            "fr3_link1": 0.06,
-            "fr3_link2": 0.05,
-            "fr3_link3": 0.05,
-            "fr3_link4": 0.045,
-            "fr3_link5": 0.04,
-            "fr3_link6": 0.04,
-            "fr3_link7": 0.035,
-            "fr3_link8": 0.035,
+            "fr3_link1": 0.1,
+            "fr3_link2": 0.1,
+            "fr3_link3": 0.1,
+            "fr3_link4": 0.1,
+            "fr3_link5": 0.1,
+            "fr3_link6": 0.1,
+            "fr3_link7": 0.1,
+            "fr3_link8": 0.1,
         }
 
         # Dizionario finale: link -> {"p0": np.array, "p1": np.array, "radius": float}

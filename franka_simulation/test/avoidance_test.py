@@ -637,7 +637,7 @@ def main():
             Waypoint(0.40, 0.50, 0.20, "WP10_FarCorner", "Safe far position", "None", False),
             Waypoint(0.30, 0.5, 0.3, "WP11_FinalHome", "Return home", "None", False),
             Waypoint(0.30, 0.60, 0.40, "WP10_FarCorner", "Safe far position", "None", False),
-            Waypoint(0.00, -0.7, 0.1, "WP11_FinalHome", "Return home", "None", False),
+            Waypoint(0.30, 0.0, 0.45, "WP11_FinalHome", "Return home", "None", False),
         ]
 
                 

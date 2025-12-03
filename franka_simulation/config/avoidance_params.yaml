@@ -62,15 +62,15 @@ online_avoidance_controller:
     # ============================================
     # PARAMETRI CAMPO REPULSIVO - MOLTO AGGRESSIVI
     # ============================================
-    influence_distance: 0.20   # m 
-    safety_margin: 0.01       # m - distanza minima assoluta
-    repulsive_gain: 0.2
+    influence_distance: 0.15   # m 
+    safety_margin: 0.08    # m - distanza minima assoluta
+    repulsive_gain: 0.01
     
     # Cinematica
     damping_max: 0.05
     singularity_threshold: 0.05
-    max_joint_velocity: 0.3   # rad/s - limitato per movimenti lenti
-    
+    max_joint_velocity: 0.1   # rad/s - limitato per movimenti lenti
+    tangential_gain: 0.1
     # Frame
     base_frame: "fr3_link0"
     ee_frame: "fr3_link8"
@@ -80,7 +80,7 @@ online_avoidance_controller:
     # ============================================
     # Se true, l'avoidance può solo usare la ridondanza del robot
     # Se false, l'avoidance ha priorità sul tracking (RACCOMANDATO)
-    use_null_space: true
+    use_null_space: false
     
     # Debug (abilitato per vedere cosa succede)
     verbose_logging: true
