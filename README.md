@@ -201,7 +201,7 @@ You can select one of the controllers from `controllers.yaml`.
 
 ### Run Gazebo examples with ROS 2
 
-If you want to use Gazebo to run your code, you can find some examples here: [franka_gazebo](./franka_gazebo/README)
+If you want to use Gazebo to run your code, you can find some examples here: [franka_gazebo](./franka_gazebo/README.md)
 
 
 ## Troubleshooting
