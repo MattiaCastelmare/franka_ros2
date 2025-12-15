@@ -626,7 +626,7 @@ def main():
         waypoints = [
             Waypoint(0.30, 0.0, 0.45, "WP0_Home", "Safe starting position", "None", False),
             Waypoint(0.20, -0.65, 0.40, "WP1_RedApproach", "Approach red box laterally", "Lateral push away", False),
-            Waypoint(0.30, 0.65, 0.40, "WP2_OtherSide", "Other side", "Lateral push away", False),
+            Waypoint(0.30, 0.45, 0.30, "WP2_OtherSide", "Other side", "Lateral push away", False),
             Waypoint(0.20, -0.35, 0.40, "WP3_Back", "Back to first side", "Lateral push away", False),
             Waypoint(0.1, 0.1, 0.50, "WP4_OtherSideAgain", "Other side again", "Lateral push away", False),
             Waypoint(0.3, -0.55, 0.3, "WP5_GapCenter", "Gap center - CRITICAL", "Strong bilateral avoidance", True),

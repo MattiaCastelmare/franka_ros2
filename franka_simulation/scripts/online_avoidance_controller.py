@@ -14,11 +14,14 @@ del Franka FR3 e campi potenziali in spazio cartesiano:
  - Forza F = -∂U/∂x (direzione dal box verso la capsula)
  - Mappatura in velocità di giunto: qdot_rep = J^T * F
  - Publish:
-      /avoidance/velocity  (Float64MultiArray, 7 joint vel)
-      /avoidance/jacobian  (riga Jacobiano "critico" 1x7)
-      /avoidance/min_distance (distanza minima attuale)
+      /avoidance/velocity       (Float64MultiArray, 7 joint vel)
+      /avoidance/jacobian       (Float64MultiArray, 7 elementi, riga jacobiano "critico")
+      /avoidance/min_distance   (Float64MultiArray, [d_min])
 
-NB: nessun null-space ancora (Versione A pulita).
+Versione con componente tangenziale MORBIDA:
+ - F_tan è sempre ⟂ a dir_vec, quindi tangente alla “bolla” di distanza
+ - ‖F_tan‖ <= tangential_gain * ‖F_norm‖ * alpha(d),
+   con alpha(d) che passa da 0 (a d_infl) a 1 (vicino a d_safe).
 """
 
 import os
@@ -37,7 +40,6 @@ import pinocchio as pin
 
 
 class Baseline1Avoidance(Node):
-
     def __init__(self):
         super().__init__("online_avoidance_controller")
 
@@ -48,9 +50,10 @@ class Baseline1Avoidance(Node):
         self.declare_parameter("repulsive_gain", 0.4)
         self.declare_parameter("max_joint_velocity", 0.4)
         self.declare_parameter("excluded_obstacles", ["ground", "plane", "floor"])
-        # componente tangenziale del campo (deviazione laterale attorno agli ostacoli)
-        self.declare_parameter("tangential_gain", 0.3)
 
+        # componente tangenziale del campo (deviazione laterale attorno agli ostacoli).
+        # NUOVA SEMANTICA: fattore massimo di ‖F_tan‖ rispetto a ‖F_norm‖ vicino a d_safe.
+        self.declare_parameter("tangential_gain", 0.3)
 
         # Lettura parametri
         self.rate = float(self.get_parameter("control_rate").value)
@@ -61,9 +64,7 @@ class Baseline1Avoidance(Node):
         self.excluded = list(self.get_parameter("excluded_obstacles").value)
         self.tangential_gain = float(self.get_parameter("tangential_gain").value)
 
-
         # ===== GEOMETRIA CAPSULE (LINK PAIRS + RAGGI) =====
-        # Coppie (parent_link, child_link)
         self.link_pairs = [
             ("fr3_link1", "fr3_link2"),
             ("fr3_link2", "fr3_link3"),
@@ -74,7 +75,6 @@ class Baseline1Avoidance(Node):
             ("fr3_link7", "fr3_link8"),
         ]
 
-        # Raggio per ogni link (m) — conservativo
         self.link_radius = {
             "fr3_link1": 0.08,
             "fr3_link2": 0.08,
@@ -86,8 +86,7 @@ class Baseline1Avoidance(Node):
             "fr3_link8": 0.08,
         }
 
-        # Dizionario finale: parent_link -> {"p0": np.array(3), "p1": np.array(3), "radius": float}
-        # p0, p1 sono definiti nel frame LOCALE del parent_link
+        # parent_link -> {"p0": np.array(3), "p1": np.array(3), "radius": float}
         self.capsules = {}
 
         # ===== STATO =====
@@ -113,23 +112,28 @@ class Baseline1Avoidance(Node):
 
         self.get_logger().info("🔥 Baseline-1 Capsule-based Potential Field Avoidance READY")
 
-
     # ============================================================
     # PINOCCHIO + COSTRUZIONE CAPSULE
     # ============================================================
     def _init_pinocchio_and_capsules(self):
         try:
-            # 1) Leggo robot_description
+            # 1) Leggo robot_description dal robot_state_publisher
             cli = self.create_client(GetParameters, "/robot_state_publisher/get_parameters")
             cli.wait_for_service(timeout_sec=10.0)
 
             req = GetParameters.Request()
+            # è fondamentale specificare il nome del parametro che vogliamo
             req.names = ["robot_description"]
             future = cli.call_async(req)
             rclpy.spin_until_future_complete(self, future)
 
-            urdf_str = future.result().values[0].string_value
+            result = future.result()
+            if result is None or len(result.values) == 0:
+                raise RuntimeError("Parametro 'robot_description' non trovato sul robot_state_publisher")
 
+            urdf_str = result.values[0].string_value
+
+            # salvo URDF temporaneamente per Pinocchio
             with tempfile.NamedTemporaryFile(delete=False, suffix=".urdf", mode="w") as f:
                 f.write(urdf_str)
                 urdf_path = f.name
@@ -171,16 +175,15 @@ class Baseline1Avoidance(Node):
                 oMp = self.data.oMf[fid_parent]   # world -> parent
                 oMc = self.data.oMf[fid_child]    # world -> child
 
-                p_w_parent = oMp.translation      # posizione parent in world
-                R_w_parent = oMp.rotation         # rot parent in world
-                p_w_child = oMc.translation       # posizione child in world
+                p_w_parent = oMp.translation
+                R_w_parent = oMp.rotation
+                p_w_child = oMc.translation
 
                 # posizione child nel frame locale del parent:
-                # p_parent_child = R_parent^T * (p_child_world - p_parent_world)
                 p_parent_child = R_w_parent.T @ (p_w_child - p_w_parent)
 
-                p0_local = np.zeros(3)                   # origine frame parent
-                p1_local = 0.95 * p_parent_child         # verso child, accorciata un po'
+                p0_local = np.zeros(3)
+                p1_local = 0.95 * p_parent_child   # leggermente accorciata
 
                 radius = self.link_radius.get(parent, 0.04)
 
@@ -200,7 +203,6 @@ class Baseline1Avoidance(Node):
             self.get_logger().error(f"Pinocchio / capsule init ERROR: {e}")
             self.pin_ok = False
 
-
     # ============================================================
     # CALLBACKS
     # ============================================================
@@ -209,7 +211,6 @@ class Baseline1Avoidance(Node):
         Rimappa l'ordine "strano" pubblicato da ROS2/MoveIt all'ordine corretto
         usato da Pinocchio: [q1, q2, q3, q4, q5, q6, q7]
         """
-        # ordine pubblicato da ROS2 (come hai osservato)
         raw_order = [
             "fr3_joint1",
             "fr3_joint3",
@@ -217,17 +218,15 @@ class Baseline1Avoidance(Node):
             "fr3_joint4",
             "fr3_joint6",
             "fr3_joint5",
-            "fr3_joint7"
+            "fr3_joint7",
         ]
 
-        # estraggo i joint in questo ordine
         q_ros = []
         for name in raw_order:
             if name in msg.name:
                 q_ros.append(msg.position[msg.name.index(name)])
             else:
-                # se manca qualcosa, esco e aspetto un messaggio coerente
-                return
+                return  # messaggio incoerente, aspetto il prossimo
 
         q_ros = np.array(q_ros)
 
@@ -243,14 +242,12 @@ class Baseline1Avoidance(Node):
 
         self.joint_positions = q_pin
 
-
     def _obstacle_cb(self, msg: PlanningScene):
         self.obstacles = []
         for obs in msg.world.collision_objects:
             if any(ex in obs.id.lower() for ex in self.excluded):
                 continue
             self.obstacles.append(obs)
-
 
     # ============================================================
     # DISTANZA CAPSULA ↔ BOX
@@ -287,7 +284,7 @@ class Baseline1Avoidance(Node):
             center = np.array([pose.position.x, pose.position.y, pose.position.z])
             half = np.array(prim.dimensions) / 2.0
 
-            # proiezione del centro del box sul segmento della capsula
+            # proiezione del centro del box sul segmento
             t = np.dot(center - p0, v_norm)
             t_clamped = np.clip(t, 0.0, L)
             closest_capsule = p0 + v_norm * t_clamped
@@ -312,9 +309,8 @@ class Baseline1Avoidance(Node):
 
         return best_d, best_dir, best_pt
 
-
     # ============================================================
-    # POTENTIAL FIELD
+    # POTENTIAL FIELD CON COMPONENTE TANGENZIALE
     # ============================================================
     def potential_force(self, d, dir_vec):
         """
@@ -324,53 +320,69 @@ class Baseline1Avoidance(Node):
         dir_vec = direzione normalizzata (dal box verso la capsula)
 
         Ritorna F (3D) in WORLD frame.
+
+        LOGICA TANGENZIALE:
+        - F_norm segue il gradiente (radiale, spinge fuori dall'ostacolo)
+        - F_tan è sempre ⟂ a dir_vec, quindi tangente alla "bolla" di distanza
+        - ‖F_tan‖ <= tangential_gain * ‖F_norm‖ * alpha(d)
+          con alpha(d)∈[0,1] che cresce da 0 (bordo influenza) a 1 (vicino a d_safe)
         """
         # fuori zona di influenza → nessuna forza
         if d >= self.d_infl:
             return np.zeros(3)
 
-        # se siamo dentro / troppo vicini, saturiamo d per evitare esplosioni
-        if d <= self.d_safe:
-            d = self.d_safe + 1e-3
+        # evito singolarità troppo vicino a d_safe
+        d_clipped = max(d, self.d_safe + 1e-3)
 
-        # Parte normale (radiale) come prima
-        term   = (1.0 / (d - self.d_safe) - 1.0 / (self.d_infl - self.d_safe))
-        dU_dd  = self.K * term * (1.0 / ((d - self.d_safe) ** 2))
+        # -----------------------------
+        # 1) Parte normale (radiale)
+        # -----------------------------
+        term = (1.0 / (d_clipped - self.d_safe) - 1.0 / (self.d_infl - self.d_safe))
+        dU_dd = self.K * term * (1.0 / ((d_clipped - self.d_safe) ** 2))
         F_norm = dU_dd * dir_vec
+        norm_F_norm = np.linalg.norm(F_norm)
 
-        # ==========================
-        # Parte tangenziale (NUOVA)
-        # ==========================
-        # Asse fisso del mondo per generare una direzione tangenziale consistente.
-        # Puoi cambiare l'asse se vuoi far "girare" attorno ad un’altra direzione.
-        # Scegli un asse non allineato con dir_vec
+        if norm_F_norm < 1e-8:
+            return np.zeros(3)
+
+        # -----------------------------
+        # 2) Direzione tangenziale
+        # -----------------------------
         world_axis = np.array([0.0, 0.0, 1.0])
         if abs(np.dot(world_axis, dir_vec)) > 0.9:
             world_axis = np.array([1.0, 0.0, 0.0])
 
-        # Direzione tangenziale = world_axis × dir_vec  (perpendicolare al gradiente)
         tang_dir = np.cross(world_axis, dir_vec)
         norm_tang = np.linalg.norm(tang_dir)
-
-        if norm_tang > 1e-6 and self.tangential_gain > 0.0:
+        if norm_tang > 1e-6:
             tang_dir /= norm_tang
-            # stessa "scala" di dU_dd, modulata da un guadagno tangenziale
-            F_tan = self.tangential_gain * dU_dd * tang_dir
+        else:
+            tang_dir = np.zeros(3)
+
+        # -----------------------------
+        # 3) Modulo della tangenziale
+        # -----------------------------
+        # alpha(d): 0 a d_infl, 1 vicino a d_safe
+        alpha = (self.d_infl - d_clipped) / (self.d_infl - self.d_safe)
+        alpha = max(0.0, min(1.0, alpha))
+
+        if self.tangential_gain > 0.0 and norm_tang > 0.0:
+            k = self.tangential_gain * alpha
+            F_tan = k * norm_F_norm * tang_dir
         else:
             F_tan = np.zeros(3)
 
-        # Forza totale = normale + tangenziale
+        # -----------------------------
+        # 4) Forza totale e clipping
+        # -----------------------------
         F = F_norm + F_tan
 
-        # Clip "soft" per evitare forze enormi vicino a d_safe
-        F_max = 20.0  # [N] equivalente
+        F_max = 15.0  # [N] equivalente
         norm_F = np.linalg.norm(F)
         if norm_F > F_max:
             F = F / norm_F * F_max
 
         return F
-
-
 
     # ============================================================
     # CONTROL LOOP
@@ -387,7 +399,6 @@ class Baseline1Avoidance(Node):
 
         if len(self.obstacles) == 0:
             self.pub.publish(zero)
-            # distanza infinita se non ci sono ostacoli
             dist_msg = Float64MultiArray()
             dist_msg.data = [999.0]
             self.min_dist_pub.publish(dist_msg)
@@ -413,27 +424,22 @@ class Baseline1Avoidance(Node):
             p1_local = caps["p1"]
             radius = caps["radius"]
 
-            # FK del parent link
             fid_parent = self.frame_ids[parent]
-            oMp = self.data.oMf[fid_parent]          # world -> parent
+            oMp = self.data.oMf[fid_parent]
             R = oMp.rotation
             t = oMp.translation
 
-            # punti in WORLD
             p0_world = t + R @ p0_local
             p1_world = t + R @ p1_local
 
-            # distanza minima capsula ↔ ostacoli
             d = 999.0
             best_dir = None
-            best_obs_pt = None
 
             for obs in self.obstacles:
-                d0, dir0, pt0 = self._distance_capsule_to_box(p0_world, p1_world, radius, obs)
+                d0, dir0, _ = self._distance_capsule_to_box(p0_world, p1_world, radius, obs)
                 if d0 < d:
                     d = d0
                     best_dir = dir0
-                    best_obs_pt = pt0
 
             if best_dir is None:
                 continue
@@ -441,35 +447,24 @@ class Baseline1Avoidance(Node):
             if d < self.d_infl:
                 active += 1
 
-                # Forza repulsiva cartesiana
                 F = self.potential_force(d, best_dir)
 
                 if np.linalg.norm(F) > 0.0:
-                    # Jacobiano posizione del frame parent (approssimazione)
                     J = pin.computeFrameJacobian(
                         self.model, self.data, q, fid_parent, pin.ReferenceFrame.WORLD
                     )
-                    Jpos = J[:3, :]  # prime 3 righe = posizione
+                    Jpos = J[:3, :]
 
-                    # qdot_rep_i = J^T * F
                     q_dot_rep += Jpos.T @ F
 
-                    # Jacobiano del vincolo distanza: d/dt(d) = (dir_vec^T * Jpos) * qdot
                     j_row = best_dir @ Jpos  # shape (7,)
 
                     if d < global_min:
                         global_min = d
                         best_j_row = j_row.copy()
 
-        # Se nessuna capsula è in zona di influenza, distanza "infinita"
         if active == 0:
             global_min = 999.0
-
-        # Debug ogni tanto
-        if self.loop % 40 == 0:
-            self.get_logger().info(
-                f"📏 min_dist(capsule) = {global_min:.3f} m (infl={self.d_infl}) | active_capsules={active}"
-            )
 
         # Pubblica distanza minima
         dist_msg = Float64MultiArray()
@@ -478,7 +473,6 @@ class Baseline1Avoidance(Node):
 
         # === OUTPUT VELOCITY & JACOBIAN ===
         if active > 0:
-            # Normalizza/clip della velocità di evitamento
             norm = np.linalg.norm(q_dot_rep)
             if norm > self.max_qdot and norm > 1e-8:
                 q_dot_rep = q_dot_rep / norm * self.max_qdot
@@ -487,7 +481,6 @@ class Baseline1Avoidance(Node):
             vel_msg.data = q_dot_rep.tolist()
             self.pub.publish(vel_msg)
 
-            # Jacobiano critico
             jac_msg = Float64MultiArray()
             if best_j_row is not None:
                 jac_msg.data = best_j_row.tolist()
@@ -495,7 +488,6 @@ class Baseline1Avoidance(Node):
                 jac_msg.data = [0.0] * 7
             self.jac_pub.publish(jac_msg)
         else:
-            # Nessuna capsula attiva → avoidance nullo
             self.pub.publish(zero)
             jac_msg = Float64MultiArray()
             jac_msg.data = [0.0] * 7

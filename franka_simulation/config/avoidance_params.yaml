@@ -62,7 +62,7 @@ online_avoidance_controller:
     # ============================================
     # PARAMETRI CAMPO REPULSIVO - MOLTO AGGRESSIVI
     # ============================================
-    influence_distance: 0.15   # m 
+    influence_distance: 0.20   # m 
     safety_margin: 0.08    # m - distanza minima assoluta
     repulsive_gain: 0.01
     
@@ -70,7 +70,7 @@ online_avoidance_controller:
     damping_max: 0.05
     singularity_threshold: 0.05
     max_joint_velocity: 0.1   # rad/s - limitato per movimenti lenti
-    tangential_gain: 0.1
+    tangential_gain: 0.8
     # Frame
     base_frame: "fr3_link0"
     ee_frame: "fr3_link8"
