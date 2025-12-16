@@ -138,7 +138,7 @@ def make_rsp_and_moveit_nodes(context: LaunchContext, arm_id, load_gripper, fran
 
         # Trajectory execution - pattern da franka_fr3_moveit_config/launch/moveit.launch.py
         trajectory_execution = {
-            'moveit_manage_controllers': True,
+            'moveit_manage_controllers': False,
             'trajectory_execution.allowed_execution_duration_scaling': 1.2,
             'trajectory_execution.allowed_goal_duration_margin': 0.5,
             'trajectory_execution.allowed_start_tolerance': 0.01,
@@ -518,7 +518,7 @@ def generate_launch_description():
 
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
     delayed_avoidance = TimerAction(period=11.0, actions=[online_avoidance])
-    #delayed_motion_server = TimerAction(period=12.0, actions=[motion_server])
+    delayed_motion_server = TimerAction(period=30.0, actions=[motion_server])
     motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
 
     # File dei parametri del velocity blender
@@ -558,15 +558,15 @@ def generate_launch_description():
             robot_nodes_delayed,
             delayed_spawn,
             delayed_jsb,
-            delayed_arm,
+            #delayed_arm,
             delayed_vel,
             delayed_obstacle_rsp,
             delayed_spawn_obstacle,
             delayed_rviz,
             clock_bridge,
             delayed_obstacle_sync,
-            #delayed_motion_server,
-            motion_server_action,
+            delayed_motion_server,
+            #motion_server_action,
             delayed_avoidance,
             delayed_blender,
         ]

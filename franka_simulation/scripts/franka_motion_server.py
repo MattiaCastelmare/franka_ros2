@@ -175,13 +175,23 @@ class FrankaMotionServer(Node):
         self.get_logger().info("✅ TF system ready")
     
     def _init_ik_service(self):
-        """Inizializza servizio IK."""
+        """Inizializza servizio IK (robusto, non bloccante)."""
         self.ik_client = self.create_client(
-            GetPositionIK, 'compute_ik', callback_group=self.callback_group)
-        
-        if not self.ik_client.wait_for_service(timeout_sec=10.0):
-            raise RuntimeError("IK service not available")
-        self.get_logger().info("✅ IK service connected")
+            GetPositionIK, 'compute_ik', callback_group=self.callback_group
+        )
+
+        self.get_logger().warn("⏳ Waiting for IK service (/compute_ik)...")
+
+        # Non blocca il nodo: riprova in background
+        def wait_for_ik():
+            while rclpy.ok():
+                if self.ik_client.wait_for_service(timeout_sec=1.0):
+                    self.get_logger().info("✅ IK service connected")
+                    return
+                self.get_logger().warn("⏳ IK service not available yet, retrying...")
+
+        Thread(target=wait_for_ik, daemon=True).start()
+
 
     def _init_fk_service(self):
         """
@@ -445,7 +455,7 @@ class FrankaMotionServer(Node):
         # Permette IK anche se la pose finale è "dentro" un ostacolo
         # L'online_avoidance_controller eviterà la collisione durante il moto
         # ════════════════════════════════════════════════════════════════
-        ik_request.ik_request.avoid_collisions = True  # ERA: True
+        ik_request.ik_request.avoid_collisions = False  # ERA: True
         
         ik_request.ik_request.ik_link_name = self.end_effector_name
         ik_request.ik_request.timeout.sec = int(self.ik_timeout)

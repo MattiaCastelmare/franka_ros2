@@ -1,27 +1,15 @@
 #!/usr/bin/env python3
 """
-ONLINE AVOIDANCE CONTROLLER — BASELINE-1 (Capsule-based, Potential Field)
-=========================================================================
+ONLINE AVOIDANCE CONTROLLER — NULL SPACE VERSION
+===============================================
 
-Implementa obstacle avoidance usando una rappresentazione a CAPSULE per i link
-del Franka FR3 e campi potenziali in spazio cartesiano:
+• Capsule-based distance estimation
+• Potential field used ONLY as direction metric
+• Avoidance projected in EE null space
+• Tracking task is NEVER opposed
+• No local minima blocking
 
- - Ogni link i è approssimato da una capsula (cilindro + due semisfere) che
-   parte dall'origine di fr3_link{i} e punta verso fr3_link{i+1}, in frame locale.
- - La distanza usata è CAPSULA ↔ BOX (ostacolo), quindi con raggio esplicito.
- - Potenziale repulsivo continuo (stile Khatib):
-      U(d) = 1/2 * K * ( 1/(d - d_safe) - 1/(d_infl - d_safe) )^2
- - Forza F = -∂U/∂x (direzione dal box verso la capsula)
- - Mappatura in velocità di giunto: qdot_rep = J^T * F
- - Publish:
-      /avoidance/velocity       (Float64MultiArray, 7 joint vel)
-      /avoidance/jacobian       (Float64MultiArray, 7 elementi, riga jacobiano "critico")
-      /avoidance/min_distance   (Float64MultiArray, [d_min])
-
-Versione con componente tangenziale MORBIDA:
- - F_tan è sempre ⟂ a dir_vec, quindi tangente alla “bolla” di distanza
- - ‖F_tan‖ <= tangential_gain * ‖F_norm‖ * alpha(d),
-   con alpha(d) che passa da 0 (a d_infl) a 1 (vicino a d_safe).
+Author: Maurizio (Null-space refactor)
 """
 
 import os
@@ -39,32 +27,27 @@ from rcl_interfaces.srv import GetParameters
 import pinocchio as pin
 
 
-class Baseline1Avoidance(Node):
+class NullSpaceAvoidance(Node):
+
     def __init__(self):
         super().__init__("online_avoidance_controller")
 
-        # ===== PARAMETRI ROS =====
+        # ================= PARAMETERS =================
         self.declare_parameter("control_rate", 100.0)
-        self.declare_parameter("influence_distance", 0.30)   # d_infl (d fuori capsula)
-        self.declare_parameter("safety_margin", 0.08)        # d_safe (d fuori capsula)
-        self.declare_parameter("repulsive_gain", 0.4)
-        self.declare_parameter("max_joint_velocity", 0.4)
+        self.declare_parameter("influence_distance", 0.30)
+        self.declare_parameter("safety_margin", 0.08)
+        self.declare_parameter("nullspace_gain", 0.15)
+        self.declare_parameter("max_joint_velocity", 0.25)
         self.declare_parameter("excluded_obstacles", ["ground", "plane", "floor"])
 
-        # componente tangenziale del campo (deviazione laterale attorno agli ostacoli).
-        # NUOVA SEMANTICA: fattore massimo di ‖F_tan‖ rispetto a ‖F_norm‖ vicino a d_safe.
-        self.declare_parameter("tangential_gain", 0.3)
-
-        # Lettura parametri
         self.rate = float(self.get_parameter("control_rate").value)
         self.d_infl = float(self.get_parameter("influence_distance").value)
         self.d_safe = float(self.get_parameter("safety_margin").value)
-        self.K = float(self.get_parameter("repulsive_gain").value)
+        self.k_null = float(self.get_parameter("nullspace_gain").value)
         self.max_qdot = float(self.get_parameter("max_joint_velocity").value)
         self.excluded = list(self.get_parameter("excluded_obstacles").value)
-        self.tangential_gain = float(self.get_parameter("tangential_gain").value)
 
-        # ===== GEOMETRIA CAPSULE (LINK PAIRS + RAGGI) =====
+        # ================= CAPSULE GEOMETRY =================
         self.link_pairs = [
             ("fr3_link1", "fr3_link2"),
             ("fr3_link2", "fr3_link3"),
@@ -75,206 +58,118 @@ class Baseline1Avoidance(Node):
             ("fr3_link7", "fr3_link8"),
         ]
 
-        self.link_radius = {
-            "fr3_link1": 0.08,
-            "fr3_link2": 0.08,
-            "fr3_link3": 0.08,
-            "fr3_link4": 0.08,
-            "fr3_link5": 0.08,
-            "fr3_link6": 0.08,
-            "fr3_link7": 0.08,
-            "fr3_link8": 0.08,
-        }
-
-        # parent_link -> {"p0": np.array(3), "p1": np.array(3), "radius": float}
+        self.link_radius = {l: 0.08 for l, _ in self.link_pairs}
         self.capsules = {}
 
-        # ===== STATO =====
-        self.joint_positions = None          # q (ordine Pinocchio, già rimappato)
-        self.frame_ids = {}                  # link_name -> frame_id
-        self.obstacles = []                  # lista di CollisionObject da PlanningScene
+        # ================= STATE =================
+        self.q = None
+        self.frame_ids = {}
+        self.obstacles = []
         self.pin_ok = False
-        self.loop = 0
 
-        # ===== PINOCCHIO: MODEL + CAPSULES =====
+        # ================= PINOCCHIO =================
         self._init_pinocchio_and_capsules()
 
-        # ===== ROS I/O =====
+        # ================= ROS =================
         self.create_subscription(JointState, "/joint_states", self._joint_cb, 10)
         self.create_subscription(PlanningScene, "/obstacle_scene", self._obstacle_cb, 1)
 
         self.pub = self.create_publisher(Float64MultiArray, "/avoidance/velocity", 10)
-        self.jac_pub = self.create_publisher(Float64MultiArray, "/avoidance/jacobian", 10)
         self.min_dist_pub = self.create_publisher(Float64MultiArray, "/avoidance/min_distance", 10)
 
-        # Timer di controllo
         self.create_timer(1.0 / self.rate, self._control_loop)
 
-        self.get_logger().info("🔥 Baseline-1 Capsule-based Potential Field Avoidance READY")
+        self.get_logger().info("🟢 Null-Space Avoidance Controller READY")
 
-    # ============================================================
-    # PINOCCHIO + COSTRUZIONE CAPSULE
-    # ============================================================
+    # ======================================================
+    # PINOCCHIO + CAPSULES
+    # ======================================================
     def _init_pinocchio_and_capsules(self):
-        try:
-            # 1) Leggo robot_description dal robot_state_publisher
-            cli = self.create_client(GetParameters, "/robot_state_publisher/get_parameters")
-            cli.wait_for_service(timeout_sec=10.0)
+        cli = self.create_client(GetParameters, "/robot_state_publisher/get_parameters")
+        cli.wait_for_service()
 
-            req = GetParameters.Request()
-            # è fondamentale specificare il nome del parametro che vogliamo
-            req.names = ["robot_description"]
-            future = cli.call_async(req)
-            rclpy.spin_until_future_complete(self, future)
+        req = GetParameters.Request()
+        req.names = ["robot_description"]
+        future = cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
 
-            result = future.result()
-            if result is None or len(result.values) == 0:
-                raise RuntimeError("Parametro 'robot_description' non trovato sul robot_state_publisher")
+        urdf = future.result().values[0].string_value
 
-            urdf_str = result.values[0].string_value
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".urdf") as f:
+            f.write(urdf.encode())
+            urdf_path = f.name
 
-            # salvo URDF temporaneamente per Pinocchio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".urdf", mode="w") as f:
-                f.write(urdf_str)
-                urdf_path = f.name
+        model_full = pin.buildModelFromUrdf(urdf_path)
+        os.unlink(urdf_path)
 
-            # 2) Modello Pinocchio completo
-            model_full = pin.buildModelFromUrdf(urdf_path)
-            os.unlink(urdf_path)
+        lock = [model_full.getJointId(n) for n in model_full.names if "finger" in n]
+        self.model = pin.buildReducedModel(model_full, lock, pin.neutral(model_full))
+        self.data = self.model.createData()
 
-            # 3) Rimuovo le dita
-            lock = [model_full.getJointId(n) for n in model_full.names if "finger" in n]
-            self.model = pin.buildReducedModel(model_full, lock, pin.neutral(model_full))
-            self.data = self.model.createData()
+        for parent, child in self.link_pairs:
+            for link in (parent, child):
+                if link not in self.frame_ids:
+                    self.frame_ids[link] = self.model.getFrameId(link)
 
-            # 4) Map frame_ids per tutti i link interessati
-            for parent, child in self.link_pairs:
-                for link in (parent, child):
-                    if link in self.frame_ids:
-                        continue
-                    try:
-                        fid = self.model.getFrameId(link)
-                        self.frame_ids[link] = fid
-                        self.get_logger().info(f"  ✓ frame {link}: {fid}")
-                    except Exception:
-                        self.get_logger().warn(f"⚠️ Frame non trovato: {link}")
+        q0 = pin.neutral(self.model)
+        pin.forwardKinematics(self.model, self.data, q0)
+        pin.updateFramePlacements(self.model, self.data)
 
-            # 5) Costruisco le capsule nel frame locale dei parent, in configurazione neutra
-            q0 = pin.neutral(self.model)
-            pin.forwardKinematics(self.model, self.data, q0)
-            pin.updateFramePlacements(self.model, self.data)
+        for parent, child in self.link_pairs:
+            fid_p = self.frame_ids[parent]
+            fid_c = self.frame_ids[child]
 
-            for parent, child in self.link_pairs:
-                if parent not in self.frame_ids or child not in self.frame_ids:
-                    self.get_logger().warn(f"⛔ Skip capsule {parent}->{child}: frame mancante")
-                    continue
+            oMp = self.data.oMf[fid_p]
+            oMc = self.data.oMf[fid_c]
 
-                fid_parent = self.frame_ids[parent]
-                fid_child = self.frame_ids[child]
+            p_child_local = oMp.rotation.T @ (oMc.translation - oMp.translation)
 
-                oMp = self.data.oMf[fid_parent]   # world -> parent
-                oMc = self.data.oMf[fid_child]    # world -> child
+            self.capsules[parent] = {
+                "p0": np.zeros(3),
+                "p1": 0.95 * p_child_local,
+                "radius": self.link_radius[parent],
+            }
 
-                p_w_parent = oMp.translation
-                R_w_parent = oMp.rotation
-                p_w_child = oMc.translation
+        self.pin_ok = True
 
-                # posizione child nel frame locale del parent:
-                p_parent_child = R_w_parent.T @ (p_w_child - p_w_parent)
-
-                p0_local = np.zeros(3)
-                p1_local = 0.95 * p_parent_child   # leggermente accorciata
-
-                radius = self.link_radius.get(parent, 0.04)
-
-                self.capsules[parent] = {
-                    "p0": p0_local,
-                    "p1": p1_local,
-                    "radius": radius,
-                }
-
-                self.get_logger().info(
-                    f"🧩 Capsule {parent}: |p1|={np.linalg.norm(p1_local):.3f} m, r={radius:.3f} m"
-                )
-
-            self.pin_ok = True
-
-        except Exception as e:
-            self.get_logger().error(f"Pinocchio / capsule init ERROR: {e}")
-            self.pin_ok = False
-
-    # ============================================================
+    # ======================================================
     # CALLBACKS
-    # ============================================================
+    # ======================================================
     def _joint_cb(self, msg: JointState):
-        """
-        Rimappa l'ordine "strano" pubblicato da ROS2/MoveIt all'ordine corretto
-        usato da Pinocchio: [q1, q2, q3, q4, q5, q6, q7]
-        """
-        raw_order = [
-            "fr3_joint1",
-            "fr3_joint3",
-            "fr3_joint2",
-            "fr3_joint4",
-            "fr3_joint6",
-            "fr3_joint5",
-            "fr3_joint7",
+        order = [
+            "fr3_joint1", "fr3_joint3", "fr3_joint2",
+            "fr3_joint4", "fr3_joint6", "fr3_joint5", "fr3_joint7"
         ]
 
-        q_ros = []
-        for name in raw_order:
-            if name in msg.name:
-                q_ros.append(msg.position[msg.name.index(name)])
-            else:
-                return  # messaggio incoerente, aspetto il prossimo
+        try:
+            q_ros = np.array([msg.position[msg.name.index(n)] for n in order])
+        except ValueError:
+            return
 
-        q_ros = np.array(q_ros)
-
-        # conversione all’ordine corretto per Pinocchio
-        q_pin = np.zeros(7)
-        q_pin[0] = q_ros[0]   # joint1
-        q_pin[1] = q_ros[2]   # joint2
-        q_pin[2] = q_ros[1]   # joint3
-        q_pin[3] = q_ros[3]   # joint4
-        q_pin[4] = q_ros[5]   # joint5
-        q_pin[5] = q_ros[4]   # joint6
-        q_pin[6] = q_ros[6]   # joint7
-
-        self.joint_positions = q_pin
+        self.q = np.array([
+            q_ros[0], q_ros[2], q_ros[1],
+            q_ros[3], q_ros[5], q_ros[4], q_ros[6]
+        ])
 
     def _obstacle_cb(self, msg: PlanningScene):
-        self.obstacles = []
-        for obs in msg.world.collision_objects:
-            if any(ex in obs.id.lower() for ex in self.excluded):
-                continue
-            self.obstacles.append(obs)
+        self.obstacles = [
+            o for o in msg.world.collision_objects
+            if not any(ex in o.id.lower() for ex in self.excluded)
+        ]
 
-    # ============================================================
-    # DISTANZA CAPSULA ↔ BOX
-    # ============================================================
-    def _distance_capsule_to_box(self, p0, p1, radius, obs):
-        """
-        Calcola distanza minima geometrica tra una CAPSULA (segmento [p0,p1] + raggio)
-        e un ostacolo di tipo BOX.
-
-        p0, p1 : punti in WORLD frame
-        radius: raggio capsula
-
-        Ritorna:
-          d_eff    : distanza "effettiva" (>= 0 fuori, < 0 in penetrazione)
-          dir_vec  : direzione normalizzata (dal box verso la capsula)
-          best_pt  : punto più vicino sul box (WORLD)
-        """
-        best_d = 999.0
-        best_dir = np.array([1.0, 0.0, 0.0])
-        best_pt = None
+    # ======================================================
+    # CAPSULE ↔ BOX DISTANCE
+    # ======================================================
+    def _distance_capsule_to_box(self, p0, p1, r, obs):
+        best_d = 1e6
+        best_dir = None
 
         v = p1 - p0
         L = np.linalg.norm(v)
         if L < 1e-6:
-            return 999.0, best_dir, None
+            return best_d, None
 
-        v_norm = v / L
+        v /= L
 
         for i, prim in enumerate(obs.primitives):
             if prim.type != prim.BOX:
@@ -284,222 +179,80 @@ class Baseline1Avoidance(Node):
             center = np.array([pose.position.x, pose.position.y, pose.position.z])
             half = np.array(prim.dimensions) / 2.0
 
-            # proiezione del centro del box sul segmento
-            t = np.dot(center - p0, v_norm)
-            t_clamped = np.clip(t, 0.0, L)
-            closest_capsule = p0 + v_norm * t_clamped
+            t = np.clip(np.dot(center - p0, v), 0, L)
+            p_seg = p0 + t * v
+            p_box = center + np.clip(p_seg - center, -half, +half)
 
-            # punto più vicino sul box (clamp dentro il box)
-            rel = closest_capsule - center
-            closest_box = center + np.clip(rel, -half, +half)
+            diff = p_seg - p_box
+            dist = np.linalg.norm(diff) - r
 
-            diff = closest_capsule - closest_box
-            dist_center = np.linalg.norm(diff)
+            if dist < best_d:
+                best_d = dist
+                best_dir = diff / (np.linalg.norm(diff) + 1e-6)
 
-            # distanza effettiva esterna (0 se tocca, negativa se penetra)
-            d_eff = dist_center - radius
+        return best_d, best_dir
 
-            if d_eff < best_d:
-                if dist_center > 1e-6:
-                    best_dir = diff / dist_center
-                else:
-                    best_dir = np.array([1.0, 0.0, 0.0])
-                best_d = d_eff
-                best_pt = closest_box
-
-        return best_d, best_dir, best_pt
-
-    # ============================================================
-    # POTENTIAL FIELD CON COMPONENTE TANGENZIALE
-    # ============================================================
-    def potential_force(self, d, dir_vec):
-        """
-        Campo potenziale continuo (Khatib-style) con componente tangenziale.
-
-        d       = distanza effettiva capsula–box (>=0 fuori, ~0 contatto)
-        dir_vec = direzione normalizzata (dal box verso la capsula)
-
-        Ritorna F (3D) in WORLD frame.
-
-        LOGICA TANGENZIALE:
-        - F_norm segue il gradiente (radiale, spinge fuori dall'ostacolo)
-        - F_tan è sempre ⟂ a dir_vec, quindi tangente alla "bolla" di distanza
-        - ‖F_tan‖ <= tangential_gain * ‖F_norm‖ * alpha(d)
-          con alpha(d)∈[0,1] che cresce da 0 (bordo influenza) a 1 (vicino a d_safe)
-        """
-        # fuori zona di influenza → nessuna forza
-        if d >= self.d_infl:
-            return np.zeros(3)
-
-        # evito singolarità troppo vicino a d_safe
-        d_clipped = max(d, self.d_safe + 1e-3)
-
-        # -----------------------------
-        # 1) Parte normale (radiale)
-        # -----------------------------
-        term = (1.0 / (d_clipped - self.d_safe) - 1.0 / (self.d_infl - self.d_safe))
-        dU_dd = self.K * term * (1.0 / ((d_clipped - self.d_safe) ** 2))
-        F_norm = dU_dd * dir_vec
-        norm_F_norm = np.linalg.norm(F_norm)
-
-        if norm_F_norm < 1e-8:
-            return np.zeros(3)
-
-        # -----------------------------
-        # 2) Direzione tangenziale
-        # -----------------------------
-        world_axis = np.array([0.0, 0.0, 1.0])
-        if abs(np.dot(world_axis, dir_vec)) > 0.9:
-            world_axis = np.array([1.0, 0.0, 0.0])
-
-        tang_dir = np.cross(world_axis, dir_vec)
-        norm_tang = np.linalg.norm(tang_dir)
-        if norm_tang > 1e-6:
-            tang_dir /= norm_tang
-        else:
-            tang_dir = np.zeros(3)
-
-        # -----------------------------
-        # 3) Modulo della tangenziale
-        # -----------------------------
-        # alpha(d): 0 a d_infl, 1 vicino a d_safe
-        alpha = (self.d_infl - d_clipped) / (self.d_infl - self.d_safe)
-        alpha = max(0.0, min(1.0, alpha))
-
-        if self.tangential_gain > 0.0 and norm_tang > 0.0:
-            k = self.tangential_gain * alpha
-            F_tan = k * norm_F_norm * tang_dir
-        else:
-            F_tan = np.zeros(3)
-
-        # -----------------------------
-        # 4) Forza totale e clipping
-        # -----------------------------
-        F = F_norm + F_tan
-
-        F_max = 15.0  # [N] equivalente
-        norm_F = np.linalg.norm(F)
-        if norm_F > F_max:
-            F = F / norm_F * F_max
-
-        return F
-
-    # ============================================================
-    # CONTROL LOOP
-    # ============================================================
+    # ======================================================
+    # CONTROL LOOP (NULL SPACE)
+    # ======================================================
     def _control_loop(self):
-        self.loop += 1
-
         zero = Float64MultiArray()
         zero.data = [0.0] * 7
 
-        if not (self.pin_ok and isinstance(self.joint_positions, np.ndarray)):
+        if not (self.pin_ok and isinstance(self.q, np.ndarray)):
             self.pub.publish(zero)
             return
 
-        if len(self.obstacles) == 0:
-            self.pub.publish(zero)
-            dist_msg = Float64MultiArray()
-            dist_msg.data = [999.0]
-            self.min_dist_pub.publish(dist_msg)
-            return
-
-        q = self.joint_positions
-
-        pin.forwardKinematics(self.model, self.data, q)
+        pin.forwardKinematics(self.model, self.data, self.q)
         pin.updateFramePlacements(self.model, self.data)
 
-        q_dot_rep = np.zeros(7)
-        active = 0
-        global_min = 999.0
-        best_j_row = None
+        qdot_ns = np.zeros(7)
+        d_min = 999.0
 
-        # === PER OGNI CAPSULA DEL ROBOT ===
-        for parent, child in self.link_pairs:
-            if parent not in self.capsules or parent not in self.frame_ids:
-                continue
-
+        for parent in self.capsules:
+            fid = self.frame_ids[parent]
             caps = self.capsules[parent]
-            p0_local = caps["p0"]
-            p1_local = caps["p1"]
-            radius = caps["radius"]
 
-            fid_parent = self.frame_ids[parent]
-            oMp = self.data.oMf[fid_parent]
-            R = oMp.rotation
-            t = oMp.translation
-
-            p0_world = t + R @ p0_local
-            p1_world = t + R @ p1_local
-
-            d = 999.0
-            best_dir = None
+            oMp = self.data.oMf[fid]
+            p0 = oMp.translation + oMp.rotation @ caps["p0"]
+            p1 = oMp.translation + oMp.rotation @ caps["p1"]
 
             for obs in self.obstacles:
-                d0, dir0, _ = self._distance_capsule_to_box(p0_world, p1_world, radius, obs)
-                if d0 < d:
-                    d = d0
-                    best_dir = dir0
+                d, dir_vec = self._distance_capsule_to_box(p0, p1, caps["radius"], obs)
+                if dir_vec is None:
+                    continue
 
-            if best_dir is None:
-                continue
+                d_min = min(d_min, d)
 
-            if d < self.d_infl:
-                active += 1
+                if d >= self.d_infl:
+                    continue
 
-                F = self.potential_force(d, best_dir)
+                alpha = np.clip((self.d_infl - d) / (self.d_infl - self.d_safe), 0, 1)
+                xdot_avoid = self.k_null * alpha * dir_vec
 
-                if np.linalg.norm(F) > 0.0:
-                    J = pin.computeFrameJacobian(
-                        self.model, self.data, q, fid_parent, pin.ReferenceFrame.WORLD
-                    )
-                    Jpos = J[:3, :]
+                J = pin.computeFrameJacobian(
+                    self.model, self.data, self.q, fid, pin.ReferenceFrame.WORLD
+                )[:3, :]
 
-                    q_dot_rep += Jpos.T @ F
+                J_pinv = np.linalg.pinv(J)
+                N = np.eye(7) - J_pinv @ J
 
-                    j_row = best_dir @ Jpos  # shape (7,)
+                qdot_raw = J.T @ xdot_avoid
+                qdot_ns += N @ qdot_raw
 
-                    if d < global_min:
-                        global_min = d
-                        best_j_row = j_row.copy()
+        if np.linalg.norm(qdot_ns) > self.max_qdot:
+            qdot_ns *= self.max_qdot / np.linalg.norm(qdot_ns)
 
-        if active == 0:
-            global_min = 999.0
-
-        # Pubblica distanza minima
-        dist_msg = Float64MultiArray()
-        dist_msg.data = [float(global_min)]
-        self.min_dist_pub.publish(dist_msg)
-
-        # === OUTPUT VELOCITY & JACOBIAN ===
-        if active > 0:
-            norm = np.linalg.norm(q_dot_rep)
-            if norm > self.max_qdot and norm > 1e-8:
-                q_dot_rep = q_dot_rep / norm * self.max_qdot
-
-            vel_msg = Float64MultiArray()
-            vel_msg.data = q_dot_rep.tolist()
-            self.pub.publish(vel_msg)
-
-            jac_msg = Float64MultiArray()
-            if best_j_row is not None:
-                jac_msg.data = best_j_row.tolist()
-            else:
-                jac_msg.data = [0.0] * 7
-            self.jac_pub.publish(jac_msg)
-        else:
-            self.pub.publish(zero)
-            jac_msg = Float64MultiArray()
-            jac_msg.data = [0.0] * 7
-            self.jac_pub.publish(jac_msg)
+        self.pub.publish(Float64MultiArray(data=qdot_ns.tolist()))
+        self.min_dist_pub.publish(Float64MultiArray(data=[float(d_min)]))
 
 
-# ============================================================
+# ======================================================
 # MAIN
-# ============================================================
+# ======================================================
 def main(args=None):
     rclpy.init(args=args)
-    node = Baseline1Avoidance()
+    node = NullSpaceAvoidance()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

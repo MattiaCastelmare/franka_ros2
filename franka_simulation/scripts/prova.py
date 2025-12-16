@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import tempfile
+import subprocess
 import numpy as np
 
 import rclpy
@@ -74,7 +75,7 @@ class RobotCapsuleVisualizer(Node):
         self.pin_ok = False
 
         # Nome del frame di base usato in RViz
-        self.base_frame = "fr3_link0"
+        self.base_frame = "world"
 
         # Inizializza Pinocchio e ricava le capsule dal tuo URDF
         self._init_pinocchio_and_build_capsules()
@@ -95,19 +96,23 @@ class RobotCapsuleVisualizer(Node):
     # ======================================================
     def _init_pinocchio_and_build_capsules(self):
         try:
-            # ---- Leggo robot_description da robot_state_publisher ----
-            cli = self.create_client(GetParameters, "/robot_state_publisher/get_parameters")
-            cli.wait_for_service(10.0)
+            from ament_index_python.packages import get_package_share_directory
 
-            req = GetParameters.Request()
-            req.names = ["robot_description"]
-            fut = cli.call_async(req)
-            rclpy.spin_until_future_complete(self, fut)
+            urdf_path = os.path.join(
+                get_package_share_directory("franka_description"),
+                "robots", "fr3", "fr3.urdf.xacro"
+            )
 
-            urdf_str = fut.result().values[0].string_value
+            urdf_xml = subprocess.check_output([
+                "xacro", urdf_path,
+                "ros2_control:=false",
+                "hand:=true",
+                "arm_id:=fr3"
+            ]).decode()
+
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".urdf", mode="w") as f:
-                f.write(urdf_str)
+                f.write(urdf_xml)
                 urdf_path = f.name
 
             # ---- Costruisco modello Pinocchio completo ----
@@ -362,9 +367,11 @@ class RobotCapsuleVisualizer(Node):
             p1 = t + R @ p1_local
 
             # aggiungo markers
-            for m in self._make_capsule_markers(p0, p1, radius, marker_id):
+            capsule_markers = self._make_capsule_markers(p0, p1, radius, marker_id)
+            for m in capsule_markers:
                 markers.markers.append(m)
-                marker_id += 1
+            marker_id += len(capsule_markers)
+
 
             # distanza per debug: uso il punto medio della capsula
             mid = (p0 + p1) / 2.0
