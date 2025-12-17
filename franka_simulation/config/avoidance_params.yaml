@@ -7,14 +7,27 @@ online_avoidance_controller:
     # Frequenza di controllo (alta per reattività)
     control_rate: 100.0  # Hz
     
-    # Topic da cui leggere gli ostacoli
-    obstacle_scene_topic: "/obstacle_scene"
+    # Distanze critiche per l'avoidance
+    influence_distance: 0.30   # m - distanza in cui l'avoidance inizia ad agire
+    safety_margin: 0.08        # m - distanza minima assoluta
     
+    # Guadagni di controllo
+    nullspace_gain: 0.15       # Gain per l'avoidance nel null-space
+    max_joint_velocity: 0.25   # rad/s - velocità massima dei giunti
+    
+    # Ostacoli da escludere dalla collisione detection
     excluded_obstacles:
       - "ground_plane"
       - "ground"
       - "floor"
       - "plane"
+    
+    # ============================================
+    # LEGACY PARAMETERS (non usati nel codice attuale)
+    # ============================================
+    # Topic da cui leggere gli ostacoli
+    obstacle_scene_topic: "/obstacle_scene"
+    
     # Control points (tutti i link del braccio)
     control_points:
       - fr3_link1
@@ -62,15 +75,13 @@ online_avoidance_controller:
     # ============================================
     # PARAMETRI CAMPO REPULSIVO - MOLTO AGGRESSIVI
     # ============================================
-    influence_distance: 0.20   # m 
-    safety_margin: 0.08    # m - distanza minima assoluta
     repulsive_gain: 0.01
     
     # Cinematica
     damping_max: 0.05
     singularity_threshold: 0.05
-    max_joint_velocity: 0.1   # rad/s - limitato per movimenti lenti
     tangential_gain: 0.8
+    
     # Frame
     base_frame: "fr3_link0"
     ee_frame: "fr3_link8"

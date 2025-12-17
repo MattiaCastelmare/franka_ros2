@@ -17,6 +17,7 @@ Questo evita:
 import numpy as np
 import rclpy
 from rclpy.node import Node
+import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
 from std_msgs.msg import Float64MultiArray
@@ -49,7 +50,9 @@ class SimpleVelocityBlender(Node):
         self.declare_parameter("avoidance_weight_max", 1.0)      # peso max su qdot_avoid
         self.declare_parameter("slowdown_factor_max", 0.5)       # riduzione max velocità vicini (0.5 -> velocità min 50%)
         self.declare_parameter("d_dot_min_close", 0.02)          # ḋ minima quando d <= d_safe (m/s equivalente)
-
+        # Modalità B (reactive): l'avoidance può muovere anche senza traiettoria
+        self.declare_parameter("reactive_enable", True)
+        self.declare_parameter("reactive_deadband", 1e-3)   # sotto questa norma → fermo
         self.kp = self.get_parameter("kp").value
         self.max_vel = self.get_parameter("max_vel").value
         self.waypoint_threshold = self.get_parameter("waypoint_threshold").value
@@ -61,6 +64,9 @@ class SimpleVelocityBlender(Node):
         self.avoidance_weight_max = self.get_parameter("avoidance_weight_max").value
         self.slowdown_factor_max = self.get_parameter("slowdown_factor_max").value
         self.d_dot_min_close = self.get_parameter("d_dot_min_close").value
+
+        self.reactive_enable = bool(self.get_parameter("reactive_enable").value)
+        self.reactive_deadband = float(self.get_parameter("reactive_deadband").value)
 
         # ===== STATO =====
         self.q = np.zeros(self.n_dof)              # Posizione corrente
@@ -184,9 +190,22 @@ class SimpleVelocityBlender(Node):
     def control_loop(self):
         """Loop di controllo principale."""
 
-        # Se non c'è traiettoria attiva, pubblica zero
-        if not self.active or len(self.trajectory_points) == 0:
-            self.publish_velocity(np.zeros(self.n_dof))
+        # ===== MODALITÀ REACTIVE (B) =====
+        # Se non c'è traiettoria, usa direttamente qdot_avoid come comando di velocità.
+        if (not self.active) or (len(self.trajectory_points) == 0):
+            if self.reactive_enable:
+                qdot = self.qdot_avoid.copy()
+
+                # deadband per evitare drift dovuto a rumore numerico
+                if np.linalg.norm(qdot) < self.reactive_deadband:
+                    qdot = np.zeros(self.n_dof)
+
+                # saturazione
+                qdot = np.clip(qdot, -self.max_vel, self.max_vel)
+
+                self.publish_velocity(qdot)
+            else:
+                self.publish_velocity(np.zeros(self.n_dof))
             return
 
         # Punto target corrente

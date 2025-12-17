@@ -6,3 +6,5 @@ velocity_control_blender:
     final_threshold: 0.01
     approach_velocity_threshold: 0.03   # oltre questo, alpha va verso 1
     min_alpha_close: 0.3    
+    reactive_enable: true
+    reactive_deadband: 0.001

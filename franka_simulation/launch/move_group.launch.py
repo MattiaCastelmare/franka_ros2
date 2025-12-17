@@ -150,6 +150,7 @@ def make_rsp_and_moveit_nodes(context: LaunchContext, arm_id, load_gripper, fran
             'publish_geometry_updates': True,
             'publish_state_updates': True,
             'publish_transforms_updates': True,
+            'publish_octomap': False,  # Disabilita (no 3D sensor disponibile)
             'default_robot_padding': 0.04,     
             'default_object_padding': 0.1,    
             'default_attached_padding': 0.02
@@ -433,26 +434,34 @@ def generate_launch_description():
 
 
 
-    # Static TF publisher: world -> base
+    # Static TF publisher: world -> base (new-style args)
     static_tf_world_base = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="world_to_base_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "world", "base"]
+        arguments=["--x", "0", "--y", "0", "--z", "0", 
+                   "--roll", "0", "--pitch", "0", "--yaw", "0",
+                   "--frame-id", "world", "--child-frame-id", "base"]
     )
 
-    # Static TF publisher: base -> fr3_link0
+    # Static TF publisher: base -> fr3_link0 (new-style args)
     static_tf_base_link0 = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="base_to_link0_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "base", "fr3_link0"]
+        arguments=["--x", "0", "--y", "0", "--z", "0",
+                   "--roll", "0", "--pitch", "0", "--yaw", "0",
+                   "--frame-id", "base", "--child-frame-id", "fr3_link0"]
     )
+    
+    # Static TF publisher: world -> obstacle/world (new-style args)
     static_tf_obstacle_world = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="world_to_obstacle_world_broadcaster",
-        arguments=["0", "0", "0", "0", "0", "0", "world", "obstacle/world"],
+        arguments=["--x", "0", "--y", "0", "--z", "0",
+                   "--roll", "0", "--pitch", "0", "--yaw", "0",
+                   "--frame-id", "world", "--child-frame-id", "obstacle/world"],
         condition=IfCondition(spawn_obstacles)
     )
     clock_bridge = Node(
