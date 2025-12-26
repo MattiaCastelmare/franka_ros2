@@ -1,6 +1,8 @@
 FROM ros:humble-ros-base
 
-# Set environment variables
+# ------------------------
+# Environment
+# ------------------------
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -10,7 +12,9 @@ ARG USER_UID=1001
 ARG USER_GID=1001
 ARG USERNAME=user
 
-# Install essential packages and ROS development tools
+# ------------------------
+# Base system dependencies
+# ------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         bash-completion \
@@ -21,23 +25,60 @@ RUN apt-get update && \
         openssh-client \
         python3-colcon-argcomplete \
         python3-colcon-common-extensions \
+        python3-pip \
+        python3-dev \
         sudo \
         vim \
+        usbutils \
+        udev \
+        v4l-utils \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
+        libstdc++6 \
+        libgcc-s1 \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Setup user configuration
+# ------------------------
+# Create user
+# ------------------------
 RUN groupadd --gid $USER_GID $USERNAME && \
     useradd --uid $USER_UID --gid $USER_GID -m $USERNAME && \
     echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc && \
     echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> /home/$USERNAME/.bashrc
 
+# ------------------------
+# ROS vision dependencies
+# ------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ros-humble-cv-bridge \
+        ros-humble-rviz2 \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# ------------------------
+# Switch to user
+# ------------------------
 USER $USERNAME
 
-# Install some ROS 2 dependencies to create a cache layer
-RUN sudo apt-get update && \
-    sudo apt-get install -y --no-install-recommends \
+# ------------------------
+# Python vision stack
+# ------------------------
+RUN pip3 install --no-cache-dir \
+    mediapipe \
+    opencv-python
+
+# ------------------------
+# ROS / Gazebo / MoveIt stack
+# ------------------------
+USER root
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
         ros-humble-ros-gz \
         ros-humble-ros-gz-sim \
         ros-humble-ros-gz-bridge \
@@ -66,27 +107,28 @@ RUN sudo apt-get update && \
         ros-humble-moveit-servo \
         ros-humble-joint-trajectory-controller \
         ros-humble-moveit-simple-controller-manager \
-        ros-humble-rviz2 \
         ros-humble-xacro \
         ros-humble-ros-testing \
         ros-humble-ros2test \
-        freeglut3-dev \
         ros-humble-ros2-control \
-    && sudo apt-get clean && \
-    sudo rm -rf /var/lib/apt/lists/*
+        freeglut3-dev \
+        ros-humble-realsense2-camera \
+        ros-humble-realsense2-description \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
+USER $USERNAME
 
+# ------------------------
+# Workspace
+# ------------------------
 WORKDIR /ros2_ws
-
-# Install the missing ROS 2 dependencies
 COPY . /ros2_ws/src
+
 RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws && \
     vcs import src < src/franka.repos --recursive --skip-existing && \
-    sudo apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y --skip-keys=pymoveit2 && \
-    sudo apt-get clean && \
-    sudo rm -rf /var/lib/apt/lists/* && \
     rm -rf /home/$USERNAME/.ros && \
     rm -rf src && \
     mkdir -p src
@@ -94,15 +136,13 @@ RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws && \
 COPY ./franka_entrypoint.sh /franka_entrypoint.sh
 RUN sudo chmod +x /franka_entrypoint.sh
 
-# Set Gazebo environment
+# ------------------------
+# Gazebo env
+# ------------------------
 ENV GZ_VERSION=fortress
 ENV IGN_GAZEBO_RESOURCE_PATH=/usr/share/gazebo_models:${IGN_GAZEBO_RESOURCE_PATH}
 ENV GZ_SIM_RESOURCE_PATH=/usr/share/gazebo_models:${GZ_SIM_RESOURCE_PATH}
 
-
-# Set the default shell to bash and the workdir to the source directory
-SHELL [ "/bin/bash", "-c" ]
-ENTRYPOINT [ "/franka_entrypoint.sh" ]
-CMD [ "/bin/bash" ]
-
-WORKDIR /ros2_ws
+SHELL ["/bin/bash", "-c"]
+ENTRYPOINT ["/franka_entrypoint.sh"]
+CMD ["/bin/bash"]
