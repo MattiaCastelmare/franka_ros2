@@ -6,25 +6,37 @@ services:
       args:
         - USER_UID=${USER_UID}
         - USER_GID=${USER_GID}
+
     container_name: franka_ros2
     network_mode: "host"
     privileged: true
-    gpus: all                     # ✅ abilita GPU in modo moderno
+    gpus: all
     command: /bin/bash
     tty: true
     stdin_open: true
+
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+        reservations:
+          memory: 4g
+
     volumes:
       - ./:/ros2_ws/src
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./limits.conf:/etc/security/limits.conf
       - /dev:/dev
+
     environment:
       QT_X11_NO_MITSHM: 1
       DISPLAY: $DISPLAY
-      NVIDIA_VISIBLE_DEVICES: all     # ✅ mostrate GPU
-      NVIDIA_DRIVER_CAPABILITIES: all # ✅ abilita CUDA, GL, NVENC ecc.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+
     cap_add:
       - SYS_NICE
+
     ulimits:
       rtprio: 99
       rttime: -1
