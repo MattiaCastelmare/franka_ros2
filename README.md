@@ -161,10 +161,15 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
       ```
 
   5. **Open a terminal and build the workspace:**
+     The **first** time you build the workspace use the following command:
+      ```bash
+      colcon build   --symlink-install   --executor sequential   --parallel-workers 1   --cmake-args -DCMAKE_BUILD_TYPE=Release
+      ```
+     The **others** time use the following command:
       ```bash
       colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
       ```
-  6. **Source the built workspace environment:**
+  7. **Source the built workspace environment:**
       ```bash
       source install/setup.bash
       ```
