@@ -13,7 +13,7 @@ ARG USER_GID=1001
 ARG USERNAME=user
 
 # ------------------------
-# Base system + vision deps (AGGIUNTE)
+# Base system + vision deps
 # ------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -39,6 +39,8 @@ RUN apt-get update && \
         libsm6 \
         libxext6 \
         libxrender-dev \
+        portaudio19-dev \
+        libasound2-dev \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -54,7 +56,7 @@ RUN groupadd --gid $USER_GID $USERNAME && \
 USER $USERNAME
 
 # ------------------------
-# ROS 2 stack (INVARIATO + RealSense)
+# ROS 2 stack + RealSense
 # ------------------------
 RUN sudo apt-get update && \
     sudo apt-get install -y --no-install-recommends \
@@ -90,17 +92,29 @@ RUN sudo apt-get update && \
         ros-humble-xacro \
         ros-humble-ros-testing \
         ros-humble-ros2test \
-        freeglut3-dev \
         ros-humble-ros2-control \
         ros-humble-realsense2-camera \
         ros-humble-realsense2-description \
+        freeglut3-dev \
     && sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # ------------------------
-# Python pose estimation (MediaPipe)
+# Python environment (MediaPipe FIX)
 # ------------------------
-RUN pip3 install --no-cache-dir mediapipe==0.10.20 --no-deps
+ENV PATH=/home/${USERNAME}/.local/bin:$PATH
+ENV PYTHONPATH=/home/${USERNAME}/.local/lib/python3.10/site-packages:$PYTHONPATH
+
+RUN pip3 install --user --upgrade pip setuptools wheel && \
+    pip3 install --user \
+        protobuf>=4.25.3,<5 \
+        absl-py \
+        flatbuffers \
+        sentencepiece \
+        sounddevice \
+        numpy==1.26.4 \
+        opencv-contrib-python==4.11.0.86 && \
+    pip3 install --user mediapipe==0.10.20
 
 # ------------------------
 # Workspace

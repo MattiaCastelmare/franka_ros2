@@ -14,9 +14,10 @@ from launch.actions import (
     ExecuteProcess,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, Command, FindExecutable
+from launch.substitutions import LaunchConfiguration, Command, FindExecutable, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch.actions import RegisterEventHandler
+from launch_ros.substitutions import FindPackageShare
 
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.event_handlers import OnProcessStart
@@ -281,13 +282,64 @@ def generate_launch_description():
                                               description="Enable MoveIt integration")
     spawn_obstacles_arg = DeclareLaunchArgument('spawn_obstacles',default_value='true',
                                               description='Spawn collision obstacles in simulation')
+    enable_camera_arg = DeclareLaunchArgument(
+        'enable_camera',
+        default_value='true',
+        description='Enable RealSense + image pipeline (realsense2_camera -> image_publisher -> human_pose_node)',
+    )
     spawn_obstacles = LaunchConfiguration("spawn_obstacles")
+
+    enable_camera = LaunchConfiguration('enable_camera')
 
 
     load_gripper = LaunchConfiguration("load_gripper")
     franka_hand = LaunchConfiguration("franka_hand")
     arm_id = LaunchConfiguration("arm_id")
     enable_moveit = LaunchConfiguration("enable_moveit")
+
+    # RealSense camera driver (optional)
+    # NOTE: Use FindPackageShare/PathJoinSubstitution so the launch file can still be used
+    # even if realsense2_camera is not installed, as long as enable_camera:=false.
+    realsense_driver = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py',
+            ])
+        ),
+        condition=IfCondition(enable_camera),
+    )
+
+    # Image pipeline nodes (optional)
+    # Scripts are installed by CMake into lib/franka_simulation with names without .py.
+    image_republisher = Node(
+        package='franka_simulation',
+        executable='image_publisher',
+        name='image_republisher',
+        output='screen',
+        condition=IfCondition(enable_camera),
+    )
+
+    human_pose_node = Node(
+        package='franka_simulation',
+        executable='human_pose_node',
+        name='human_pose_node',
+        output='screen',
+        condition=IfCondition(enable_camera),
+    )
+
+    # Ordered startup: driver -> republisher -> pose
+    delayed_image_republisher = TimerAction(
+        period=2.0,
+        actions=[image_republisher],
+        condition=IfCondition(enable_camera),
+    )
+    delayed_human_pose = TimerAction(
+        period=3.0,
+        actions=[human_pose_node],
+        condition=IfCondition(enable_camera),
+    )
 
     # RSP + MoveIt nodes (ritardati per evitare warning TF)
     robot_nodes_delayed = TimerAction(period=2.0, actions=[
@@ -560,9 +612,11 @@ def generate_launch_description():
             arm_id_arg,
             spawn_obstacles_arg,
             enable_moveit_arg,
+            enable_camera_arg,
             static_tf_world_base,
             static_tf_base_link0,
             static_tf_obstacle_world,
+            realsense_driver,
             gz,
             robot_nodes_delayed,
             delayed_spawn,
@@ -578,5 +632,7 @@ def generate_launch_description():
             #motion_server_action,
             delayed_avoidance,
             delayed_blender,
+            delayed_image_republisher,
+            delayed_human_pose,
         ]
     )
