@@ -35,6 +35,7 @@
     </visual>
     
     <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <box size="$(arg box1_size_x) $(arg box1_size_y) $(arg box1_size_z)"/>
       </geometry>
@@ -55,6 +56,11 @@
   <gazebo reference="obstacle_box_central">
     <material>Gazebo/Red</material>
     <static>true</static>
+    <!-- Contact parameters (Gazebo-classic style; kept for parity even if ignored by gz-sim) -->
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>1e7</kp>
+    <kd>1.0</kd>
   </gazebo>
 
   <!-- ========================================== -->
@@ -69,6 +75,7 @@
   
   <link name="obstacle_box_lateral" >
     <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <box size="$(arg box2_size_x) $(arg box2_size_y) $(arg box2_size_z)"/>
       </geometry>
@@ -78,6 +85,7 @@
     </visual>
     
     <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <box size="$(arg box2_size_x) $(arg box2_size_y) $(arg box2_size_z)"/>
       </geometry>
@@ -98,6 +106,11 @@
   <gazebo reference="obstacle_box_lateral">
     <material>Gazebo/Yellow</material>
     <static>true</static>
+    <!-- Match central obstacle contact params -->
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <kp>1e7</kp>
+    <kd>1.0</kd>
   </gazebo>
 
   <!-- ========================================== -->

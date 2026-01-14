@@ -413,7 +413,7 @@ def generate_launch_description():
         'urdf', 'obstacles', 'multi_obstacle_scene.urdf.xacro'
     )
 
-    obstacle_robot_description = Command(['xacro ', obstacle_urdf_path])
+    obstacle_robot_description = Command([FindExecutable(name='xacro'), ' ', obstacle_urdf_path])
 
     # Robot State Publisher per l'ostacolo (pubblica i TF)
     obstacle_rsp = Node(

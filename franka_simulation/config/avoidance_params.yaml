@@ -8,12 +8,31 @@ online_avoidance_controller:
     control_rate: 100.0  # Hz
     
     # Distanze critiche per l'avoidance
-    influence_distance: 0.30   # m - distanza in cui l'avoidance inizia ad agire
+    influence_distance: 0.20   # m - distanza in cui l'avoidance inizia ad agire
     safety_margin: 0.08        # m - distanza minima assoluta
     
     # Guadagni di controllo
     nullspace_gain: 0.15       # Gain per l'avoidance nel null-space
     max_joint_velocity: 0.25   # rad/s - velocità massima dei giunti
+
+    # ============================================
+    # EXTRA SAFETY: PAVIMENTO + AUTOCOLLISIONE
+    # (approssimazioni veloci: capsule-capsule e piano z=ground_z)
+    # ============================================
+    enable_ground_avoidance: true
+    ground_z: 0.0
+    ground_influence_distance: 0.15
+    ground_safety_margin: 0.05
+    ground_gain: 0.25
+
+    # Requested: disable self-collision check (keep large capsule radii for external obstacles).
+    enable_self_collision_avoidance: false
+    self_influence_distance: 0.12
+    self_safety_margin: 0.03
+    self_gain: 0.25
+    # NOTE: self-collision via coarse capsules can create false positives near HOME.
+    # Skipping more nearby links reduces constant self-repulsion and mid-way stalls.
+    self_skip_adjacent_links: 3
     
     # Ostacoli da escludere dalla collisione detection
     excluded_obstacles:

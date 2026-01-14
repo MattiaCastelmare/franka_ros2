@@ -4,7 +4,26 @@ velocity_control_blender:
     max_vel: 0.15        # rad/s
     waypoint_threshold: 0.05
     final_threshold: 0.01
-    approach_velocity_threshold: 0.03   # oltre questo, alpha va verso 1
-    min_alpha_close: 0.3    
-    reactive_enable: true
+    # (alcuni parametri legacy possono rimanere qui anche se non usati)
+    approach_velocity_threshold: 0.03   # legacy
+    min_alpha_close: 0.3                # legacy
+    # IMPORTANT: evita movimento "spontaneo" all'avvio
+    hold_position_without_trajectory: true
+    reactive_enable: false
     reactive_deadband: 0.001
+
+    # Allineati con avoidance_params.yaml
+    influence_distance: 0.20
+    safety_margin: 0.08
+
+    # Blending smooth anti-stallo
+    avoidance_weight_max: 0.8
+    slowdown_factor_max: 0.4
+    d_dot_min_close: 0.0
+    d_dot_min_far: -0.05
+    avoidance_tangent_weight: 0.4
+    normal_correction_max: 0.25
+    use_avoidance_velocity: true
+    avoidance_normal_only: true
+    null_boost_max: 3.0
+    avoidance_ratio_max: 1.0

@@ -49,10 +49,26 @@ class SimpleVelocityBlender(Node):
         # MODIFICA: nuovi parametri per blending e proiezione
         self.declare_parameter("avoidance_weight_max", 1.0)      # peso max su qdot_avoid
         self.declare_parameter("slowdown_factor_max", 0.5)       # riduzione max velocità vicini (0.5 -> velocità min 50%)
-        self.declare_parameter("d_dot_min_close", 0.02)          # ḋ minima quando d <= d_safe (m/s equivalente)
+        # ḋ minima quando d <= d_safe (m/s equivalente). 0.0 = evita penetrazione ma non forza "scappare".
+        self.declare_parameter("d_dot_min_close", 0.0)
+        # ḋ minima al bordo della zona di influenza (di solito negativa: permette avvicinarsi se lontano)
+        self.declare_parameter("d_dot_min_far", -0.05)
+
+        # Bias tangenziale per "aggirare" senza bloccare il goal
+        self.declare_parameter("avoidance_tangent_weight", 0.4)
+        # Limite alla correzione lungo la normale (evita scatti)
+        self.declare_parameter("normal_correction_max", 0.25)
+        # Strategie per evitare lo "stallo" in presenza di ostacoli
+        self.declare_parameter("use_avoidance_velocity", True)        # usa /avoidance/velocity nel blending
+        self.declare_parameter("avoidance_normal_only", True)         # applica repulsione solo nella normale (rispetto a j_row)
+        self.declare_parameter("null_boost_max", 3.0)                 # boost progress nel nullspace vicino all'ostacolo
+        self.declare_parameter("avoidance_ratio_max", 1.2)            # limite: ||w_rep*qdot_avoid|| <= ratio*(||qdot_ns||+eps)
         # Modalità B (reactive): l'avoidance può muovere anche senza traiettoria
         self.declare_parameter("reactive_enable", True)
         self.declare_parameter("reactive_deadband", 1e-3)   # sotto questa norma → fermo
+        # Sicurezza/UX: per default non muovere il robot finché non arriva una traiettoria
+        # (evita drift/spinte iniziali dovute a avoidance o rumore)
+        self.declare_parameter("hold_position_without_trajectory", True)
         self.kp = self.get_parameter("kp").value
         self.max_vel = self.get_parameter("max_vel").value
         self.waypoint_threshold = self.get_parameter("waypoint_threshold").value
@@ -64,9 +80,21 @@ class SimpleVelocityBlender(Node):
         self.avoidance_weight_max = self.get_parameter("avoidance_weight_max").value
         self.slowdown_factor_max = self.get_parameter("slowdown_factor_max").value
         self.d_dot_min_close = self.get_parameter("d_dot_min_close").value
+        self.d_dot_min_far = float(self.get_parameter("d_dot_min_far").value)
+
+        self.avoidance_tangent_weight = float(self.get_parameter("avoidance_tangent_weight").value)
+        self.normal_correction_max = float(self.get_parameter("normal_correction_max").value)
+
+        self.use_avoidance_velocity = bool(self.get_parameter("use_avoidance_velocity").value)
+        self.avoidance_normal_only = bool(self.get_parameter("avoidance_normal_only").value)
+        self.null_boost_max = float(self.get_parameter("null_boost_max").value)
+        self.avoidance_ratio_max = float(self.get_parameter("avoidance_ratio_max").value)
 
         self.reactive_enable = bool(self.get_parameter("reactive_enable").value)
         self.reactive_deadband = float(self.get_parameter("reactive_deadband").value)
+        self.hold_position_without_trajectory = bool(
+            self.get_parameter("hold_position_without_trajectory").value
+        )
 
         # ===== STATO =====
         self.q = np.zeros(self.n_dof)              # Posizione corrente
@@ -125,6 +153,14 @@ class SimpleVelocityBlender(Node):
         self.get_logger().info(
             f"   Kp={self.kp}, max_vel={self.max_vel}, d_safe={self.d_safe}, d_infl={self.d_infl}"
         )
+        self.get_logger().info(
+            f"   use_avoidance_velocity={self.use_avoidance_velocity}, avoidance_normal_only={self.avoidance_normal_only}, "
+            f"null_boost_max={self.null_boost_max}, avoidance_ratio_max={self.avoidance_ratio_max}"
+        )
+        self.get_logger().info(
+            f"   d_dot_min_far={self.d_dot_min_far}, d_dot_min_close={self.d_dot_min_close}, "
+            f"avoidance_tangent_weight={self.avoidance_tangent_weight}, normal_correction_max={self.normal_correction_max}"
+        )
 
     # ======================================================================
     # CALLBACKS
@@ -143,20 +179,52 @@ class SimpleVelocityBlender(Node):
             return
 
         # Mappa nomi giunti -> indici
+        # In alcune pipeline (o per bug/bridge), JointTrajectory può arrivare con joint_names vuoti.
+        # In quel caso, se positions è di dimensione 7, assumiamo l'ordine canonico.
         index_map = {}
-        for i, name in enumerate(self.joint_names):
-            if name in msg.joint_names:
-                index_map[i] = msg.joint_names.index(name)
+        if msg.joint_names and len(msg.joint_names) > 0:
+            for i, name in enumerate(self.joint_names):
+                if name in msg.joint_names:
+                    index_map[i] = msg.joint_names.index(name)
 
+        use_direct_positions = False
         if len(index_map) != self.n_dof:
-            self.get_logger().error("Joint names mismatch in trajectory_cb!")
-            return
+            # Fallback: assume canonical order if positions look correct
+            ok_shape = all((hasattr(p, "positions") and len(p.positions) == self.n_dof) for p in msg.points)
+            if ok_shape:
+                use_direct_positions = True
+                self.get_logger().warn(
+                    "JointTrajectory joint_names missing/mismatched; assuming canonical FR3 joint order."
+                )
+            else:
+                self.get_logger().error(
+                    f"Joint names mismatch in trajectory_cb! joint_names={list(msg.joint_names)}"
+                )
+                return
 
-        # Estrai tutti i punti della traiettoria
-        self.trajectory_points = []
+        # Estrai tutti i punti della traiettoria (prima in una lista locale)
+        new_points = []
         for point in msg.points:
-            q_target = np.array([point.positions[index_map[i]] for i in range(self.n_dof)])
-            self.trajectory_points.append(q_target)
+            if use_direct_positions:
+                q_target = np.array(point.positions[: self.n_dof], dtype=float)
+            else:
+                q_target = np.array([point.positions[index_map[i]] for i in range(self.n_dof)], dtype=float)
+            new_points.append(q_target)
+
+        # Guard: ignore degenerate trajectories (all points ~ identical).
+        # These can appear in some edge cases and would otherwise overwrite a useful trajectory.
+        try:
+            if len(new_points) >= 2:
+                span = float(np.linalg.norm(new_points[-1] - new_points[0]))
+                if span < 1e-3:
+                    self.get_logger().warn(
+                        f"Ignoring degenerate trajectory (span≈{span:.2e} rad, points={len(new_points)})."
+                    )
+                    return
+        except Exception:
+            pass
+
+        self.trajectory_points = new_points
 
         self.current_index = 0
         self.active = True
@@ -193,6 +261,11 @@ class SimpleVelocityBlender(Node):
         # ===== MODALITÀ REACTIVE (B) =====
         # Se non c'è traiettoria, usa direttamente qdot_avoid come comando di velocità.
         if (not self.active) or (len(self.trajectory_points) == 0):
+            # Default: mantieni fermo finché non arriva una traiettoria
+            if self.hold_position_without_trajectory:
+                self.publish_velocity(np.zeros(self.n_dof))
+                return
+
             if self.reactive_enable:
                 qdot = self.qdot_avoid.copy()
 
@@ -254,81 +327,62 @@ class SimpleVelocityBlender(Node):
         d = float(self.min_dist)
 
         # Se nessuna informazione sensata di avoidance → tracking puro
-        if (d >= self.d_infl) or (avoid_norm < 1e-6) or (j_norm < 1e-6):
+        if (d >= self.d_infl) or (j_norm < 1e-6):
             qdot_des = qdot_tracking
         else:
             # --------------------------------------------------------------
-            # ZONA DI INFLUENZA:
-            #   - decomposizione tracking in normale + tangenziale
-            #   - blending morbido tra tracking e repulsione
-            #   - vincolo su ḋ SOLO molto vicino all'ostacolo
+            # ZONA DI INFLUENZA (smooth, goal-driven):
+            #   - mantieni tracking verso goal
+            #   - aggiungi un bias tangenziale (per aggirare)
+            #   - applica un vincolo su ḋ in tutta la zona di influenza
+            #     con correzione MINIMA lungo j_row (QP 1D)
             # --------------------------------------------------------------
-
             d_safe = self.d_safe
             d_infl = self.d_infl
 
-            # 1) Proiettore sul normale e sul null space
-            #    J: (1,7), J^+: (7,1), P = J^+ J, N = I - P
+            # Projectors for the distance normal and its nullspace
             J = j_row.reshape(1, self.n_dof)
             JT = J.T
-            denom = float(J @ JT) + 1e-8          # JJ^T = ||j_row||^2 (scalare)
-            P = (JT @ J) / denom                  # proiettore sulla direzione di j_row
-            N = np.eye(self.n_dof) - P            # proiettore nel null space di j_row
+            denom = float(J @ JT) + 1e-8
+            P = (JT @ J) / denom
+            N = np.eye(self.n_dof) - P
 
-            # 2) Decomposizione del tracking:
-            #    qdot_tracking = qdot_n (normale) + qdot_tan (tangenziale)
-            qdot_n   = P @ qdot_tracking          # componente che cambia d
-            qdot_tan = N @ qdot_tracking          # componente che non cambia d al primo ordine
-
-            # 3) Peso basato sulla distanza (smoothstep da d_infl -> d_safe)
-            x = (d_infl - d) / (d_infl - d_safe)  # 0 al bordo esterno, 1 vicino a d_safe
+            # Smoothstep weight: 0 at d_infl, 1 at d_safe
+            x = (d_infl - d) / (d_infl - d_safe)
             x = max(0.0, min(1.0, x))
-            w_d = 3.0 * x * x - 2.0 * x * x * x   # smoothstep ∈ [0,1]
+            w_d = 3.0 * x * x - 2.0 * x * x * x
 
-            # 4) Pesi per normal tracking e repulsione:
-            #    - lontano: w_d ≈ 0  → w_n ≈ 1, w_rep ≈ 0
-            #    - vicino : w_d ≈ 1  → w_n ≈ 0, w_rep ≈ max
-            w_n   = 1.0 - w_d
-            w_rep = self.avoidance_weight_max * w_d
+            # 1) Base: keep tracking (towards goal)
+            qdot_des = qdot_tracking.copy()
 
-            # >>> ENFASI SUL NULL SPACE <<<
-            # Tracking "utile" = tutto quello che sopravvive nel null space (qdot_tan)
-            # + eventualmente una piccola componente normale se non siamo proprio attaccati.
-            NULL_BOOST = 2.0      # prova con 2.0 o 3.0
-            qdot_ns = NULL_BOOST * qdot_tan + w_n * qdot_n
+            # 2) Add tangential avoidance bias (helps going around instead of pushing straight back)
+            if self.use_avoidance_velocity and (avoid_norm > 1e-6):
+                qdot_avoid_tan = N @ qdot_avoid
+                qdot_des = qdot_des + (self.avoidance_tangent_weight * w_d) * qdot_avoid_tan
 
+            # 3) Optional: increase tangential progress near obstacle
+            null_boost = 1.0 + self.null_boost_max * w_d
+            qdot_des = (P @ qdot_des) + null_boost * (N @ qdot_des)
 
-            # 5) Combinazione preliminare:
-            #    - qdot_ns: sempre presente → il robot cerca comunque di progredire
-            #      nel null space della distanza
-            #    - qdot_avoid: componente puramente di repulsione
-            qdot_des = qdot_ns + w_rep * qdot_avoid
+            # 4) Enforce a smooth lower bound on d_dot across the influence region
+            #    - far (d≈d_infl): allow some approach (negative)
+            #    - close (d≈d_safe): require non-decreasing distance (>= d_dot_min_close, default 0)
+            d_dot_min = (1.0 - w_d) * self.d_dot_min_far + w_d * self.d_dot_min_close
 
+            d_dot = float(j_row @ qdot_des)
+            if d_dot < d_dot_min:
+                lambda_corr = (d_dot_min - d_dot) / (j_norm * j_norm + 1e-8)
+                corr = lambda_corr * j_row
+                # Cap the correction magnitude for smoothness
+                corr_norm = float(np.linalg.norm(corr))
+                if corr_norm > self.normal_correction_max:
+                    corr *= self.normal_correction_max / (corr_norm + 1e-9)
+                qdot_des = qdot_des + corr
 
-            # 6) Rallentamento globale vicino all'ostacolo
+            # 5) Global slowdown (gentle) close to obstacles
             gamma = 1.0 - self.slowdown_factor_max * w_d
-            gamma = max(0.5, gamma)
-            # non rallentare oltre il 20%
+            gamma = max(0.6, gamma)
             qdot_des *= gamma
-
-            # 7) Vincolo su ḋ = j_row @ qdot SOLO quando siamo molto vicini
-            #    - se d > d_safe: permettiamo anche un piccolo avvicinamento
-            #    - se d <= d_safe: imponiamo ḋ >= ḋ_min_close (positivo)
-            if d <= d_safe:
-                # 1) ḋ attuale
-                d_dot = float(j_row @ qdot_des)
-                d_dot_min = self.d_dot_min_close   # ad es. 0.02 m/s equivalente
-
-                # 2) Salva la componente tangenziale PRIMA della correzione normale
-                qdot_tan_only = N @ qdot_des
-
-                # 3) Se serve, calcola la correzione lungo la normale
-                if d_dot < d_dot_min:
-                    lambda_corr = (d_dot_min - d_dot) / (j_norm * j_norm + 1e-8)
-                    qdot_des = qdot_des + lambda_corr * j_row
-
-                # 4) Reintroduci la componente tangenziale (non viene toccata dal vincolo)
-                qdot_des = qdot_des + qdot_tan_only
 
 
         # ------------------------------------------------------------------

@@ -78,6 +78,22 @@ class FrankaMotionServer(Node):
         self._log_configuration()
         self.trajectory_pub = self.create_publisher(JointTrajectory, '/velocity_blender/trajectory', 10)
 
+    def _ensure_joint_names(self, traj: JointTrajectory) -> JointTrajectory:
+        """Ensure the published JointTrajectory has the expected joint_names.
+
+        Some pipelines may return JointTrajectory messages with empty or unexpected joint_names.
+        The velocity blender relies on joint_names for correct mapping.
+        """
+        if traj is None:
+            return traj
+        try:
+            if (not hasattr(traj, 'joint_names')) or (not traj.joint_names) or (len(traj.joint_names) != len(self.joint_names)):
+                traj.joint_names = list(self.joint_names)
+        except Exception:
+            # Best-effort only
+            pass
+        return traj
+
         
     def _declare_parameters(self):
         """Parametri configurabili completi."""
@@ -286,7 +302,7 @@ class FrankaMotionServer(Node):
                 self.get_logger().info(
                     f"📤 Publishing planned JointTrajectory ({len(trajectory.points)} points)"
                 )
-                self.trajectory_pub.publish(trajectory)
+                self.trajectory_pub.publish(self._ensure_joint_names(trajectory))
 
             # =======================
             # CARTESIAN PLANNING
@@ -308,7 +324,7 @@ class FrankaMotionServer(Node):
                 self.get_logger().info(
                     f"📤 Publishing Cartesian JointTrajectory ({len(traj_msg.points)} points)"
                 )
-                self.trajectory_pub.publish(traj_msg)
+                self.trajectory_pub.publish(self._ensure_joint_names(traj_msg))
 
             # =========================
             # SUCCESS
@@ -382,7 +398,7 @@ class FrankaMotionServer(Node):
 
             # 🔹 Pubblica la traiettoria per il velocity blender
             self.get_logger().info("📤 [move_to_joint] Publishing trajectory to /velocity_blender/trajectory")
-            self.trajectory_pub.publish(trajectory)
+            self.trajectory_pub.publish(self._ensure_joint_names(trajectory))
 
             # Aggiorna feedback: il "global plan" è pronto
             feedback.current_state = "completed"
@@ -636,7 +652,7 @@ class FrankaMotionServer(Node):
             jt = trajectory_msg
 
         if jt.points:
-            self.trajectory_pub.publish(jt)
+            self.trajectory_pub.publish(self._ensure_joint_names(jt))
         else:
             self.get_logger().warn("⚠️ JointTrajectory vuota nel global plan")
 

@@ -193,33 +193,20 @@ class RobotCapsuleVisualizer(Node):
     # CALLBACKS
     # ======================================================
     def _joint_cb(self, msg: JointState):
-        # ordine pubblicato da ROS2
-        raw_order = ["fr3_joint1", "fr3_joint3", "fr3_joint2",
-                    "fr3_joint4", "fr3_joint6", "fr3_joint5", "fr3_joint7"]
+        # Ordine canonico dei giunti (come ros2_control): [1..7]
+        joint_names = [
+            "fr3_joint1", "fr3_joint2", "fr3_joint3", "fr3_joint4",
+            "fr3_joint5", "fr3_joint6", "fr3_joint7",
+        ]
 
-        # costruisco q_ros nello stesso ordine
-        q_ros = []
-        for name in raw_order:
-            if name in msg.name:
-                q_ros.append(msg.position[msg.name.index(name)])
-            else:
-                return  # messaggio incompleto
-        
-        q_ros = np.array(q_ros)
-
-        # ---- CONVERSIONE ALL'ORDINE CORRETTO PER PINOCCHIO ----
-        # corretto: [1,2,3,4,5,6,7]
-        q_pin = np.zeros(7)
-
-        q_pin[0] = q_ros[0]   # joint1
-        q_pin[1] = q_ros[2]   # joint2
-        q_pin[2] = q_ros[1]   # joint3
-        q_pin[3] = q_ros[3]   # joint4
-        q_pin[4] = q_ros[5]   # joint5
-        q_pin[5] = q_ros[4]   # joint6
-        q_pin[6] = q_ros[6]   # joint7
-
-        self.joint_positions = q_pin
+        try:
+            name_to_idx = {n: i for i, n in enumerate(msg.name)}
+            self.joint_positions = np.array(
+                [msg.position[name_to_idx[n]] for n in joint_names],
+                dtype=float,
+            )
+        except (KeyError, IndexError):
+            return  # messaggio incompleto
 
 
     def _obstacle_cb(self, msg: PlanningScene):
