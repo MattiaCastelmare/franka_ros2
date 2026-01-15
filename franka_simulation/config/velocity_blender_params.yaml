@@ -1,7 +1,13 @@
 velocity_control_blender:
   ros__parameters:
-    kp: 3.0
-    max_vel: 0.15        # rad/s
+    # Core tracking
+    kp: 6.0
+    # Global joint-velocity cap (rad/s): reduce speed so avoidance has time to react.
+    max_vel: 0.15
+    control_period_s: 0.01
+    velocity_filter_beta: 0.65
+    slowdown_gamma_min: 0.35
+    ns_floor_fraction: 0.25
     waypoint_threshold: 0.05
     final_threshold: 0.01
     # (alcuni parametri legacy possono rimanere qui anche se non usati)
@@ -13,17 +19,31 @@ velocity_control_blender:
     reactive_deadband: 0.001
 
     # Allineati con avoidance_params.yaml
-    influence_distance: 0.20
+    influence_distance: 0.35
     safety_margin: 0.08
 
-    # Blending smooth anti-stallo
-    avoidance_weight_max: 0.8
-    slowdown_factor_max: 0.4
-    d_dot_min_close: 0.0
-    d_dot_min_far: -0.05
+    # Blending (make avoidance clearly visible below ~20cm)
+    avoidance_weight_max: 1.0
+    slowdown_factor_max: 0.45
+    # Require non-decreasing distance near the safety margin.
+    d_dot_min_close: 0.05
+    # Extra escape push when inside the safety margin (stronger shove away)
+    d_dot_push_gain: 1.2
+    d_dot_push_max: 0.25
+    d_dot_min_far: -0.08
     avoidance_tangent_weight: 0.4
-    normal_correction_max: 0.25
+    normal_correction_max: 0.35
     use_avoidance_velocity: true
     avoidance_normal_only: true
-    null_boost_max: 3.0
-    avoidance_ratio_max: 1.0
+    null_boost_max: 2.0
+    # More permissive than 1.0, so repulsion isn't zeroed when tracking nullspace is small.
+    avoidance_ratio_max: 3.0
+
+    # Anti-stall: if blending collapses to ~0 while avoidance is active, inject a tiny
+    # tangential component (in the nullspace of the distance Jacobian) to slide around.
+    tangent_escape_enable: true
+    tangent_escape_speed: 0.03
+    tangent_escape_err_min: 0.03
+
+    # Interactive demo support: pause execution (publish 0 velocities)
+    pause_enable: true

@@ -1,0 +1,32 @@
+safe_avoidance_test:
+  ros__parameters:
+    # Demo / logging
+    require_user_confirm: true
+    confirm_after_home: true
+    status_compact: true
+    use_ansi: false
+    log_every_n: 3
+
+    # Execution guards
+    reach_tolerance_m: 0.03
+    settle_time_s: 0.4
+    # Keep this as a soft guard only; on timeout we do NOT fail the demo.
+    max_exec_time_s: 25.0
+    timeout_action: "wait_user"   # wait_user|advance|ignore|fail
+    qd_settle_threshold: 0.05
+    cmd_settle_threshold: 0.02
+
+    # Best-effort stall handling (prevents endless waiting without declaring failure)
+    stall_best_effort_enable: true
+    stall_best_effort_time_s: 6.0
+    stall_cmd_threshold: 0.01
+    stall_err_threshold_m: 0.05
+
+    # Trajectory wait / fallback
+    traj_wait_timeout_s: 2.0
+    fallback_traj_time_s: 4.0
+    fallback_stuck_min_dist_m: 0.25
+
+    # MoveIt speed scaling for the demo (keep low so avoidance is visible)
+    moveit_velocity_scaling: 0.05
+    moveit_acceleration_scaling: 0.05

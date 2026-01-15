@@ -8,12 +8,28 @@ online_avoidance_controller:
     control_rate: 100.0  # Hz
     
     # Distanze critiche per l'avoidance
-    influence_distance: 0.20   # m - distanza in cui l'avoidance inizia ad agire
+    influence_distance: 0.35   # m - distanza in cui l'avoidance inizia ad agire
+    aggressive_distance: 0.20  # m - sotto questa distanza l'avoidance diventa "spinta via" (molto visibile)
     safety_margin: 0.08        # m - distanza minima assoluta
     
     # Guadagni di controllo
-    nullspace_gain: 0.15       # Gain per l'avoidance nel null-space
-    max_joint_velocity: 0.25   # rad/s - velocità massima dei giunti
+    # Obiettivo: evitare in modo chiaro (soprattutto < 20 cm) senza rendere il moto ingestibile.
+    nullspace_gain: 0.25
+    tangential_gain: 0.10
+    aggressive_gain_scale: 4.0
+    max_joint_velocity: 0.20
+
+    # Capsule geometry (m)
+    # NOTE: ripristinati i raggi originali (i più grandi). Quelli piccoli anticipano falsi contatti
+    # e possono rendere l'avoidance troppo "timida" o incoerente sul WP1.
+    capsule_radii: [0.15, 0.12, 0.13]
+    capsule_fractions: [0.00, 0.35, 0.25, 0.75, 0.60, 0.95]
+
+    # Capsule↔OBB distance computation
+    box_projection_iters: 8
+    repulsion_spread_enable: true
+    repulsion_spread_samples: 5
+    repulsion_spread_half_length: 0.10
 
     # ============================================
     # EXTRA SAFETY: PAVIMENTO + AUTOCOLLISIONE
@@ -23,7 +39,7 @@ online_avoidance_controller:
     ground_z: 0.0
     ground_influence_distance: 0.15
     ground_safety_margin: 0.05
-    ground_gain: 0.25
+    ground_gain: 0.15
 
     # Requested: disable self-collision check (keep large capsule radii for external obstacles).
     enable_self_collision_avoidance: false
@@ -41,76 +57,7 @@ online_avoidance_controller:
       - "floor"
       - "plane"
     
-    # ============================================
-    # LEGACY PARAMETERS (non usati nel codice attuale)
-    # ============================================
-    # Topic da cui leggere gli ostacoli
-    obstacle_scene_topic: "/obstacle_scene"
-    
-    # Control points (tutti i link del braccio)
-    control_points:
-      - fr3_link1
-      - fr3_link2
-      - fr3_link3
-      - fr3_link4
-      - fr3_link5
-      - fr3_link6
-      - fr3_link7
-      - fr3_link8
-    
-    # Offsets per ogni control point
-    control_points_offsets_yaml: |
-      fr3_link1:
-        - [0.0, 0.0, 0.0]
-      fr3_link2:
-        - [0.0, 0.0, 0.0]
-        - [0.0, 0.05, 0.0]
-        - [0.0, -0.05, 0.0]
-      fr3_link3:
-        - [0.0, 0.0, 0.0]
-        - [0.0, 0.0, 0.05]
-        - [0.0, 0.0, -0.05]
-      fr3_link4:
-        - [0.0, 0.0, 0.0]
-        - [0.05, 0.0, 0.0]
-        - [-0.05, 0.0, 0.0]
-      fr3_link5:
-        - [0.0, 0.0, 0.0]
-        - [0.0, 0.05, 0.0]
-        - [0.0, -0.05, 0.0]
-      fr3_link6:
-        - [0.0, 0.0, 0.0]
-        - [0.0, 0.0, 0.05]
-        - [0.0, 0.0, -0.05]
-      fr3_link7:
-        - [0.0, 0.0, 0.0]
-        - [0.03, 0.0, 0.0]
-        - [-0.03, 0.0, 0.0]
-      fr3_link8:
-        - [0.0, 0.0, 0.0]
-        - [0.0, 0.0, 0.05]
-        - [0.0, 0.0, -0.05]
-    
-    # ============================================
-    # PARAMETRI CAMPO REPULSIVO - MOLTO AGGRESSIVI
-    # ============================================
-    repulsive_gain: 0.01
-    
-    # Cinematica
-    damping_max: 0.05
-    singularity_threshold: 0.05
-    tangential_gain: 0.8
-    
-    # Frame
-    base_frame: "fr3_link0"
-    ee_frame: "fr3_link8"
-    
-    # ============================================
-    # IMPORTANTE: Disabilita proiezione null-space
-    # ============================================
-    # Se true, l'avoidance può solo usare la ridondanza del robot
-    # Se false, l'avoidance ha priorità sul tracking (RACCOMANDATO)
-    use_null_space: false
-    
-    # Debug (abilitato per vedere cosa succede)
-    verbose_logging: true
+    # NOTE:
+    # In questo repo ci sono stati in passato parametri "legacy" (repulsive_gain, use_null_space, ecc.)
+    # che NON vengono letti dall'attuale online_avoidance_controller.
+    # Li rimuoviamo per evitare chiavi duplicate (es. tangential_gain) che in YAML possono sovrascriversi.

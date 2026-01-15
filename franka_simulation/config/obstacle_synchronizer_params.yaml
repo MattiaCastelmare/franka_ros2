@@ -1,0 +1,18 @@
+obstacle_synchronizer:
+  ros__parameters:
+    obstacles_namespace: /obstacle
+    update_rate: 2.0
+
+    # This node will publish the obstacle PlanningScene in "reference_frame".
+    # The launch file may still override some TF-related params depending on the sim setup.
+    reference_frame: base
+
+    # Path to the xacro used to build the obstacle robot_description.
+    # Typically overridden by the launch file (so it can use get_package_share_directory()).
+    urdf_xacro_path: ""
+
+    obstacle_scene_topic: /obstacle_scene
+    publish_to_planning_scene: true
+
+    # Frame used for publishing /planning_scene (MoveIt/RViz), while /obstacle_scene can remain in world.
+    planning_scene_frame: fr3_link0

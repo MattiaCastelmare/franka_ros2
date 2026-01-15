@@ -24,14 +24,17 @@ from typing import List, Optional
 import numpy as np
 import threading
 import time
+import math
 
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from std_msgs.msg import String
+from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from moveit_msgs.msg import PlanningScene, MoveItErrorCodes
 from moveit_msgs.srv import GetPositionIK
 from geometry_msgs.msg import PoseStamped
+from rcl_interfaces.srv import GetParameters
 
 from franka_simulation.action import MoveToPose
 
@@ -142,8 +145,13 @@ class SafeAvoidanceTest(Node):
         # -------------------------------
         # {id: {frame_id: str, pose: Pose, primitive: SolidPrimitive, stamp_wall: float}}
         self._obstacles = {}
-        self._last_obstacles_log_wall = 0.0
         self._obstacles_seen_once = False
+
+        # Logging helpers (keep output informative but not noisy)
+        self._last_log_wall = 0.0
+        self._last_log_active = None
+        self._last_log_hazard = None
+        self._no_obstacles_warn_wall = 0.0
 
         # -------------------------------
         # Pinocchio
@@ -183,6 +191,10 @@ class SafeAvoidanceTest(Node):
             10,
         )
 
+        # Pause control for the velocity blender (ensures the robot truly stops between waypoints)
+        self._pause_pub = self.create_publisher(Bool, "/velocity_blender/pause", 10)
+        self._paused_last = None  # Optional[bool]
+
         self.action_client = ActionClient(self, MoveToPose, "move_to_pose")
 
         # IK service (fallback when MoveIt planning does not provide a usable trajectory)
@@ -198,12 +210,6 @@ class SafeAvoidanceTest(Node):
         self.declare_parameter("log_every_n", 5)  # every N debug ticks (0.2s * N)
         self._log_every_n = int(self.get_parameter("log_every_n").value)
         self._debug_tick = 0
-
-        self.declare_parameter("log_obstacles_every_s", 5.0)
-        self._log_obstacles_every_s = float(self.get_parameter("log_obstacles_every_s").value)
-
-        self.declare_parameter("log_table_header_every_n", 20)
-        self._log_table_header_every_n = int(self.get_parameter("log_table_header_every_n").value)
 
         # Reach/settle criteria (EE space)
         self.declare_parameter("reach_tolerance_m", 0.03)
@@ -224,17 +230,197 @@ class SafeAvoidanceTest(Node):
         self._traj_wait_timeout_s = float(self.get_parameter("traj_wait_timeout_s").value)
         self._fallback_traj_time_s = float(self.get_parameter("fallback_traj_time_s").value)
 
+        # MoveIt execution speed scaling (important for avoidance demos)
+        self.declare_parameter("moveit_velocity_scaling", 0.06)
+        self.declare_parameter("moveit_acceleration_scaling", 0.06)
+        self._moveit_vel_scale = float(self.get_parameter("moveit_velocity_scaling").value)
+        self._moveit_acc_scale = float(self.get_parameter("moveit_acceleration_scaling").value)
+
+        # Optional: sanity-check that key parameters are actually loaded by the running stack.
+        # This is very useful when you have multiple workspaces (e.g., /home/... vs /ros2_ws/...).
+        self.declare_parameter("stack_param_check_enable", True)
+        self.declare_parameter("stack_param_check_delay_s", 2.0)
+        self._stack_param_check_enable = bool(self.get_parameter("stack_param_check_enable").value)
+        self._stack_param_check_delay_s = float(self.get_parameter("stack_param_check_delay_s").value)
+        self._stack_param_checked = False
+        self._stack_param_check_start_wall = time.time()
+
+        # Safety: do NOT trigger the IK fallback just because the robot is "stuck" when close to obstacles.
+        # The fallback trajectory ignores collisions and can cause impacts.
+        # We only allow the "stuck"-based fallback when we are clearly far from obstacles.
+        self.declare_parameter("fallback_stuck_min_dist_m", 0.25)
+        self._fallback_stuck_min_dist_m = float(self.get_parameter("fallback_stuck_min_dist_m").value)
+
         # UX: optionally require ENTER after reaching HOME before starting WP0
-        self.declare_parameter("confirm_after_home", False)
+        self.declare_parameter("confirm_after_home", True)
         self._confirm_after_home = bool(self.get_parameter("confirm_after_home").value)
+
+        # UX: require ENTER after each waypoint (interactive mode). If false, auto-advance.
+        self.declare_parameter("require_user_confirm", True)
+        self._require_user_confirm = bool(self.get_parameter("require_user_confirm").value)
+
+        # Timeout behavior: avoid freezing the whole demo.
+        # - "wait_user": pause + wait for ENTER, then advance to next waypoint (best-effort)
+        # - "advance": auto-advance to next waypoint
+        # - "ignore": keep waiting forever (not recommended)
+        # - "fail": old behavior (State.FAILED)
+        self.declare_parameter("timeout_action", "wait_user")
+        self._timeout_action = str(self.get_parameter("timeout_action").value)
+
+        # Best-effort stall handling (avoid infinite hang without declaring failure)
+        self.declare_parameter("stall_best_effort_enable", True)
+        self.declare_parameter("stall_best_effort_time_s", 6.0)
+        self.declare_parameter("stall_cmd_threshold", 0.01)
+        self.declare_parameter("stall_err_threshold_m", 0.05)
+        self._stall_best_effort_enable = bool(self.get_parameter("stall_best_effort_enable").value)
+        self._stall_best_effort_time_s = float(self.get_parameter("stall_best_effort_time_s").value)
+        self._stall_cmd_threshold = float(self.get_parameter("stall_cmd_threshold").value)
+        self._stall_err_threshold_m = float(self.get_parameter("stall_err_threshold_m").value)
+
+        # Logging style
+        self.declare_parameter("use_ansi", False)
+        self._use_ansi = bool(self.get_parameter("use_ansi").value)
+        self.declare_parameter("status_compact", True)
+        self._status_compact = bool(self.get_parameter("status_compact").value)
 
         # -------------------------------
         # Keyboard listener (NON BLOCKING)
         # -------------------------------
-        # The listener only prompts when _confirm_request is set.
-        threading.Thread(target=self._keyboard_listener, daemon=True).start()
+        # Start it only if interactive confirmation is enabled.
+        if self._require_user_confirm or self._confirm_after_home:
+            threading.Thread(target=self._keyboard_listener, daemon=True).start()
 
         self.get_logger().info("✅ SafeAvoidanceTest node ready")
+
+        if self._stack_param_check_enable:
+            self.create_timer(0.2, self._stack_param_check_tick)
+
+        # Ensure we start unpaused so HOME can execute immediately.
+        self._set_blender_pause(False)
+
+
+    def _set_blender_pause(self, paused: bool):
+        """Best-effort pause control for velocity_control_blender."""
+        try:
+            p = bool(paused)
+            if self._paused_last is not None and (bool(self._paused_last) == p):
+                return
+            msg = Bool()
+            msg.data = p
+            self._pause_pub.publish(msg)
+            self._paused_last = p
+        except Exception:
+            pass
+
+
+    def _stack_param_check_tick(self):
+        """One-shot param dump from the running stack (avoidance + blender)."""
+        if self._stack_param_checked:
+            return
+        if (time.time() - self._stack_param_check_start_wall) < self._stack_param_check_delay_s:
+            return
+
+        def fetch(node_name: str, keys: List[str]):
+            cli = self.create_client(GetParameters, f"/{node_name}/get_parameters")
+            if not cli.wait_for_service(timeout_sec=0.5):
+                return None
+            req = GetParameters.Request()
+            req.names = list(keys)
+            fut = cli.call_async(req)
+            rclpy.spin_until_future_complete(self, fut, timeout_sec=1.0)
+            if fut.result() is None:
+                return None
+            out = {}
+            for k, v in zip(keys, fut.result().values):
+                try:
+                    if v.type == v.TYPE_DOUBLE:
+                        out[k] = float(v.double_value)
+                    elif v.type == v.TYPE_INTEGER:
+                        out[k] = int(v.integer_value)
+                    elif v.type == v.TYPE_BOOL:
+                        out[k] = bool(v.bool_value)
+                    elif v.type == v.TYPE_STRING:
+                        out[k] = str(v.string_value)
+                    elif v.type == v.TYPE_DOUBLE_ARRAY:
+                        out[k] = [float(x) for x in v.double_array_value]
+                    elif v.type == v.TYPE_INTEGER_ARRAY:
+                        out[k] = [int(x) for x in v.integer_array_value]
+                    elif v.type == v.TYPE_STRING_ARRAY:
+                        out[k] = [str(x) for x in v.string_array_value]
+                    else:
+                        out[k] = "(unhandled)"
+                except Exception:
+                    out[k] = "(error)"
+            return out
+
+        avoid_keys = [
+            "influence_distance",
+            "aggressive_distance",
+            "safety_margin",
+            "nullspace_gain",
+            "tangential_gain",
+            "aggressive_gain_scale",
+            "max_joint_velocity",
+        ]
+        blend_keys = [
+            "max_vel",
+            "kp",
+            "influence_distance",
+            "safety_margin",
+            "avoidance_weight_max",
+            "d_dot_min_close",
+            "d_dot_push_gain",
+            "d_dot_push_max",
+        ]
+
+        avoid = fetch("online_avoidance_controller", avoid_keys)
+        blend = fetch("velocity_control_blender", blend_keys)
+
+        if avoid is None:
+            self.get_logger().warn(
+                "⚠️ Param check: /online_avoidance_controller/get_parameters not available. "
+                "Are you running the full stack (launch) in the same ROS_DOMAIN_ID?"
+            )
+        else:
+            self.get_logger().info(f"[PARAM] online_avoidance_controller: {avoid}")
+
+        if blend is None:
+            self.get_logger().warn(
+                "⚠️ Param check: /velocity_control_blender/get_parameters not available. "
+                "Is the blender node running?"
+            )
+        else:
+            self.get_logger().info(f"[PARAM] velocity_control_blender: {blend}")
+
+        self.get_logger().info(
+            f"[PARAM] avoidance_test MoveIt scaling: vel={self._moveit_vel_scale}, acc={self._moveit_acc_scale}"
+        )
+
+        self._stack_param_checked = True
+
+
+    # ======================================================
+    # STATUS LINE FORMATTING
+    # ======================================================
+
+    def _status_line(self, wp: str, err_m: float, d_min_m: float, haz: str, cmd_norm: float, avoid_norm: float, near_txt: str) -> str:
+        # Keep it short and greppable.
+        # Example:
+        # [SAFE] WP5 err=0.042 d=0.118 haz=external:box |cmd|=0.082 |avoid|=0.031 near=obstacle_box@0.221
+        def f3(x: float) -> str:
+            if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+                return "nan"
+            return f"{x:.3f}"
+
+        haz = (haz or "none")
+        if len(haz) > 40:
+            haz = haz[:39] + "…"
+        return (
+            f"[SAFE] {wp} "
+            f"err={f3(err_m)}m d={f3(d_min_m)}m haz={haz} "
+            f"|cmd|={f3(cmd_norm)} |avoid|={f3(avoid_norm)} "
+            f"near={near_txt}"
+        )
 
 
     # ======================================================
@@ -398,10 +584,9 @@ class SafeAvoidanceTest(Node):
             )
 
     def _scene_cb(self, msg: PlanningScene):
-        # Store latest obstacles so debug log can display their poses.
-        # obstacle_synchronizer sets: collision_obj.id = link.name
+        # Store latest obstacles for lightweight context (e.g. nearest obstacle).
+        # Do NOT spam obstacle lists in the logs.
         now_wall = time.time()
-        updated = False
 
         for co in msg.world.collision_objects:
             if not co.primitives or not co.primitive_poses:
@@ -420,62 +605,8 @@ class SafeAvoidanceTest(Node):
                 "stamp_wall": now_wall,
             }
 
-            # Detect meaningful changes to trigger a one-time info log
-            if prev is None:
-                updated = True
-            else:
-                try:
-                    dx = abs(prev["pose"].position.x - pose.position.x)
-                    dy = abs(prev["pose"].position.y - pose.position.y)
-                    dz = abs(prev["pose"].position.z - pose.position.z)
-                    if (dx + dy + dz) > 1e-6:
-                        updated = True
-                except Exception:
-                    updated = True
-
         if not self._obstacles_seen_once and self._obstacles:
             self._obstacles_seen_once = True
-            updated = True
-
-        # Avoid spamming: log summary on first receive and then periodically.
-        if updated or ((now_wall - self._last_obstacles_log_wall) >= self._log_obstacles_every_s):
-            self._last_obstacles_log_wall = now_wall
-            self._log_obstacles_summary()
-
-
-    def _log_obstacles_summary(self):
-        if not self._obstacles:
-            return
-
-        # ANSI colors (works well in most terminals)
-        RESET = "\033[0m"
-        CYAN = "\033[36m"
-        GRAY = "\033[90m"
-
-        lines = []
-        for oid in sorted(self._obstacles.keys()):
-            o = self._obstacles[oid]
-            pose = o.get("pose")
-            prim = o.get("primitive")
-            frame_id = o.get("frame_id", "")
-
-            if pose is None or prim is None:
-                continue
-
-            p = pose.position
-            dims = list(getattr(prim, "dimensions", []))
-            lines.append(
-                f"- {oid} frame={frame_id} pos={self._fmt_xyz(p.x, p.y, p.z)} size={self._fmt_dim(dims)}"
-            )
-
-        if not lines:
-            return
-
-        self.get_logger().info(
-            f"{CYAN}[OBSTACLES]{RESET} {len(lines)} objects from /obstacle_scene\n"
-            + "\n".join(lines)
-            + f"\n{GRAY}(If a box is missing here, avoidance won't see it; if it is present here but not in Gazebo, it's a spawn/physics issue.){RESET}"
-        )
 
 
     # ======================================================
@@ -494,6 +625,8 @@ class SafeAvoidanceTest(Node):
 
     def send_home(self):
         self.get_logger().info("🏠 Moving to HOME (joint space)")
+        # Allow motion during HOME
+        self._set_blender_pause(False)
         traj = JointTrajectory()
         traj.joint_names = [
             "fr3_joint1", "fr3_joint2", "fr3_joint3",
@@ -553,7 +686,11 @@ class SafeAvoidanceTest(Node):
         goal.pose_target.pose.orientation.z = 0.0
         goal.pose_target.pose.orientation.w = 0.0
 
-        goal.max_velocity_scaling_factor = 0.06
+        goal.max_velocity_scaling_factor = float(self._moveit_vel_scale)
+        goal.max_acceleration_scaling_factor = float(self._moveit_acc_scale)
+
+        # Allow motion while executing a waypoint
+        self._set_blender_pause(False)
 
         self.get_logger().info(f"➡ Sending waypoint {wp.name}")
         self.action_client.wait_for_server()
@@ -614,9 +751,12 @@ class SafeAvoidanceTest(Node):
                 self._confirm_received.clear()
                 self.user_ok = False
 
+                # Resume execution
+                self._set_blender_pause(False)
+
                 # If we were waiting after a waypoint, advance to the next one.
                 # If we were waiting after HOME, start from WP0 without incrementing.
-                if self._waiting_reason == "after waypoint":
+                if self._waiting_reason in ("after waypoint", "timeout waypoint", "stalled waypoint"):
                     self.wp_index += 1
 
                 self._waiting_reason = None
@@ -657,7 +797,11 @@ class SafeAvoidanceTest(Node):
 
                 # Also consider "stuck" case: command is ~0 while far from target.
                 cmd_norm_now = float(np.linalg.norm(self.blended_vel))
-                stuck_now = (err > 0.05) and (cmd_norm_now < 1e-3)
+                # NOTE: If we're close to obstacles, the blender may intentionally slow/stop.
+                # In that case, starting an IK fallback would be unsafe.
+                far_from_obstacles = (float(self.min_dist) >= self._fallback_stuck_min_dist_m)
+                no_hazard = (str(self.hazard or "none") == "none")
+                stuck_now = (err > 0.05) and (cmd_norm_now < 1e-3) and far_from_obstacles and no_hazard
 
                 if traj_is_missing or traj_is_trivial or stuck_now:
                     # Kick off async IK request (do not block the timer callback)
@@ -674,13 +818,40 @@ class SafeAvoidanceTest(Node):
             self._process_ik_fallback_if_ready(now_wall=now)
 
             # Timeout guard
-            if (now - self._exec_start_wall) > self._max_exec_time_s:
-                self.get_logger().error(
-                    f"⏱️ Timeout while executing {self.current_wp.name}: "
-                    f"err={err:.3f}m, hazard={self.hazard}, d_min={self.min_dist:.3f}"
-                )
-                self.state = State.FAILED
-                return
+            if (self._max_exec_time_s is not None) and (float(self._max_exec_time_s) > 0.0):
+                if (now - self._exec_start_wall) > float(self._max_exec_time_s):
+                    self.get_logger().warn(
+                        f"⏱️ Timeout while executing {self.current_wp.name} (best-effort): "
+                        f"err={err:.3f}m, hazard={self.hazard}, d_min={self.min_dist:.3f}. "
+                        f"timeout_action={self._timeout_action}"
+                    )
+
+                    action = (self._timeout_action or "wait_user").strip().lower()
+                    if action == "fail":
+                        self.state = State.FAILED
+                        return
+                    if action == "ignore":
+                        # Keep waiting indefinitely
+                        return
+
+                    # Either auto-advance or wait for user
+                    if action == "advance":
+                        self.wp_index += 1
+                        self.state = State.READY
+                        return
+
+                    # Default: wait_user
+                    self._set_blender_pause(True)
+                    if self._require_user_confirm:
+                        self.get_logger().info(
+                            "⏸ Timeout reached — robot paused. Premi ENTER per passare al waypoint successivo (best-effort)."
+                        )
+                        self._request_user_confirm(reason="timeout waypoint")
+                        self.state = State.WAIT_USER
+                    else:
+                        self.wp_index += 1
+                        self.state = State.READY
+                    return
 
             # Settle criteria
             cmd_norm = float(np.linalg.norm(self.blended_vel))
@@ -697,11 +868,44 @@ class SafeAvoidanceTest(Node):
                         f"ee={self._fmt_xyz(float(ee[0]), float(ee[1]), float(ee[2]), prec=3)} "
                         f"err={err:.4f} m | hazard={self.hazard} d_min={self.min_dist:.3f}"
                     )
-                    self.get_logger().info("⏸ Robot fermo — attendendo conferma utente (ENTER)")
-                    self._request_user_confirm(reason="after waypoint")
-                    self.state = State.WAIT_USER
+                    if self._require_user_confirm:
+                        self.get_logger().info("⏸ Robot fermo — attendendo conferma utente (ENTER)")
+                        # Enforce pause so we are truly stopped while waiting.
+                        self._set_blender_pause(True)
+                        self._request_user_confirm(reason="after waypoint")
+                        self.state = State.WAIT_USER
+                    else:
+                        # Auto-advance to next waypoint.
+                        self.wp_index += 1
+                        self._waiting_reason = None
+                        self.state = State.READY
             else:
                 self._reach_entered_wall = None
+
+            # Best-effort stall handling: if we're far from target and the robot is not moving for too long,
+            # do NOT fail; pause and ask the user to continue to the next waypoint.
+            if self._stall_best_effort_enable and (self._stall_best_effort_time_s > 0.0):
+                cmd_norm_now = float(np.linalg.norm(self.blended_vel))
+                far = float(err) > float(self._stall_err_threshold_m)
+                slow = cmd_norm_now < float(self._stall_cmd_threshold)
+                if far and slow:
+                    if self._stall_start_wall is None:
+                        self._stall_start_wall = now
+                    elif (now - float(self._stall_start_wall)) >= float(self._stall_best_effort_time_s):
+                        self.get_logger().warn(
+                            f"[BEST-EFFORT] Stalled at {self.current_wp.name}: err={err:.3f}m, |cmd|={cmd_norm_now:.3f}. "
+                            "Pausing and waiting for user confirmation."
+                        )
+                        self._set_blender_pause(True)
+                        if self._require_user_confirm:
+                            self._request_user_confirm(reason="stalled waypoint")
+                            self.state = State.WAIT_USER
+                        else:
+                            self.wp_index += 1
+                            self.state = State.READY
+                        return
+                else:
+                    self._stall_start_wall = None
 
 
     def _debug(self):
@@ -710,14 +914,13 @@ class SafeAvoidanceTest(Node):
             return
 
         self._debug_tick += 1
-        if self._log_every_n > 1 and (self._debug_tick % self._log_every_n) != 0:
-            return
 
         # What we can observe directly:
-        # - avoidance_vel: output of online_avoidance_controller
-        # - blended_vel: actual command sent to ros2_control
-        # A good proxy for "tracking component" is the residual blended-avoidance.
-        # (Not perfect, but very informative to see when avoidance influences commands.)
+        # - qdot_avoid: output of online_avoidance_controller
+        # - qdot_cmd: actual command sent to ros2_control (after blending)
+        # We cannot observe the internal "pure tracking" command directly, but a useful proxy is:
+        #   qdot_track_proxy ≈ qdot_cmd - qdot_avoid
+        # This makes it easy to see if avoidance is actually contributing near obstacles.
         qdot_avoid = self.avoidance_vel
         qdot_cmd = self.blended_vel
         qdot_track_proxy = qdot_cmd - qdot_avoid
@@ -728,44 +931,29 @@ class SafeAvoidanceTest(Node):
 
         jn = float(np.linalg.norm(self.j_row))
         d = float(self.min_dist)
-        d_dot = float(self.j_row @ qdot_cmd) if jn > 1e-9 else float("nan")
 
         # Simple "avoidance active" heuristic
         active = (d < 0.30) and (av > 1e-3) and (jn > 1e-6)
 
         # Alignment between avoidance and command (cosine similarity)
         if av > 1e-9 and bv > 1e-9:
-            cos_ab = float(np.dot(qdot_avoid, qdot_cmd) / (av * bv))
+            cos_ac = float(np.dot(qdot_avoid, qdot_cmd) / (av * bv))
         else:
-            cos_ab = float("nan")
+            cos_ac = float('nan')
 
-        # ANSI colors (works well in most terminals)
-        RESET = "\033[0m"
-        BOLD = "\033[1m"
-        RED = "\033[31m"
-        YELLOW = "\033[33m"
-        GREEN = "\033[32m"
-        CYAN = "\033[36m"
-        GRAY = "\033[90m"
-
-        # Distance color coding (tuned to defaults d_safe=0.08, d_infl=0.30)
-        if np.isfinite(d) and d <= 0.08:
-            d_col = RED
-        elif np.isfinite(d) and d <= 0.30:
-            d_col = YELLOW
+        if self._use_ansi:
+            RESET = "\033[0m"
+            RED = "\033[31m"
+            YELLOW = "\033[33m"
+            GREEN = "\033[32m"
+            CYAN = "\033[36m"
         else:
-            d_col = GREEN
-
-        active_col = GREEN if active else GRAY
+            RESET = ""
+            RED = ""
+            YELLOW = ""
+            GREEN = ""
+            CYAN = ""
         wp = self.current_wp.name if self.current_wp else "(none)"
-
-        # Velocity magnitudes: highlight avoidance when it dominates
-        if av > max(0.05, 0.8 * bv):
-            av_col = RED
-        elif av > 0.02:
-            av_col = YELLOW
-        else:
-            av_col = GRAY
 
         # Target / actual end-effector position
         ee = self.ee_position()
@@ -779,43 +967,85 @@ class SafeAvoidanceTest(Node):
         # Add obstacle context: nearest obstacle center (rough, but very useful)
         near_id, near_d = self._get_nearest_obstacle(ee)
         near_txt = f"{near_id}@{near_d:.3f}m" if near_id is not None else "(none)"
+        # Smart logging policy:
+        # - periodic (every N ticks)
+        # - immediate if avoidance becomes active/inactive or hazard label changes
+        now_wall = time.time()
+        haz = (self.hazard or "none")
+        event = (
+            (self._last_log_active is None)
+            or (active != self._last_log_active)
+            or (haz != self._last_log_hazard)
+        )
+        periodic = (self._log_every_n <= 1) or ((self._debug_tick % self._log_every_n) == 0)
+        if not (event or periodic):
+            return
 
-        # Compact table header occasionally
-        if self._log_table_header_every_n > 0 and (self._debug_tick % self._log_table_header_every_n) == 0:
-            self.get_logger().info(
-                f"{CYAN}[AVOID]{RESET} "
-                "wp                act  d_min   err    |cmd|  |avoid| ratio  cos   hazard             near_obs"
+        # Warn (rate-limited) if we never received obstacles: avoidance cannot work.
+        if (
+            (not self._obstacles_seen_once)
+            and (self._exec_start_wall is not None)
+            and ((now_wall - self._exec_start_wall) > 2.0)
+            and ((now_wall - self._no_obstacles_warn_wall) > 10.0)
+        ):
+            self._no_obstacles_warn_wall = now_wall
+            self.get_logger().warn(
+                "⚠️ No obstacles received on /obstacle_scene yet — avoidance will not activate. "
+                "Check obstacle_synchronizer + TF frames."
             )
 
-            if target is not None:
-                self.get_logger().info(
-                    f"{CYAN}[AVOID]{RESET} "
-                    f"target={self._fmt_xyz(float(target[0]), float(target[1]), float(target[2]), prec=3)} "
-                    f"ee={self._fmt_xyz(float(ee[0]), float(ee[1]), float(ee[2]), prec=3)}"
-                )
-
-        ratio = (av / bv) if bv > 1e-9 else float("nan")
-        act_flag = "Y" if active else "-"
-
-        haz = (self.hazard or "none")
-        if len(haz) > 18:
-            haz_disp = haz[:17] + "…"
+        # Light color coding (only for the distance)
+        if np.isfinite(d) and d <= 0.08:
+            d_col = RED
+        elif np.isfinite(d) and d <= 0.30:
+            d_col = YELLOW
         else:
-            haz_disp = haz
+            d_col = GREEN
 
-        self.get_logger().info(
-            f"{CYAN}[AVOID]{RESET} "
-            f"{wp:<16} "
-            f"{active_col}{act_flag}{RESET}   "
-            f"{d_col}{d:5.3f}{RESET} "
-            f"{err:5.3f} "
-            f"{bv:5.3f} "
-            f"{av_col}{av:6.3f}{RESET} "
-            f"{ratio:5.2f} "
-            f"{cos_ab:5.2f} "
-            f"{haz_disp:<18} "
-            f"{near_txt}"
-        )
+        act_flag = "ACTIVE" if active else "-"
+
+        # Keep hazard compact
+        haz_disp = haz
+        if len(haz_disp) > 28:
+            haz_disp = haz_disp[:27] + "…"
+
+        # Ratios help answer: "is avoidance actually doing something?"
+        # - a_over_cmd close to 0: avoidance negligible
+        # - a_over_cmd large: avoidance dominates command
+        # - a_over_track large: avoidance dominates estimated tracking component
+        eps = 1e-9
+        a_over_cmd = av / (bv + eps)
+        a_over_track = av / (tv + eps)
+
+        if self._status_compact:
+            self.get_logger().info(
+                self._status_line(
+                    wp=str(wp),
+                    err_m=float(err),
+                    d_min_m=float(d),
+                    haz=str(haz_disp),
+                    cmd_norm=float(bv),
+                    avoid_norm=float(av),
+                    near_txt=str(near_txt),
+                )
+            )
+        else:
+            self.get_logger().info(
+                f"{CYAN}[AVOID]{RESET} {wp} "
+                f"err={err:.3f}m "
+                f"d_min={d_col}{d:.3f}{RESET}m "
+                f"|cmd|={bv:.3f} "
+                f"|track≈|={tv:.3f} "
+                f"|avoid|={av:.3f} "
+                f"a/c={a_over_cmd:.2f} a/t={a_over_track:.2f} cos(a,cmd)={cos_ac:+.2f} "
+                f"{act_flag} "
+                f"hazard={haz_disp} "
+                f"near={near_txt}"
+            )
+
+        self._last_log_wall = now_wall
+        self._last_log_active = active
+        self._last_log_hazard = haz
 
         # Stall diagnostics: robot not making progress while far from target.
         now_wall = time.time()
@@ -836,8 +1066,8 @@ class SafeAvoidanceTest(Node):
                     elif (now_wall - self._stall_start_wall) > 2.0:
                         self.get_logger().warn(
                             f"{YELLOW}[STALL?]{RESET} "
-                            f"err={err:.3f}m but |cmd|={bv:.3f}rad/s. "
-                            f"d_min={d:.3f} active={active} hazard={self.hazard}. "
+                            f"wp={wp} err={err:.3f}m |cmd|={bv:.3f}rad/s d_min={d:.3f} "
+                            f"avoid_active={active} hazard={self.hazard} near={near_txt} "
                             f"target={self._fmt_xyz(float(target[0]), float(target[1]), float(target[2]), prec=3)} "
                             f"ee={self._fmt_xyz(float(ee[0]), float(ee[1]), float(ee[2]), prec=3)}"
                         )

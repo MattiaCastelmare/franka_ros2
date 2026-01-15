@@ -282,12 +282,20 @@ def generate_launch_description():
                                               description="Enable MoveIt integration")
     spawn_obstacles_arg = DeclareLaunchArgument('spawn_obstacles',default_value='true',
                                               description='Spawn collision obstacles in simulation')
+
+    # Optional: run the waypoint-based safe avoidance demo node
+    run_safe_test_arg = DeclareLaunchArgument(
+        'run_safe_test',
+        default_value='false',
+        description='Start safe_avoidance_test demo node (waypoint execution + readable logs)',
+    )
     enable_camera_arg = DeclareLaunchArgument(
         'enable_camera',
-        default_value='true',
+        default_value='false',
         description='Enable RealSense + image pipeline (realsense2_camera -> image_publisher -> human_pose_node)',
     )
     spawn_obstacles = LaunchConfiguration("spawn_obstacles")
+    run_safe_test = LaunchConfiguration("run_safe_test")
 
     enable_camera = LaunchConfiguration('enable_camera')
 
@@ -348,21 +356,27 @@ def generate_launch_description():
             args=[arm_id, load_gripper, franka_hand, enable_moveit]
         )
     ])
+
+    obstacle_sync_params_file = os.path.join(
+        get_package_share_directory('franka_simulation'),
+        'config',
+        'obstacle_synchronizer_params.yaml'
+    )
     obstacle_sync = Node(
         package='franka_simulation',
         executable='obstacle_synchronizer',
         name='obstacle_synchronizer',
         output='screen',
-        parameters=[{
-            'obstacles_namespace': '/obstacle',
-            'update_rate': 2.0,
-            'reference_frame': 'base',
-            # ✅ percorso del file .xacro da cui leggere automaticamente
-            'urdf_xacro_path': os.path.join(
-                get_package_share_directory('franka_simulation'),
-                'urdf', 'obstacles', 'multi_obstacle_scene.urdf.xacro'
-            ),
-        }],
+        parameters=[
+            obstacle_sync_params_file,
+            {
+                # ✅ percorso del file .xacro da cui leggere automaticamente
+                'urdf_xacro_path': os.path.join(
+                    get_package_share_directory('franka_simulation'),
+                    'urdf', 'obstacles', 'multi_obstacle_scene.urdf.xacro'
+                ),
+            }
+        ],
         condition=IfCondition(spawn_obstacles)
     )
     delayed_obstacle_sync = TimerAction(
@@ -425,6 +439,7 @@ def generate_launch_description():
             'robot_description': ParameterValue(obstacle_robot_description, value_type=str),
             'publish_frequency': 30.0,
             'frame_prefix': 'obstacle/',
+            'use_sim_time': True,
         }],
         output='screen'
     )
@@ -491,6 +506,7 @@ def generate_launch_description():
         package="tf2_ros",
         executable="static_transform_publisher",
         name="world_to_base_broadcaster",
+        parameters=[{'use_sim_time': True}],
         arguments=["--x", "0", "--y", "0", "--z", "0", 
                    "--roll", "0", "--pitch", "0", "--yaw", "0",
                    "--frame-id", "world", "--child-frame-id", "base"]
@@ -501,6 +517,7 @@ def generate_launch_description():
         package="tf2_ros",
         executable="static_transform_publisher",
         name="base_to_link0_broadcaster",
+        parameters=[{'use_sim_time': True}],
         arguments=["--x", "0", "--y", "0", "--z", "0",
                    "--roll", "0", "--pitch", "0", "--yaw", "0",
                    "--frame-id", "base", "--child-frame-id", "fr3_link0"]
@@ -511,6 +528,7 @@ def generate_launch_description():
         package="tf2_ros",
         executable="static_transform_publisher",
         name="world_to_obstacle_world_broadcaster",
+        parameters=[{'use_sim_time': True}],
         arguments=["--x", "0", "--y", "0", "--z", "0",
                    "--roll", "0", "--pitch", "0", "--yaw", "0",
                    "--frame-id", "world", "--child-frame-id", "obstacle/world"],
@@ -531,23 +549,17 @@ def generate_launch_description():
     )
 
 
+    motion_server_params_file = os.path.join(
+        get_package_share_directory('franka_simulation'),
+        'config',
+        'motion_server_params.yaml'
+    )
     motion_server = Node(
         package='franka_simulation',
         executable='franka_motion_server',
         name='franka_motion_server',
         output='screen',
-        parameters=[{
-            'move_group_name': 'fr3_arm',
-            'base_link_name': 'fr3_link0',
-            'end_effector_name': 'fr3_hand_tcp',
-            'planner_id': 'RRTstar',
-            'allowed_planning_time': 5.0,
-            'max_velocity_scaling_factor': 0.1,
-            'max_acceleration_scaling_factor': 0.1,
-            'max_motion_retries': 3,
-            'max_ik_retries': 5,
-            'ik_timeout': 10.0
-        }]
+        parameters=[motion_server_params_file]
     )
 
     # Parametri da config/avoidance_params.yaml
@@ -579,7 +591,9 @@ def generate_launch_description():
 
     delayed_rviz = TimerAction(period=10.0, actions=[rviz_node])  # Ritardato per dare tempo a move_group
     delayed_avoidance = TimerAction(period=11.0, actions=[online_avoidance])
-    delayed_motion_server = TimerAction(period=30.0, actions=[motion_server])
+    # Motion server is required to publish trajectories for the blender.
+    # A very long delay makes the system look "stalled" when launching demos.
+    delayed_motion_server = TimerAction(period=14.0, actions=[motion_server])
     motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
 
     # File dei parametri del velocity blender
@@ -602,6 +616,23 @@ def generate_launch_description():
         ]
     )
 
+    # Start demo after motion_server + avoidance + blender are up
+    safe_test_params_file = os.path.join(
+        get_package_share_directory('franka_simulation'),
+        'config',
+        'safe_avoidance_test_params.yaml'
+    )
+    safe_test_node = Node(
+        package='franka_simulation',
+        executable='safe_avoidance_test',
+        name='safe_avoidance_test',
+        output='screen',
+        parameters=[safe_test_params_file],
+        condition=IfCondition(run_safe_test),
+    )
+
+    delayed_safe_test = TimerAction(period=18.0, actions=[safe_test_node], condition=IfCondition(run_safe_test))
+
 
 
 
@@ -611,6 +642,7 @@ def generate_launch_description():
             franka_hand_arg,
             arm_id_arg,
             spawn_obstacles_arg,
+            run_safe_test_arg,
             enable_moveit_arg,
             enable_camera_arg,
             static_tf_world_base,
@@ -632,6 +664,7 @@ def generate_launch_description():
             #motion_server_action,
             delayed_avoidance,
             delayed_blender,
+            delayed_safe_test,
             delayed_image_republisher,
             delayed_human_pose,
         ]

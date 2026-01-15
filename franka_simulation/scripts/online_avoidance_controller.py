@@ -15,6 +15,7 @@ Author: Maurizio (Null-space refactor)
 import os
 import tempfile
 import numpy as np
+import zlib
 
 import rclpy
 from rclpy.node import Node
@@ -47,9 +48,34 @@ class NullSpaceAvoidance(Node):
         self.declare_parameter("control_rate", 100.0)
         self.declare_parameter("influence_distance", 0.30)
         self.declare_parameter("safety_margin", 0.08)
+        # When closer than this distance, avoidance becomes intentionally more aggressive.
+        # This is *not* the same as safety_margin: it is a "start pushing hard" threshold.
+        self.declare_parameter("aggressive_distance", 0.20)
+        self.declare_parameter("aggressive_gain_scale", 3.0)
+        # Overall scaling for the avoidance twist (used for both repulsive and tangential components)
         self.declare_parameter("nullspace_gain", 0.15)
+        # Extra tangential (swirl) component to break local minima near obstacles.
+        # 0.0 disables tangential motion.
+        self.declare_parameter("tangential_gain", 0.20)
         self.declare_parameter("max_joint_velocity", 0.25)
         self.declare_parameter("excluded_obstacles", ["ground_plane", "ground", "floor", "plane"])
+
+        # Capsule geometry tuning (m)
+        # NOTE: These directly affect d_min and therefore when avoidance triggers.
+        self.declare_parameter("capsule_radii", [0.15, 0.12, 0.13])
+        # Fractions along each link segment used to place 3 overlapped capsules.
+        # Format: [p0_0, p1_0, p0_1, p1_1, p0_2, p1_2]
+        self.declare_parameter("capsule_fractions", [0.00, 0.35, 0.25, 0.75, 0.60, 0.95])
+
+        # Distance model knobs
+        # Iterations used by the (convex) alternating projection to get closest points segment<->AABB in box frame.
+        self.declare_parameter("box_projection_iters", 8)
+
+        # Optional: spread repulsion over a small region around the closest point on the capsule.
+        # This makes the avoidance less "pointy" and generally more stable.
+        self.declare_parameter("repulsion_spread_enable", True)
+        self.declare_parameter("repulsion_spread_samples", 5)      # odd number recommended (e.g., 3/5/7)
+        self.declare_parameter("repulsion_spread_half_length", 0.10)  # m along the capsule segment
 
         # Extra safety layers (approximate but fast): ground + self-collision
         self.declare_parameter("enable_ground_avoidance", True)
@@ -69,9 +95,20 @@ class NullSpaceAvoidance(Node):
         self.rate = float(self.get_parameter("control_rate").value)
         self.d_infl = float(self.get_parameter("influence_distance").value)
         self.d_safe = float(self.get_parameter("safety_margin").value)
+        self.d_aggr = float(self.get_parameter("aggressive_distance").value)
+        self.k_aggr = float(self.get_parameter("aggressive_gain_scale").value)
         self.k_null = float(self.get_parameter("nullspace_gain").value)
+        self.k_tan = float(self.get_parameter("tangential_gain").value)
         self.max_qdot = float(self.get_parameter("max_joint_velocity").value)
         self.excluded = list(self.get_parameter("excluded_obstacles").value)
+
+        self.capsule_radii = [float(x) for x in list(self.get_parameter("capsule_radii").value)]
+        self.capsule_fractions = [float(x) for x in list(self.get_parameter("capsule_fractions").value)]
+        self.box_projection_iters = int(self.get_parameter("box_projection_iters").value)
+
+        self.repulsion_spread_enable = bool(self.get_parameter("repulsion_spread_enable").value)
+        self.repulsion_spread_samples = int(self.get_parameter("repulsion_spread_samples").value)
+        self.repulsion_spread_half_length = float(self.get_parameter("repulsion_spread_half_length").value)
 
         self.enable_ground = bool(self.get_parameter("enable_ground_avoidance").value)
         self.ground_z = float(self.get_parameter("ground_z").value)
@@ -89,7 +126,18 @@ class NullSpaceAvoidance(Node):
         self.get_logger().info(f"   d_infl (influence_distance): {self.d_infl}")
         self.get_logger().info(f"   d_safe (safety_margin): {self.d_safe}")
         self.get_logger().info(f"   k_null (nullspace_gain): {self.k_null}")
+        self.get_logger().info(f"   k_tan (tangential_gain): {self.k_tan}")
         self.get_logger().info(f"   max_qdot (max_joint_velocity): {self.max_qdot}")
+        self.get_logger().info(f"   d_aggr (aggressive_distance): {self.d_aggr}")
+        self.get_logger().info(f"   k_aggr (aggressive_gain_scale): {self.k_aggr}")
+        self.get_logger().info(
+            "   capsule geometry: "
+            f"radii={self.capsule_radii} | fractions={self.capsule_fractions}"
+        )
+        self.get_logger().info(
+            "   box distance: "
+            f"iters={self.box_projection_iters} | spread(enable={self.repulsion_spread_enable}, samples={self.repulsion_spread_samples}, half_len={self.repulsion_spread_half_length})"
+        )
         self.get_logger().info(
             "   extra safety: "
             f"ground(enable={self.enable_ground}, z={self.ground_z}, d_infl={self.ground_infl}, d_safe={self.ground_safe}, k={self.k_ground}) | "
@@ -111,9 +159,7 @@ class NullSpaceAvoidance(Node):
         # Raggi delle 3 capsule sovrapposte per ogni link
         # [zona giunto, corpo, verso giunto successivo]
         self.capsules = {}
-        # Manteniamo i raggi originali (come richiesto):
-        # NOTE: se l'autocollisione è abilitata, questi raggi possono generare vincoli molto conservativi.
-        self.capsule_radii = [0.15, 0.12, 0.13]
+        # NOTE: capsule_radii is now a parameter (configurable in YAML).
 
         # ================= STATE =================
         self.q = None
@@ -283,22 +329,29 @@ class NullSpaceAvoidance(Node):
 
             p_child_local = oMp.rotation.T @ (oMc.translation - oMp.translation)
 
-            # Catena di 3 capsule sovrapposte
+            # Catena di 3 capsule sovrapposte (frazioni configurabili via parametro)
+            fr = list(self.capsule_fractions) if isinstance(self.capsule_fractions, list) else []
+            if len(fr) != 6:
+                fr = [0.00, 0.35, 0.25, 0.75, 0.60, 0.95]
+            r = list(self.capsule_radii) if isinstance(self.capsule_radii, list) else []
+            if len(r) != 3:
+                r = [0.15, 0.12, 0.13]
+
             self.capsules[parent] = [
                 {
-                    "p0": 0.00 * p_child_local,
-                    "p1": 0.35 * p_child_local,
-                    "radius": self.capsule_radii[0],
+                    "p0": float(fr[0]) * p_child_local,
+                    "p1": float(fr[1]) * p_child_local,
+                    "radius": float(r[0]),
                 },
                 {
-                    "p0": 0.25 * p_child_local,
-                    "p1": 0.75 * p_child_local,
-                    "radius": self.capsule_radii[1],
+                    "p0": float(fr[2]) * p_child_local,
+                    "p1": float(fr[3]) * p_child_local,
+                    "radius": float(r[1]),
                 },
                 {
-                    "p0": 0.60 * p_child_local,
-                    "p1": 0.95 * p_child_local,
-                    "radius": self.capsule_radii[2],
+                    "p0": float(fr[4]) * p_child_local,
+                    "p1": float(fr[5]) * p_child_local,
+                    "radius": float(r[2]),
                 },
             ]
 
@@ -325,18 +378,78 @@ class NullSpaceAvoidance(Node):
     # ======================================================
     # CAPSULE ↔ BOX DISTANCE
     # ======================================================
+    @staticmethod
+    def _clip_aabb(p: np.ndarray, half: np.ndarray) -> np.ndarray:
+        return np.clip(p, -half, +half)
+
+    @staticmethod
+    def _outward_normal_aabb(p_inside: np.ndarray, half: np.ndarray) -> np.ndarray:
+        """Best-effort outward normal when p is (numerically) inside the AABB."""
+        p = p_inside.reshape(3)
+        h = half.reshape(3)
+        # distance to each face
+        d = h - np.abs(p)
+        # pick the nearest face
+        axis = int(np.argmin(d))
+        n = np.zeros(3, dtype=float)
+        n[axis] = 1.0 if p[axis] >= 0.0 else -1.0
+        return n
+
+    @classmethod
+    def _closest_points_segment_aabb(
+        cls,
+        a: np.ndarray,
+        b: np.ndarray,
+        half: np.ndarray,
+        iters: int = 8,
+    ):
+        """Closest points between segment a-b and axis-aligned box [-half,+half] in the same frame.
+
+        Returns (p_seg, p_box, t) where:
+          p_seg = a + t*(b-a), t in [0,1]
+          p_box = clip(p_seg)
+
+        Implementation: alternating projections between convex sets (segment and AABB).
+        For our small problem size this is fast and stable.
+        """
+        a = a.reshape(3).astype(float)
+        b = b.reshape(3).astype(float)
+        half = half.reshape(3).astype(float)
+
+        d = b - a
+        dd = float(d @ d)
+        if dd < 1e-12:
+            p = a.copy()
+            q = cls._clip_aabb(p, half)
+            return p, q, 0.0
+
+        t = 0.5
+        it = max(1, int(iters))
+        for _ in range(it):
+            p = a + t * d
+            q = cls._clip_aabb(p, half)
+            t = float((q - a) @ d) / dd
+            t = float(np.clip(t, 0.0, 1.0))
+
+        p = a + t * d
+        q = cls._clip_aabb(p, half)
+        return p, q, t
+
     def _distance_capsule_to_box(self, p0, p1, r, obs):
+        """Distance between a capsule segment (p0-p1, radius r) and a set of OBB boxes in CollisionObject.
+
+        Returns:
+          best_d: min distance (can be negative for penetration)
+          best_dir: unit vector (world) pointing from obstacle to capsule
+          best_p_seg: closest point on capsule segment (world)
+          best_p_box: closest point on obstacle (world)
+          samples: optional list of repulsion samples (each with p_seg, p_box, dir, distance, weight)
+        """
         best_d = 1e6
         best_dir = None
-        best_p_seg = None  # Punto sulla capsula
-        best_p_box = None  # Punto sull'ostacolo
-
-        v = p1 - p0
-        L = np.linalg.norm(v)
-        if L < 1e-6:
-            return best_d, None, None, None
-
-        v /= L
+        best_p_seg = None
+        best_p_box = None
+        best_samples = []
 
         for i, prim in enumerate(obs.primitives):
             if prim.type != prim.BOX:
@@ -350,25 +463,120 @@ class NullSpaceAvoidance(Node):
             q = pose.orientation
             R = self._quat_to_rot_matrix(q.x, q.y, q.z, q.w)
 
-            # Sample points along the capsule segment to approximate closest point to OBB.
-            # This is robust for OBBs and still cheap at 100 Hz for a small number of obstacles.
-            n_samples = 7
-            for s in np.linspace(0.0, L, n_samples):
-                p_seg = p0 + s * v
-                p_local = R.T @ (p_seg - center)
-                p_clamped = np.clip(p_local, -half, +half)
-                p_box = center + R @ p_clamped
+            # Transform segment into box-local frame (OBB -> AABB)
+            a = R.T @ (p0 - center)
+            b = R.T @ (p1 - center)
 
-                diff = p_seg - p_box
-                dist = np.linalg.norm(diff) - r
+            p_seg_l, p_box_l, t_star = self._closest_points_segment_aabb(
+                a, b, half, iters=self.box_projection_iters
+            )
 
-                if dist < best_d:
-                    best_d = dist
-                    best_dir = diff / (np.linalg.norm(diff) + 1e-6)
-                    best_p_seg = p_seg
-                    best_p_box = p_box
+            diff_l = p_seg_l - p_box_l
+            diff_n = float(np.linalg.norm(diff_l))
+            if diff_n < 1e-9:
+                # Segment point is (numerically) on or inside the box: choose outward normal.
+                dir_l = self._outward_normal_aabb(p_seg_l, half)
+            else:
+                dir_l = diff_l / diff_n
 
-        return best_d, best_dir, best_p_seg, best_p_box
+            p_seg_w = center + R @ p_seg_l
+            p_box_w = center + R @ p_box_l
+            dir_w = R @ dir_l
+            dir_w = dir_w / (float(np.linalg.norm(dir_w)) + 1e-9)
+
+            dist = float(np.linalg.norm(p_seg_w - p_box_w) - float(r))
+
+            # Optional repulsion samples around the closest point for a smoother "region" effect.
+            samples = []
+            if self.repulsion_spread_enable and self.repulsion_spread_samples >= 2:
+                d_ab = b - a
+                L = float(np.linalg.norm(d_ab))
+                if L > 1e-9:
+                    half_len = max(0.0, float(self.repulsion_spread_half_length))
+                    dt = float(np.clip(half_len / L, 0.0, 0.5))
+                    n = int(self.repulsion_spread_samples)
+                    if (n % 2) == 0:
+                        n += 1
+                    offsets = np.linspace(-dt, +dt, n)
+                    for off in offsets:
+                        ti = float(np.clip(float(t_star) + float(off), 0.0, 1.0))
+                        pi_l = a + ti * d_ab
+                        qi_l = self._clip_aabb(pi_l, half)
+                        di_l = pi_l - qi_l
+                        di_n = float(np.linalg.norm(di_l))
+                        if di_n < 1e-9:
+                            ni_l = self._outward_normal_aabb(pi_l, half)
+                        else:
+                            ni_l = di_l / di_n
+                        pi_w = center + R @ pi_l
+                        qi_w = center + R @ qi_l
+                        ni_w = R @ ni_l
+                        ni_w = ni_w / (float(np.linalg.norm(ni_w)) + 1e-9)
+                        di = float(np.linalg.norm(pi_w - qi_w) - float(r))
+                        # Weight: prioritize near-contact samples, keep bounded.
+                        w = 1.0 / (0.02 + max(0.0, di))
+                        samples.append(
+                            {
+                                "p_seg": pi_w,
+                                "p_box": qi_w,
+                                "dir": ni_w,
+                                "distance": di,
+                                "weight": float(w),
+                            }
+                        )
+
+            if dist < best_d:
+                best_d = dist
+                best_dir = dir_w
+                best_p_seg = p_seg_w
+                best_p_box = p_box_w
+                best_samples = samples
+
+        return best_d, best_dir, best_p_seg, best_p_box, best_samples
+
+    @staticmethod
+    def _stable_sign_from_id(text: str) -> float:
+        """Deterministic +/-1 sign from a string id (no dependence on PYTHONHASHSEED)."""
+        try:
+            v = zlib.crc32(text.encode('utf-8'))
+        except Exception:
+            v = 0
+        return 1.0 if (v % 2) == 0 else -1.0
+
+    @staticmethod
+    def _smooth_alpha(d: float, d_infl: float, d_safe: float) -> float:
+        """Smooth activation 0..1 (0 at d_infl, 1 at d_safe or closer)."""
+        if d_infl <= d_safe + 1e-9:
+            return 0.0
+        # allow negative distances (penetration): treat as fully active
+        if d <= d_safe:
+            return 1.0
+        if d >= d_infl:
+            return 0.0
+        x = (d_infl - d) / (d_infl - d_safe)
+        x = float(np.clip(x, 0.0, 1.0))
+        # smoothstep
+        return float(3.0 * x * x - 2.0 * x * x * x)
+
+    @staticmethod
+    def _tangential_dir(dir_vec: np.ndarray) -> np.ndarray:
+        """Return a unit tangential direction orthogonal to dir_vec (prefer world-up swirl)."""
+        d = dir_vec.reshape(3)
+        n = float(np.linalg.norm(d))
+        if n < 1e-9:
+            return np.zeros(3)
+        d = d / n
+        up = np.array([0.0, 0.0, 1.0], dtype=float)
+        t = np.cross(up, d)
+        tn = float(np.linalg.norm(t))
+        if tn < 1e-6:
+            # dir ~ parallel to up, pick another axis
+            ax = np.array([1.0, 0.0, 0.0], dtype=float)
+            t = np.cross(ax, d)
+            tn = float(np.linalg.norm(t))
+        if tn < 1e-9:
+            return np.zeros(3)
+        return t / tn
 
     # ======================================================
     # CAPSULE MARKER (RViz)
@@ -496,7 +704,7 @@ class NullSpaceAvoidance(Node):
 
                 # ===== External obstacles (PlanningScene boxes) =====
                 for obs in self.obstacles:
-                    d, dir_vec, p_seg, p_box = self._distance_capsule_to_box(p0, p1, caps["radius"], obs)
+                    d, dir_vec, p_seg, p_box, samples = self._distance_capsule_to_box(p0, p1, caps["radius"], obs)
                     if dir_vec is None:
                         continue
 
@@ -517,10 +725,41 @@ class NullSpaceAvoidance(Node):
                     if d >= self.d_infl:
                         continue
 
-                    alpha = np.clip((self.d_infl - d) / (self.d_infl - self.d_safe), 0, 1)
-                    xdot_avoid = self.k_null * alpha * dir_vec
-                    Jp = self._point_jacobian_world(fid, p_seg)
-                    qdot_avoid += Jp.T @ xdot_avoid
+                    sgn = self._stable_sign_from_id(str(getattr(obs, 'id', '')))
+
+                    # If enabled, use multiple points around the closest point to create a "region" repulsion.
+                    # Otherwise, fall back to the single closest point.
+                    rep_points = samples if (self.repulsion_spread_enable and len(samples) > 0) else [
+                        {
+                            "p_seg": p_seg,
+                            "dir": dir_vec,
+                            "distance": float(d),
+                            "weight": 1.0,
+                        }
+                    ]
+
+                    for s in rep_points:
+                        ds = float(s.get("distance", d))
+                        if ds >= self.d_infl:
+                            continue
+
+                        # Base activation (0 at d_infl, 1 at d_aggr or closer)
+                        alpha_far = self._smooth_alpha(ds, float(self.d_infl), float(self.d_aggr))
+                        # Extra aggressive scaling inside the 20cm zone down to safety_margin
+                        alpha_close = self._smooth_alpha(ds, float(self.d_aggr), float(self.d_safe))
+                        gain_scale = 1.0 + float(self.k_aggr) * float(alpha_close)
+
+                        dir_s = np.array(s.get("dir", dir_vec), dtype=float).reshape(3)
+                        tan = self._tangential_dir(dir_s)
+                        w = float(s.get("weight", 1.0))
+
+                        xdot_avoid = w * (
+                            (self.k_null * alpha_far * gain_scale) * dir_s
+                            + (self.k_tan * alpha_far * gain_scale * sgn) * tan
+                        )
+
+                        Jp = self._point_jacobian_world(fid, np.array(s.get("p_seg", p_seg), dtype=float).reshape(3))
+                        qdot_avoid += Jp.T @ xdot_avoid
 
                 # ===== Ground (floor plane z = ground_z) =====
                 if self.enable_ground:
@@ -545,7 +784,7 @@ class NullSpaceAvoidance(Node):
                     })
 
                     if d_ground < self.ground_infl:
-                        alpha_g = np.clip((self.ground_infl - d_ground) / (self.ground_infl - self.ground_safe), 0, 1)
+                        alpha_g = self._smooth_alpha(float(d_ground), float(self.ground_infl), float(self.ground_safe))
                         dir_g = np.array([0.0, 0.0, 1.0], dtype=float)
                         xdot_g = self.k_ground * alpha_g * dir_g
                         Jp_g = self._point_jacobian_world(fid, p_low)
@@ -585,7 +824,7 @@ class NullSpaceAvoidance(Node):
 
                     # Repel the two points away from each other
                     n = diff / (np.linalg.norm(diff) + 1e-9)
-                    alpha_s = np.clip((self.self_infl - dist) / (self.self_infl - self.self_safe), 0, 1)
+                    alpha_s = self._smooth_alpha(float(dist), float(self.self_infl), float(self.self_safe))
                     xdot_s = self.k_self * alpha_s * n
 
                     J_i = self._point_jacobian_world(si["fid"], cp_i)
@@ -617,18 +856,30 @@ class NullSpaceAvoidance(Node):
         self.min_dist_pub.publish(Float64MultiArray(data=[float(d_min)]))
 
         # Publish hazard label (avoid confusion when far from any influence zone)
-        any_infl = [self.d_infl]
-        if self.enable_ground:
-            any_infl.append(self.ground_infl)
-        if self.enable_self:
-            any_infl.append(self.self_infl)
-        infl_min = float(min(any_infl)) if any_infl else self.d_infl
+        # IMPORTANT:
+        # Previously we compared d_min against the *minimum* influence distance among all enabled hazards.
+        # That caused hazard='none' even when an external obstacle was within self.d_infl (e.g. 0.12 < d < 0.20),
+        # which is confusing during debugging. Use a hazard-specific influence threshold instead.
+        infl_thr = float(self.d_infl)
+        try:
+            if isinstance(best_hazard, str):
+                if best_hazard.startswith("ground:"):
+                    infl_thr = float(self.ground_infl)
+                elif best_hazard.startswith("self:"):
+                    infl_thr = float(self.self_infl)
+                elif best_hazard.startswith("external:"):
+                    infl_thr = float(self.d_infl)
+        except Exception:
+            infl_thr = float(self.d_infl)
         hazard_msg = String()
-        hazard_msg.data = best_hazard if d_min < infl_min else "none"
+        hazard_active = bool(d_min < infl_thr)
+        hazard_msg.data = best_hazard if hazard_active else "none"
         self.hazard_pub.publish(hazard_msg)
 
-        # Se siamo fuori da ogni zona di influenza, azzera il jacobiano per evitare valori "stale"
-        if d_min >= self.d_infl:
+        # Publish a meaningful distance Jacobian row only when the corresponding hazard is active.
+        # This prevents downstream controllers (velocity_blender) from entering constrained mode
+        # when the closest feature is outside its own influence region (common source of stalls).
+        if not hazard_active:
             self.jac_pub.publish(jac_zero)
         else:
             self.jac_pub.publish(Float64MultiArray(data=best_j_row.tolist()))
@@ -737,7 +988,17 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    rclpy.shutdown()
+    finally:
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        # ros2 launch can already have shut down the default context.
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
