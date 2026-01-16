@@ -214,7 +214,8 @@ class SafeAvoidanceTest(Node):
         # Reach/settle criteria (EE space)
         self.declare_parameter("reach_tolerance_m", 0.03)
         self.declare_parameter("settle_time_s", 0.4)
-        self.declare_parameter("max_exec_time_s", 25.0)
+        # If <= 0: disable hard timeout (recommended for interactive demos where avoidance may slow down).
+        self.declare_parameter("max_exec_time_s", 0.0)
         self.declare_parameter("qd_settle_threshold", 0.05)   # rad/s
         self.declare_parameter("cmd_settle_threshold", 0.02)  # rad/s
 
@@ -264,18 +265,26 @@ class SafeAvoidanceTest(Node):
         # - "advance": auto-advance to next waypoint
         # - "ignore": keep waiting forever (not recommended)
         # - "fail": old behavior (State.FAILED)
-        self.declare_parameter("timeout_action", "wait_user")
+        # Default: do NOT block the demo on timeout; advance best-effort.
+        self.declare_parameter("timeout_action", "advance")
         self._timeout_action = str(self.get_parameter("timeout_action").value)
 
         # Best-effort stall handling (avoid infinite hang without declaring failure)
         self.declare_parameter("stall_best_effort_enable", True)
         self.declare_parameter("stall_best_effort_time_s", 6.0)
+        # When stalled too long: either "advance" (default) or "wait_user".
+        self.declare_parameter("stall_action", "advance")
         self.declare_parameter("stall_cmd_threshold", 0.01)
         self.declare_parameter("stall_err_threshold_m", 0.05)
         self._stall_best_effort_enable = bool(self.get_parameter("stall_best_effort_enable").value)
         self._stall_best_effort_time_s = float(self.get_parameter("stall_best_effort_time_s").value)
+        self._stall_action = str(self.get_parameter("stall_action").value)
         self._stall_cmd_threshold = float(self.get_parameter("stall_cmd_threshold").value)
         self._stall_err_threshold_m = float(self.get_parameter("stall_err_threshold_m").value)
+
+        # Logging: when to consider avoidance "active" (for SAFE/AVOIDANCE flag)
+        self.declare_parameter("avoidance_active_distance_m", 0.35)
+        self._avoidance_active_distance_m = float(self.get_parameter("avoidance_active_distance_m").value)
 
         # Logging style
         self.declare_parameter("use_ansi", False)
@@ -403,7 +412,19 @@ class SafeAvoidanceTest(Node):
     # STATUS LINE FORMATTING
     # ======================================================
 
-    def _status_line(self, wp: str, err_m: float, d_min_m: float, haz: str, cmd_norm: float, avoid_norm: float, near_txt: str) -> str:
+    def _status_line(
+        self,
+        wp: str,
+        err_m: float,
+        d_min_m: float,
+        haz: str,
+        cmd_norm: float,
+        track_norm: float,
+        avoid_norm: float,
+        near_txt: str,
+        avoidance_active: bool,
+        use_ansi: bool,
+    ) -> str:
         # Keep it short and greppable.
         # Example:
         # [SAFE] WP5 err=0.042 d=0.118 haz=external:box |cmd|=0.082 |avoid|=0.031 near=obstacle_box@0.221
@@ -415,10 +436,24 @@ class SafeAvoidanceTest(Node):
         haz = (haz or "none")
         if len(haz) > 40:
             haz = haz[:39] + "…"
+        if use_ansi:
+            RESET = "\033[0m"
+            RED = "\033[31m"
+            GREEN = "\033[32m"
+        else:
+            RESET = ""
+            RED = ""
+            GREEN = ""
+
+        if avoidance_active:
+            tag = f"{RED}[AVOIDANCE]{RESET}"
+        else:
+            tag = f"{GREEN}[SAFE]{RESET}"
+
         return (
-            f"[SAFE] {wp} "
+            f"{tag} {wp} "
             f"err={f3(err_m)}m d={f3(d_min_m)}m haz={haz} "
-            f"|cmd|={f3(cmd_norm)} |avoid|={f3(avoid_norm)} "
+            f"|cmd|={f3(cmd_norm)} |track|={f3(track_norm)} |avoid|={f3(avoid_norm)} "
             f"near={near_txt}"
         )
 
@@ -835,22 +870,26 @@ class SafeAvoidanceTest(Node):
                         return
 
                     # Either auto-advance or wait for user
-                    if action == "advance":
-                        self.wp_index += 1
-                        self.state = State.READY
+                    if action == "wait_user":
+                        self._set_blender_pause(True)
+                        if self._require_user_confirm:
+                            self.get_logger().info(
+                                "⏸ Timeout reached — robot paused. Premi ENTER per passare al waypoint successivo (best-effort)."
+                            )
+                            self._request_user_confirm(reason="timeout waypoint")
+                            self.state = State.WAIT_USER
+                        else:
+                            self.wp_index += 1
+                            self.state = State.READY
                         return
 
-                    # Default: wait_user
+                    # Default: advance (best-effort)
                     self._set_blender_pause(True)
-                    if self._require_user_confirm:
-                        self.get_logger().info(
-                            "⏸ Timeout reached — robot paused. Premi ENTER per passare al waypoint successivo (best-effort)."
-                        )
-                        self._request_user_confirm(reason="timeout waypoint")
-                        self.state = State.WAIT_USER
-                    else:
-                        self.wp_index += 1
-                        self.state = State.READY
+                    self.get_logger().warn(
+                        "⏭️ Timeout reached — advancing to next waypoint (best-effort)."
+                    )
+                    self.wp_index += 1
+                    self.state = State.READY
                     return
 
             # Settle criteria
@@ -894,13 +933,23 @@ class SafeAvoidanceTest(Node):
                     elif (now - float(self._stall_start_wall)) >= float(self._stall_best_effort_time_s):
                         self.get_logger().warn(
                             f"[BEST-EFFORT] Stalled at {self.current_wp.name}: err={err:.3f}m, |cmd|={cmd_norm_now:.3f}. "
-                            "Pausing and waiting for user confirmation."
+                            "Best-effort advance policy triggered."
                         )
-                        self._set_blender_pause(True)
-                        if self._require_user_confirm:
-                            self._request_user_confirm(reason="stalled waypoint")
-                            self.state = State.WAIT_USER
+                        action = (self._stall_action or "advance").strip().lower()
+                        if action == "wait_user":
+                            self._set_blender_pause(True)
+                            if self._require_user_confirm:
+                                self._request_user_confirm(reason="stalled waypoint")
+                                self.state = State.WAIT_USER
+                            else:
+                                self.wp_index += 1
+                                self.state = State.READY
                         else:
+                            # Default: auto-advance
+                            self._set_blender_pause(True)
+                            self.get_logger().warn(
+                                "⏭️ Stalled too long — advancing to next waypoint (best-effort)."
+                            )
                             self.wp_index += 1
                             self.state = State.READY
                         return
@@ -932,8 +981,13 @@ class SafeAvoidanceTest(Node):
         jn = float(np.linalg.norm(self.j_row))
         d = float(self.min_dist)
 
-        # Simple "avoidance active" heuristic
-        active = (d < 0.30) and (av > 1e-3) and (jn > 1e-6)
+        # Simple "avoidance active" heuristic (for SAFE/AVOIDANCE flag)
+        # Prefer hazard label when available; fall back to thresholds.
+        haz_now = str(self.hazard or "none")
+        active = (
+            (haz_now != "none")
+            or ((d < float(self._avoidance_active_distance_m)) and (av > 1e-3) and (jn > 1e-6))
+        )
 
         # Alignment between avoidance and command (cosine similarity)
         if av > 1e-9 and bv > 1e-9:
@@ -971,7 +1025,7 @@ class SafeAvoidanceTest(Node):
         # - periodic (every N ticks)
         # - immediate if avoidance becomes active/inactive or hazard label changes
         now_wall = time.time()
-        haz = (self.hazard or "none")
+        haz = haz_now
         event = (
             (self._last_log_active is None)
             or (active != self._last_log_active)
@@ -1025,13 +1079,16 @@ class SafeAvoidanceTest(Node):
                     d_min_m=float(d),
                     haz=str(haz_disp),
                     cmd_norm=float(bv),
+                    track_norm=float(tv),
                     avoid_norm=float(av),
                     near_txt=str(near_txt),
+                    avoidance_active=bool(active),
+                    use_ansi=bool(self._use_ansi),
                 )
             )
         else:
             self.get_logger().info(
-                f"{CYAN}[AVOID]{RESET} {wp} "
+                f"{(RED + 'AVOIDANCE' + RESET) if active else (GREEN + 'SAFE' + RESET)} {wp} "
                 f"err={err:.3f}m "
                 f"d_min={d_col}{d:.3f}{RESET}m "
                 f"|cmd|={bv:.3f} "

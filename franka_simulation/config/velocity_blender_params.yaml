@@ -10,6 +10,16 @@ velocity_control_blender:
     ns_floor_fraction: 0.25
     waypoint_threshold: 0.05
     final_threshold: 0.01
+
+    # Dynamic-obstacle friendly path following:
+    # Project current joint state onto the trajectory and track a lookahead point.
+    # This allows temporary deviation (avoidance) and automatic rejoin to the original plan.
+    rejoin_enable: true
+    rejoin_lookahead_points: 5
+    # Preferred: arc-length lookahead in joint space (rad). If >0 it overrides points-based lookahead.
+    rejoin_lookahead_distance_rad: 0.25
+    # 0 = search full remaining trajectory for the nearest point (safe for ~O(100) points)
+    rejoin_search_ahead_points: 0
     # (alcuni parametri legacy possono rimanere qui anche se non usati)
     approach_velocity_threshold: 0.03   # legacy
     min_alpha_close: 0.3                # legacy
@@ -23,26 +33,54 @@ velocity_control_blender:
     safety_margin: 0.08
 
     # Blending (make avoidance clearly visible below ~20cm)
-    avoidance_weight_max: 1.0
-    slowdown_factor_max: 0.45
+    # Slightly reduce the maximum weight so tracking is not completely cancelled.
+    # Safety is still enforced by the d_dot constraint + push term.
+    avoidance_weight_max: 0.55
+    slowdown_factor_max: 0.35
     # Require non-decreasing distance near the safety margin.
-    d_dot_min_close: 0.05
-    # Extra escape push when inside the safety margin (stronger shove away)
-    d_dot_push_gain: 1.2
-    d_dot_push_max: 0.25
+    # NOTE: A strictly positive d_dot_min_close can create deadlocks when the only feasible
+    # way around an obstacle requires a brief distance decrease. Keep it at 0 and rely on
+    # the push term only when inside the safety margin.
+    d_dot_min_close: 0.0
+    # Extra escape push when inside the safety margin (recovery, not a default behavior)
+    d_dot_push_gain: 0.6
+    d_dot_push_max: 0.12
     d_dot_min_far: -0.08
-    avoidance_tangent_weight: 0.4
-    normal_correction_max: 0.35
+
+    # CBF-style shaping + robust enforcement under saturation
+    cbf_enable: true
+    cbf_kappa: 2.0
+    cbf_projection_iters: 4
+    cbf_eps: 0.0001
+
+    # Emergency safety: hard override when too close
+    emergency_enable: true
+    emergency_enter_m: 0.05
+    emergency_exit_m: 0.10
+    emergency_d_dot: 0.06
+    emergency_max_vel_fraction: 1.0
+    emergency_hazard_prefixes: ["external:"]
+
+    # Recovery after emergency clears: slide tangentially then rejoin
+    recovery_enable: true
+    recovery_time_s: 1.0
+    recovery_tangent_speed: 0.08
+    avoidance_tangent_weight: 0.35
+    normal_correction_max: 0.25
     use_avoidance_velocity: true
     avoidance_normal_only: true
-    null_boost_max: 2.0
+    null_boost_max: 1.6
     # More permissive than 1.0, so repulsion isn't zeroed when tracking nullspace is small.
     avoidance_ratio_max: 3.0
+
+    # Gentle avoidance shaping (avoid abrupt repulsive kicks)
+    avoidance_input_filter_beta: 0.55
+    avoidance_repulsion_cap_fraction: 0.65
 
     # Anti-stall: if blending collapses to ~0 while avoidance is active, inject a tiny
     # tangential component (in the nullspace of the distance Jacobian) to slide around.
     tangent_escape_enable: true
-    tangent_escape_speed: 0.03
+    tangent_escape_speed: 0.06
     tangent_escape_err_min: 0.03
 
     # Interactive demo support: pause execution (publish 0 velocities)

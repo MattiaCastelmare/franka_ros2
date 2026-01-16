@@ -16,6 +16,7 @@ import os
 import tempfile
 import numpy as np
 import zlib
+import math
 
 import rclpy
 from rclpy.node import Node
@@ -498,6 +499,10 @@ class NullSpaceAvoidance(Node):
                     if (n % 2) == 0:
                         n += 1
                     offsets = np.linspace(-dt, +dt, n)
+                    # Gaussian weights over offsets so the "hand" effect is smooth and bounded.
+                    # IMPORTANT: Do not weight by 1/(epsilon + distance). That can explode near contact
+                    # and produce abrupt, overly strong repulsion.
+                    sigma = max(1e-9, 0.5 * dt) if dt > 1e-9 else 1e-9
                     for off in offsets:
                         ti = float(np.clip(float(t_star) + float(off), 0.0, 1.0))
                         pi_l = a + ti * d_ab
@@ -513,8 +518,8 @@ class NullSpaceAvoidance(Node):
                         ni_w = R @ ni_l
                         ni_w = ni_w / (float(np.linalg.norm(ni_w)) + 1e-9)
                         di = float(np.linalg.norm(pi_w - qi_w) - float(r))
-                        # Weight: prioritize near-contact samples, keep bounded.
-                        w = 1.0 / (0.02 + max(0.0, di))
+                        # Weight depends only on offset along the capsule segment ("region" shape), bounded in (0,1].
+                        w = float(math.exp(-0.5 * float(off * off) / float(sigma * sigma)))
                         samples.append(
                             {
                                 "p_seg": pi_w,
@@ -738,6 +743,10 @@ class NullSpaceAvoidance(Node):
                         }
                     ]
 
+                    # Combine region samples as a WEIGHTED AVERAGE in joint space.
+                    # This keeps the repulsion magnitude bounded and avoids scaling with number of samples.
+                    qdot_reg = np.zeros(7)
+                    w_sum = 0.0
                     for s in rep_points:
                         ds = float(s.get("distance", d))
                         if ds >= self.d_infl:
@@ -752,14 +761,23 @@ class NullSpaceAvoidance(Node):
                         dir_s = np.array(s.get("dir", dir_vec), dtype=float).reshape(3)
                         tan = self._tangential_dir(dir_s)
                         w = float(s.get("weight", 1.0))
+                        if w <= 0.0:
+                            continue
 
-                        xdot_avoid = w * (
+                        xdot_avoid = (
                             (self.k_null * alpha_far * gain_scale) * dir_s
                             + (self.k_tan * alpha_far * gain_scale * sgn) * tan
                         )
 
-                        Jp = self._point_jacobian_world(fid, np.array(s.get("p_seg", p_seg), dtype=float).reshape(3))
-                        qdot_avoid += Jp.T @ xdot_avoid
+                        Jp = self._point_jacobian_world(
+                            fid,
+                            np.array(s.get("p_seg", p_seg), dtype=float).reshape(3)
+                        )
+                        qdot_reg += w * (Jp.T @ xdot_avoid)
+                        w_sum += w
+
+                    if w_sum > 1e-9:
+                        qdot_avoid += (qdot_reg / w_sum)
 
                 # ===== Ground (floor plane z = ground_z) =====
                 if self.enable_ground:

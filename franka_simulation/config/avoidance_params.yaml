@@ -9,15 +9,17 @@ online_avoidance_controller:
     
     # Distanze critiche per l'avoidance
     influence_distance: 0.35   # m - distanza in cui l'avoidance inizia ad agire
-    aggressive_distance: 0.20  # m - sotto questa distanza l'avoidance diventa "spinta via" (molto visibile)
+    aggressive_distance: 0.16  # m - sotto questa distanza l'avoidance diventa "spinta via" (molto visibile)
     safety_margin: 0.08        # m - distanza minima assoluta
     
     # Guadagni di controllo
     # Obiettivo: evitare in modo chiaro (soprattutto < 20 cm) senza rendere il moto ingestibile.
-    nullspace_gain: 0.25
-    tangential_gain: 0.10
-    aggressive_gain_scale: 4.0
-    max_joint_velocity: 0.20
+    # NOTE: se l'avoidance satura costantemente a max_joint_velocity, tende a cancellare il tracking
+    # e può creare deadlock. Riduciamo la saturazione e aumentiamo la componente tangenziale.
+    nullspace_gain: 0.15
+    tangential_gain: 0.22
+    aggressive_gain_scale: 2.5
+    max_joint_velocity: 0.12
 
     # Capsule geometry (m)
     # NOTE: ripristinati i raggi originali (i più grandi). Quelli piccoli anticipano falsi contatti

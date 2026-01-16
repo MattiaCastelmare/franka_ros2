@@ -51,6 +51,10 @@ class ObstacleSynchronizer(Node):
         self.declare_parameter('urdf_xacro_path', '')
         self.declare_parameter('obstacle_scene_topic', '/obstacle_scene')
         self.declare_parameter('publish_to_planning_scene', True)  # Per RViz
+        # Also publish individual CollisionObject messages (MoveIt PlanningSceneInterface).
+        # This is often the most robust way to feed obstacles into MoveIt for collision-aware planning.
+        self.declare_parameter('publish_to_collision_object', True)
+        self.declare_parameter('collision_object_topic', '/collision_object')
         # Frame used for the RViz/MoveIt planning scene publication.
         # Using the robot base frame avoids TF-time issues with simulated time and stops
         # MoveIt from spamming "Unknown frame: world".
@@ -62,6 +66,8 @@ class ObstacleSynchronizer(Node):
         self.obstacle_scene_topic = self.get_parameter('obstacle_scene_topic').value
         self.publish_to_planning_scene = self.get_parameter('publish_to_planning_scene').value
         self.planning_scene_frame = self.get_parameter('planning_scene_frame').value
+        self.publish_to_collision_object = bool(self.get_parameter('publish_to_collision_object').value)
+        self.collision_object_topic = str(self.get_parameter('collision_object_topic').value)
 
         # Percorso del file Xacro
         urdf_xacro_param = self.get_parameter('urdf_xacro_path').get_parameter_value().string_value
@@ -94,6 +100,17 @@ class ObstacleSynchronizer(Node):
         else:
             self.planning_scene_pub = None
 
+        # Publisher 3: /collision_object (MoveIt PlanningSceneInterface)
+        # Use TRANSIENT_LOCAL so late-joining nodes still get the latest objects.
+        if self.publish_to_collision_object:
+            self.collision_object_pub = self.create_publisher(
+                CollisionObject,
+                self.collision_object_topic,
+                PLANNING_SCENE_QOS,
+            )
+        else:
+            self.collision_object_pub = None
+
         # === Timer per pubblicare periodicamente ===
         self.timer = self.create_timer(1.0 / self.update_rate, self.publish_obstacles)
 
@@ -102,6 +119,9 @@ class ObstacleSynchronizer(Node):
         self.get_logger().info(f"   📁 File: {self.urdf_xacro_path}")
         self.get_logger().info(f"   📤 Avoidance topic: {self.obstacle_scene_topic}")
         self.get_logger().info(f"   📺 RViz topic: /planning_scene ({'enabled' if self.publish_to_planning_scene else 'disabled'})")
+        self.get_logger().info(
+            f"   🧱 collision_object topic: {self.collision_object_topic} ({'enabled' if self.publish_to_collision_object else 'disabled'})"
+        )
         self.get_logger().info(f"   🔄 Update rate: {self.update_rate} Hz")
         self.get_logger().info(f"   🧭 reference_frame: {self.reference_frame} (published in world frame)")
         if self.publish_to_planning_scene:
@@ -261,6 +281,13 @@ class ObstacleSynchronizer(Node):
                 co_ps.primitives.append(primitive)
                 co_ps.primitive_poses.append(pose_ps)
                 planning_scene_moveit.world.collision_objects.append(co_ps)
+
+                # Also publish via /collision_object so MoveIt planning reliably sees it.
+                if self.collision_object_pub is not None:
+                    try:
+                        self.collision_object_pub.publish(co_ps)
+                    except Exception:
+                        pass
 
             count += 1
 
