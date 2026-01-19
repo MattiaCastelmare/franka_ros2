@@ -17,6 +17,7 @@ import tempfile
 import numpy as np
 import zlib
 import math
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -91,6 +92,59 @@ class NullSpaceAvoidance(Node):
         self.declare_parameter("self_gain", 0.25)
         # Skip capsule pairs belonging to links closer than this in the kinematic chain
         self.declare_parameter("self_skip_adjacent_links", 1)
+
+        # ================= CBF-QP SAFETY FILTER =================
+        # NOTE: These parameters are used ONLY to filter the node's nominal output into a safe output.
+        # They do not introduce new ROS topics/messages.
+        #
+        # Barrier function: h = d - d_safe
+        # Constraint: g^T qdot >= v_obs_proj - alpha*(d - d_safe)
+        self.declare_parameter("d_safe", 0.08)          # [m] safety distance
+        self.declare_parameter("d_buffer", 0.30)        # [m] activation distance (influence zone for the filter)
+        self.declare_parameter("d_buffer_out", 0.0)     # [m] hysteresis exit threshold (0 -> auto)
+        self.declare_parameter("alpha", 5.0)            # [1/s] CBF gain
+        self.declare_parameter("max_constraints", 5)    # K (top-K closest hazards)
+        self.declare_parameter("lambda_reg", 1e-6)      # regularization on qdot
+        self.declare_parameter("rho_slack", 100.0)      # slack penalty
+        self.declare_parameter("beta_lpf", 0.80)        # LPF on output qdot (kept for backward compatibility)
+        self.declare_parameter("output_accel_limit", 0.0)  # [rad/s^2] 0 disables rate limiting
+        self.declare_parameter("approach_speed_limit", 0.0)  # [m/s] 0 disables extra cap on negative d_dot
+        self.declare_parameter("use_qp", True)          # try OSQP if available
+        self.declare_parameter("eps", 1e-9)             # numerical epsilon
+        self.declare_parameter("qp_weight_diag", [1.0] * 7)  # diagonal W in ||qdot-qdot_nom||_W
+
+        # ===== Risk-scaled zones (30/20/10/5 cm) + Stop Gate =====
+        # These parameters implement the staged behavior requested:
+        # - gentle deviation at 0.30m
+        # - medium at 0.20m
+        # - strong at 0.10m
+        # - hard stop at 0.05m (release at 0.06m)
+        self.declare_parameter("risk_d_far", 0.30)          # [m] start reacting
+        self.declare_parameter("risk_d_mid", 0.20)          # [m] medium zone
+        self.declare_parameter("risk_d_near", 0.10)         # [m] strong zone
+        self.declare_parameter("stop_distance", 0.05)       # [m] hard stop enter
+        self.declare_parameter("stop_release_distance", 0.06)  # [m] hard stop exit (hysteresis)
+
+        # Risk-scaled CBF alpha: alpha(d) = lerp(alpha_min, alpha_max, w(d))
+        # Defaults keep legacy behavior (alpha_min==alpha_max==alpha).
+        self.declare_parameter("alpha_min", 5.0)            # [1/s]
+        self.declare_parameter("alpha_max", 5.0)            # [1/s]
+
+        # QP damping term: gamma(d) * ||qdot - qdot_prev||^2
+        self.declare_parameter("qp_damping_min", 0.0)       # >= 0
+        self.declare_parameter("qp_damping_max", 0.0)       # >= 0
+
+        # Risk-scaled output LPF (beta near should be smaller for smoother motion)
+        self.declare_parameter("beta_lpf_far", 0.80)        # 0..1
+        self.declare_parameter("beta_lpf_near", 0.80)       # 0..1
+
+        # Smoothing for published min distance signal (for downstream blending/visualization)
+        self.declare_parameter("min_distance_lpf", 0.50)    # 0..1 (1.0 = no filtering)
+
+        # Optional posture bias (OFF by default): pulls away from folded configurations.
+        # If posture_reference is empty, pinocchio neutral is used.
+        self.declare_parameter("posture_bias_gain", 0.0)    # [1/s]
+        self.declare_parameter("posture_reference", [])     # 7 values (radians)
         
         # Carica i valori dal YAML (ora il nodo sa dove trovarli)
         self.rate = float(self.get_parameter("control_rate").value)
@@ -123,6 +177,100 @@ class NullSpaceAvoidance(Node):
         self.k_self = float(self.get_parameter("self_gain").value)
         self.self_skip_adjacent = int(self.get_parameter("self_skip_adjacent_links").value)
 
+        # --- CBF-QP params (with backward compatible defaults) ---
+        # If YAML doesn't specify these new keys, defaults are used.
+        self.cbf_d_safe = float(self.get_parameter("d_safe").value)
+        self.cbf_d_buffer_in = float(self.get_parameter("d_buffer").value)
+        self.cbf_d_buffer_out = float(self.get_parameter("d_buffer_out").value)
+        if self.cbf_d_buffer_out <= self.cbf_d_buffer_in + 1e-12:
+            self.cbf_d_buffer_out = float(1.10 * self.cbf_d_buffer_in)
+
+        self.cbf_alpha = float(self.get_parameter("alpha").value)
+        self.cbf_K = int(self.get_parameter("max_constraints").value)
+        self.cbf_lambda_reg = float(self.get_parameter("lambda_reg").value)
+        self.cbf_rho_slack = float(self.get_parameter("rho_slack").value)
+        self.cbf_beta_lpf = float(self.get_parameter("beta_lpf").value)
+        self.cbf_output_accel_limit = float(self.get_parameter("output_accel_limit").value)
+        self.cbf_approach_speed_limit = float(self.get_parameter("approach_speed_limit").value)
+        self.cbf_use_qp = bool(self.get_parameter("use_qp").value)
+        self.cbf_eps = float(self.get_parameter("eps").value)
+        self.cbf_W_diag = np.array(list(self.get_parameter("qp_weight_diag").value), dtype=float).reshape(-1)
+        if self.cbf_W_diag.shape[0] != 7:
+            self.get_logger().warn("qp_weight_diag must have length 7; falling back to ones")
+            self.cbf_W_diag = np.ones(7, dtype=float)
+        self.cbf_W_diag = np.maximum(self.cbf_W_diag, 1e-9)
+
+        # --- Risk-scaled staging / stop gate ---
+        self.risk_d_far = float(self.get_parameter("risk_d_far").value)
+        self.risk_d_mid = float(self.get_parameter("risk_d_mid").value)
+        self.risk_d_near = float(self.get_parameter("risk_d_near").value)
+        self.stop_d_in = float(self.get_parameter("stop_distance").value)
+        self.stop_d_out = float(self.get_parameter("stop_release_distance").value)
+        # Ensure monotonic thresholds
+        self.risk_d_far = max(self.risk_d_far, self.risk_d_mid + 1e-6)
+        self.risk_d_mid = max(self.risk_d_mid, self.risk_d_near + 1e-6)
+        self.risk_d_near = max(self.risk_d_near, self.stop_d_in + 1e-6)
+        self.stop_d_out = max(self.stop_d_out, self.stop_d_in + 1e-6)
+
+        self.cbf_alpha_min = float(self.get_parameter("alpha_min").value)
+        self.cbf_alpha_max = float(self.get_parameter("alpha_max").value)
+        # Backward compatible: if user didn't configure min/max, treat legacy 'alpha' as both.
+        if (self.cbf_alpha_min <= 0.0) and (self.cbf_alpha_max <= 0.0):
+            self.cbf_alpha_min = float(self.cbf_alpha)
+            self.cbf_alpha_max = float(self.cbf_alpha)
+        self.cbf_alpha_min = max(0.0, float(self.cbf_alpha_min))
+        self.cbf_alpha_max = max(0.0, float(self.cbf_alpha_max))
+        if self.cbf_alpha_max < self.cbf_alpha_min:
+            self.cbf_alpha_max = self.cbf_alpha_min
+
+        self.cbf_qp_damping_min = float(self.get_parameter("qp_damping_min").value)
+        self.cbf_qp_damping_max = float(self.get_parameter("qp_damping_max").value)
+
+        self.cbf_beta_lpf_far = float(self.get_parameter("beta_lpf_far").value)
+        self.cbf_beta_lpf_near = float(self.get_parameter("beta_lpf_near").value)
+        self.min_distance_lpf = float(self.get_parameter("min_distance_lpf").value)
+
+        self.posture_bias_gain = float(self.get_parameter("posture_bias_gain").value)
+        self.posture_reference_param = list(self.get_parameter("posture_reference").value)
+
+        self._cbf_active = False
+        self._stop_gate_active = False
+        self._qdot_out_prev = np.zeros(7, dtype=float)
+        self._qdot_pub_prev = np.zeros(7, dtype=float)
+        self._qdot_qp_prev = np.zeros(7, dtype=float)
+        self._d_min_filt = 999.0
+        self._qp_last_status = "disabled"
+        self._qp_last_slack_max = 0.0
+        self._last_debug_log_ns = 0
+
+        # Optional QP solver (OSQP) setup
+        self._qp_available = False
+        self._osqp_solver = None
+        self._sp = None
+        self._A_data_template = None
+        self._A_data_work = None
+        self._A_g_slices = None
+        self._qp_q_work = None
+        self._qp_l_work = None
+        self._qp_u_work = None
+        self._P_data_template = None
+        self._P_data_work = None
+
+        if self.cbf_use_qp and self.cbf_K > 0:
+            try:
+                import osqp  # type: ignore
+                import scipy.sparse as sp  # type: ignore
+
+                self._sp = sp
+                self._osqp_mod = osqp
+                self._qp_available = True
+                self._init_osqp_solver()
+                self._qp_last_status = "ready"
+            except Exception as e:
+                self._qp_available = False
+                self._osqp_solver = None
+                self._qp_last_status = f"no_osqp:{e.__class__.__name__}"
+
         self.get_logger().info(f"📊 Parametri CARICATI (da file YAML o default):")
         self.get_logger().info(f"   d_infl (influence_distance): {self.d_infl}")
         self.get_logger().info(f"   d_safe (safety_margin): {self.d_safe}")
@@ -143,6 +291,20 @@ class NullSpaceAvoidance(Node):
             "   extra safety: "
             f"ground(enable={self.enable_ground}, z={self.ground_z}, d_infl={self.ground_infl}, d_safe={self.ground_safe}, k={self.k_ground}) | "
             f"self(enable={self.enable_self}, d_infl={self.self_infl}, d_safe={self.self_safe}, k={self.k_self}, skip_adj={self.self_skip_adjacent})"
+        )
+
+        self.get_logger().info(
+            "   CBF-QP safety filter: "
+            f"d_safe={self.cbf_d_safe}, d_buffer_in={self.cbf_d_buffer_in}, d_buffer_out={self.cbf_d_buffer_out}, "
+            f"alpha={self.cbf_alpha} (risk-scaled [{self.cbf_alpha_min},{self.cbf_alpha_max}]), K={self.cbf_K}, use_qp={self.cbf_use_qp} (available={self._qp_available}), beta_lpf={self.cbf_beta_lpf}"
+        )
+
+        self.get_logger().info(
+            "   Risk zones: "
+            f"far={self.risk_d_far:.3f} mid={self.risk_d_mid:.3f} near={self.risk_d_near:.3f} "
+            f"stop_in={self.stop_d_in:.3f} stop_out={self.stop_d_out:.3f} | "
+            f"qp_damping=[{self.cbf_qp_damping_min},{self.cbf_qp_damping_max}] | "
+            f"beta_lpf_far={self.cbf_beta_lpf_far} beta_lpf_near={self.cbf_beta_lpf_near}"
         )
 
 
@@ -584,6 +746,348 @@ class NullSpaceAvoidance(Node):
         return t / tn
 
     # ======================================================
+    # RISK-SCALED ZONES (30/20/10/5 cm)
+    # ======================================================
+    def _risk_weight(self, d: float) -> float:
+        """Continuous risk weight w(d) in [0,1], based on staged distance thresholds.
+
+        Mapping (by default):
+          d >= 30cm   -> w = 0
+          30..20cm    -> w ramps 0 .. 0.25
+          20..10cm    -> w ramps 0.25 .. 0.75
+          10..5cm     -> w ramps 0.75 .. 1.0
+          d <= 5cm    -> w = 1
+        """
+        df = float(self.risk_d_far)
+        dm = float(self.risk_d_mid)
+        dn = float(self.risk_d_near)
+        ds = float(self.stop_d_in)
+
+        d = float(d)
+        if d >= df:
+            return 0.0
+        if d <= ds:
+            return 1.0
+
+        if d > dm:
+            x = self._smooth_alpha(d, df, dm)  # 0..1
+            return 0.25 * x
+        if d > dn:
+            x = self._smooth_alpha(d, dm, dn)
+            return 0.25 + 0.50 * x
+
+        x = self._smooth_alpha(d, dn, ds)
+        return 0.75 + 0.25 * x
+
+    def _alpha_from_distance(self, d: float) -> float:
+        w = self._risk_weight(d)
+        a0 = float(self.cbf_alpha_min)
+        a1 = float(self.cbf_alpha_max)
+        return float(a0 + w * (a1 - a0))
+
+    def _qp_gamma_from_distance(self, d: float) -> float:
+        w = self._risk_weight(d)
+        g0 = float(self.cbf_qp_damping_min)
+        g1 = float(self.cbf_qp_damping_max)
+        return float(g0 + w * (g1 - g0))
+
+    def _beta_lpf_from_distance(self, d: float) -> float:
+        """Risk-scaled output LPF coefficient beta in [0,1].
+
+        beta=1 -> no filtering; beta small -> smoother/laggier.
+        """
+        w = self._risk_weight(d)
+        b_far = float(self.cbf_beta_lpf_far)
+        b_near = float(self.cbf_beta_lpf_near)
+        return float(np.clip(b_far + w * (b_near - b_far), 0.0, 1.0))
+
+    def _posture_reference(self) -> Optional[np.ndarray]:
+        """Return a 7D posture reference (radians) if available."""
+        try:
+            if isinstance(self.posture_reference_param, list) and len(self.posture_reference_param) == 7:
+                return np.array([float(x) for x in self.posture_reference_param], dtype=float).reshape(7)
+        except Exception:
+            pass
+        try:
+            # Pinocchio neutral for the reduced model should match 7 DoF here.
+            q0 = pin.neutral(self.model)
+            q0 = np.array(q0, dtype=float).reshape(-1)
+            if q0.shape[0] >= 7:
+                return q0[:7].copy()
+        except Exception:
+            pass
+        return None
+
+    # ======================================================
+    # CBF-QP SAFETY FILTER
+    # ======================================================
+    def compute_constraints(
+        self,
+        candidates: List[dict],
+        active_threshold: float,
+    ) -> Tuple[np.ndarray, np.ndarray, int, Optional[dict]]:
+        """Build top-K CBF constraints from hazard candidates.
+
+        IMPORTANT: constraints are computed ONLY from the closest capsule/contact geometry per hazard.
+
+        Each candidate dict must contain:
+          - kind: 'external'|'ground'|'self'
+          - hazard: string label
+          - d: distance (signed allowed)
+          - and geometry needed to compute g:
+              external/ground: fid, p (world), n (world)
+              self: fid_i, p_i, fid_j, p_j, n (world)
+
+        Returns:
+          G: (K,7) stacked gradients (inactive rows are zeros)
+          b: (K,) RHS for constraints (inactive are very negative)
+          m_active: number of active constraints (<=K)
+          active_best: most critical active candidate (min d) or None
+        """
+        K = max(0, int(self.cbf_K))
+        G = np.zeros((K, 7), dtype=float)
+        b = np.full((K,), -1e9, dtype=float)  # inactive constraints
+
+        if K == 0:
+            return G, b, 0, None
+
+        # Filter by activation distance and sort by distance
+        act = [c for c in candidates if float(c.get("d", 1e9)) <= float(active_threshold)]
+        act.sort(key=lambda x: float(x.get("d", 1e9)))
+
+        m_active = min(K, len(act))
+        active_best = act[0] if m_active > 0 else None
+
+        for i in range(m_active):
+            c = act[i]
+            d = float(c["d"])
+            kind = str(c.get("kind", ""))
+            v_obs_proj = 0.0  # obstacle velocity along normal not available -> assume static
+
+            if kind in ("external", "ground"):
+                fid = int(c["fid"])
+                p = np.array(c["p"], dtype=float).reshape(3)
+                n = np.array(c["n"], dtype=float).reshape(3)
+                n = n / (float(np.linalg.norm(n)) + self.cbf_eps)
+                Jp = self._point_jacobian_world(fid, p)
+                g = (n.reshape(1, 3) @ Jp).reshape(-1)
+            elif kind == "self":
+                fid_i = int(c["fid_i"])
+                fid_j = int(c["fid_j"])
+                p_i = np.array(c["p_i"], dtype=float).reshape(3)
+                p_j = np.array(c["p_j"], dtype=float).reshape(3)
+                n = np.array(c["n"], dtype=float).reshape(3)
+                n = n / (float(np.linalg.norm(n)) + self.cbf_eps)
+                J_i = self._point_jacobian_world(fid_i, p_i)
+                J_j = self._point_jacobian_world(fid_j, p_j)
+                g = (n.reshape(1, 3) @ (J_i - J_j)).reshape(-1)
+            else:
+                continue
+
+            # CBF RHS: g^T qdot >= v_obs_proj - alpha*(d - d_safe)
+            alpha_i = float(self._alpha_from_distance(d))
+            bi = float(v_obs_proj - alpha_i * (d - self.cbf_d_safe))
+            # Optional cap on maximum approach speed (negative d_dot).
+            # Enforces: d_dot >= -v_limit, i.e. g^T qdot >= -v_limit
+            v_lim = float(self.cbf_approach_speed_limit)
+            if v_lim > 0.0:
+                bi = max(bi, -v_lim)
+            G[i, :] = g
+            b[i] = bi
+
+        return G, b, m_active, active_best
+
+    def solve_qp_safety_filter(
+        self,
+        qdot_nom: np.ndarray,
+        G: np.ndarray,
+        b: np.ndarray,
+        gamma: float,
+        qdot_prev: np.ndarray,
+    ) -> Optional[Tuple[np.ndarray, float, str]]:
+        """Solve the CBF-QP using OSQP (if available). Returns (qdot, slack_max, status) or None."""
+        if (not self._qp_available) or (self._osqp_solver is None):
+            return None
+
+        qdot_nom = np.array(qdot_nom, dtype=float).reshape(7)
+        K = int(self.cbf_K)
+        if K <= 0:
+            return qdot_nom, 0.0, "no_constraints"
+
+        # Fill OSQP update vectors in-place
+        # Objective:
+        #   (q-qnom)^T W (q-qnom) + lambda||q||^2 + gamma||q-qprev||^2 + rho||s||^2
+        # OSQP uses: 1/2 x^T P x + q^T x
+        gamma = float(max(0.0, gamma))
+        qdot_prev = np.array(qdot_prev, dtype=float).reshape(7)
+
+        # Linear cost on qdot: -2 * (W*qdot_nom + gamma*qdot_prev)
+        self._qp_q_work[:] = 0.0
+        self._qp_q_work[:7] = -2.0 * (self.cbf_W_diag * qdot_nom + gamma * qdot_prev)
+
+        # Constraint lower bounds for CBF rows
+        self._qp_l_work[:K] = b.reshape(-1)[:K]
+
+        # Update A matrix values for G entries (fixed sparsity)
+        # A stores columns 0..6 (qdot) first K entries as g[:,j]
+        self._A_data_work[:] = self._A_data_template
+        for j in range(7):
+            sl = self._A_g_slices[j]
+            self._A_data_work[sl[0]:sl[1]] = G[:, j]
+
+        # Update P diagonal for qdot block (fixed sparsity: diagonal matrix)
+        # Base P already includes 2*(W + lambda_reg). We add 2*gamma on the first 7 diagonal entries.
+        if (self._P_data_template is not None) and (self._P_data_work is not None):
+            self._P_data_work[:] = self._P_data_template
+            self._P_data_work[:7] = self._P_data_template[:7] + (2.0 * gamma)
+
+        try:
+            if (self._P_data_work is not None):
+                self._osqp_solver.update(Px=self._P_data_work, q=self._qp_q_work, l=self._qp_l_work, Ax=self._A_data_work)
+            else:
+                self._osqp_solver.update(q=self._qp_q_work, l=self._qp_l_work, Ax=self._A_data_work)
+            res = self._osqp_solver.solve()
+        except Exception as e:
+            return None
+
+        status = str(getattr(res.info, "status", ""))
+        status_ok = status.lower().startswith("solved")
+        if (not status_ok) or (res.x is None):
+            return None
+
+        x = np.array(res.x, dtype=float).reshape(-1)
+        qdot = x[:7]
+        slack = x[7:7 + K] if x.shape[0] >= (7 + K) else np.zeros(K)
+        slack_max = float(np.max(slack)) if slack.size > 0 else 0.0
+        return qdot, slack_max, status
+
+    def fallback_projection(
+        self,
+        qdot_nom: np.ndarray,
+        G_active: np.ndarray,
+        b_active: np.ndarray,
+        iters: int = 3,
+    ) -> np.ndarray:
+        """Deterministic fallback: sequential projection (POCS) onto half-spaces g^T qdot >= b."""
+        q = np.array(qdot_nom, dtype=float).reshape(7)
+
+        # Joint velocity box constraints
+        qmin = -float(self.max_qdot)
+        qmax = +float(self.max_qdot)
+        q = np.clip(q, qmin, qmax)
+
+        M = int(G_active.shape[0])
+        if M <= 0:
+            return q
+
+        eps = float(self.cbf_eps)
+        for _ in range(max(1, int(iters))):
+            for i in range(M):
+                g = G_active[i, :].reshape(7)
+                bi = float(b_active[i])
+                g_norm2 = float(g @ g)
+                if g_norm2 < 1e-12:
+                    continue
+                val = float(g @ q)
+                if val + 1e-12 < bi:
+                    q = q + ((bi - val) / (g_norm2 + eps)) * g
+                    q = np.clip(q, qmin, qmax)
+
+        return q
+
+    def _init_osqp_solver(self):
+        """Initialize an OSQP problem with fixed size based on max_constraints (K)."""
+        K = int(self.cbf_K)
+        if K <= 0:
+            return
+
+        sp = self._sp
+        osqp = self._osqp_mod
+
+        n = 7 + K
+        m = (2 * K) + 7
+
+        # Quadratic cost: (q-qnom)^T W (q-qnom) + lambda||q||^2 + rho||s||^2
+        # OSQP uses 1/2 x^T P x + q^T x
+        P_diag = np.zeros(n, dtype=float)
+        P_diag[:7] = 2.0 * (self.cbf_W_diag + float(self.cbf_lambda_reg))
+        P_diag[7:] = 2.0 * float(self.cbf_rho_slack)
+        P = sp.diags(P_diag, offsets=0, format='csc')
+
+        # Build A with a fixed sparsity pattern.
+        # Rows:
+        #   0..K-1         : CBF constraints  G q + s >= b
+        #   K..2K-1        : s >= 0
+        #   2K..2K+6       : qmin <= q <= qmax
+
+        indptr = [0]
+        indices: List[int] = []
+        data: List[float] = []
+        self._A_g_slices = []
+
+        # q columns (0..6)
+        for j in range(7):
+            col_rows = list(range(0, K)) + [2 * K + j]
+            col_data = [0.0] * K + [1.0]
+            start = len(data)
+            indices.extend(col_rows)
+            data.extend(col_data)
+            end = start + K
+            self._A_g_slices.append((start, end))
+            indptr.append(len(data))
+
+        # slack columns (7..7+K-1)
+        for k in range(K):
+            col_rows = [k, K + k]
+            col_data = [1.0, 1.0]
+            indices.extend(col_rows)
+            data.extend(col_data)
+            indptr.append(len(data))
+
+        A = sp.csc_matrix((np.array(data, dtype=float), np.array(indices, dtype=int), np.array(indptr, dtype=int)), shape=(m, n))
+
+        # Bounds l <= A x <= u
+        l = np.full(m, -np.inf, dtype=float)
+        u = np.full(m, +np.inf, dtype=float)
+
+        # Initialize with all CBF constraints inactive
+        l[:K] = -1e9
+
+        # Slack nonnegativity
+        l[K:2 * K] = 0.0
+
+        # Joint limits
+        qmin = -float(self.max_qdot)
+        qmax = +float(self.max_qdot)
+        l[2 * K:2 * K + 7] = qmin
+        u[2 * K:2 * K + 7] = qmax
+
+        q = np.zeros(n, dtype=float)
+
+        solver = osqp.OSQP()
+        solver.setup(
+            P=P,
+            q=q,
+            A=A,
+            l=l,
+            u=u,
+            warm_start=True,
+            verbose=False,
+            polish=False,
+            max_iter=100,
+        )
+
+        # Cache arrays for fast update
+        self._osqp_solver = solver
+        self._A_data_template = A.data.copy()
+        self._A_data_work = A.data.copy()
+        self._P_data_template = P.data.copy()
+        self._P_data_work = P.data.copy()
+        self._qp_q_work = q.copy()
+        self._qp_l_work = l.copy()
+        self._qp_u_work = u.copy()  # (u is constant here; kept for completeness)
+
+    # ======================================================
     # CAPSULE MARKER (RViz)
     # ======================================================
     def _make_capsule_markers(self, p0, p1, radius, marker_id):
@@ -684,6 +1188,11 @@ class NullSpaceAvoidance(Node):
         best_dir = None
         best_pair = None  # (fid_a, p_a, fid_b, p_b) for self-collision
 
+        # Track closest capsule per external obstacle for CBF constraints
+        external_best: Dict[str, dict] = {}
+        ground_best: Optional[dict] = None
+        self_best: Optional[dict] = None
+
         # Precompute world capsules (for ground + self-collision)
         segments = []
         link_to_index = {f"fr3_link{i}": i for i in range(1, 9)}
@@ -712,6 +1221,18 @@ class NullSpaceAvoidance(Node):
                     d, dir_vec, p_seg, p_box, samples = self._distance_capsule_to_box(p0, p1, caps["radius"], obs)
                     if dir_vec is None:
                         continue
+
+                    # Record best (closest) capsule contact for this obstacle (used by CBF constraints)
+                    obs_id = str(getattr(obs, "id", ""))
+                    if obs_id not in external_best or float(d) < float(external_best[obs_id]["d"]):
+                        external_best[obs_id] = {
+                            "kind": "external",
+                            "hazard": f"external:{obs_id}",
+                            "d": float(d),
+                            "fid": int(fid),
+                            "p": np.array(p_seg, dtype=float).reshape(3),
+                            "n": np.array(dir_vec, dtype=float).reshape(3),
+                        }
 
                     if d < d_min:
                         d_min = d
@@ -801,6 +1322,17 @@ class NullSpaceAvoidance(Node):
                         "distance": d_ground,
                     })
 
+                    # Record best (closest) ground hazard for CBF constraints
+                    if (ground_best is None) or (float(d_ground) < float(ground_best["d"])):
+                        ground_best = {
+                            "kind": "ground",
+                            "hazard": "ground:plane",
+                            "d": float(d_ground),
+                            "fid": int(fid),
+                            "p": np.array(p_low, dtype=float).reshape(3),
+                            "n": np.array([0.0, 0.0, 1.0], dtype=float),
+                        }
+
                     if d_ground < self.ground_infl:
                         alpha_g = self._smooth_alpha(float(d_ground), float(self.ground_infl), float(self.ground_safe))
                         dir_g = np.array([0.0, 0.0, 1.0], dtype=float)
@@ -830,6 +1362,20 @@ class NullSpaceAvoidance(Node):
                         best_dir = None
                         best_pair = (si["fid"], cp_i, sj["fid"], cp_j, diff)
                         best_hazard = f"self:{si['parent']}<->{sj['parent']}"
+
+                    # Record closest self-collision pair for CBF constraints
+                    if (self_best is None) or (float(dist) < float(self_best["d"])):
+                        n_self = diff / (np.linalg.norm(diff) + 1e-9)
+                        self_best = {
+                            "kind": "self",
+                            "hazard": f"self:{si['parent']}<->{sj['parent']}",
+                            "d": float(dist),
+                            "fid_i": int(si["fid"]),
+                            "p_i": np.array(cp_i, dtype=float).reshape(3),
+                            "fid_j": int(sj["fid"]),
+                            "p_j": np.array(cp_j, dtype=float).reshape(3),
+                            "n": np.array(n_self, dtype=float).reshape(3),
+                        }
 
                     self.distances_data.append({
                         "p_capsule": cp_i,
@@ -865,42 +1411,148 @@ class NullSpaceAvoidance(Node):
         else:
             best_j_row = np.zeros(7)
 
-        # Saturazione avoidance
-        norm_qdot = np.linalg.norm(qdot_avoid)
-        if norm_qdot > self.max_qdot:
-            qdot_avoid *= self.max_qdot / norm_qdot
+        # --------------------------
+        # CBF-QP Safety Filter stage
+        # --------------------------
+        # Nominal command for this node = the current (potential-field) avoidance output.
+        qdot_nom = np.array(qdot_avoid, dtype=float).reshape(7)
 
-        self.pub.publish(Float64MultiArray(data=qdot_avoid.tolist()))
-        self.min_dist_pub.publish(Float64MultiArray(data=[float(d_min)]))
+        # Filter the min distance signal (used only for risk scaling / downstream diagnostics).
+        d_beta = float(np.clip(self.min_distance_lpf, 0.0, 1.0))
+        self._d_min_filt = float(d_beta * float(d_min) + (1.0 - d_beta) * float(self._d_min_filt))
 
-        # Publish hazard label (avoid confusion when far from any influence zone)
-        # IMPORTANT:
-        # Previously we compared d_min against the *minimum* influence distance among all enabled hazards.
-        # That caused hazard='none' even when an external obstacle was within self.d_infl (e.g. 0.12 < d < 0.20),
-        # which is confusing during debugging. Use a hazard-specific influence threshold instead.
-        infl_thr = float(self.d_infl)
+        # Hard stop gate at stop_d_in, release at stop_d_out (hysteresis).
+        if (not self._stop_gate_active) and (float(d_min) <= float(self.stop_d_in)):
+            self._stop_gate_active = True
+        elif self._stop_gate_active and (float(d_min) >= float(self.stop_d_out)):
+            self._stop_gate_active = False
+
+        # Optional posture bias (OFF by default): only meaningful near obstacles.
+        # This helps reduce the "fold on itself" behavior by gently pulling toward a neutral posture.
+        if float(self.posture_bias_gain) > 0.0:
+            q_ref = self._posture_reference()
+            if (q_ref is not None) and isinstance(self.q, np.ndarray) and (self.q.shape[0] >= 7):
+                w_post = float(self._risk_weight(self._d_min_filt))
+                q_cur = np.array(self.q, dtype=float).reshape(-1)[:7]
+                qdot_post = float(self.posture_bias_gain) * w_post * (q_ref - q_cur)
+                qdot_nom = qdot_nom + qdot_post
+
+        # Hysteresis on activation to avoid chatter/jitter
+        # Use the filtered distance for stability (constraints still use raw per-candidate distances).
+        d_act = float(self._d_min_filt)
+        d_in = float(max(self.cbf_d_buffer_in, self.risk_d_far))
+        d_out = float(max(self.cbf_d_buffer_out, self.risk_d_far))
+
+        if (not self._cbf_active) and (d_act <= d_in):
+            self._cbf_active = True
+        elif self._cbf_active and (d_act >= d_out):
+            self._cbf_active = False
+
+        active_thr = float(d_out) if self._cbf_active else float(d_in)
+
+        candidates: List[dict] = []
+        if len(external_best) > 0:
+            candidates.extend(list(external_best.values()))
+        if ground_best is not None:
+            candidates.append(ground_best)
+        if self_best is not None:
+            candidates.append(self_best)
+
+        G, b_cbf, m_active, active_best = self.compute_constraints(candidates, active_thr)
+
+        # Solve (QP preferred) or fallback
+        qdot_safe = None
+        slack_max = 0.0
+        qp_status = "inactive"
+        if self._stop_gate_active:
+            qdot_safe = np.zeros(7, dtype=float)
+            slack_max = 0.0
+            qp_status = "stop_gate"
+        elif m_active <= 0:
+            qdot_safe = qdot_nom
+            qp_status = "no_constraints"
+        else:
+            gamma = float(self._qp_gamma_from_distance(self._d_min_filt))
+            # Try QP with OSQP
+            if self.cbf_use_qp and self._qp_available:
+                qp_res = self.solve_qp_safety_filter(qdot_nom, G, b_cbf, gamma=gamma, qdot_prev=self._qdot_qp_prev)
+                if qp_res is not None:
+                    qdot_safe, slack_max, qp_status = qp_res
+                else:
+                    qdot_safe = None
+
+            # Robust fallback
+            if qdot_safe is None:
+                qdot_safe = self.fallback_projection(qdot_nom, G[:m_active, :], b_cbf[:m_active], iters=3)
+                slack_max = 0.0
+                qp_status = "fallback_projection"
+
+        # Remember previous (pre-LPF) safe output for QP damping
         try:
-            if isinstance(best_hazard, str):
-                if best_hazard.startswith("ground:"):
-                    infl_thr = float(self.ground_infl)
-                elif best_hazard.startswith("self:"):
-                    infl_thr = float(self.self_infl)
-                elif best_hazard.startswith("external:"):
-                    infl_thr = float(self.d_infl)
+            self._qdot_qp_prev = np.array(qdot_safe, dtype=float).reshape(7)
         except Exception:
-            infl_thr = float(self.d_infl)
-        hazard_msg = String()
-        hazard_active = bool(d_min < infl_thr)
-        hazard_msg.data = best_hazard if hazard_active else "none"
-        self.hazard_pub.publish(hazard_msg)
+            self._qdot_qp_prev = self._qdot_qp_prev
 
-        # Publish a meaningful distance Jacobian row only when the corresponding hazard is active.
-        # This prevents downstream controllers (velocity_blender) from entering constrained mode
-        # when the closest feature is outside its own influence region (common source of stalls).
-        if not hazard_active:
+        # Joint velocity limits (box)
+        qdot_safe = np.clip(qdot_safe, -float(self.max_qdot), +float(self.max_qdot))
+
+        # Low-pass filter on output to reduce jitter (risk-scaled)
+        beta = float(self._beta_lpf_from_distance(self._d_min_filt))
+        qdot_out = beta * qdot_safe + (1.0 - beta) * self._qdot_out_prev
+        self._qdot_out_prev = qdot_out.copy()
+
+        self._qp_last_status = str(qp_status)
+        self._qp_last_slack_max = float(slack_max)
+
+        # Optional acceleration (rate) limiting on the published command to reduce "scatti".
+        # Per-joint: |dqdot/dt| <= output_accel_limit
+        acc_lim = float(self.cbf_output_accel_limit)
+        if acc_lim > 0.0:
+            dt = 1.0 / float(max(1.0, self.rate))
+            dq = qdot_out - self._qdot_pub_prev
+            dq_max = float(acc_lim) * float(dt)
+            dq = np.clip(dq, -dq_max, +dq_max)
+            qdot_out = self._qdot_pub_prev + dq
+        self._qdot_pub_prev = qdot_out.copy()
+
+        self.pub.publish(Float64MultiArray(data=qdot_out.tolist()))
+
+        # --------------------------
+        # Publish ACTIVE CBF hazard signals (consistent with constraints)
+        # --------------------------
+        hazard_msg = String()
+        # Publish filtered global minimum distance so downstream logic can react early but smoothly.
+        self.min_dist_pub.publish(Float64MultiArray(data=[float(self._d_min_filt)]))
+
+        if self._stop_gate_active:
+            hazard_msg.data = "stop_gate"
+            self.hazard_pub.publish(hazard_msg)
+            self.jac_pub.publish(jac_zero)
+        elif (active_best is None) or (m_active <= 0):
+            hazard_msg.data = "none"
+            self.hazard_pub.publish(hazard_msg)
             self.jac_pub.publish(jac_zero)
         else:
-            self.jac_pub.publish(Float64MultiArray(data=best_j_row.tolist()))
+            hazard_msg.data = str(active_best.get("hazard", "none"))
+            self.hazard_pub.publish(hazard_msg)
+            # Jacobian row for the most critical ACTIVE constraint
+            self.jac_pub.publish(Float64MultiArray(data=G[0, :].reshape(-1).tolist()))
+
+        # Debug log (throttled): useful to confirm the filter is behaving
+        try:
+            now_ns = int(self.get_clock().now().nanoseconds)
+            if now_ns - int(self._last_debug_log_ns) >= 1_000_000_000:
+                self._last_debug_log_ns = now_ns
+                w_dbg = float(self._risk_weight(self._d_min_filt))
+                gamma_dbg = float(self._qp_gamma_from_distance(self._d_min_filt))
+                self.get_logger().debug(
+                    f"CBF-QP: d_min_raw={float(d_min):.4f} d_min_filt={float(self._d_min_filt):.4f} "
+                    f"w={w_dbg:.2f} gamma={gamma_dbg:.2f} stop={self._stop_gate_active} "
+                    f"active={self._cbf_active} m_active={m_active} status={self._qp_last_status} "
+                    f"slack_max={self._qp_last_slack_max:.3e}"
+                )
+        except Exception:
+            pass
 
         # ================= RViz CAPSULE VISUALIZATION =================
         marker_array = MarkerArray()
