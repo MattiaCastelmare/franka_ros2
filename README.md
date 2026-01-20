@@ -21,6 +21,48 @@
 The **franka_ros2** repository provides a **ROS 2** integration of **libfranka**, allowing efficient control of the Franka Robotics arm within the ROS 2 framework. This project is designed to facilitate robotic research and development by providing a robust interface for controlling the research versions of Franka Robotics robots.
 
 For convenience, we provide Dockerfile and docker-compose.yml files. While it is possible to build **franka_ros2** directly on your local machine, this approach requires manual installation of certain dependencies, while many others will be automatically installed by the **ROS 2** build system (e.g., via **rosdep**). This can result in a large number of libraries being installed on your system, potentially causing conflicts. Using Docker encapsulates these dependencies within the container, minimizing such risks. Docker also ensures a consistent and reproducible build environment across systems. For these reasons, we recommend using Docker.
+## Fork-specific Information (Extended Simulation and Research Branch)
+
+This repository is a fork of the official `frankarobotics/franka_ros2` project and includes additional
+research-oriented extensions, simulation tools, and Docker support developed in this fork.
+
+### Branch structure
+
+This fork follows a clear branching strategy to ensure portability and easy synchronization with the official repository:
+
+- **`humble`**
+  - Mirrors the official upstream branch `frankarobotics/franka_ros2:humble`
+  - Kept aligned with upstream
+  - Not intended for custom development in this fork
+
+- **`humble-mattia`** ✅ *(recommended)*
+  - Stable branch including additional simulation packages, Docker extensions, and research tooling
+  - This is the **recommended branch for users who want to clone and use this fork**
+  - Actively maintained and periodically rebased/merged with upstream updates
+
+### Recommended clone command
+
+To use the extended features provided by this fork, clone the repository as follows:
+
+```bash
+git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git
+```
+### Additional dependencies via .repos
+
+In addition to the official Franka dependencies, this fork relies on extra source-level repositories
+(e.g. MoveIt2 and PyMoveIt2) that are not vendored directly in this repository.
+
+These dependencies are managed using a separate .repos file:
+
+- franka.repos – official Franka dependencies
+
+- extras.repos – additional research dependencies (e.g. MoveIt2, PyMoveIt2)
+
+To import all required repositories manually: 
+```bash
+vcs import src < src/franka.repos --recursive --skip-existing
+vcs import src < src/extras.repos --recursive --skip-existing
+```
 
 ## Caution
 This package is in rapid development. Users should expect breaking changes and are encouraged to report any bugs via [GitHub Issues page](https://github.com/frankarobotics/franka_ros2/issues).
@@ -136,11 +178,15 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
       ```bash
       colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
       ```
-  7. **Source the built workspace:**
+  7.1. **Build only franka_simulation package:**
+      ```bash
+      colcon build --packages-select franka_simulation --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      ```
+  8. **Source the built workspace:**
       ```bash
       source install/setup.bash
       ```
-  8. **When you are done, you can exit the shell and delete the container**:
+  9. **When you are done, you can exit the shell and delete the container**:
       ```bash
       docker compose down -t 0
       ```
