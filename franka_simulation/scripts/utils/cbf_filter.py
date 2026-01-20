@@ -135,8 +135,9 @@ def apply_cbf_qp_safety_filter(
             qdot_post = float(params.posture_bias_gain) * w_post * (q_ref - q_cur)
             qdot_nom = qdot_nom + qdot_post
 
-    # --- CBF activation hysteresis (avoid chatter).
-    d_act = float(state.d_min_filt)
+    # --- CBF activation hysteresis (avoid chatter) using RAW effective distance.
+    # This avoids a delayed reaction caused by min-distance filtering.
+    d_act = float(d_min)
     d_in = float(max(float(params.cbf_d_buffer_in), float(params.risk_d_far)))
     d_out = float(max(float(params.cbf_d_buffer_out), float(params.risk_d_far)))
 

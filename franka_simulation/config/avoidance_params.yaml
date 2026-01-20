@@ -79,6 +79,14 @@ online_avoidance_controller:
     eps: 1.0e-9
     qp_weight_diag: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
+    # =====================================================
+    # ARCHITECTURE SWITCH (recommended)
+    # =====================================================
+    # To avoid double-safety conservatism (controller CBF/QP + blender d_dot/CBF),
+    # keep the controller NOMINAL and enforce safety ONLY in velocity_control_blender
+    # (which sees the FINAL command = tracking + avoidance).
+    controller_safety_filter_enable: false
+
     # ============================================
     # Staged risk zones (30/20/10/5 cm) + stop gate
     # ============================================
@@ -102,6 +110,17 @@ online_avoidance_controller:
 
     # Filtering for published min distance (downstream blending/rviz)
     min_distance_lpf: 0.50
+
+    # ============================================
+    # Robustness options
+    # ============================================
+    # Conservative distance for ALL safety decisions: d_eff = d_raw - distance_inflation
+    # (closest_constraint still publishes d_raw for coherent blender enforcement)
+    distance_inflation: 0.0
+
+    # Reduce hazard switching in /avoidance/closest_hazard when distances are similar
+    hazard_hold_time_s: 0.20
+    hazard_switch_delta_m: 0.010
 
     # Optional posture bias (OFF by default)
     posture_bias_gain: 0.0

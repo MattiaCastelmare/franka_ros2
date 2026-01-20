@@ -18,9 +18,11 @@ Author: Maurizio
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.duration import Duration
+from rclpy.time import Time
 from enum import Enum
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 import threading
 import time
@@ -34,6 +36,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from moveit_msgs.msg import PlanningScene, MoveItErrorCodes
 from moveit_msgs.srv import GetPositionIK
 from geometry_msgs.msg import PoseStamped
+from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
 
 from franka_simulation.action import MoveToPose
@@ -43,6 +46,14 @@ import pinocchio as pin
 from ament_index_python.packages import get_package_share_directory
 import subprocess
 import os
+
+
+try:
+    import tf2_ros
+    from tf2_geometry_msgs import do_transform_pose
+except Exception:  # pragma: no cover (depends on ROS install)
+    tf2_ros = None
+    do_transform_pose = None
 
 
 # ======================================================
@@ -114,9 +125,19 @@ class SafeAvoidanceTest(Node):
         self.qd = np.zeros(7)
         self.avoidance_vel = np.zeros(7)
         self.blended_vel = np.zeros(7)
+        # Alias used by some log helpers (keep in sync with blended_vel)
+        self.last_cmd = np.zeros(7)
         self.min_dist = float("inf")
         self.j_row = np.zeros(7)
         self.hazard = "none"
+
+        # Coherent closest constraint (preferred for safety/debug):
+        # `/avoidance/closest_constraint`: Float64MultiArray [d_closest, j_row_0..j_row_6]
+        # `/avoidance/closest_hazard`: String
+        self.closest_d = float("inf")
+        self.closest_j_row = np.zeros(7)
+        self.closest_hazard = "none"
+        self._closest_stamp_wall = None  # Optional[float]
 
         # Progress / stall detection
         self._last_err = None
@@ -153,18 +174,42 @@ class SafeAvoidanceTest(Node):
         self._last_log_hazard = None
         self._no_obstacles_warn_wall = 0.0
 
+        # Generic throttling (key -> last_wall)
+        self._warn_last_wall: Dict[str, float] = {}
+
         # -------------------------------
         # Pinocchio
         # -------------------------------
         self._init_pinocchio()
 
         # -------------------------------
+        # TF2 (for obstacle frames)
+        # -------------------------------
+        self._tf_available = (tf2_ros is not None) and (do_transform_pose is not None)
+        self._tf_buffer = None
+        self._tf_listener = None
+        if self._tf_available:
+            try:
+                self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10.0))
+                self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+            except Exception:
+                self._tf_available = False
+                self._tf_buffer = None
+                self._tf_listener = None
+
+        # -------------------------------
         # ROS interfaces
         # -------------------------------
         self.create_subscription(JointState, "/joint_states", self._js_cb, 10)
         self.create_subscription(Float64MultiArray, "/avoidance/velocity", self._avoid_cb, 10)
+        # Legacy (potentially incoherent pair): kept for backward-compatible logging only.
         self.create_subscription(Float64MultiArray, "/avoidance/min_distance", self._min_dist_cb, 10)
         self.create_subscription(Float64MultiArray, "/avoidance/jacobian", self._jac_cb, 10)
+
+        # Preferred coherent closest-constraint pair (used for any safety/stuck/active decisions).
+        self.create_subscription(Float64MultiArray, "/avoidance/closest_constraint", self._closest_constraint_cb, 10)
+        self.create_subscription(String, "/avoidance/closest_hazard", self._closest_hazard_cb, 10)
+
         self.create_subscription(Float64MultiArray, "/fr3_velocity_controller/commands", self._cmd_cb, 10)
         self.create_subscription(PlanningScene, "/obstacle_scene", self._scene_cb, 10)
         self.create_subscription(String, "/avoidance/hazard", self._hazard_cb, 10)
@@ -225,6 +270,16 @@ class SafeAvoidanceTest(Node):
         self._qd_settle_thr = float(self.get_parameter("qd_settle_threshold").value)
         self._cmd_settle_thr = float(self.get_parameter("cmd_settle_threshold").value)
 
+        # HOME publishing target(s)
+        # Default: publish HOME only to the velocity blender (recommended).
+        self.declare_parameter("publish_home_to_joint_traj_controller", False)
+        self._publish_home_to_joint_traj_controller = bool(
+            self.get_parameter("publish_home_to_joint_traj_controller").value
+        )
+
+        # HOME reached settling (joint space)
+        self._home_reach_entered_wall = None  # Optional[float]
+
         # If no valid trajectory appears after sending a goal, compute IK and publish a simple trajectory.
         self.declare_parameter("traj_wait_timeout_s", 2.0)
         self.declare_parameter("fallback_traj_time_s", 4.0)
@@ -245,6 +300,9 @@ class SafeAvoidanceTest(Node):
         self._stack_param_check_delay_s = float(self.get_parameter("stack_param_check_delay_s").value)
         self._stack_param_checked = False
         self._stack_param_check_start_wall = time.time()
+        self._stack_param_check_started = False
+        self._stack_param_check_futures: Dict[str, object] = {}
+        self._stack_param_check_clients: Dict[str, object] = {}
 
         # Safety: do NOT trigger the IK fallback just because the robot is "stuck" when close to obstacles.
         # The fallback trajectory ignores collisions and can cause impacts.
@@ -322,6 +380,45 @@ class SafeAvoidanceTest(Node):
             pass
 
 
+    def _warn_throttled(self, key: str, msg: str, period_s: float = 5.0):
+        """Rate-limit repetitive warnings (best-effort, no exceptions)."""
+        try:
+            now = time.time()
+            last = float(self._warn_last_wall.get(str(key), 0.0))
+            if (now - last) < float(period_s):
+                return
+            self._warn_last_wall[str(key)] = float(now)
+            self.get_logger().warn(str(msg))
+        except Exception:
+            return
+
+
+    def _pick_coherent_safety(self, *, now_wall: Optional[float] = None) -> Tuple[float, str, float, bool]:
+        """Pick the most coherent safety signals available.
+
+        Returns (d_min, hazard, j_norm, coherent).
+        - coherent=True means the pair (d, j_row, hazard) came from closest-constraint topics.
+        - coherent=False means we fall back to legacy topics (/min_distance + /jacobian + /hazard),
+          which can be temporally incoherent and should not drive critical decisions.
+        """
+        try:
+            now = float(now_wall) if now_wall is not None else time.time()
+            stamp = self._closest_stamp_wall
+            coherent = (stamp is not None) and ((now - float(stamp)) <= 0.5)
+            if coherent:
+                d = float(self.closest_d)
+                haz = str(self.closest_hazard or "none")
+                jn = float(np.linalg.norm(np.array(self.closest_j_row, dtype=float).reshape(-1)))
+                return d, haz, jn, True
+
+            d = float(self.min_dist)
+            haz = str(self.hazard or "none")
+            jn = float(np.linalg.norm(np.array(self.j_row, dtype=float).reshape(-1)))
+            return d, haz, jn, False
+        except Exception:
+            return float("inf"), "none", 0.0, False
+
+
     def _stack_param_check_tick(self):
         """One-shot param dump from the running stack (avoidance + blender)."""
         if self._stack_param_checked:
@@ -329,38 +426,36 @@ class SafeAvoidanceTest(Node):
         if (time.time() - self._stack_param_check_start_wall) < self._stack_param_check_delay_s:
             return
 
-        def fetch(node_name: str, keys: List[str]):
-            cli = self.create_client(GetParameters, f"/{node_name}/get_parameters")
-            if not cli.wait_for_service(timeout_sec=0.5):
+        def parse_result(keys: List[str], fut) -> Optional[Dict[str, object]]:
+            try:
+                res = fut.result()
+                if res is None:
+                    return None
+                out: Dict[str, object] = {}
+                for k, v in zip(keys, res.values):
+                    try:
+                        t = int(getattr(v, "type", 0))
+                        if t == int(ParameterType.PARAMETER_DOUBLE):
+                            out[k] = float(v.double_value)
+                        elif t == int(ParameterType.PARAMETER_INTEGER):
+                            out[k] = int(v.integer_value)
+                        elif t == int(ParameterType.PARAMETER_BOOL):
+                            out[k] = bool(v.bool_value)
+                        elif t == int(ParameterType.PARAMETER_STRING):
+                            out[k] = str(v.string_value)
+                        elif t == int(ParameterType.PARAMETER_DOUBLE_ARRAY):
+                            out[k] = [float(x) for x in v.double_array_value]
+                        elif t == int(ParameterType.PARAMETER_INTEGER_ARRAY):
+                            out[k] = [int(x) for x in v.integer_array_value]
+                        elif t == int(ParameterType.PARAMETER_STRING_ARRAY):
+                            out[k] = [str(x) for x in v.string_array_value]
+                        else:
+                            out[k] = "(unhandled)"
+                    except Exception:
+                        out[k] = "(error)"
+                return out
+            except Exception:
                 return None
-            req = GetParameters.Request()
-            req.names = list(keys)
-            fut = cli.call_async(req)
-            rclpy.spin_until_future_complete(self, fut, timeout_sec=1.0)
-            if fut.result() is None:
-                return None
-            out = {}
-            for k, v in zip(keys, fut.result().values):
-                try:
-                    if v.type == v.TYPE_DOUBLE:
-                        out[k] = float(v.double_value)
-                    elif v.type == v.TYPE_INTEGER:
-                        out[k] = int(v.integer_value)
-                    elif v.type == v.TYPE_BOOL:
-                        out[k] = bool(v.bool_value)
-                    elif v.type == v.TYPE_STRING:
-                        out[k] = str(v.string_value)
-                    elif v.type == v.TYPE_DOUBLE_ARRAY:
-                        out[k] = [float(x) for x in v.double_array_value]
-                    elif v.type == v.TYPE_INTEGER_ARRAY:
-                        out[k] = [int(x) for x in v.integer_array_value]
-                    elif v.type == v.TYPE_STRING_ARRAY:
-                        out[k] = [str(x) for x in v.string_array_value]
-                    else:
-                        out[k] = "(unhandled)"
-                except Exception:
-                    out[k] = "(error)"
-            return out
 
         avoid_keys = [
             "influence_distance",
@@ -382,21 +477,73 @@ class SafeAvoidanceTest(Node):
             "d_dot_push_max",
         ]
 
-        avoid = fetch("online_avoidance_controller", avoid_keys)
-        blend = fetch("velocity_control_blender", blend_keys)
+        # Phase 1: create clients + kick off async requests (non-blocking)
+        if not self._stack_param_check_started:
+            self._stack_param_check_started = True
+
+            for node_name, keys in (
+                ("online_avoidance_controller", avoid_keys),
+                ("velocity_control_blender", blend_keys),
+            ):
+                srv = f"/{node_name}/get_parameters"
+                try:
+                    cli = self.create_client(GetParameters, srv)
+                    self._stack_param_check_clients[node_name] = cli
+                except Exception:
+                    self._stack_param_check_clients[node_name] = None
+
+            # Do not return yet: we can attempt to send requests immediately.
+
+        # Phase 2: if clients are ready and no future yet, send async request.
+        for node_name, keys in (
+            ("online_avoidance_controller", avoid_keys),
+            ("velocity_control_blender", blend_keys),
+        ):
+            if node_name in self._stack_param_check_futures:
+                continue
+
+            cli = self._stack_param_check_clients.get(node_name)
+            if cli is None or (not cli.service_is_ready()):
+                self._warn_throttled(
+                    f"param_srv_{node_name}",
+                    f"⚠️ Param check: service /{node_name}/get_parameters not available yet.",
+                    period_s=2.0,
+                )
+                continue
+
+            try:
+                req = GetParameters.Request()
+                req.names = list(keys)
+                self._stack_param_check_futures[node_name] = cli.call_async(req)
+            except Exception:
+                self._stack_param_check_futures[node_name] = None
+
+        # Phase 3: wait until both futures are done, then log.
+        if ("online_avoidance_controller" not in self._stack_param_check_futures) or (
+            "velocity_control_blender" not in self._stack_param_check_futures
+        ):
+            return
+
+        avoid_fut = self._stack_param_check_futures.get("online_avoidance_controller")
+        blend_fut = self._stack_param_check_futures.get("velocity_control_blender")
+        if avoid_fut is None or blend_fut is None:
+            return
+        if (not avoid_fut.done()) or (not blend_fut.done()):
+            return
+
+        avoid = parse_result(avoid_keys, avoid_fut)
+        blend = parse_result(blend_keys, blend_fut)
 
         if avoid is None:
             self.get_logger().warn(
-                "⚠️ Param check: /online_avoidance_controller/get_parameters not available. "
-                "Are you running the full stack (launch) in the same ROS_DOMAIN_ID?"
+                "⚠️ Param check: failed to read online_avoidance_controller parameters (async call failed)."
             )
         else:
             self.get_logger().info(f"[PARAM] online_avoidance_controller: {avoid}")
 
         if blend is None:
             self.get_logger().warn(
-                "⚠️ Param check: /velocity_control_blender/get_parameters not available. "
-                "Is the blender node running?"
+                "⚠️ Param check: failed to read velocity_control_blender parameters (async call failed)."
             )
         else:
             self.get_logger().info(f"[PARAM] velocity_control_blender: {blend}")
@@ -423,6 +570,7 @@ class SafeAvoidanceTest(Node):
         avoid_norm: float,
         near_txt: str,
         avoidance_active: bool,
+        coherent: bool,
         use_ansi: bool,
     ) -> str:
         # Keep it short and greppable.
@@ -450,10 +598,55 @@ class SafeAvoidanceTest(Node):
         else:
             tag = f"{GREEN}[SAFE]{RESET}"
 
+        # Extra diagnostics:
+        # - decompose the executed command into normal/tangential components w.r.t. the active hazard normal
+        # - detect track-vs-avoid cancellation (common reason for WP2 "quasi-stall")
+        cmd_n = float("nan")
+        cmd_t = float("nan")
+        d_dot_cmd = float("nan")
+        d_eff = float(max(0.0, float(d_min_m)))
+
+        cos_track_avoid = float("nan")
+        cos_avoid_cmd = float("nan")
+        cancel_flag = "-"
+        try:
+            # Prefer coherent closest constraint when available, otherwise fall back to legacy.
+            j_src = np.array(self.closest_j_row if coherent else self.j_row, dtype=float).reshape(-1)
+            j = j_src
+            c = np.array(self.blended_vel, dtype=float).reshape(-1)
+            jn = float(np.linalg.norm(j))
+            if (jn > 1e-6) and (c.shape[0] == j.shape[0]):
+                n = j / jn
+                c_n = float(n @ c)
+                c_t_vec = c - c_n * n
+                cmd_n = abs(float(c_n))
+                cmd_t = float(np.linalg.norm(c_t_vec))
+                d_dot_cmd = float(j @ c)
+
+            # Cancellation proxy: qdot_track_proxy ≈ qdot_cmd - qdot_avoid
+            a = np.array(self.avoidance_vel, dtype=float).reshape(-1)
+            t = c - a
+            an = float(np.linalg.norm(a))
+            tn = float(np.linalg.norm(t))
+            cn = float(np.linalg.norm(c))
+            eps = 1e-9
+            if an > eps and tn > eps:
+                cos_track_avoid = float(np.dot(t, a) / (tn * an))
+            if an > eps and cn > eps:
+                cos_avoid_cmd = float(np.dot(a, c) / (an * cn))
+
+            # Heuristic: strong cancellation if cmd is small despite sizable track/avoid and they oppose.
+            if (cn < 0.25 * (tn + an)) and (np.isfinite(cos_track_avoid) and cos_track_avoid < -0.5):
+                cancel_flag = "CANCEL"
+        except Exception:
+            pass
+
         return (
             f"{tag} {wp} "
-            f"err={f3(err_m)}m d={f3(d_min_m)}m haz={haz} "
+            f"err={f3(err_m)}m d_raw={f3(d_min_m)}m d_eff={f3(d_eff)}m haz={haz} "
             f"|cmd|={f3(cmd_norm)} |track|={f3(track_norm)} |avoid|={f3(avoid_norm)} "
+            f"|cmd_n|={f3(cmd_n)} |cmd_t|={f3(cmd_t)} d_dot_cmd={f3(d_dot_cmd)} "
+            f"cos(t,a)={f3(cos_track_avoid)} cos(a,cmd)={f3(cos_avoid_cmd)} {cancel_flag} "
             f"near={near_txt}"
         )
 
@@ -481,15 +674,53 @@ class SafeAvoidanceTest(Node):
         best_id = None
         best_d = float("inf")
         for oid, o in self._obstacles.items():
-            pose = o.get("pose")
-            if pose is None:
+            c = self._obstacle_center_world(o)
+            if c is None:
                 continue
-            c = np.array([pose.position.x, pose.position.y, pose.position.z], dtype=float)
             d = float(np.linalg.norm(p_world - c))
             if d < best_d:
                 best_d = d
                 best_id = oid
         return best_id, best_d
+
+
+    def _obstacle_center_world(self, o: dict) -> Optional[np.ndarray]:
+        """Return obstacle center in 'world' frame (or None if unavailable)."""
+        try:
+            pose = o.get("pose")
+            frame_id = str(o.get("frame_id") or "")
+            if pose is None:
+                return None
+
+            # Fast path: already in world.
+            if frame_id in ("world", ""):
+                return np.array([pose.position.x, pose.position.y, pose.position.z], dtype=float)
+
+            if not self._tf_available or (self._tf_buffer is None):
+                self._warn_throttled(
+                    "tf_missing",
+                    f"⚠️ TF2 not available: cannot transform obstacles from '{frame_id}' to 'world' (skipping obstacle distances).",
+                    period_s=10.0,
+                )
+                return None
+
+            if not self._tf_buffer.can_transform("world", frame_id, Time(), timeout=Duration(seconds=0.0)):
+                self._warn_throttled(
+                    f"tf_no_{frame_id}",
+                    f"⚠️ Missing TF '{frame_id}' -> 'world' (skipping obstacle distances).",
+                    period_s=5.0,
+                )
+                return None
+
+            ps = PoseStamped()
+            ps.header.frame_id = frame_id
+            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.pose = pose
+            tf = self._tf_buffer.lookup_transform("world", frame_id, Time(), timeout=Duration(seconds=0.0))
+            pw = do_transform_pose(ps, tf)
+            return np.array([pw.pose.position.x, pw.pose.position.y, pw.pose.position.z], dtype=float)
+        except Exception:
+            return None
 
 
     # ======================================================
@@ -577,11 +808,27 @@ class SafeAvoidanceTest(Node):
 
     def _cmd_cb(self, msg: Float64MultiArray):
         if len(msg.data) == 7:
-            self.blended_vel = np.array(msg.data)
+            self.blended_vel = np.array(msg.data, dtype=float)
+            # Keep alias in sync for any older log helpers.
+            self.last_cmd = np.array(msg.data, dtype=float)
 
     def _hazard_cb(self, msg: String):
         if msg.data:
             self.hazard = str(msg.data)
+
+    def _closest_constraint_cb(self, msg: Float64MultiArray):
+        try:
+            if len(msg.data) >= 8:
+                self.closest_d = float(msg.data[0])
+                self.closest_j_row = np.array(msg.data[1:8], dtype=float)
+                self._closest_stamp_wall = time.time()
+        except Exception:
+            pass
+
+    def _closest_hazard_cb(self, msg: String):
+        if msg.data:
+            self.closest_hazard = str(msg.data)
+            self._closest_stamp_wall = time.time()
 
     def _blender_traj_cb(self, msg: JointTrajectory):
         # Track whether a *new* trajectory actually arrives to the blender.
@@ -677,12 +924,14 @@ class SafeAvoidanceTest(Node):
         # Preferred path: publish to velocity blender (used by the simulation stack)
         self.velocity_blender_traj_pub.publish(traj)
 
-        # Backward-compatible path: if a joint trajectory controller is running, publish there too.
-        self.joint_traj_pub.publish(traj)
+        if self._publish_home_to_joint_traj_controller:
+            self.joint_traj_pub.publish(traj)
+            self.get_logger().info(
+                "   ↳ Published HOME trajectory to /velocity_blender/trajectory and /joint_trajectory_controller/joint_trajectory"
+            )
+        else:
+            self.get_logger().info("   ↳ Published HOME trajectory to /velocity_blender/trajectory")
 
-        self.get_logger().info(
-            "   ↳ Published HOME trajectory to /velocity_blender/trajectory (and also to /joint_trajectory_controller/joint_trajectory if available)"
-        )
         self.state = State.GOING_HOME
 
 
@@ -694,6 +943,15 @@ class SafeAvoidanceTest(Node):
         if self.wp_index >= len(self.waypoints):
             self.state = State.COMPLETED
             self.get_logger().info("🏁 All waypoints completed")
+            return
+
+        # Non-blocking: never wait in the executor thread.
+        if not self.action_client.server_is_ready():
+            self._warn_throttled(
+                "move_to_pose_not_ready",
+                "⏳ Action server 'move_to_pose' not ready yet; will retry...",
+                period_s=2.0,
+            )
             return
 
         wp = self.waypoints[self.wp_index]
@@ -728,7 +986,6 @@ class SafeAvoidanceTest(Node):
         self._set_blender_pause(False)
 
         self.get_logger().info(f"➡ Sending waypoint {wp.name}")
-        self.action_client.wait_for_server()
         self.action_client.send_goal_async(goal).add_done_callback(
             self._goal_response_cb
         )
@@ -768,14 +1025,25 @@ class SafeAvoidanceTest(Node):
             self.send_home()
 
         elif self.state == State.GOING_HOME:
-            if np.linalg.norm(self.q - HOME_JOINT_POSITION) < 0.02:
-                self.get_logger().info("✅ HOME reached")
-                if self._confirm_after_home:
-                    # Optional confirmation before starting waypoint execution.
-                    self._request_user_confirm(reason="start waypoints")
-                    self.state = State.WAIT_USER
-                else:
-                    self.state = State.READY
+            now = time.time()
+            q_err = float(np.linalg.norm(self.q - HOME_JOINT_POSITION))
+            cmd_norm = float(np.linalg.norm(self.blended_vel))
+            qd_norm = float(np.linalg.norm(self.qd))
+            settled = (cmd_norm < self._cmd_settle_thr) and (qd_norm < self._qd_settle_thr)
+
+            if (q_err < 0.02) and settled:
+                if self._home_reach_entered_wall is None:
+                    self._home_reach_entered_wall = now
+                elif (now - self._home_reach_entered_wall) >= self._settle_time_s:
+                    self.get_logger().info("✅ HOME reached (settled)")
+                    self._home_reach_entered_wall = None
+                    if self._confirm_after_home:
+                        self._request_user_confirm(reason="start waypoints")
+                        self.state = State.WAIT_USER
+                    else:
+                        self.state = State.READY
+            else:
+                self._home_reach_entered_wall = None
 
         elif self.state == State.READY:
             self.send_next_waypoint()
@@ -834,8 +1102,9 @@ class SafeAvoidanceTest(Node):
                 cmd_norm_now = float(np.linalg.norm(self.blended_vel))
                 # NOTE: If we're close to obstacles, the blender may intentionally slow/stop.
                 # In that case, starting an IK fallback would be unsafe.
-                far_from_obstacles = (float(self.min_dist) >= self._fallback_stuck_min_dist_m)
-                no_hazard = (str(self.hazard or "none") == "none")
+                d_safety, haz_safety, _jn_safety, _coherent = self._pick_coherent_safety(now_wall=now)
+                far_from_obstacles = (float(d_safety) >= self._fallback_stuck_min_dist_m)
+                no_hazard = (str(haz_safety or "none") == "none")
                 stuck_now = (err > 0.05) and (cmd_norm_now < 1e-3) and far_from_obstacles and no_hazard
 
                 if traj_is_missing or traj_is_trivial or stuck_now:
@@ -855,9 +1124,11 @@ class SafeAvoidanceTest(Node):
             # Timeout guard
             if (self._max_exec_time_s is not None) and (float(self._max_exec_time_s) > 0.0):
                 if (now - self._exec_start_wall) > float(self._max_exec_time_s):
+                    d_safety, haz_safety, _jn_safety, coherent = self._pick_coherent_safety(now_wall=now)
                     self.get_logger().warn(
                         f"⏱️ Timeout while executing {self.current_wp.name} (best-effort): "
-                        f"err={err:.3f}m, hazard={self.hazard}, d_min={self.min_dist:.3f}. "
+                        f"err={err:.3f}m, hazard={haz_safety} d_min={float(d_safety):.3f} "
+                        f"src={'closest' if coherent else 'legacy'}. "
                         f"timeout_action={self._timeout_action}"
                     )
 
@@ -901,11 +1172,13 @@ class SafeAvoidanceTest(Node):
                 if self._reach_entered_wall is None:
                     self._reach_entered_wall = now
                 elif (now - self._reach_entered_wall) >= self._settle_time_s:
+                    d_safety, haz_safety, _jn_safety, coherent = self._pick_coherent_safety(now_wall=now)
                     self.get_logger().info(
                         f"✅ {self.current_wp.name} reached (measured) | "
                         f"target={self._fmt_xyz(float(target[0]), float(target[1]), float(target[2]), prec=3)} "
                         f"ee={self._fmt_xyz(float(ee[0]), float(ee[1]), float(ee[2]), prec=3)} "
-                        f"err={err:.4f} m | hazard={self.hazard} d_min={self.min_dist:.3f}"
+                        f"err={err:.4f} m | hazard={haz_safety} d_min={float(d_safety):.3f} "
+                        f"src={'closest' if coherent else 'legacy'}"
                     )
                     if self._require_user_confirm:
                         self.get_logger().info("⏸ Robot fermo — attendendo conferma utente (ENTER)")
@@ -978,16 +1251,19 @@ class SafeAvoidanceTest(Node):
         bv = float(np.linalg.norm(qdot_cmd))
         tv = float(np.linalg.norm(qdot_track_proxy))
 
-        jn = float(np.linalg.norm(self.j_row))
-        d = float(self.min_dist)
+        now_wall = time.time()
+        d, haz_now, jn, coherent = self._pick_coherent_safety(now_wall=now_wall)
 
         # Simple "avoidance active" heuristic (for SAFE/AVOIDANCE flag)
-        # Prefer hazard label when available; fall back to thresholds.
-        haz_now = str(self.hazard or "none")
-        active = (
-            (haz_now != "none")
-            or ((d < float(self._avoidance_active_distance_m)) and (av > 1e-3) and (jn > 1e-6))
-        )
+        # IMPORTANT: drive this from the coherent closest-constraint pair when available.
+        haz_now = str(haz_now or "none")
+        if bool(coherent):
+            active = (haz_now != "none") or (
+                (d < float(self._avoidance_active_distance_m)) and (av > 1e-3) and (jn > 1e-6)
+            )
+        else:
+            # Legacy topics can be temporally incoherent; do not use hazard label to decide ACTIVE.
+            active = (d < float(self._avoidance_active_distance_m)) and (av > 1e-3) and (jn > 1e-6)
 
         # Alignment between avoidance and command (cosine similarity)
         if av > 1e-9 and bv > 1e-9:
@@ -1024,7 +1300,6 @@ class SafeAvoidanceTest(Node):
         # Smart logging policy:
         # - periodic (every N ticks)
         # - immediate if avoidance becomes active/inactive or hazard label changes
-        now_wall = time.time()
         haz = haz_now
         event = (
             (self._last_log_active is None)
@@ -1083,6 +1358,7 @@ class SafeAvoidanceTest(Node):
                     avoid_norm=float(av),
                     near_txt=str(near_txt),
                     avoidance_active=bool(active),
+                    coherent=bool(coherent),
                     use_ansi=bool(self._use_ansi),
                 )
             )
@@ -1096,7 +1372,7 @@ class SafeAvoidanceTest(Node):
                 f"|avoid|={av:.3f} "
                 f"a/c={a_over_cmd:.2f} a/t={a_over_track:.2f} cos(a,cmd)={cos_ac:+.2f} "
                 f"{act_flag} "
-                f"hazard={haz_disp} "
+                f"hazard={haz_disp} src={'closest' if coherent else 'legacy'} "
                 f"near={near_txt}"
             )
 
@@ -1124,7 +1400,7 @@ class SafeAvoidanceTest(Node):
                         self.get_logger().warn(
                             f"{YELLOW}[STALL?]{RESET} "
                             f"wp={wp} err={err:.3f}m |cmd|={bv:.3f}rad/s d_min={d:.3f} "
-                            f"avoid_active={active} hazard={self.hazard} near={near_txt} "
+                            f"avoid_active={active} hazard={haz_disp} src={'closest' if coherent else 'legacy'} near={near_txt} "
                             f"target={self._fmt_xyz(float(target[0]), float(target[1]), float(target[2]), prec=3)} "
                             f"ee={self._fmt_xyz(float(ee[0]), float(ee[1]), float(ee[2]), prec=3)}"
                         )
@@ -1338,9 +1614,21 @@ def main():
         Waypoint(0.30, 0.0, 0.45, "WP13_HOME_RETURN"),
     ]
 
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, RuntimeError):
+        # In some ROS2 builds, Ctrl-C during message conversion can raise a RuntimeError.
+        # Treat it as a best-effort shutdown (diagnostic-only behavior).
+        pass
+    finally:
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ velocity_control_blender:
     max_vel: 0.15
     control_period_s: 0.01
     velocity_filter_beta: 0.65
+    # Risk-scaled LPF (close to obstacles -> less lag)
+    velocity_filter_beta_near: 0.90
     slowdown_gamma_min: 0.35
     ns_floor_fraction: 0.25
     waypoint_threshold: 0.05
@@ -28,6 +30,15 @@ velocity_control_blender:
     # Allineati con avoidance_params.yaml
     influence_distance: 0.35
     safety_margin: 0.08
+
+    # Conservative distance option (must match controller if used)
+    distance_inflation: 0.0
+
+    # Unified risk staging (30/20/10/5 cm)
+    risk_d_far: 0.30
+    risk_d_mid: 0.20
+    risk_d_near: 0.10
+    stop_distance: 0.05
 
     # Blending (make avoidance clearly visible below ~20cm)
     # Slightly reduce the maximum weight so tracking is not completely cancelled.
@@ -72,6 +83,8 @@ velocity_control_blender:
 
     # Gentle avoidance shaping (avoid abrupt repulsive kicks)
     avoidance_input_filter_beta: 0.55
+    # Close to obstacles -> less lag on avoidance input
+    avoidance_input_filter_beta_near: 0.90
     avoidance_repulsion_cap_fraction: 0.65
 
     # Anti-stall: if blending collapses to ~0 while avoidance is active, inject a tiny
@@ -79,6 +92,9 @@ velocity_control_blender:
     tangent_escape_enable: true
     tangent_escape_speed: 0.06
     tangent_escape_err_min: 0.03
+
+    # Prevent tangential dominance (nullspace component cap)
+    tangential_cmd_max_fraction: 0.60
 
     # Diagnostics (helps explain stalls)
     diag_enable: true

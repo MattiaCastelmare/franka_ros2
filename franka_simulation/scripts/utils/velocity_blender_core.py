@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .avoidance_math import enforce_halfspace_with_box
+from .risk_staging import compute_risk_staging, ramp_down_distance
 
 
 def compute_polyline_arc_lengths(points: Sequence[np.ndarray]) -> Optional[np.ndarray]:
@@ -238,6 +239,13 @@ class InfluenceParams:
     slowdown_factor_max: float
     slowdown_gamma_min: float
 
+    # Unified risk staging thresholds (30/20/10/5 cm) + conservative inflation
+    distance_inflation: float
+    risk_d_far: float
+    risk_d_mid: float
+    risk_d_near: float
+    stop_distance: float
+
     d_dot_min_far: float
     d_dot_min_close: float
 
@@ -267,6 +275,8 @@ class InfluenceParams:
     tangent_escape_speed: float
     tangent_escape_err_min: float
 
+    tangential_cmd_max_fraction: float
+
     diag_cmd_norm_eps: float
 
 
@@ -282,6 +292,7 @@ def compute_influence_zone_command(
     error_norm: float,
     threshold: float,
     recovery_until_wall: float,
+    stall_detected: bool = False,
     params: InfluenceParams,
 ) -> tuple[np.ndarray, Dict[str, Any]]:
     """Compute qdot_des in the influence zone.
@@ -319,11 +330,21 @@ def compute_influence_zone_command(
     P = (JT @ J) / denom
     N = np.eye(n_dof) - P
 
-    # Smoothstep weight: 0 at d_infl, 1 at d_safe
-    x = (float(d_infl) - float(d)) / (float(d_infl) - float(d_safe))
-    x = max(0.0, min(1.0, x))
-    w_d = 3.0 * x * x - 2.0 * x * x * x
+    # Unified risk staging (based on *effective* distance).
+    d_eff = float(d) - float(max(0.0, float(params.distance_inflation)))
+    staging = compute_risk_staging(
+        d_eff=float(d_eff),
+        d_far=float(params.risk_d_far),
+        d_mid=float(params.risk_d_mid),
+        d_near=float(params.risk_d_near),
+        d_stop=float(params.stop_distance),
+    )
+    w_d = float(staging.w_total)
     dbg["w_d"] = float(w_d)
+    dbg["d_eff"] = float(d_eff)
+    dbg["w_far"] = float(staging.w_far)
+    dbg["w_mid"] = float(staging.w_mid)
+    dbg["w_near"] = float(staging.w_near)
 
     # 1) Base: keep tracking (towards goal)
     qdot_des = np.array(qdot_tracking, dtype=float).reshape(n_dof).copy()
@@ -367,7 +388,7 @@ def compute_influence_zone_command(
     null_boost = 1.0 + float(params.null_boost_max) * float(w_d)
     qdot_des = (P @ qdot_des) + float(null_boost) * (N @ qdot_des)
 
-    # 4) Enforce lower bound on d_dot across the influence region
+    # 4) Enforce lower bound on d_dot across the influence region (risk-staged)
     d_dot_min = (1.0 - float(w_d)) * float(params.d_dot_min_far) + float(w_d) * float(params.d_dot_min_close)
 
     if params.cbf_enable:
@@ -377,8 +398,22 @@ def compute_influence_zone_command(
         except Exception:
             pass
 
-    if float(d) < float(d_safe):
-        push = float(params.d_dot_push_gain) * float(float(d_safe) - float(d))
+    # Extra push only when inside the safety margin.
+    # Use a smooth ramp so we don't introduce a discontinuity at d_safe (reduces jitter).
+    if float(d_eff) < float(d_safe):
+        pen = max(0.0, float(d_safe) - float(d_eff))
+        # 0 at d_safe, 1 near stop_distance.
+        try:
+            r = float(
+                ramp_down_distance(
+                    d=float(d_eff),
+                    d_hi=float(d_safe),
+                    d_lo=float(params.stop_distance),
+                )
+            )
+        except Exception:
+            r = 1.0
+        push = float(params.d_dot_push_gain) * float(pen) * float(np.clip(r, 0.0, 1.0))
         push = float(np.clip(push, 0.0, float(params.d_dot_push_max)))
         d_dot_min = max(float(d_dot_min), float(push))
 
@@ -426,7 +461,9 @@ def compute_influence_zone_command(
             pass
 
     # 6) Anti-stall tangential escape
-    if params.tangent_escape_enable:
+    # IMPORTANT: gate on progress-based stall detection to avoid injecting tangential motion
+    # during normal smooth avoidance.
+    if params.tangent_escape_enable and bool(stall_detected):
         try:
             if (float(w_d) > 1e-3) and (float(error_norm) > float(max(float(threshold), float(params.tangent_escape_err_min)))):
                 des_n = float(np.linalg.norm(qdot_des))
@@ -459,7 +496,40 @@ def compute_influence_zone_command(
         except Exception:
             pass
 
+    # Final: cap tangential component in the distance-jacobian nullspace.
+    qdot_des = _cap_tangential_component(
+        qdot=np.array(qdot_des, dtype=float).reshape(n_dof),
+        N=N,
+        max_vel=float(params.max_vel),
+        w_d=float(w_d),
+        tangential_cmd_max_fraction=float(params.tangential_cmd_max_fraction),
+    )
+
     return qdot_des, dbg
+
+
+def _cap_tangential_component(
+    *,
+    qdot: np.ndarray,
+    N: np.ndarray,
+    max_vel: float,
+    w_d: float,
+    tangential_cmd_max_fraction: float,
+) -> np.ndarray:
+    """Cap the nullspace (tangential) component norm to avoid dominance/chattering."""
+    try:
+        qdot = np.array(qdot, dtype=float).reshape(-1)
+        t = N @ qdot
+        t_n = float(np.linalg.norm(t))
+
+        frac = float(np.clip(float(tangential_cmd_max_fraction), 0.0, 2.0))
+        # Allow more tangential near obstacles, but still bounded.
+        cap = float(frac) * float(max_vel) * float(0.30 + 0.70 * float(np.clip(w_d, 0.0, 1.0)))
+        if (cap > 0.0) and (t_n > cap) and (t_n > 1e-9):
+            t = (cap / t_n) * t
+        return (qdot - (N @ qdot)) + t
+    except Exception:
+        return np.array(qdot, dtype=float).reshape(-1)
 
 
 def apply_output_filter_and_constraints(
@@ -467,6 +537,7 @@ def apply_output_filter_and_constraints(
     qdot_des: np.ndarray,
     qdot_prev: np.ndarray,
     velocity_filter_beta: float,
+    velocity_filter_beta_near: float,
     max_vel: float,
     # constraint inputs
     d: float,
@@ -476,6 +547,7 @@ def apply_output_filter_and_constraints(
     cbf_projection_iters: int,
     cbf_eps: float,
     normal_correction_max: float,
+    qdot_tracking_hint: Optional[np.ndarray],
     dbg: Dict[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """LPF + saturation + robust halfspace enforcement.
@@ -484,7 +556,11 @@ def apply_output_filter_and_constraints(
 
     Returns (qdot, qdot_prev_new, dbg).
     """
-    beta = float(np.clip(float(velocity_filter_beta), 0.0, 1.0))
+    # Risk-scaled LPF: close to hazards -> less lag (beta -> beta_near).
+    w = float(np.clip(float(dbg.get("w_d", 0.0)), 0.0, 1.0))
+    b_far = float(np.clip(float(velocity_filter_beta), 0.0, 1.0))
+    b_near = float(np.clip(float(velocity_filter_beta_near), 0.0, 1.0))
+    beta = float(b_far + (b_near - b_far) * w)
     qdot = beta * np.array(qdot_des, dtype=float).reshape(-1) + (1.0 - beta) * np.array(qdot_prev, dtype=float).reshape(-1)
     qdot_prev_new = qdot.copy()
 
@@ -496,21 +572,19 @@ def apply_output_filter_and_constraints(
             d_dot_min_eff = float(dbg.get("d_dot_min", 0.0))
 
             # Feasibility guard: under the box constraint |qdot_i|<=max_vel, the maximum
-            # achievable distance rate is max_vel * sum(|j_i|). If the requested bound
-            # exceeds this, we switch to a best-effort command that maximizes d_dot.
+            # achievable distance rate is max_vel * sum(|j_i|).
             d_dot_max = float(max_vel) * float(np.sum(np.abs(j)))
             if d_dot_max <= 1e-9:
                 d_dot_min_eff = float(d_dot_min_eff)
             else:
                 if float(d_dot_min_eff) > float(d_dot_max):
-                    # Infeasible: maximize distance increase.
-                    qdot = float(max_vel) * np.sign(j)
-                    dbg["cbf_ok"] = False
+                    # Soft-infeasible: request the maximum achievable bound and keep going.
+                    # This avoids an abrupt jump to qdot = max_vel*sign(j) (which can look like "folding").
+                    d_dot_min_eff = float(d_dot_max) - 1e-6
                     dbg["cbf_infeasible"] = True
-                    return qdot, qdot_prev_new, dbg
-
-                # Otherwise clamp slightly below the true maximum to help convergence.
-                d_dot_min_eff = float(min(float(d_dot_min_eff), float(d_dot_max) - 1e-6))
+                else:
+                    # Otherwise clamp slightly below the true maximum to help convergence.
+                    d_dot_min_eff = float(min(float(d_dot_min_eff), float(d_dot_max) - 1e-6))
 
             qdot, ok = enforce_halfspace_with_box(
                 qdot_des=qdot,
@@ -535,6 +609,26 @@ def apply_output_filter_and_constraints(
                 if bool(ok2):
                     qdot = qdot2
                     ok = True
+
+            # If still not ok: safety-first escape (maximize d_dot) + optional nullspace tracking.
+            if not bool(ok):
+                qdot = float(max_vel) * np.sign(j)
+                if qdot_tracking_hint is not None:
+                    try:
+                        qt = np.array(qdot_tracking_hint, dtype=float).reshape(-1)
+                        jn2 = float(j @ j) + 1e-8
+                        N = np.eye(int(qt.shape[0])) - (np.outer(j, j) / jn2)
+                        t = N @ qt
+                        t_n = float(np.linalg.norm(t))
+                        t_cap = 0.5 * float(max_vel)
+                        if (t_cap > 0.0) and (t_n > t_cap) and (t_n > 1e-9):
+                            t *= (t_cap / t_n)
+                        qdot = np.clip(qdot + t, -float(max_vel), float(max_vel))
+                    except Exception:
+                        pass
+                dbg["cbf_ok"] = False
+                dbg["cbf_infeasible_hard"] = True
+                return qdot, qdot_prev_new, dbg
 
             dbg["cbf_ok"] = bool(ok)
         except Exception:
