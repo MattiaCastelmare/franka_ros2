@@ -63,7 +63,14 @@ class SimpleVelocityBlender(Node):
         self.qdot_prev = np.zeros(self.n_dof)      # Velocità precedente (per smoothing)
         self.J_avoid = np.zeros((1, self.n_dof))   # Jacobiano del punto più critico (1x7)
         self.min_dist = 999.0                      # Distanza minima iniziale "lontana"
+        self.min_dist_raw = 999.0                  # Distanza minima RAW (non filtrata)
         self.hazard = "none"
+
+        # Coherent closest constraint from the avoidance controller
+        # Message format: [d_closest, j_row_0..j_row_6]
+        self.closest_d = 999.0
+        self.closest_j_row = np.zeros(self.n_dof)
+        self.closest_hazard = "none"
 
         # Emergency / recovery state (kept as a small struct to avoid scattering fields).
         self._er_state = EmergencyRecoveryState()
@@ -108,6 +115,25 @@ class SimpleVelocityBlender(Node):
         self.create_subscription(
             Float64MultiArray, "/avoidance/min_distance",
             self.min_dist_cb, 10
+        )
+
+        # Raw global min distance (safety-critical)
+        self.create_subscription(
+            Float64MultiArray, "/avoidance/min_distance_raw",
+            self.min_dist_raw_cb, 10
+        )
+
+        # Coherent (d_closest, j_row_closest)
+        self.create_subscription(
+            Float64MultiArray, "/avoidance/closest_constraint",
+            self.closest_constraint_cb, 10
+        )
+
+        self.create_subscription(
+            String,
+            "/avoidance/closest_hazard",
+            self.closest_hazard_cb,
+            10,
         )
 
         self.create_subscription(
@@ -402,6 +428,24 @@ class SimpleVelocityBlender(Node):
         if len(msg.data) > 0:
             self.min_dist = float(msg.data[0])
 
+    def min_dist_raw_cb(self, msg: Float64MultiArray):
+        """Riceve la distanza minima RAW (non filtrata) dall'ostacolo."""
+        if len(msg.data) > 0:
+            self.min_dist_raw = float(msg.data[0])
+
+    def closest_constraint_cb(self, msg: Float64MultiArray):
+        """Riceve (d_closest, j_row_closest) coerenti dal controller di avoidance."""
+        try:
+            if len(msg.data) >= (1 + self.n_dof):
+                self.closest_d = float(msg.data[0])
+                self.closest_j_row = np.array(msg.data[1 : 1 + self.n_dof], dtype=float).reshape(self.n_dof)
+        except Exception:
+            pass
+
+    def closest_hazard_cb(self, msg: String):
+        if msg.data:
+            self.closest_hazard = str(msg.data)
+
     def hazard_cb(self, msg: String):
         if msg.data:
             self.hazard = str(msg.data)
@@ -453,15 +497,33 @@ class SimpleVelocityBlender(Node):
         # EMERGENCY OVERRIDE (hard safety)
         # ------------------------------------------------------------------
         now = time.time()
-        d = float(self.min_dist)
-        j_row = self.J_avoid[0, :]
+
+        # --- Pick the most coherent safety signal available ---
+        # Prefer the coherent pair published by the avoidance controller.
+        use_closest = bool(np.linalg.norm(self.closest_j_row) > 1e-6) and (float(self.closest_d) < 1e6)
+        if use_closest:
+            d = float(self.closest_d)
+            j_row = np.array(self.closest_j_row, dtype=float).reshape(-1)
+            hazard_for_safety = str(self.closest_hazard or "none")
+        else:
+            # Fallback to legacy topics
+            d = float(self.min_dist)
+            j_row = self.J_avoid[0, :]
+            hazard_for_safety = str(self.hazard or "none")
+
+        # Conservative gating distance: use RAW global min if available.
+        try:
+            d_gate = float(min(float(self.min_dist_raw), float(d)))
+        except Exception:
+            d_gate = float(d)
+
         j_norm = float(np.linalg.norm(j_row))
 
         handled, qdot_em, self._er_state, reset_smoothing = emergency_override(
             now_wall=float(now),
-            d=float(d),
+            d=float(d_gate),
             j_row=np.array(j_row, dtype=float).reshape(-1),
-            hazard=str(self.hazard or "none"),
+            hazard=str(hazard_for_safety),
             j_norm=float(j_norm),
             max_vel=float(self.max_vel),
             state=self._er_state,
@@ -578,7 +640,7 @@ class SimpleVelocityBlender(Node):
             "idx": int(self.current_index),
             "n_points": int(len(self.trajectory_points)),
             "err_norm": float(error_norm),
-            "d": float(d),
+            "d": float(d_gate),
             "j_norm": float(j_norm),
             "w_d": 0.0,
             "gamma": 1.0,
@@ -589,12 +651,12 @@ class SimpleVelocityBlender(Node):
         }
 
         # Se nessuna informazione sensata di avoidance → tracking puro
-        if (d >= self.d_infl) or (j_norm < 1e-6):
+        if (d_gate >= self.d_infl) or (j_norm < 1e-6):
             qdot_des = qdot_tracking
         else:
             qdot_des, dbg2 = compute_influence_zone_command(
                 now_wall=float(now),
-                d=float(d),
+                d=float(d_gate),
                 j_row=np.array(j_row, dtype=float).reshape(-1),
                 j_norm=float(j_norm),
                 qdot_tracking=np.array(qdot_tracking, dtype=float).reshape(self.n_dof),
@@ -646,7 +708,7 @@ class SimpleVelocityBlender(Node):
             qdot_prev=np.array(self.qdot_prev, dtype=float).reshape(self.n_dof),
             velocity_filter_beta=float(self.velocity_filter_beta),
             max_vel=float(self.max_vel),
-            d=float(d),
+            d=float(d_gate),
             d_infl=float(self.d_infl),
             j_row=np.array(j_row, dtype=float).reshape(-1),
             j_norm=float(j_norm),

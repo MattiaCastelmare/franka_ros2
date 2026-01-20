@@ -492,16 +492,50 @@ def apply_output_filter_and_constraints(
 
     if (float(d) < float(d_infl)) and (float(j_norm) > 1e-6):
         try:
+            j = np.array(j_row, dtype=float).reshape(-1)
             d_dot_min_eff = float(dbg.get("d_dot_min", 0.0))
+
+            # Feasibility guard: under the box constraint |qdot_i|<=max_vel, the maximum
+            # achievable distance rate is max_vel * sum(|j_i|). If the requested bound
+            # exceeds this, we switch to a best-effort command that maximizes d_dot.
+            d_dot_max = float(max_vel) * float(np.sum(np.abs(j)))
+            if d_dot_max <= 1e-9:
+                d_dot_min_eff = float(d_dot_min_eff)
+            else:
+                if float(d_dot_min_eff) > float(d_dot_max):
+                    # Infeasible: maximize distance increase.
+                    qdot = float(max_vel) * np.sign(j)
+                    dbg["cbf_ok"] = False
+                    dbg["cbf_infeasible"] = True
+                    return qdot, qdot_prev_new, dbg
+
+                # Otherwise clamp slightly below the true maximum to help convergence.
+                d_dot_min_eff = float(min(float(d_dot_min_eff), float(d_dot_max) - 1e-6))
+
             qdot, ok = enforce_halfspace_with_box(
                 qdot_des=qdot,
-                j_row=np.array(j_row, dtype=float).reshape(-1),
+                j_row=j,
                 d_dot_min=float(d_dot_min_eff),
                 max_abs_vel=float(max_vel),
                 iters=int(cbf_projection_iters),
                 eps=float(cbf_eps),
                 correction_l2_max=float(normal_correction_max),
             )
+            # If we failed, try again without a correction cap (safety-first near obstacles).
+            if not bool(ok):
+                qdot2, ok2 = enforce_halfspace_with_box(
+                    qdot_des=qdot,
+                    j_row=j,
+                    d_dot_min=float(d_dot_min_eff),
+                    max_abs_vel=float(max_vel),
+                    iters=max(2, int(cbf_projection_iters) * 2),
+                    eps=float(cbf_eps),
+                    correction_l2_max=None,
+                )
+                if bool(ok2):
+                    qdot = qdot2
+                    ok = True
+
             dbg["cbf_ok"] = bool(ok)
         except Exception:
             dbg["cbf_ok"] = False

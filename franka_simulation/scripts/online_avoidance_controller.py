@@ -31,6 +31,7 @@ import pinocchio as pin
 from utils.avoidance_math import (
     OsqpCbfQpSolver,
     build_capsules_for_link_pairs,
+    build_cbf_constraints,
     build_reduced_pinocchio_model_from_urdf,
     filtered_collision_objects_from_planning_scene,
     ordered_joint_positions_from_joint_state,
@@ -410,6 +411,15 @@ class NullSpaceAvoidance(Node):
 
         self.pub = self.create_publisher(Float64MultiArray, "/avoidance/velocity", 10)
         self.min_dist_pub = self.create_publisher(Float64MultiArray, "/avoidance/min_distance", 10)
+        # Raw, unfiltered global minimum distance (safety-critical for downstream blending).
+        self.min_dist_raw_pub = self.create_publisher(Float64MultiArray, "/avoidance/min_distance_raw", 10)
+
+        # Coherent pair (d_closest_raw, j_row_closest) to avoid mismatch between
+        # filtered min distance and the active constraint Jacobian.
+        # Message format: [d_closest, j_row_0..j_row_6]
+        self.closest_constraint_pub = self.create_publisher(Float64MultiArray, "/avoidance/closest_constraint", 10)
+        self.closest_hazard_pub = self.create_publisher(String, "/avoidance/closest_hazard", 10)
+
         # riga di Jacobiano (1x7) del punto più critico: d_dot ≈ j_row @ qdot
         self.jac_pub = self.create_publisher(Float64MultiArray, "/avoidance/jacobian", 10)
         # Debug/diagnostics: which hazard is currently the most critical (helps explain stalls)
@@ -428,6 +438,7 @@ class NullSpaceAvoidance(Node):
         G: Optional[np.ndarray],
         m_active: int,
         active_best: Optional[dict],
+        d_min_raw: float,
     ) -> None:
         """Publish min-distance, hazard string, and active constraint Jacobian row.
 
@@ -437,7 +448,10 @@ class NullSpaceAvoidance(Node):
         """
         hazard_msg = String()
 
-        # Publish filtered global minimum distance so downstream logic can react early but smoothly.
+        # Publish BOTH raw and filtered global min distance.
+        # - raw: safety-critical (avoids latency)
+        # - filtered: smooth visualization / non-critical shaping
+        self.min_dist_raw_pub.publish(Float64MultiArray(data=[float(d_min_raw)]))
         self.min_dist_pub.publish(Float64MultiArray(data=[float(self._cbf_state.d_min_filt)]))
 
         if self._cbf_state.stop_gate_active:
@@ -471,6 +485,16 @@ class NullSpaceAvoidance(Node):
         if not (self.pin_ok and isinstance(self.q, np.ndarray)):
             self.pub.publish(zero)
             self.jac_pub.publish(jac_zero)
+            # Keep downstream nodes from using stale values.
+            try:
+                self.min_dist_raw_pub.publish(Float64MultiArray(data=[999.0]))
+                self.min_dist_pub.publish(Float64MultiArray(data=[999.0]))
+                self.closest_constraint_pub.publish(Float64MultiArray(data=[999.0] + [0.0] * 7))
+                msg = String()
+                msg.data = "none"
+                self.closest_hazard_pub.publish(msg)
+            except Exception:
+                pass
             return
 
         # Update kinematics for current q
@@ -546,11 +570,63 @@ class NullSpaceAvoidance(Node):
             qp_available=bool(self._qp_available),
         )
 
+        # ------------------------------------------------------------------
+        # Publish a *coherent* closest hazard pair for downstream blending:
+        #   (d_closest_raw, j_row_closest)
+        # This intentionally does NOT depend on whether the CBF is active.
+        # ------------------------------------------------------------------
+        try:
+            if len(candidates) > 0:
+                Gc, _, mc, best_c = build_cbf_constraints(
+                    list(candidates),
+                    float(1e9),
+                    K=1,
+                    cbf_eps=float(self._cbf_params.cbf_eps),
+                    cbf_d_safe=float(self._cbf_params.cbf_d_safe),
+                    approach_speed_limit=float(self._cbf_params.cbf_approach_speed_limit),
+                    alpha_min=float(self._cbf_params.cbf_alpha_min),
+                    alpha_max=float(self._cbf_params.cbf_alpha_max),
+                    risk_d_far=float(self._cbf_params.risk_d_far),
+                    risk_d_mid=float(self._cbf_params.risk_d_mid),
+                    risk_d_near=float(self._cbf_params.risk_d_near),
+                    stop_distance=float(self._cbf_params.stop_d_in),
+                    model=self.model,
+                    data=self.data,
+                    q=self.q,
+                )
+                if (int(mc) > 0) and (best_c is not None):
+                    d_closest = float(best_c.get("d", float(d_min)))
+                    j_row_closest = np.array(Gc[0, :], dtype=float).reshape(-1)
+                    self.closest_constraint_pub.publish(
+                        Float64MultiArray(data=[float(d_closest)] + j_row_closest.tolist())
+                    )
+                    msg = String()
+                    msg.data = str(best_c.get("hazard", "none"))
+                    self.closest_hazard_pub.publish(msg)
+                else:
+                    self.closest_constraint_pub.publish(Float64MultiArray(data=[999.0] + [0.0] * 7))
+                    msg = String()
+                    msg.data = "none"
+                    self.closest_hazard_pub.publish(msg)
+            else:
+                self.closest_constraint_pub.publish(Float64MultiArray(data=[999.0] + [0.0] * 7))
+                msg = String()
+                msg.data = "none"
+                self.closest_hazard_pub.publish(msg)
+        except Exception:
+            pass
+
         # Publish the joint velocity command (same topic/type as before)
         self.pub.publish(Float64MultiArray(data=np.array(qdot_out, dtype=float).reshape(-1).tolist()))
 
         # Publish diagnostics (min distance, hazard string, and jacobian of the most critical active constraint)
-        self._publish_cbf_diagnostics(jac_zero=jac_zero, G=G, m_active=int(m_active), active_best=active_best)
+        self._publish_cbf_diagnostics(
+            jac_zero=jac_zero,
+            G=G,
+            m_active=int(m_active),
+            active_best=active_best,
+            d_min_raw=float(d_min),
+        )
 
         # Throttled debug log (1Hz)
         debug_throttled(
