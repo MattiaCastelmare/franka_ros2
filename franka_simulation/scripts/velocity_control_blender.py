@@ -24,6 +24,19 @@ from std_msgs.msg import Float64MultiArray, Bool, String
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
 
+# Low-level helpers extracted to utils (installed via franka_simulation/CMakeLists.txt).
+from utils.velocity_blender_core import (
+    EmergencyParams,
+    EmergencyRecoveryState,
+    InfluenceParams,
+    apply_output_filter_and_constraints,
+    compute_influence_zone_command,
+    compute_polyline_arc_lengths,
+    emergency_override,
+    interpolate_at_s,
+    nearest_point_on_polyline,
+)
+
 
 class SimpleVelocityBlender(Node):
 
@@ -38,184 +51,10 @@ class SimpleVelocityBlender(Node):
         self.n_dof = 7
 
         # ===== PARAMETRI (da ROS/YAML) =====
-        self.declare_parameter("control_period_s", 0.01)  # seconds
-        self.declare_parameter("kp", 20.0)             # MODIFICA: un po' meno aggressivo (prima 30)
-        self.declare_parameter("max_vel", 0.4)         # MODIFICA: limita velocità globale
-        self.declare_parameter("waypoint_threshold", 0.05)
-        self.declare_parameter("final_threshold", 0.01)
-
-        # Path rejoin / lookahead (for dynamic obstacles)
-        # Instead of tracking the current waypoint index rigidly, we continuously project the current
-        # joint configuration onto the received trajectory and pick a target ahead (lookahead).
-        # This enables: deviate to avoid obstacles -> once clear, rejoin the original trajectory.
-        self.declare_parameter("rejoin_enable", True)
-        self.declare_parameter("rejoin_lookahead_points", 5)
-        # Prefer distance-based lookahead (joint-space arc length). If > 0, it overrides lookahead_points.
-        self.declare_parameter("rejoin_lookahead_distance_rad", 0.25)
-        # Search range for nearest-point (0 = search full trajectory from current_index).
-        self.declare_parameter("rejoin_search_ahead_points", 0)
-
-        self.declare_parameter("influence_distance", 0.30)
-        self.declare_parameter("safety_margin", 0.08)
-
-        # MODIFICA: nuovi parametri per blending e proiezione
-        self.declare_parameter("avoidance_weight_max", 1.0)      # peso max su qdot_avoid
-        self.declare_parameter("slowdown_factor_max", 0.5)       # riduzione max velocità vicini (0.5 -> velocità min 50%)
-        # ḋ minima quando d <= d_safe (m/s equivalente). 0.0 = evita penetrazione ma non forza "scappare".
-        self.declare_parameter("d_dot_min_close", 0.0)
-        # Extra push when inside the safety margin (helps avoid deadlocks at the boundary).
-        # Interpreted as: d_dot_min := max(d_dot_min, d_dot_push_gain * (d_safe - d)) for d < d_safe.
-        self.declare_parameter("d_dot_push_gain", 0.5)
-        self.declare_parameter("d_dot_push_max", 0.10)
-        # ḋ minima al bordo della zona di influenza (di solito negativa: permette avvicinarsi se lontano)
-        self.declare_parameter("d_dot_min_far", -0.05)
-
-        # CBF-style constraint shaping and robust enforcement under velocity saturation.
-        # Classic CBF on h(d)=d-d_safe:  h_dot + k*h >= 0  ->  d_dot >= -k*(d-d_safe)
-        # This yields a smooth lower bound: negative far away, 0 at d_safe, positive inside.
-        self.declare_parameter("cbf_enable", True)
-        self.declare_parameter("cbf_kappa", 2.0)
-        # Enforce the half-space constraint together with joint-velocity box constraints by
-        # alternating projections (fast, dependency-free). Small number of iterations is enough.
-        self.declare_parameter("cbf_projection_iters", 4)
-        self.declare_parameter("cbf_eps", 1e-4)
-
-        # ------------------------------------------------------------------
-        # EMERGENCY SAFETY (hard override)
-        # If the minimum distance drops below enter threshold, immediately override tracking and
-        # command a joint velocity that increases the distance (move away along the distance gradient).
-        # Once the minimum distance is above exit threshold (hysteresis), switch to a short recovery
-        # phase where we add tangential motion to help slide around the obstacle and rejoin the path.
-        # ------------------------------------------------------------------
-        self.declare_parameter("emergency_enable", True)
-        self.declare_parameter("emergency_enter_m", 0.05)  # 5 cm
-        self.declare_parameter("emergency_exit_m", 0.10)   # 10 cm
-        # Desired minimum distance rate (m/s) during emergency escape.
-        self.declare_parameter("emergency_d_dot", 0.06)
-        # Hard cap for escape command as fraction of max_vel.
-        self.declare_parameter("emergency_max_vel_fraction", 1.0)
-        # Apply emergency only for these hazard prefixes (from /avoidance/hazard), e.g. external/self/ground.
-        self.declare_parameter("emergency_hazard_prefixes", ["external:"])
-
-        # Recovery (after emergency clears): inject tangential motion for a short time.
-        self.declare_parameter("recovery_enable", True)
-        self.declare_parameter("recovery_time_s", 1.0)
-        self.declare_parameter("recovery_tangent_speed", 0.08)  # rad/s scaled by proximity
-
-        # Bias tangenziale per "aggirare" senza bloccare il goal
-        self.declare_parameter("avoidance_tangent_weight", 0.4)
-        # Limite alla correzione lungo la normale (evita scatti)
-        self.declare_parameter("normal_correction_max", 0.25)
-        # Strategie per evitare lo "stallo" in presenza di ostacoli
-        self.declare_parameter("use_avoidance_velocity", True)        # usa /avoidance/velocity nel blending
-        self.declare_parameter("avoidance_normal_only", True)         # applica repulsione solo nella normale (rispetto a j_row)
-        self.declare_parameter("null_boost_max", 3.0)                 # boost progress nel nullspace vicino all'ostacolo
-        self.declare_parameter("avoidance_ratio_max", 1.2)            # limite: ||w_rep*qdot_avoid|| <= ratio*(||qdot_ns||+eps)
-
-        # Gentle avoidance shaping: filter and cap avoidance so it cannot dominate tracking.
-        # - avoidance_input_filter_beta: 1.0 = no filtering, lower = smoother
-        # - avoidance_repulsion_cap_fraction: cap repulsion norm as fraction of max_vel
-        self.declare_parameter("avoidance_input_filter_beta", 0.55)
-        self.declare_parameter("avoidance_repulsion_cap_fraction", 0.65)
-
-        # Smoothing / safety knobs (previously hard-coded)
-        self.declare_parameter("velocity_filter_beta", 0.7)   # 0.7 = più reattivo, 0.5 = più liscio
-        self.declare_parameter("slowdown_gamma_min", 0.6)     # lower bound for global slowdown gamma
-        self.declare_parameter("ns_floor_fraction", 0.25)     # floor for ns_norm as fraction of max_vel
-
-        # Diagnostics (helps explain stalls)
-        self.declare_parameter("diag_enable", True)
-        self.declare_parameter("diag_period_s", 1.0)
-        self.declare_parameter("diag_cmd_norm_eps", 0.005)
-
-        # Anti-stall: inject a small tangential component (in the nullspace of j_row)
-        # if the blended command collapses close to zero while avoidance is active.
-        # This helps "slide around" obstacles instead of freezing.
-        self.declare_parameter("tangent_escape_enable", True)
-        self.declare_parameter("tangent_escape_speed", 0.03)     # rad/s (scaled by w_d)
-        self.declare_parameter("tangent_escape_err_min", 0.03)   # rad: only if not already basically at target
-
-        # Pause (for interactive step-by-step demos/tests)
-        # When paused, the blender publishes zero velocities and does not execute the trajectory.
-        self.declare_parameter("pause_enable", True)
-        # Modalità B (reactive): l'avoidance può muovere anche senza traiettoria
-        self.declare_parameter("reactive_enable", True)
-        self.declare_parameter("reactive_deadband", 1e-3)   # sotto questa norma → fermo
-        # Sicurezza/UX: per default non muovere il robot finché non arriva una traiettoria
-        # (evita drift/spinte iniziali dovute a avoidance o rumore)
-        self.declare_parameter("hold_position_without_trajectory", True)
-        self.control_period_s = float(self.get_parameter("control_period_s").value)
-
-        self.kp = self.get_parameter("kp").value
-        self.max_vel = self.get_parameter("max_vel").value
-        self.waypoint_threshold = self.get_parameter("waypoint_threshold").value
-        self.final_threshold = self.get_parameter("final_threshold").value
-
-        self.rejoin_enable = bool(self.get_parameter("rejoin_enable").value)
-        self.rejoin_lookahead_points = int(self.get_parameter("rejoin_lookahead_points").value)
-        self.rejoin_lookahead_distance_rad = float(self.get_parameter("rejoin_lookahead_distance_rad").value)
-        self.rejoin_search_ahead_points = int(self.get_parameter("rejoin_search_ahead_points").value)
-
-        self.d_infl = self.get_parameter("influence_distance").value
-        self.d_safe = self.get_parameter("safety_margin").value
-
-        self.avoidance_weight_max = self.get_parameter("avoidance_weight_max").value
-        self.slowdown_factor_max = self.get_parameter("slowdown_factor_max").value
-        self.d_dot_min_close = self.get_parameter("d_dot_min_close").value
-        self.d_dot_push_gain = float(self.get_parameter("d_dot_push_gain").value)
-        self.d_dot_push_max = float(self.get_parameter("d_dot_push_max").value)
-        self.d_dot_min_far = float(self.get_parameter("d_dot_min_far").value)
-
-        self.cbf_enable = bool(self.get_parameter("cbf_enable").value)
-        self.cbf_kappa = float(self.get_parameter("cbf_kappa").value)
-        self.cbf_projection_iters = int(self.get_parameter("cbf_projection_iters").value)
-        self.cbf_eps = float(self.get_parameter("cbf_eps").value)
-
-        self.emergency_enable = bool(self.get_parameter("emergency_enable").value)
-        self.emergency_enter_m = float(self.get_parameter("emergency_enter_m").value)
-        self.emergency_exit_m = float(self.get_parameter("emergency_exit_m").value)
-        self.emergency_d_dot = float(self.get_parameter("emergency_d_dot").value)
-        self.emergency_max_vel_fraction = float(self.get_parameter("emergency_max_vel_fraction").value)
-        self.emergency_hazard_prefixes = [
-            str(x) for x in list(self.get_parameter("emergency_hazard_prefixes").value)
-        ]
-
-        self.recovery_enable = bool(self.get_parameter("recovery_enable").value)
-        self.recovery_time_s = float(self.get_parameter("recovery_time_s").value)
-        self.recovery_tangent_speed = float(self.get_parameter("recovery_tangent_speed").value)
-
-        self.avoidance_tangent_weight = float(self.get_parameter("avoidance_tangent_weight").value)
-        self.normal_correction_max = float(self.get_parameter("normal_correction_max").value)
-
-        self.use_avoidance_velocity = bool(self.get_parameter("use_avoidance_velocity").value)
-        self.avoidance_normal_only = bool(self.get_parameter("avoidance_normal_only").value)
-        self.null_boost_max = float(self.get_parameter("null_boost_max").value)
-        self.avoidance_ratio_max = float(self.get_parameter("avoidance_ratio_max").value)
-
-        self.avoidance_input_filter_beta = float(self.get_parameter("avoidance_input_filter_beta").value)
-        self.avoidance_repulsion_cap_fraction = float(self.get_parameter("avoidance_repulsion_cap_fraction").value)
-
-        self.velocity_filter_beta = float(self.get_parameter("velocity_filter_beta").value)
-        self.slowdown_gamma_min = float(self.get_parameter("slowdown_gamma_min").value)
-        self.ns_floor_fraction = float(self.get_parameter("ns_floor_fraction").value)
-
-        self.diag_enable = bool(self.get_parameter("diag_enable").value)
-        self.diag_period_s = float(self.get_parameter("diag_period_s").value)
-        self.diag_cmd_norm_eps = float(self.get_parameter("diag_cmd_norm_eps").value)
-        self._last_diag_wall = 0.0
-
-        self.tangent_escape_enable = bool(self.get_parameter("tangent_escape_enable").value)
-        self.tangent_escape_speed = float(self.get_parameter("tangent_escape_speed").value)
-        self.tangent_escape_err_min = float(self.get_parameter("tangent_escape_err_min").value)
-
-        self.pause_enable = bool(self.get_parameter("pause_enable").value)
-        self.paused = False
-
-        self.reactive_enable = bool(self.get_parameter("reactive_enable").value)
-        self.reactive_deadband = float(self.get_parameter("reactive_deadband").value)
-        self.hold_position_without_trajectory = bool(
-            self.get_parameter("hold_position_without_trajectory").value
-        )
+        # Nota: per una vista completa/ordinata dei parametri, guarda:
+        #   franka_simulation/config/velocity_blender_params.yaml
+        self._declare_parameters()
+        self._load_parameters()
 
         # ===== STATO =====
         self.q = np.zeros(self.n_dof)              # Posizione corrente
@@ -226,9 +65,8 @@ class SimpleVelocityBlender(Node):
         self.min_dist = 999.0                      # Distanza minima iniziale "lontana"
         self.hazard = "none"
 
-        # Emergency / recovery state
-        self._emergency_active = False
-        self._recovery_until_wall = 0.0
+        # Emergency / recovery state (kept as a small struct to avoid scattering fields).
+        self._er_state = EmergencyRecoveryState()
 
         # Traiettoria
         self.trajectory_points = []      # Lista di configurazioni target
@@ -324,141 +162,151 @@ class SimpleVelocityBlender(Node):
             f"   pause_enable={self.pause_enable} (topic: /velocity_blender/pause)"
         )
 
-    def _enforce_halfspace_with_box(
-        self,
-        qdot_des: np.ndarray,
-        j_row: np.ndarray,
-        d_dot_min: float,
-        max_abs_vel: float,
-        iters: int,
-        eps: float,
-    ):
-        """Enforce j_row @ qdot >= d_dot_min with |qdot_i|<=max_abs_vel.
 
-        We implement a small alternating-projection loop:
-          1) clamp to box
-          2) if half-space violated, add minimal correction along j_row
-          3) clamp again
+    def _declare_parameters(self):
+        """Declare all ROS parameters with defaults (single source of truth)."""
+        defaults = {
+            # Core tracking
+            "control_period_s": 0.01,
+            "kp": 20.0,
+            "max_vel": 0.4,
+            "waypoint_threshold": 0.05,
+            "final_threshold": 0.01,
 
-        This is a practical, dependency-free approximation to the QP:
-          min ||qdot - qdot_des||^2 s.t. j_row qdot >= d_dot_min, |qdot|<=max
-        """
+            # Path rejoin / lookahead
+            "rejoin_enable": True,
+            "rejoin_lookahead_points": 5,
+            "rejoin_lookahead_distance_rad": 0.25,
+            "rejoin_search_ahead_points": 0,
 
-        qdot = np.array(qdot_des, dtype=float).reshape(self.n_dof)
-        maxv = float(max_abs_vel)
-        if maxv <= 0.0:
-            return np.zeros(self.n_dof), False
+            # Distance / avoidance inputs
+            "influence_distance": 0.30,
+            "safety_margin": 0.08,
 
-        j = np.array(j_row, dtype=float).reshape(self.n_dof)
-        jn2 = float(j @ j) + 1e-8
+            # Blending / constraints
+            "avoidance_weight_max": 1.0,
+            "slowdown_factor_max": 0.5,
+            "d_dot_min_close": 0.0,
+            "d_dot_push_gain": 0.5,
+            "d_dot_push_max": 0.10,
+            "d_dot_min_far": -0.05,
+            "cbf_enable": True,
+            "cbf_kappa": 2.0,
+            "cbf_projection_iters": 4,
+            "cbf_eps": 1e-4,
 
-        # Start from box projection
-        qdot = np.clip(qdot, -maxv, +maxv)
+            # Emergency stop/escape
+            "emergency_enable": True,
+            "emergency_enter_m": 0.05,
+            "emergency_exit_m": 0.10,
+            "emergency_d_dot": 0.06,
+            "emergency_max_vel_fraction": 1.0,
+            "emergency_hazard_prefixes": ["external:"],
 
-        ok = False
-        for _ in range(max(1, int(iters))):
-            d_dot = float(j @ qdot)
-            if d_dot >= float(d_dot_min) - float(eps):
-                ok = True
-                break
+            # Recovery
+            "recovery_enable": True,
+            "recovery_time_s": 1.0,
+            "recovery_tangent_speed": 0.08,
 
-            # Minimal correction along j
-            lam = (float(d_dot_min) - d_dot) / jn2
-            corr = lam * j
+            # Blending shaping / anti-stall
+            "avoidance_tangent_weight": 0.4,
+            "normal_correction_max": 0.25,
+            "use_avoidance_velocity": True,
+            "avoidance_normal_only": True,
+            "null_boost_max": 3.0,
+            "avoidance_ratio_max": 1.2,
+            "avoidance_input_filter_beta": 0.55,
+            "avoidance_repulsion_cap_fraction": 0.65,
+            "velocity_filter_beta": 0.7,
+            "slowdown_gamma_min": 0.6,
+            "ns_floor_fraction": 0.25,
+            "diag_enable": True,
+            "diag_period_s": 1.0,
+            "diag_cmd_norm_eps": 0.005,
+            "tangent_escape_enable": True,
+            "tangent_escape_speed": 0.03,
+            "tangent_escape_err_min": 0.03,
 
-            # Smoothness cap (reuse existing normal_correction_max as an L2 bound)
-            try:
-                c_norm = float(np.linalg.norm(corr))
-                if c_norm > float(self.normal_correction_max):
-                    corr *= float(self.normal_correction_max) / (c_norm + 1e-9)
-            except Exception:
-                pass
+            # Pause / reactive
+            "pause_enable": True,
+            "reactive_enable": True,
+            "reactive_deadband": 1e-3,
+            "hold_position_without_trajectory": True,
+        }
 
-            qdot = qdot + corr
-            qdot = np.clip(qdot, -maxv, +maxv)
+        for k, v in defaults.items():
+            self.declare_parameter(k, v)
 
-        # Final check
-        try:
-            ok = ok or (float(j @ qdot) >= float(d_dot_min) - float(eps))
-        except Exception:
-            ok = False
+    def _load_parameters(self):
+        """Read parameters into attributes (casts kept explicit for clarity)."""
+        p = lambda name: self.get_parameter(name).value
 
-        return qdot, ok
+        self.control_period_s = float(p("control_period_s"))
+        self.kp = float(p("kp"))
+        self.max_vel = float(p("max_vel"))
+        self.waypoint_threshold = float(p("waypoint_threshold"))
+        self.final_threshold = float(p("final_threshold"))
 
-    @staticmethod
-    def _nearest_point_on_polyline(q: np.ndarray, pts: list, s_cum: np.ndarray, i0: int, i1: int):
-        """Nearest point projection of q onto polyline segments [i0..i1].
+        self.rejoin_enable = bool(p("rejoin_enable"))
+        self.rejoin_lookahead_points = int(p("rejoin_lookahead_points"))
+        self.rejoin_lookahead_distance_rad = float(p("rejoin_lookahead_distance_rad"))
+        self.rejoin_search_ahead_points = int(p("rejoin_search_ahead_points"))
 
-        Returns (best_i, best_alpha, best_s, best_qproj, best_d2)
-        where the nearest point lies on segment i->i+1 at interpolation alpha in [0,1].
-        """
-        n = int(len(pts))
-        if n <= 0:
-            return 0, 0.0, 0.0, q.copy(), float('inf')
-        if n == 1:
-            dq = pts[0] - q
-            return 0, 0.0, float(s_cum[0]) if s_cum is not None else 0.0, pts[0].copy(), float(dq @ dq)
+        self.d_infl = float(p("influence_distance"))
+        self.d_safe = float(p("safety_margin"))
 
-        i0 = int(max(0, min(n - 2, i0)))
-        i1 = int(max(i0, min(n - 2, i1)))
+        self.avoidance_weight_max = float(p("avoidance_weight_max"))
+        self.slowdown_factor_max = float(p("slowdown_factor_max"))
+        self.d_dot_min_close = float(p("d_dot_min_close"))
+        self.d_dot_push_gain = float(p("d_dot_push_gain"))
+        self.d_dot_push_max = float(p("d_dot_push_max"))
+        self.d_dot_min_far = float(p("d_dot_min_far"))
 
-        best_i = i0
-        best_a = 0.0
-        best_d2 = float('inf')
-        best_qp = pts[i0].copy()
-        best_s = float(s_cum[i0]) if s_cum is not None else 0.0
+        self.cbf_enable = bool(p("cbf_enable"))
+        self.cbf_kappa = float(p("cbf_kappa"))
+        self.cbf_projection_iters = int(p("cbf_projection_iters"))
+        self.cbf_eps = float(p("cbf_eps"))
 
-        qv = q.reshape(-1)
+        self.emergency_enable = bool(p("emergency_enable"))
+        self.emergency_enter_m = float(p("emergency_enter_m"))
+        self.emergency_exit_m = float(p("emergency_exit_m"))
+        self.emergency_d_dot = float(p("emergency_d_dot"))
+        self.emergency_max_vel_fraction = float(p("emergency_max_vel_fraction"))
+        self.emergency_hazard_prefixes = [str(x) for x in list(p("emergency_hazard_prefixes"))]
 
-        for i in range(i0, i1 + 1):
-            p0 = pts[i]
-            p1 = pts[i + 1]
-            v = p1 - p0
-            vv = float(v @ v)
-            if vv < 1e-12:
-                a = 0.0
-                qp = p0
-            else:
-                a = float(((qv - p0) @ v) / vv)
-                a = float(np.clip(a, 0.0, 1.0))
-                qp = p0 + a * v
+        self.recovery_enable = bool(p("recovery_enable"))
+        self.recovery_time_s = float(p("recovery_time_s"))
+        self.recovery_tangent_speed = float(p("recovery_tangent_speed"))
 
-            d = qp - qv
-            d2 = float(d @ d)
-            if d2 < best_d2:
-                best_d2 = d2
-                best_i = i
-                best_a = a
-                best_qp = qp
-                if s_cum is not None:
-                    seg_len = float(np.linalg.norm(v))
-                    best_s = float(s_cum[i]) + a * seg_len
-                else:
-                    best_s = float(i) + a
+        self.avoidance_tangent_weight = float(p("avoidance_tangent_weight"))
+        self.normal_correction_max = float(p("normal_correction_max"))
+        self.use_avoidance_velocity = bool(p("use_avoidance_velocity"))
+        self.avoidance_normal_only = bool(p("avoidance_normal_only"))
+        self.null_boost_max = float(p("null_boost_max"))
+        self.avoidance_ratio_max = float(p("avoidance_ratio_max"))
 
-        return best_i, best_a, best_s, best_qp, best_d2
+        self.avoidance_input_filter_beta = float(p("avoidance_input_filter_beta"))
+        self.avoidance_repulsion_cap_fraction = float(p("avoidance_repulsion_cap_fraction"))
 
-    @staticmethod
-    def _interpolate_at_s(pts: list, s_cum: np.ndarray, s_query: float) -> np.ndarray:
-        """Interpolate polyline at arc-length s_query (joint-space)."""
-        n = int(len(pts))
-        if n <= 0:
-            return np.zeros(7, dtype=float)
-        if n == 1 or s_cum is None or len(s_cum) != n:
-            return pts[-1].copy()
+        self.velocity_filter_beta = float(p("velocity_filter_beta"))
+        self.slowdown_gamma_min = float(p("slowdown_gamma_min"))
+        self.ns_floor_fraction = float(p("ns_floor_fraction"))
 
-        s0 = float(s_cum[0])
-        sN = float(s_cum[-1])
-        s = float(np.clip(s_query, s0, sN))
-        j = int(np.searchsorted(s_cum, s, side='right') - 1)
-        j = int(max(0, min(n - 2, j)))
+        self.diag_enable = bool(p("diag_enable"))
+        self.diag_period_s = float(p("diag_period_s"))
+        self.diag_cmd_norm_eps = float(p("diag_cmd_norm_eps"))
+        self._last_diag_wall = 0.0
 
-        sj0 = float(s_cum[j])
-        sj1 = float(s_cum[j + 1])
-        if (sj1 - sj0) < 1e-12:
-            return pts[j + 1].copy()
-        a = (s - sj0) / (sj1 - sj0)
-        return (1.0 - a) * pts[j] + a * pts[j + 1]
+        self.tangent_escape_enable = bool(p("tangent_escape_enable"))
+        self.tangent_escape_speed = float(p("tangent_escape_speed"))
+        self.tangent_escape_err_min = float(p("tangent_escape_err_min"))
+
+        self.pause_enable = bool(p("pause_enable"))
+        self.paused = False
+
+        self.reactive_enable = bool(p("reactive_enable"))
+        self.reactive_deadband = float(p("reactive_deadband"))
+        self.hold_position_without_trajectory = bool(p("hold_position_without_trajectory"))
 
     # ======================================================================
     # CALLBACKS
@@ -525,14 +373,7 @@ class SimpleVelocityBlender(Node):
         self.trajectory_points = new_points
 
         # Precompute cumulative arc-length along the joint-space polyline
-        try:
-            s = [0.0]
-            for i in range(1, len(self.trajectory_points)):
-                ds = float(np.linalg.norm(self.trajectory_points[i] - self.trajectory_points[i - 1]))
-                s.append(s[-1] + ds)
-            self._traj_s = np.array(s, dtype=float)
-        except Exception:
-            self._traj_s = None
+        self._traj_s = compute_polyline_arc_lengths(self.trajectory_points)
 
         self.current_index = 0
         self._progress_index = 0
@@ -616,45 +457,30 @@ class SimpleVelocityBlender(Node):
         j_row = self.J_avoid[0, :]
         j_norm = float(np.linalg.norm(j_row))
 
-        hazard = str(self.hazard or "none")
-        hazard_ok = True
-        if self.emergency_hazard_prefixes and hazard != "none":
-            hazard_ok = any(hazard.startswith(p) for p in self.emergency_hazard_prefixes)
-
-        if self.emergency_enable and hazard_ok and (j_norm > 1e-6):
-            # Hysteresis on emergency state
-            if (not self._emergency_active) and (d <= float(self.emergency_enter_m)):
-                self._emergency_active = True
-                # Reset smoothing so we react immediately
-                self.qdot_prev = np.zeros(self.n_dof)
-
-            if self._emergency_active:
-                # Exit condition
-                if d >= float(self.emergency_exit_m):
-                    self._emergency_active = False
-                    if self.recovery_enable and (self.recovery_time_s > 0.0):
-                        self._recovery_until_wall = now + float(self.recovery_time_s)
-                else:
-                    # Escape velocity: minimal-norm solution to enforce d_dot >= emergency_d_dot
-                    d_dot_des = max(0.0, float(self.emergency_d_dot))
-                    alpha = d_dot_des / (j_norm * j_norm + 1e-8)
-                    qdot_escape = alpha * j_row
-
-                    # Stronger escape if deeper than enter threshold
-                    try:
-                        if float(self.emergency_enter_m) > 1e-6:
-                            depth = max(0.0, float(self.emergency_enter_m) - d)
-                            depth_gain = 1.0 + 4.0 * (depth / float(self.emergency_enter_m))
-                            qdot_escape *= float(np.clip(depth_gain, 1.0, 5.0))
-                    except Exception:
-                        pass
-
-                    maxv = float(self.max_vel) * float(max(0.1, self.emergency_max_vel_fraction))
-                    qdot_escape = np.clip(qdot_escape, -maxv, +maxv)
-
-                    # Publish immediately (ignore trajectory tracking while in emergency)
-                    self.publish_velocity(qdot_escape)
-                    return
+        handled, qdot_em, self._er_state, reset_smoothing = emergency_override(
+            now_wall=float(now),
+            d=float(d),
+            j_row=np.array(j_row, dtype=float).reshape(-1),
+            hazard=str(self.hazard or "none"),
+            j_norm=float(j_norm),
+            max_vel=float(self.max_vel),
+            state=self._er_state,
+            params=EmergencyParams(
+                emergency_enable=bool(self.emergency_enable),
+                emergency_enter_m=float(self.emergency_enter_m),
+                emergency_exit_m=float(self.emergency_exit_m),
+                emergency_d_dot=float(self.emergency_d_dot),
+                emergency_max_vel_fraction=float(self.emergency_max_vel_fraction),
+                emergency_hazard_prefixes=list(self.emergency_hazard_prefixes),
+                recovery_enable=bool(self.recovery_enable),
+                recovery_time_s=float(self.recovery_time_s),
+            ),
+        )
+        if reset_smoothing:
+            self.qdot_prev = np.zeros(self.n_dof)
+        if handled and (qdot_em is not None):
+            self.publish_velocity(qdot_em)
+            return
 
         # ------------------------------------------------------------------
         # PATH FOLLOWING WITH REJOIN (dynamic-obstacle friendly)
@@ -675,7 +501,7 @@ class SimpleVelocityBlender(Node):
                 # Project on segments: search up to end-1
                 seg_end = int(max(0, min(end - 1, last_idx - 1)))
                 seg_start = int(max(0, min(start, seg_end)))
-                bi, ba, bs, bq, _ = self._nearest_point_on_polyline(
+                bi, ba, bs, bq, _ = nearest_point_on_polyline(
                     q=self.q.reshape(self.n_dof),
                     pts=self.trajectory_points,
                     s_cum=self._traj_s,
@@ -695,7 +521,7 @@ class SimpleVelocityBlender(Node):
         lookahead_s = float(self.rejoin_lookahead_distance_rad)
         if (lookahead_s is not None) and (lookahead_s > 1e-6) and (self._traj_s is not None):
             s_target = float(self._progress_s) + float(lookahead_s)
-            q_target = self._interpolate_at_s(self.trajectory_points, self._traj_s, s_target)
+            q_target = interpolate_at_s(pts=self.trajectory_points, s_cum=self._traj_s, s_query=s_target, n_dof=self.n_dof)
             # Maintain a conservative index (for logging/diagnostics)
             try:
                 self.current_index = int(np.searchsorted(self._traj_s, float(self._progress_s), side='right') - 1)
@@ -766,213 +592,70 @@ class SimpleVelocityBlender(Node):
         if (d >= self.d_infl) or (j_norm < 1e-6):
             qdot_des = qdot_tracking
         else:
-            # --------------------------------------------------------------
-            # ZONA DI INFLUENZA (smooth, goal-driven):
-            #   - mantieni tracking verso goal
-            #   - aggiungi un bias tangenziale (per aggirare)
-            #   - applica un vincolo su ḋ in tutta la zona di influenza
-            #     con correzione MINIMA lungo j_row (QP 1D)
-            # --------------------------------------------------------------
-            d_safe = self.d_safe
-            d_infl = self.d_infl
-
-            # Projectors for the distance normal and its nullspace
-            J = j_row.reshape(1, self.n_dof)
-            JT = J.T
-            denom = float(J @ JT) + 1e-8
-            P = (JT @ J) / denom
-            N = np.eye(self.n_dof) - P
-
-            # Smoothstep weight: 0 at d_infl, 1 at d_safe
-            x = (d_infl - d) / (d_infl - d_safe)
-            x = max(0.0, min(1.0, x))
-            w_d = 3.0 * x * x - 2.0 * x * x * x
-            dbg["w_d"] = float(w_d)
-
-            # 1) Base: keep tracking (towards goal)
-            qdot_des = qdot_tracking.copy()
-
-            # 2) Add avoidance contribution (repulsive normal + tangential)
-            if self.use_avoidance_velocity and (avoid_norm > 1e-6):
-                # Split avoidance into normal/tangential w.r.t. the current distance gradient
-                qdot_avoid_n = P @ qdot_avoid
-                qdot_avoid_t = N @ qdot_avoid
-
-                # Optionally keep only the normal repulsion (safer but can stall); tangential can still be added.
-                qdot_avoid_use_n = qdot_avoid_n if self.avoidance_normal_only else qdot_avoid
-
-                # Weight schedule near obstacle
-                w_rep = float(self.avoidance_weight_max) * w_d
-                w_tan = float(self.avoidance_tangent_weight) * w_d
-
-                # Ratio limiter: do not let repulsion dominate the motion that can still make progress.
-                # Use the tracking component in the constraint nullspace as a proxy for "go-around" capability.
-                ns_norm = float(np.linalg.norm(N @ qdot_des))
-                rep_vec = w_rep * qdot_avoid_use_n
-                rep_norm = float(np.linalg.norm(rep_vec))
-
-                # Absolute cap on repulsion magnitude so it can't dominate tracking.
-                try:
-                    cap_frac = float(np.clip(float(self.avoidance_repulsion_cap_fraction), 0.0, 2.0))
-                    rep_cap = cap_frac * float(self.max_vel)
-                    if (rep_cap > 0.0) and (rep_norm > rep_cap) and (rep_norm > 1e-9):
-                        rep_vec *= (rep_cap / rep_norm)
-                        rep_norm = float(np.linalg.norm(rep_vec))
-                except Exception:
-                    pass
-                # IMPORTANT:
-                # If the tracking component has (almost) no nullspace part, ns_norm can be ~0.
-                # With a strict ratio limiter this would squash repulsion to ~0 as well, which can
-                # result in cmd≈0 right when we actually need repulsion to keep moving safely.
-                # We therefore apply a small floor based on the configured max velocity.
-                ns_floor = max(float(self.ns_floor_fraction) * float(self.max_vel), 1e-3)
-                rep_max = float(self.avoidance_ratio_max) * (max(ns_norm, ns_floor) + 1e-6)
-                if rep_norm > rep_max and rep_norm > 1e-9:
-                    rep_vec *= (rep_max / rep_norm)
-
-                qdot_des = qdot_des + rep_vec + (w_tan * qdot_avoid_t)
-
-            # 3) Optional: increase tangential progress near obstacle
-            null_boost = 1.0 + self.null_boost_max * w_d
-            qdot_des = (P @ qdot_des) + null_boost * (N @ qdot_des)
-
-            # 4) Enforce a smooth lower bound on d_dot across the influence region
-            #    - far (d≈d_infl): allow some approach (negative)
-            #    - close (d≈d_safe): require non-decreasing distance (>= d_dot_min_close, default 0)
-            d_dot_min = (1.0 - w_d) * self.d_dot_min_far + w_d * self.d_dot_min_close
-
-            # Optional CBF shaping: d_dot >= -k*(d-d_safe). This smoothly transitions from
-            # "allowed approach" (negative) to "no approach" at the safety margin and to
-            # "escape" (positive) inside.
-            if self.cbf_enable:
-                try:
-                    cbf_min = -float(self.cbf_kappa) * float(d - d_safe)
-                    d_dot_min = max(float(d_dot_min), float(cbf_min))
-                except Exception:
-                    pass
-
-            # Extra escape term if we are inside the safety margin: force d_dot to become positive.
-            if d < d_safe:
-                push = float(self.d_dot_push_gain) * float(d_safe - d)
-                push = float(np.clip(push, 0.0, float(self.d_dot_push_max)))
-                d_dot_min = max(float(d_dot_min), push)
-
-            d_dot = float(j_row @ qdot_des)
-            dbg["d_dot"] = float(d_dot)
-            dbg["d_dot_min"] = float(d_dot_min)
-            if d_dot < d_dot_min:
-                # Minimal correction along j_row (QP 1D) before slowdown/saturation
-                lambda_corr = (d_dot_min - d_dot) / (j_norm * j_norm + 1e-8)
-                corr = lambda_corr * j_row
-                # Cap the correction magnitude for smoothness
-                corr_norm = float(np.linalg.norm(corr))
-                if corr_norm > self.normal_correction_max:
-                    corr *= self.normal_correction_max / (corr_norm + 1e-9)
-                qdot_des = qdot_des + corr
-
-            # 5) Global slowdown (gentle) close to obstacles
-            gamma = 1.0 - self.slowdown_factor_max * w_d
-            gamma = max(float(self.slowdown_gamma_min), gamma)
-            qdot_des *= gamma
-            dbg["gamma"] = float(gamma)
-
-            # 5b) Recovery tangential injection (after emergency clears)
-            if self.recovery_enable and (now < float(self._recovery_until_wall)):
-                try:
-                    # Build a tangential direction in the nullspace of J (doesn't worsen d_dot)
-                    t_vec = N @ qdot_tracking
-                    t_n = float(np.linalg.norm(t_vec))
-                    if t_n < 1e-9 and (avoid_norm > 1e-9):
-                        t_vec = N @ qdot_avoid
-                        t_n = float(np.linalg.norm(t_vec))
-                    if t_n < 1e-9:
-                        # deterministic basis fallback
-                        t_vec = np.zeros(self.n_dof)
-                        for k in range(self.n_dof):
-                            ei = np.zeros(self.n_dof)
-                            ei[k] = 1.0
-                            cand = N @ ei
-                            cn = float(np.linalg.norm(cand))
-                            if cn > 1e-6:
-                                t_vec = cand
-                                t_n = cn
-                                break
-                    if t_n > 1e-9:
-                        # Scale by proximity (w_d) so it's mainly active near the obstacle
-                        t_dir = t_vec / (t_n + 1e-9)
-                        qdot_des = qdot_des + (float(self.recovery_tangent_speed) * float(w_d)) * t_dir
-                except Exception:
-                    pass
-
-            # 6) Anti-stall tangential escape: if command collapses (due to cancellation between tracking
-            #    and repulsion) while we're still far from the waypoint, add a small tangential velocity
-            #    in the nullspace of J (so it does not worsen d_dot).
-            if self.tangent_escape_enable:
-                try:
-                    if (w_d > 1e-3) and (float(error_norm) > float(max(threshold, self.tangent_escape_err_min))):
-                        des_n = float(np.linalg.norm(qdot_des))
-                        if des_n < float(self.diag_cmd_norm_eps):
-                            # Candidate 1: tracking component in distance-nullspace
-                            t_vec = N @ qdot_tracking
-                            t_n = float(np.linalg.norm(t_vec))
-                            if t_n < 1e-9:
-                                # Candidate 2: avoidance tangential component (if any)
-                                try:
-                                    t_vec = N @ qdot_avoid
-                                    t_n = float(np.linalg.norm(t_vec))
-                                except Exception:
-                                    t_vec = np.zeros(self.n_dof)
-                                    t_n = 0.0
-
-                            if t_n < 1e-9:
-                                # Candidate 3: deterministic basis fallback
-                                # (project e_i into nullspace until we find a usable direction)
-                                t_vec = np.zeros(self.n_dof)
-                                for k in range(self.n_dof):
-                                    ei = np.zeros(self.n_dof)
-                                    ei[k] = 1.0
-                                    cand = N @ ei
-                                    cn = float(np.linalg.norm(cand))
-                                    if cn > 1e-6:
-                                        t_vec = cand
-                                        t_n = cn
-                                        break
-
-                            if t_n > 1e-9:
-                                t_dir = t_vec / (t_n + 1e-9)
-                                qdot_des = qdot_des + (float(self.tangent_escape_speed) * float(w_d)) * t_dir
-                except Exception:
-                    pass
+            qdot_des, dbg2 = compute_influence_zone_command(
+                now_wall=float(now),
+                d=float(d),
+                j_row=np.array(j_row, dtype=float).reshape(-1),
+                j_norm=float(j_norm),
+                qdot_tracking=np.array(qdot_tracking, dtype=float).reshape(self.n_dof),
+                qdot_avoid=np.array(qdot_avoid, dtype=float).reshape(self.n_dof),
+                avoid_norm=float(avoid_norm),
+                error_norm=float(error_norm),
+                threshold=float(threshold),
+                recovery_until_wall=float(self._er_state.recovery_until_wall),
+                params=InfluenceParams(
+                    n_dof=int(self.n_dof),
+                    d_infl=float(self.d_infl),
+                    d_safe=float(self.d_safe),
+                    max_vel=float(self.max_vel),
+                    avoidance_weight_max=float(self.avoidance_weight_max),
+                    slowdown_factor_max=float(self.slowdown_factor_max),
+                    slowdown_gamma_min=float(self.slowdown_gamma_min),
+                    d_dot_min_far=float(self.d_dot_min_far),
+                    d_dot_min_close=float(self.d_dot_min_close),
+                    cbf_enable=bool(self.cbf_enable),
+                    cbf_kappa=float(self.cbf_kappa),
+                    cbf_projection_iters=int(self.cbf_projection_iters),
+                    cbf_eps=float(self.cbf_eps),
+                    d_dot_push_gain=float(self.d_dot_push_gain),
+                    d_dot_push_max=float(self.d_dot_push_max),
+                    use_avoidance_velocity=bool(self.use_avoidance_velocity),
+                    avoidance_normal_only=bool(self.avoidance_normal_only),
+                    avoidance_tangent_weight=float(self.avoidance_tangent_weight),
+                    null_boost_max=float(self.null_boost_max),
+                    avoidance_ratio_max=float(self.avoidance_ratio_max),
+                    avoidance_repulsion_cap_fraction=float(self.avoidance_repulsion_cap_fraction),
+                    ns_floor_fraction=float(self.ns_floor_fraction),
+                    normal_correction_max=float(self.normal_correction_max),
+                    recovery_enable=bool(self.recovery_enable),
+                    recovery_tangent_speed=float(self.recovery_tangent_speed),
+                    tangent_escape_enable=bool(self.tangent_escape_enable),
+                    tangent_escape_speed=float(self.tangent_escape_speed),
+                    tangent_escape_err_min=float(self.tangent_escape_err_min),
+                    diag_cmd_norm_eps=float(self.diag_cmd_norm_eps),
+                ),
+            )
+            dbg.update(dbg2)
 
 
         # ------------------------------------------------------------------
         # FILTRO SULLA VELOCITÀ + SATURAZIONE (+ robust CBF enforcement under saturation)
         # ------------------------------------------------------------------
-        beta = float(self.velocity_filter_beta)
-        beta = float(np.clip(beta, 0.0, 1.0))
-        qdot = beta * qdot_des + (1.0 - beta) * self.qdot_prev
-        self.qdot_prev = qdot.copy()
-
-        # First box saturation
-        qdot = np.clip(qdot, -self.max_vel, self.max_vel)
-
-        # If avoidance is active, ensure the distance constraint is still satisfied after saturation.
-        # This is important with dynamic obstacles: clipping can break the half-space constraint.
-        if (d < float(self.d_infl)) and (j_norm > 1e-6):
-            try:
-                # Recompute the same d_dot_min used above (dbg already holds it).
-                d_dot_min_eff = float(dbg.get("d_dot_min", 0.0))
-                qdot, ok = self._enforce_halfspace_with_box(
-                    qdot_des=qdot,
-                    j_row=j_row,
-                    d_dot_min=d_dot_min_eff,
-                    max_abs_vel=float(self.max_vel),
-                    iters=int(self.cbf_projection_iters),
-                    eps=float(self.cbf_eps),
-                )
-                dbg["cbf_ok"] = bool(ok)
-            except Exception:
-                dbg["cbf_ok"] = False
+        qdot, qdot_prev_new, dbg = apply_output_filter_and_constraints(
+            qdot_des=np.array(qdot_des, dtype=float).reshape(self.n_dof),
+            qdot_prev=np.array(self.qdot_prev, dtype=float).reshape(self.n_dof),
+            velocity_filter_beta=float(self.velocity_filter_beta),
+            max_vel=float(self.max_vel),
+            d=float(d),
+            d_infl=float(self.d_infl),
+            j_row=np.array(j_row, dtype=float).reshape(-1),
+            j_norm=float(j_norm),
+            cbf_projection_iters=int(self.cbf_projection_iters),
+            cbf_eps=float(self.cbf_eps),
+            normal_correction_max=float(self.normal_correction_max),
+            dbg=dbg,
+        )
+        self.qdot_prev = np.array(qdot_prev_new, dtype=float).reshape(self.n_dof)
 
         # Diagnostics: if avoidance is active (d in influence + valid jacobian) but cmd is ~0, log internal state.
         if self.diag_enable:

@@ -115,6 +115,13 @@ foreach(script ${PYTHON_SCRIPTS})
     RENAME ${script_name})
 endforeach()
 
+# Install shared Python helpers used by multiple scripts.
+# They live in scripts/utils (with __init__.py) and must be available at runtime
+# next to the installed executables, otherwise `import utils...` will fail.
+install(DIRECTORY scripts/utils
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 
 
 

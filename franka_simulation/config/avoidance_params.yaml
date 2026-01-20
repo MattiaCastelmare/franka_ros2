@@ -58,6 +58,54 @@ online_avoidance_controller:
       - "ground"
       - "floor"
       - "plane"
+
+    # ============================================
+    # CBF / SAFETY FILTER (optional but supported)
+    # ============================================
+    # Barrier: h = d - d_safe
+    # Constraint (conceptually): d_dot >= -alpha * (d - d_safe)
+    d_safe: 0.08
+    d_buffer: 0.30
+    # 0.0 -> auto (1.1 * d_buffer)
+    d_buffer_out: 0.0
+    alpha: 5.0
+    max_constraints: 5
+    lambda_reg: 1.0e-6
+    rho_slack: 100.0
+    beta_lpf: 0.80
+    output_accel_limit: 0.0
+    approach_speed_limit: 0.0
+    use_qp: true
+    eps: 1.0e-9
+    qp_weight_diag: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    # ============================================
+    # Staged risk zones (30/20/10/5 cm) + stop gate
+    # ============================================
+    risk_d_far: 0.30
+    risk_d_mid: 0.20
+    risk_d_near: 0.10
+    stop_distance: 0.05
+    stop_release_distance: 0.06
+
+    # Risk-scaled alpha (defaults keep legacy behavior if min==max==alpha)
+    alpha_min: 5.0
+    alpha_max: 5.0
+
+    # QP damping (0 disables)
+    qp_damping_min: 0.0
+    qp_damping_max: 0.0
+
+    # Risk-scaled output LPF
+    beta_lpf_far: 0.80
+    beta_lpf_near: 0.80
+
+    # Filtering for published min distance (downstream blending/rviz)
+    min_distance_lpf: 0.50
+
+    # Optional posture bias (OFF by default)
+    posture_bias_gain: 0.0
+    posture_reference: []
     
     # NOTE:
     # In questo repo ci sono stati in passato parametri "legacy" (repulsive_gain, use_null_space, ecc.)

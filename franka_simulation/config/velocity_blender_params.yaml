@@ -20,9 +20,6 @@ velocity_control_blender:
     rejoin_lookahead_distance_rad: 0.25
     # 0 = search full remaining trajectory for the nearest point (safe for ~O(100) points)
     rejoin_search_ahead_points: 0
-    # (alcuni parametri legacy possono rimanere qui anche se non usati)
-    approach_velocity_threshold: 0.03   # legacy
-    min_alpha_close: 0.3                # legacy
     # IMPORTANT: evita movimento "spontaneo" all'avvio
     hold_position_without_trajectory: true
     reactive_enable: false
@@ -82,6 +79,11 @@ velocity_control_blender:
     tangent_escape_enable: true
     tangent_escape_speed: 0.06
     tangent_escape_err_min: 0.03
+
+    # Diagnostics (helps explain stalls)
+    diag_enable: true
+    diag_period_s: 1.0
+    diag_cmd_norm_eps: 0.005
 
     # Interactive demo support: pause execution (publish 0 velocities)
     pause_enable: true
