@@ -105,9 +105,9 @@ RUN sudo apt-get update && \
 ENV PATH=/home/${USERNAME}/.local/bin:$PATH
 ENV PYTHONPATH=/home/${USERNAME}/.local/lib/python3.10/site-packages:$PYTHONPATH
 
-RUN pip3 install --user --upgrade pip setuptools wheel && \
+RUN pip3 install --user --upgrade "pip" "setuptools<80" "wheel" && \
     pip3 install --user \
-        protobuf>=4.25.3,<5 \
+        "protobuf>=4.25.3,<5" \
         absl-py \
         flatbuffers \
         sentencepiece \
@@ -115,6 +115,7 @@ RUN pip3 install --user --upgrade pip setuptools wheel && \
         numpy==1.26.4 \
         opencv-contrib-python==4.11.0.86 && \
     pip3 install --user mediapipe==0.10.20
+
 
 # ------------------------
 # Workspace
