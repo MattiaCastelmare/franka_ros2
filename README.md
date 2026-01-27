@@ -178,15 +178,15 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
       ```bash
       colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
       ```
-  7(1). **Build only franka_simulation package**
+  8. **Build only franka_simulation package**
       ```bash
       colcon build --packages-select franka_simulation --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
       ```
-  8. **Source the built workspace:**
+  9. **Source the built workspace:**
       ```bash
       source install/setup.bash
       ```
-  9. **When you are done, you can exit the shell and delete the container**:
+  10. **When you are done, you can exit the shell and delete the container**:
       ```bash
       docker compose down -t 0
       ```
