@@ -156,7 +156,14 @@ def scan_external_and_ground(
                 }
 
             # Distance markers (for RViz)
-            distances_data.append({"p_capsule": p_seg, "p_obstacle": p_box, "distance": d})
+            distances_data.append(
+                {
+                    "p_capsule": p_seg,
+                    "p_obstacle": p_box,
+                    "distance": d,
+                    "infl": float(d_infl),
+                }
+            )
 
             # Track minimum distance regardless of activation
             d_min = min(d_min, float(d))
@@ -234,7 +241,14 @@ def scan_external_and_ground(
             d_ground = float((p_low[2] - float(ground_z)) - radius)
             p_plane = np.array([p_low[0], p_low[1], float(ground_z)], dtype=float)
 
-            distances_data.append({"p_capsule": p_low, "p_obstacle": p_plane, "distance": d_ground})
+            distances_data.append(
+                {
+                    "p_capsule": p_low,
+                    "p_obstacle": p_plane,
+                    "distance": d_ground,
+                    "infl": float(ground_infl),
+                }
+            )
             d_min = min(d_min, float(d_ground))
 
             if (ground_best is None) or (float(d_ground) < float(ground_best["d"])):
@@ -314,7 +328,14 @@ def scan_self_collision(
                     "n": np.array(n_self, dtype=float).reshape(3),
                 }
 
-            distances_data.append({"p_capsule": cp_i, "p_obstacle": cp_j, "distance": dist})
+            distances_data.append(
+                {
+                    "p_capsule": cp_i,
+                    "p_obstacle": cp_j,
+                    "distance": dist,
+                    "infl": float(self_infl),
+                }
+            )
 
             if dist >= float(self_infl):
                 continue

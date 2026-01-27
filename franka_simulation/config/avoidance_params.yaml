@@ -6,7 +6,7 @@ online_avoidance_controller:
   ros__parameters:
     # Distanze critiche per l'avoidance
     # Unico parametro master: raggio di influenza
-    influence_distance: 0.10   # m
+    influence_distance: 0.30   # m
     safety_margin: 0.0         # m
     distance_inflation: 0.0    # m (inflazione conservativa opzionale)
     # Frequenza di controllo (alta per reattività)
@@ -94,9 +94,6 @@ online_avoidance_controller:
     # Staged risk zones (30/20/10/5 cm) + stop gate
     # ============================================
     # Soglie di rischio derivate dal raggio (far = r_infl, mid = 2/3, near = 1/3)
-    risk_d_far: 0.10
-    risk_d_mid: 0.0667
-    risk_d_near: 0.0333
     stop_distance: 0.02
     stop_release_distance: 0.06
 
@@ -139,6 +136,6 @@ online_avoidance_controller:
 velocity_control_blender:
   ros__parameters:
     # Unica fonte per le distanze di influenza del blender (allineata al controller)
-    influence_distance: 0.10
+    influence_distance: 0.30
     safety_margin: 0.0
     distance_inflation: 0.0

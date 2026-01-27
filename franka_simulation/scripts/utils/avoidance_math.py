@@ -1236,7 +1236,8 @@ def make_distance_markers(
     marker_id: int,
     *,
     stamp_msg: Any,
-    d_infl: float,
+    activation_distance: float,
+    rgba: Optional[tuple[float, float, float, float]] = None,
     frame_id: str = "world",
     ns_line: str = "distances",
     ns_text: str = "distances_text",
@@ -1255,8 +1256,16 @@ def make_distance_markers(
     p_obs = np.array(p_obs, dtype=float).reshape(3)
     d = float(d)
 
-    if d < float(d_infl):
+    if rgba is not None:
+        
+        try:
+            r, g, b, a = rgba
+            color = ColorRGBA(r=float(r), g=float(g), b=float(b), a=float(a))
+        except Exception:
+            color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=0.8)
+    elif d <= float(activation_distance):
         color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8)
+       
     else:
         color = ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.8)
 

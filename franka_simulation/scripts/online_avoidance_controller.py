@@ -497,6 +497,7 @@ class NullSpaceAvoidance(Node):
             data=self.data,
             distances_data=self.distances_data,
             d_infl=float(self.params.d_infl),
+            distance_inflation=float(self.params.distance_inflation),
             stamp_msg=self.get_clock().now().to_msg(),
             logger=self.get_logger(),
         )

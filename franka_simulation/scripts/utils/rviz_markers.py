@@ -25,6 +25,7 @@ def build_marker_array(
     data: Any,
     distances_data: List[dict],
     d_infl: float,
+    distance_inflation: float,
     stamp_msg: Any,
     logger: Any = None,
 ) -> MarkerArray:
@@ -53,16 +54,23 @@ def build_marker_array(
 
     # ================= RViz DISTANCE VISUALIZATION =================
     debug_count = 0
+    infl_bias = max(0.0, float(distance_inflation))
     for dist_data in distances_data:
         p_cap = dist_data["p_capsule"]
         p_obs = dist_data["p_obstacle"]
         d = float(dist_data["distance"])
+        d_eff = float(d) - float(infl_bias)
+        infl = float(d_infl)
+        is_active = bool(d_eff <= float(infl))
+        rgba = (1.0, 0.0, 0.0, 0.8) if is_active else (0.0, 0.0, 1.0, 0.8)
 
         # Log per debug (una volta ogni 50 marker per non spammare)
         if logger is not None and debug_count == 0:
-            color_name = "RED" if d < float(d_infl) else "BLUE"
+            color_name = "RED" if is_active else "BLUE"
             try:
-                logger.debug(f"   Distance: {d:.4f}m (d_infl={float(d_infl):.4f}) → {color_name}")
+                logger.debug(
+                    f"   Distance: {d:.4f}m (eff={float(d_eff):.4f}, infl={float(infl):.4f}) → {color_name}"
+                )
             except Exception:
                 pass
         debug_count = (debug_count + 1) % 50
@@ -73,7 +81,8 @@ def build_marker_array(
             float(d),
             int(marker_id),
             stamp_msg=stamp_msg,
-            d_infl=float(d_infl),
+            activation_distance=float(infl),
+            rgba=rgba,
         )
         marker_array.markers.extend(dm)
         marker_id += len(dm)
