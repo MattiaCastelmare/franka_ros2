@@ -178,7 +178,7 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
       ```bash
       colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
       ```
-  7bis. **Build only franka_simulation package**
+  7,1. **Build only franka_simulation package**
       ```bash
       colcon build --packages-select franka_simulation --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
       ```
