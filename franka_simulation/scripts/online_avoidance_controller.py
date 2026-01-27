@@ -9,7 +9,7 @@ ONLINE AVOIDANCE CONTROLLER — NULL SPACE VERSION
 • Tracking task is NEVER opposed
 • No local minima blocking
 
-Author: Maurizio (Null-space refactor)
+Author: Mattia (Null-space refactor)
 """
 
 import numpy as np

@@ -17,9 +17,9 @@ online_avoidance_controller:
     # NOTE: se l'avoidance satura costantemente a max_joint_velocity, tende a cancellare il tracking
     # e può creare deadlock. Riduciamo la saturazione e aumentiamo la componente tangenziale.
     nullspace_gain: 0.15
-    tangential_gain: 0.22
+    tangential_gain: 0.0
     aggressive_gain_scale: 2.5
-    max_joint_velocity: 0.12
+    max_joint_velocity: 0.25
 
     # Capsule geometry (m)
     # NOTE: ripristinati i raggi originali (i più grandi). Quelli piccoli anticipano falsi contatti
@@ -29,7 +29,7 @@ online_avoidance_controller:
 
     # Capsule↔OBB distance computation
     box_projection_iters: 8
-    repulsion_spread_enable: true
+    repulsion_spread_enable: false
     repulsion_spread_samples: 5
     repulsion_spread_half_length: 0.10
 
@@ -37,7 +37,7 @@ online_avoidance_controller:
     # EXTRA SAFETY: PAVIMENTO + AUTOCOLLISIONE
     # (approssimazioni veloci: capsule-capsule e piano z=ground_z)
     # ============================================
-    enable_ground_avoidance: true
+    enable_ground_avoidance: false
     ground_z: 0.0
     ground_influence_distance: 0.15
     ground_safety_margin: 0.05
