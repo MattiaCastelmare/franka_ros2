@@ -112,6 +112,19 @@ DEFAULT_VELOCITY_BLENDER_PARAMS: Dict[str, Any] = {
     "tangent_escape_speed": 0.03,
     "tangent_escape_err_min": 0.03,
 
+    # Tangential tracking escape (when normal is clipped)
+    "tangent_tracking_escape_enable": True,
+    "tangent_tracking_cmd_small": 0.02,
+    "tangent_tracking_vt_min": 0.03,
+    "tangent_tracking_vt_max": 0.10,
+    "tangent_tracking_alpha_max": 0.80,
+
+    # Penetration emergency (signed distance < 0)
+    "penetration_emergency_enable": True,
+    "penetration_emergency_d_dot": 0.08,
+    "penetration_emergency_depth_ref": 0.03,
+    "penetration_emergency_max_vel_fraction": 1.0,
+
     # Extra cap to prevent tangential dominance (applied in j-row nullspace)
     "tangential_cmd_max_fraction": 0.60,
 
@@ -265,6 +278,17 @@ def load_velocity_blender_parameters(node: Any, target: Any) -> None:
     target.tangent_escape_enable = bool(p("tangent_escape_enable"))
     target.tangent_escape_speed = float(p("tangent_escape_speed"))
     target.tangent_escape_err_min = float(p("tangent_escape_err_min"))
+
+    target.tangent_tracking_escape_enable = bool(p("tangent_tracking_escape_enable"))
+    target.tangent_tracking_cmd_small = float(p("tangent_tracking_cmd_small"))
+    target.tangent_tracking_vt_min = float(p("tangent_tracking_vt_min"))
+    target.tangent_tracking_vt_max = float(p("tangent_tracking_vt_max"))
+    target.tangent_tracking_alpha_max = float(p("tangent_tracking_alpha_max"))
+
+    target.penetration_emergency_enable = bool(p("penetration_emergency_enable"))
+    target.penetration_emergency_d_dot = float(p("penetration_emergency_d_dot"))
+    target.penetration_emergency_depth_ref = float(p("penetration_emergency_depth_ref"))
+    target.penetration_emergency_max_vel_fraction = float(p("penetration_emergency_max_vel_fraction"))
 
     target.tangential_cmd_max_fraction = float(p("tangential_cmd_max_fraction"))
 

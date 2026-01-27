@@ -37,6 +37,8 @@ DEFAULT_NULLSPACE_AVOIDANCE_PARAMS: Dict[str, Any] = {
     # Extra tangential (swirl) component to break local minima near obstacles.
     "tangential_gain": 0.20,
     "max_joint_velocity": 0.25,
+    # Per-obstacle clamp on J^T xdot contribution (0.0 = off)
+    "avoidance_contrib_max_ratio": 0.0,
     "excluded_obstacles": ["ground_plane", "ground", "floor", "plane"],
 
     # Capsule geometry tuning (m)
@@ -136,6 +138,7 @@ class NullSpaceAvoidanceParams:
     k_null: float
     k_tan: float
     max_qdot: float
+    avoidance_contrib_max_ratio: float
     excluded: List[str]
 
     # Geometry
@@ -235,6 +238,7 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
     k_null = p_float("nullspace_gain")
     k_tan = p_float("tangential_gain")
     max_qdot = p_float("max_joint_velocity")
+    avoidance_contrib_max_ratio = p_float("avoidance_contrib_max_ratio")
     excluded = p_list_str("excluded_obstacles")
 
     capsule_radii = p_list_float("capsule_radii")
@@ -281,9 +285,11 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
     cbf_W_diag = np.maximum(cbf_W_diag, 1e-9)
 
     # --- Risk-scaled staging / stop gate ---
-    risk_d_far = float(node.get_parameter("risk_d_far").value)
-    risk_d_mid = float(node.get_parameter("risk_d_mid").value)
-    risk_d_near = float(node.get_parameter("risk_d_near").value)
+    # Derive risk thresholds from influence_distance for a single-parameter workflow.
+    # far = d_infl, mid = 2/3 * d_infl, near = 1/3 * d_infl
+    risk_d_far = float(d_infl)
+    risk_d_mid = float(d_infl) * (2.0 / 3.0)
+    risk_d_near = float(d_infl) * (1.0 / 3.0)
     stop_d_in = float(node.get_parameter("stop_distance").value)
     stop_d_out = float(node.get_parameter("stop_release_distance").value)
 
@@ -367,6 +373,7 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
         k_null=float(k_null),
         k_tan=float(k_tan),
         max_qdot=float(max_qdot),
+        avoidance_contrib_max_ratio=float(avoidance_contrib_max_ratio),
         excluded=list(excluded),
         capsule_radii=list(capsule_radii),
         capsule_fractions=list(capsule_fractions),

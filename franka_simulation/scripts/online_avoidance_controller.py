@@ -209,6 +209,7 @@ class NullSpaceAvoidance(Node):
         segments = iter_world_capsule_segments(capsules=self.capsules, frame_ids=self.frame_ids, data=self.data)
 
         # --- Nominal avoidance (external obstacles + ground) + debug distances
+        avoid_diag: dict = {}
         qdot_external_ground, d_min, external_best, ground_best, dist_ext_ground = scan_external_and_ground(
             segments=segments,
             obstacles=list(self.obstacles),
@@ -225,11 +226,14 @@ class NullSpaceAvoidance(Node):
             k_aggr=float(self.params.k_aggr),
             k_null=float(self.params.k_null),
             k_tan=float(self.params.k_tan),
+            max_qdot=float(self.params.max_qdot),
+            avoidance_contrib_max_ratio=float(getattr(self.params, "avoidance_contrib_max_ratio", 0.0)),
             enable_ground=bool(self.params.enable_ground),
             ground_z=float(self.params.ground_z),
             ground_infl=float(self.params.ground_infl),
             ground_safe=float(self.params.ground_safe),
             k_ground=float(self.params.k_ground),
+            debug_stats=avoid_diag,
         )
 
         # --- Nominal avoidance (self-collision) + debug distances
@@ -467,6 +471,21 @@ class NullSpaceAvoidance(Node):
                     f"closest='{ch}' switches={int(self._dbg_closest_switch_count)} "
                     f"stop={bool(self._cbf_state.stop_gate_active)} enter={int(self._dbg_stop_enter_count)} exit={int(self._dbg_stop_exit_count)} "
                     f"cbf_active={bool(self._cbf_state.cbf_active)}"
+                )
+
+                alpha_far_max = float(avoid_diag.get("alpha_far_max", 0.0)) if isinstance(avoid_diag, dict) else 0.0
+                alpha_near_zero = bool(alpha_far_max < 1e-3)
+                qdot_ext_norm = float(np.linalg.norm(np.array(qdot_external_ground, dtype=float).reshape(-1)))
+                qdot_pre_max = float(avoid_diag.get("norm_pre_max", 0.0)) if isinstance(avoid_diag, dict) else 0.0
+                qdot_post_max = float(avoid_diag.get("norm_post_max", 0.0)) if isinstance(avoid_diag, dict) else 0.0
+                clamp_count = int(avoid_diag.get("clamp_count", 0)) if isinstance(avoid_diag, dict) else 0
+                clamp_ratio = float(getattr(self.params, "avoidance_contrib_max_ratio", 0.0))
+
+                self.get_logger().info(
+                    "[AVOID-NOM] "
+                    f"d_raw={float(d_min_raw):.3f}m alpha_max={alpha_far_max:.3f} alpha_zero={alpha_near_zero} "
+                    f"qdot_ext_norm={qdot_ext_norm:.3f} pre_max={qdot_pre_max:.3f} post_max={qdot_post_max:.3f} "
+                    f"clamp_ratio={clamp_ratio:.2f} clamp_count={clamp_count} haz='{ch}'"
                 )
         except Exception:
             pass

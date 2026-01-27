@@ -632,22 +632,23 @@ def stable_sign_from_id(text: str) -> float:
 
 
 def smooth_alpha(d: float, d_infl: float, d_safe: float) -> float:
-    """Smooth activation 0..1 (0 at d_infl, 1 at d_safe or closer)."""
+    """
+    Smooth activation in [0,1] with zero slope at the boundaries.
+    This avoids velocity snaps when entering/exiting the influence zone.
+    """
     d = float(d)
     d_infl = float(d_infl)
     d_safe = float(d_safe)
 
-    if d_infl <= d_safe + 1e-9:
-        return 0.0
-    if d <= d_safe:
-        return 1.0
-    if d >= d_infl:
-        return 0.0
+    if d_infl <= d_safe + 1e-12:
+        return 1.0 if d <= d_safe else 0.0
 
-    x = (d_infl - d) / (d_infl - d_safe)
-    x = float(np.clip(x, 0.0, 1.0))
-    # smoothstep
-    return float(3.0 * x * x - 2.0 * x * x * x)
+    # Normalize: t=0 at d_infl, t=1 at d_safe
+    t = (d_infl - d) / (d_infl - d_safe)
+    t = max(0.0, min(1.0, float(t)))
+
+    # Quintic smoothstep (C2 continuous, zero derivative at ends)
+    return float(t ** 3 * (10.0 - 15.0 * t + 6.0 * t * t))
 
 
 def smoothstep01(x: float) -> float:

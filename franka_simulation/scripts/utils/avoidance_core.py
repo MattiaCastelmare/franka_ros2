@@ -89,12 +89,15 @@ def scan_external_and_ground(
     k_aggr: float,
     k_null: float,
     k_tan: float,
+    max_qdot: float,
+    avoidance_contrib_max_ratio: float,
     # ground params
     enable_ground: bool,
     ground_z: float,
     ground_infl: float,
     ground_safe: float,
     k_ground: float,
+    debug_stats: Optional[dict] = None,
 ) -> Tuple[np.ndarray, float, Dict[str, dict], Optional[dict], List[dict]]:
     """Scan PlanningScene obstacles + ground plane and build the nominal avoidance command.
 
@@ -110,6 +113,14 @@ def scan_external_and_ground(
     external_best: Dict[str, dict] = {}
     ground_best: Optional[dict] = None
     distances_data: List[dict] = []
+
+    clamp_ratio = max(0.0, float(avoidance_contrib_max_ratio))
+
+    if debug_stats is not None:
+        debug_stats.setdefault("alpha_far_max", 0.0)
+        debug_stats.setdefault("norm_pre_max", 0.0)
+        debug_stats.setdefault("norm_post_max", 0.0)
+        debug_stats.setdefault("clamp_count", 0)
 
     for seg in segments:
         p0 = np.array(seg["p0"], dtype=float).reshape(3)
@@ -150,10 +161,6 @@ def scan_external_and_ground(
             # Track minimum distance regardless of activation
             d_min = min(d_min, float(d))
 
-            # Outside influence zone: do not contribute to nominal avoidance
-            if d >= float(d_infl):
-                continue
-
             sgn = stable_sign_from_id(str(getattr(obs, "id", "")))
 
             # If enabled, use multiple points around the closest point to create a "region" repulsion.
@@ -166,11 +173,16 @@ def scan_external_and_ground(
             w_sum = 0.0
             for s in rep_points:
                 ds = float(s.get("distance", d))
-                if ds >= float(d_infl):
-                    continue
 
                 # Base activation (0 at d_infl, 1 at d_aggr or closer)
                 alpha_far = smooth_alpha(ds, float(d_infl), float(d_aggr))
+                if debug_stats is not None:
+                    debug_stats["alpha_far_max"] = max(debug_stats["alpha_far_max"], float(alpha_far))
+
+                # Outside influence zone: smooth_alpha already decays to 0 -> negligible contribution.
+                if alpha_far <= 0.0:
+                    continue
+
                 # Extra aggressive scaling inside the d_aggr zone down to d_safe
                 alpha_close = smooth_alpha(ds, float(d_aggr), float(d_safe))
                 gain_scale = 1.0 + float(k_aggr) * float(alpha_close)
@@ -193,7 +205,24 @@ def scan_external_and_ground(
                     fid,
                     np.array(s.get("p_seg", p_seg), dtype=float).reshape(3),
                 )
-                qdot_reg += w * (Jp.T @ xdot_avoid)
+                qdot_contrib = Jp.T @ xdot_avoid
+                norm_pre = float(np.linalg.norm(qdot_contrib))
+
+                clamp_applied = False
+                norm_post = float(norm_pre)
+                max_norm = clamp_ratio * float(max_qdot)
+                if max_norm > 1e-12 and norm_pre > max_norm:
+                    qdot_contrib = (max_norm / norm_pre) * qdot_contrib
+                    norm_post = float(np.linalg.norm(qdot_contrib))
+                    clamp_applied = True
+
+                if debug_stats is not None:
+                    debug_stats["norm_pre_max"] = max(debug_stats["norm_pre_max"], float(norm_pre))
+                    debug_stats["norm_post_max"] = max(debug_stats["norm_post_max"], float(norm_post))
+                    if clamp_applied:
+                        debug_stats["clamp_count"] = int(debug_stats.get("clamp_count", 0)) + 1
+
+                qdot_reg += w * qdot_contrib
                 w_sum += w
 
             if w_sum > 1e-9:

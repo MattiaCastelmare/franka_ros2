@@ -15,6 +15,7 @@ Questo evita:
 """
 
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import rclpy
@@ -54,28 +55,8 @@ class SimpleVelocityBlender(Node):
         vh.declare_velocity_blender_parameters(self)
         vh.load_velocity_blender_parameters(self, self)
 
-        # Extra (self-contained) parameters for smoother, more "natural" obstacle bypass.
-        # These are declared here (not in utils) to honor the "edit only this file" constraint.
-        # Defaults are conservative and require no YAML changes.
-        self.declare_parameter("tangent_tracking_escape_enable", True)
-        self.declare_parameter("tangent_tracking_cmd_small", 0.02)
-        self.declare_parameter("tangent_tracking_vt_min", 0.03)
-        self.declare_parameter("tangent_tracking_vt_max", 0.10)
-        self.declare_parameter("tangent_tracking_alpha_max", 0.80)
-        self.declare_parameter("penetration_emergency_enable", True)
-        self.declare_parameter("penetration_emergency_d_dot", 0.08)
-        self.declare_parameter("penetration_emergency_depth_ref", 0.03)
-        self.declare_parameter("penetration_emergency_max_vel_fraction", 1.0)
-
-        self.tangent_tracking_escape_enable = bool(self.get_parameter("tangent_tracking_escape_enable").value)
-        self.tangent_tracking_cmd_small = float(self.get_parameter("tangent_tracking_cmd_small").value)
-        self.tangent_tracking_vt_min = float(self.get_parameter("tangent_tracking_vt_min").value)
-        self.tangent_tracking_vt_max = float(self.get_parameter("tangent_tracking_vt_max").value)
-        self.tangent_tracking_alpha_max = float(self.get_parameter("tangent_tracking_alpha_max").value)
-        self.penetration_emergency_enable = bool(self.get_parameter("penetration_emergency_enable").value)
-        self.penetration_emergency_d_dot = float(self.get_parameter("penetration_emergency_d_dot").value)
-        self.penetration_emergency_depth_ref = float(self.get_parameter("penetration_emergency_depth_ref").value)
-        self.penetration_emergency_max_vel_fraction = float(self.get_parameter("penetration_emergency_max_vel_fraction").value)
+        # Flag: if influence_distance <= 0, force pure tracking (no avoidance/CBF/emergency).
+        self.avoidance_disabled = (float(self.d_infl) <= 0.0)
 
         # ===== STATO =====
         self.q = np.zeros(self.n_dof)              # Posizione corrente
@@ -312,62 +293,78 @@ class SimpleVelocityBlender(Node):
             return
 
         # ------------------------------------------------------------------
-        # EMERGENCY OVERRIDE (hard safety)
+        # EMERGENCY OVERRIDE (hard safety) + safety signal
         # ------------------------------------------------------------------
         now = time.time()
 
-        safety = vh.compute_safety_signal_context(
-            closest_d=float(self.closest_d),
-            closest_j_row=np.array(self.closest_j_row, dtype=float).reshape(-1),
-            closest_hazard=str(self.closest_hazard or "none"),
-            distance_inflation=float(self.distance_inflation),
-            risk_d_far=float(self.risk_d_far),
-            risk_d_mid=float(self.risk_d_mid),
-            risk_d_near=float(self.risk_d_near),
-            stop_distance=float(self.stop_distance),
-        )
-
-        # Signed distance robustness:
-        # - use a clipped effective distance for blending weights (continuous behavior)
-        # - but if d_raw < 0 -> penetration emergency (push out decisively, no oscillations)
-        d_raw_closest = float(safety.d_raw)
-        d_eff_for_weights = float(max(0.0, float(safety.d_eff)))
-        try:
-            staging_clip = vh.compute_risk_staging(
-                d_eff=float(d_eff_for_weights),
-                d_far=float(self.risk_d_far),
-                d_mid=float(self.risk_d_mid),
-                d_near=float(self.risk_d_near),
-                d_stop=float(self.stop_distance),
+        if self.avoidance_disabled:
+            # Stub safety: no hazard, no staging, no avoidance.
+            safety = SimpleNamespace(
+                d_raw=999.0,
+                d_eff=999.0,
+                inflation=0.0,
+                hazard="none",
+                j_row=np.zeros(n),
+                staging=None,
             )
-        except Exception:
-            staging_clip = safety.staging
+            staging_clip = SimpleNamespace(w_total=0.0, w_far=0.0, w_mid=0.0, w_near=0.0, stop_gate=False)
+            d_raw_closest = float(safety.d_raw)
+            d_eff_for_weights = float(safety.d_eff)
+            j_row_use = np.zeros(n)
+            j_norm_use = 0.0
+        else:
+            safety = vh.compute_safety_signal_context(
+                closest_d=float(self.closest_d),
+                closest_j_row=np.array(self.closest_j_row, dtype=float).reshape(-1),
+                closest_hazard=str(self.closest_hazard or "none"),
+                distance_inflation=float(self.distance_inflation),
+                risk_d_far=float(self.risk_d_far),
+                risk_d_mid=float(self.risk_d_mid),
+                risk_d_near=float(self.risk_d_near),
+                stop_distance=float(self.stop_distance),
+            )
 
-        # Filter j_row for stability (use raw for emergency for fast reaction).
-        j_row_raw = np.array(safety.j_row, dtype=float).reshape(-1)
-        w_d = float(getattr(staging_clip, "w_total", 0.0))
-        try:
-            if (not self._closest_j_row_filt_init) or (self._closest_j_row_filt is None):
+            # Signed distance robustness:
+            # - use a clipped effective distance for blending weights (continuous behavior)
+            # - but if d_raw < 0 -> penetration emergency (push out decisively, no oscillations)
+            d_raw_closest = float(safety.d_raw)
+            d_eff_for_weights = float(max(0.0, float(safety.d_eff)))
+            try:
+                staging_clip = vh.compute_risk_staging(
+                    d_eff=float(d_eff_for_weights),
+                    d_far=float(self.risk_d_far),
+                    d_mid=float(self.risk_d_mid),
+                    d_near=float(self.risk_d_near),
+                    d_stop=float(self.stop_distance),
+                )
+            except Exception:
+                staging_clip = safety.staging
+
+            # Filter j_row for stability (use raw for emergency for fast reaction).
+            j_row_raw = np.array(safety.j_row, dtype=float).reshape(-1)
+            w_d = float(getattr(staging_clip, "w_total", 0.0))
+            try:
+                if (not self._closest_j_row_filt_init) or (self._closest_j_row_filt is None):
+                    self._closest_j_row_filt = np.array(j_row_raw, dtype=float).reshape(n)
+                    self._closest_j_row_filt_init = True
+                else:
+                    prev = np.array(self._closest_j_row_filt, dtype=float).reshape(n)
+                    cur = np.array(j_row_raw, dtype=float).reshape(n)
+                    # Sign alignment to avoid flips.
+                    if float(prev @ cur) < 0.0:
+                        cur = -cur
+                    # Risk-scaled beta: far -> smoother, near -> more responsive (but still filtered).
+                    beta = float(0.20 + 0.60 * float(np.clip(w_d, 0.0, 1.0)))
+                    self._closest_j_row_filt = beta * cur + (1.0 - beta) * prev
+            except Exception:
                 self._closest_j_row_filt = np.array(j_row_raw, dtype=float).reshape(n)
                 self._closest_j_row_filt_init = True
-            else:
-                prev = np.array(self._closest_j_row_filt, dtype=float).reshape(n)
-                cur = np.array(j_row_raw, dtype=float).reshape(n)
-                # Sign alignment to avoid flips.
-                if float(prev @ cur) < 0.0:
-                    cur = -cur
-                # Risk-scaled beta: far -> smoother, near -> more responsive (but still filtered).
-                beta = float(0.20 + 0.60 * float(np.clip(w_d, 0.0, 1.0)))
-                self._closest_j_row_filt = beta * cur + (1.0 - beta) * prev
-        except Exception:
-            self._closest_j_row_filt = np.array(j_row_raw, dtype=float).reshape(n)
-            self._closest_j_row_filt_init = True
 
-        j_row_use = np.array(self._closest_j_row_filt, dtype=float).reshape(-1)
-        j_norm_use = float(np.linalg.norm(j_row_use))
-        if j_norm_use < 1e-9:
-            j_row_use = np.array(j_row_raw, dtype=float).reshape(-1)
+            j_row_use = np.array(self._closest_j_row_filt, dtype=float).reshape(-1)
             j_norm_use = float(np.linalg.norm(j_row_use))
+            if j_norm_use < 1e-9:
+                j_row_use = np.array(j_row_raw, dtype=float).reshape(-1)
+                j_norm_use = float(np.linalg.norm(j_row_use))
 
         # ------------------------------------------------------------------
         # PENETRATION EMERGENCY (signed distance < 0)
@@ -377,7 +374,8 @@ class SimpleVelocityBlender(Node):
         # along the distance gradient (j_row). This is deterministic and does not
         # depend on hazard prefixes.
         if (
-            bool(self.penetration_emergency_enable)
+            (not self.avoidance_disabled)
+            and bool(self.penetration_emergency_enable)
             and (float(d_raw_closest) < 0.0)
             and (float(j_norm_use) > 1e-6)
             and (str(safety.hazard) != "none")
@@ -402,32 +400,39 @@ class SimpleVelocityBlender(Node):
             except Exception:
                 pass
 
-        handled, qdot_em, self._er_state, reset_smoothing, emergency_now = vh.handle_emergency_override(
-            now_wall=float(now),
-            d_eff=float(d_eff_for_weights),
-            j_row=np.array(j_row_raw, dtype=float).reshape(-1),
-            hazard=str(safety.hazard),
-            j_norm=float(np.linalg.norm(j_row_raw)),
-            max_vel=float(self.max_vel),
-            state=self._er_state,
-            params=vh.make_emergency_params_from_attrs(self),
-        )
-        if reset_smoothing:
-            self.qdot_prev = np.zeros(n)
-        if handled and (qdot_em is not None):
-            # Preserve original semantics: on emergency early-return we only count emergency enters.
-            self._diag.update_edge_counters(
-                emergency_now=bool(emergency_now),
-                stop_gate_now=bool(self._diag.prev_stop_gate),
+        if not self.avoidance_disabled:
+            handled, qdot_em, self._er_state, reset_smoothing, emergency_now = vh.handle_emergency_override(
+                now_wall=float(now),
+                d_eff=float(d_eff_for_weights),
+                j_row=np.array(j_row_raw, dtype=float).reshape(-1),
+                hazard=str(safety.hazard),
+                j_norm=float(np.linalg.norm(j_row_raw)),
+                max_vel=float(self.max_vel),
+                state=self._er_state,
+                params=vh.make_emergency_params_from_attrs(self),
             )
-            self.publish_velocity(qdot_em)
-            return
+            if reset_smoothing:
+                self.qdot_prev = np.zeros(n)
+            if handled and (qdot_em is not None):
+                # Preserve original semantics: on emergency early-return we only count emergency enters.
+                self._diag.update_edge_counters(
+                    emergency_now=bool(emergency_now),
+                    stop_gate_now=bool(self._diag.prev_stop_gate),
+                )
+                self.publish_velocity(qdot_em)
+                return
 
-        # Stop gate entry counter (based on effective distance)
-        self._diag.update_edge_counters(
-            emergency_now=bool(self._diag.prev_emergency),
-            stop_gate_now=bool(getattr(staging_clip, "stop_gate", False)),
-        )
+            # Stop gate entry counter (based on effective distance)
+            self._diag.update_edge_counters(
+                emergency_now=bool(self._diag.prev_emergency),
+                stop_gate_now=bool(getattr(staging_clip, "stop_gate", False)),
+            )
+        else:
+            # Avoidance off: keep counters stable
+            self._diag.update_edge_counters(
+                emergency_now=False,
+                stop_gate_now=False,
+            )
 
         # ------------------------------------------------------------------
         # PATH FOLLOWING WITH REJOIN (dynamic-obstacle friendly)

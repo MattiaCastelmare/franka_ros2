@@ -611,7 +611,7 @@ def generate_launch_description():
                 executable='velocity_control_blender',
                 name='velocity_control_blender',
                 output='screen',
-                parameters=[velocity_blender_params_file]
+                parameters=[velocity_blender_params_file, avoidance_params_file]
             )
         ]
     )
