@@ -17,6 +17,7 @@ should not contain heavy math.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -65,6 +66,7 @@ DEFAULT_VELOCITY_BLENDER_PARAMS: Dict[str, Any] = {
     "risk_d_mid": 0.20,
     "risk_d_near": 0.10,
     "stop_distance": 0.05,
+    "stop_release_distance": 0.06,
 
     # Blending / constraints
     "avoidance_weight_max": 1.0,
@@ -231,6 +233,7 @@ def load_velocity_blender_parameters(node: Any, target: Any) -> None:
     target.risk_d_mid = float(p("risk_d_mid"))
     target.risk_d_near = float(p("risk_d_near"))
     target.stop_distance = float(p("stop_distance"))
+    target.stop_release_distance = float(p("stop_release_distance"))
 
     target.avoidance_weight_max = float(p("avoidance_weight_max"))
     target.slowdown_factor_max = float(p("slowdown_factor_max"))
@@ -249,7 +252,11 @@ def load_velocity_blender_parameters(node: Any, target: Any) -> None:
     target.emergency_exit_m = float(p("emergency_exit_m"))
     target.emergency_d_dot = float(p("emergency_d_dot"))
     target.emergency_max_vel_fraction = float(p("emergency_max_vel_fraction"))
-    target.emergency_hazard_prefixes = [str(x) for x in list(p("emergency_hazard_prefixes"))]
+    try:
+        target.emergency_hazard_prefixes = [str(x) for x in list(p("emergency_hazard_prefixes"))]
+    except Exception:
+        # Backward-compatible default when the parameter is missing.
+        target.emergency_hazard_prefixes = []
 
     target.recovery_enable = bool(p("recovery_enable"))
     target.recovery_time_s = float(p("recovery_time_s"))
@@ -505,6 +512,129 @@ def compute_effective_distance_and_staging(
     return float(inflation), float(d_eff), staging
 
 
+def compute_safety_and_jrow(
+    *,
+    n_dof: int,
+    closest_d: float,
+    closest_j_row: np.ndarray,
+    closest_hazard: str,
+    distance_inflation: float,
+    risk_d_far: float,
+    risk_d_mid: float,
+    risk_d_near: float,
+    stop_distance: float,
+    avoidance_disabled: bool,
+    closest_j_row_filt: np.ndarray,
+    closest_j_row_filt_init: bool,
+) -> Tuple[
+    SafetySignalContext,
+    Any,
+    float,
+    float,
+    float,
+    np.ndarray,
+    np.ndarray,
+    float,
+    np.ndarray,
+    bool,
+]:
+    """Compute safety + staging and update the filtered closest j_row.
+
+    Returns:
+        safety, staging_clip, d_raw_closest, d_eff_for_weights, d_eff_for_stop,
+        j_row_raw, j_row_use, j_norm_use, closest_j_row_filt, closest_j_row_filt_init
+    """
+
+    n_dof = int(n_dof)
+    if bool(avoidance_disabled):
+        safety = SafetySignalContext(
+            d_raw=999.0,
+            j_row=np.zeros(n_dof),
+            hazard="none",
+            j_norm=0.0,
+            inflation=0.0,
+            d_eff=999.0,
+            staging=None,
+        )
+        staging_clip = SimpleNamespace(w_total=0.0, w_far=0.0, w_mid=0.0, w_near=0.0, stop_gate=False)
+        return (
+            safety,
+            staging_clip,
+            float(safety.d_raw),
+            float(safety.d_eff),
+            float(safety.d_eff),
+            np.zeros(n_dof),
+            np.zeros(n_dof),
+            0.0,
+            np.array(closest_j_row_filt, dtype=float).reshape(n_dof),
+            bool(closest_j_row_filt_init),
+        )
+
+    safety = compute_safety_signal_context(
+        closest_d=float(closest_d),
+        closest_j_row=np.array(closest_j_row, dtype=float).reshape(-1),
+        closest_hazard=str(closest_hazard or "none"),
+        distance_inflation=float(distance_inflation),
+        risk_d_far=float(risk_d_far),
+        risk_d_mid=float(risk_d_mid),
+        risk_d_near=float(risk_d_near),
+        stop_distance=float(stop_distance),
+    )
+
+    d_raw_closest = float(safety.d_raw)
+    d_eff_for_weights = float(max(0.0, float(safety.d_eff)))
+    d_eff_for_stop = float(safety.d_eff)
+    try:
+        staging_clip = compute_risk_staging(
+            d_eff=float(d_eff_for_weights),
+            d_far=float(risk_d_far),
+            d_mid=float(risk_d_mid),
+            d_near=float(risk_d_near),
+            d_stop=float(stop_distance),
+        )
+    except Exception:
+        staging_clip = safety.staging
+
+    # Filter j_row for stability (use raw for emergency for fast reaction).
+    j_row_raw = np.array(safety.j_row, dtype=float).reshape(-1)
+    w_d = float(getattr(staging_clip, "w_total", 0.0))
+    try:
+        if (not bool(closest_j_row_filt_init)) or (closest_j_row_filt is None):
+            closest_j_row_filt = np.array(j_row_raw, dtype=float).reshape(n_dof)
+            closest_j_row_filt_init = True
+        else:
+            prev = np.array(closest_j_row_filt, dtype=float).reshape(n_dof)
+            cur = np.array(j_row_raw, dtype=float).reshape(n_dof)
+            # Sign alignment to avoid flips.
+            if float(prev @ cur) < 0.0:
+                cur = -cur
+            # Risk-scaled beta: far -> smoother, near -> more responsive (but still filtered).
+            beta = float(0.20 + 0.60 * float(np.clip(w_d, 0.0, 1.0)))
+            closest_j_row_filt = beta * cur + (1.0 - beta) * prev
+    except Exception:
+        closest_j_row_filt = np.array(j_row_raw, dtype=float).reshape(n_dof)
+        closest_j_row_filt_init = True
+
+    j_row_use = np.array(closest_j_row_filt, dtype=float).reshape(-1)
+    j_norm_use = float(np.linalg.norm(j_row_use))
+    if j_norm_use < 1e-9:
+        j_row_use = np.array(j_row_raw, dtype=float).reshape(-1)
+        j_norm_use = float(np.linalg.norm(j_row_use))
+
+    return (
+        safety,
+        staging_clip,
+        float(d_raw_closest),
+        float(d_eff_for_weights),
+        float(d_eff_for_stop),
+        np.array(j_row_raw, dtype=float).reshape(-1),
+        np.array(j_row_use, dtype=float).reshape(-1),
+        float(j_norm_use),
+        np.array(closest_j_row_filt, dtype=float).reshape(n_dof),
+        bool(closest_j_row_filt_init),
+    )
+
+
 # -----------------------------------------------------------------------------
 # Progress / rejoin bookkeeping
 # -----------------------------------------------------------------------------
@@ -516,6 +646,43 @@ class PolylineProgress:
 
     progress_index: int = 0
     progress_s: float = 0.0
+
+
+@dataclass
+class StallProgressState:
+    """Keep progress-based stall detection state."""
+
+    last_progress_s: Optional[float] = None
+    last_progress_wall: Optional[float] = None
+    stalled: bool = False
+
+
+def update_stall_detection(
+    *,
+    now_wall: float,
+    progress_s: float,
+    state: StallProgressState,
+) -> StallProgressState:
+    """Update stall detection state (same thresholds as the node)."""
+
+    try:
+        if state.last_progress_s is None or state.last_progress_wall is None:
+            state.last_progress_s = float(progress_s)
+            state.last_progress_wall = float(now_wall)
+            state.stalled = False
+        else:
+            dt = float(now_wall) - float(state.last_progress_wall)
+            # Evaluate on a coarse window to avoid noise-triggered toggles.
+            if dt >= 1.5:
+                ds = float(progress_s) - float(state.last_progress_s)
+                # If we advanced less than ~0.01 rad of polyline arc-length in 1.5s, treat as stalled.
+                state.stalled = bool(ds < 0.01)
+                state.last_progress_s = float(progress_s)
+                state.last_progress_wall = float(now_wall)
+    except Exception:
+        state.stalled = False
+
+    return state
 
 
 def update_polyline_progress(
@@ -841,6 +1008,191 @@ def apply_final_filters_and_limits(
         qdot_tracking_hint=np.array(qdot_tracking_hint, dtype=float).reshape(-1),
         dbg=dbg,
     )
+
+
+@dataclass
+class StopGateState:
+    """Hold STOP-gate state and throttling timestamps."""
+
+    stop_active: bool = False
+    stop_enter_wall: Optional[float] = None
+    stop_phase: str = "HOLD"
+    stop_warn_wall: float = 0.0
+    stop_d_dot_last: float = 0.0
+    stop_log_wall: float = 0.0
+
+
+def handle_penetration_emergency(
+    *,
+    penetration_emergency_enable: bool,
+    d_raw_closest: float,
+    j_norm_use: float,
+    hazard: str,
+    penetration_emergency_d_dot: float,
+    penetration_emergency_depth_ref: float,
+    penetration_emergency_max_vel_fraction: float,
+    max_vel: float,
+    j_row_use: np.ndarray,
+) -> Tuple[bool, Optional[np.ndarray]]:
+    """Handle penetration emergency; returns (handled, qdot_escape)."""
+
+    if (
+        bool(penetration_emergency_enable)
+        and (float(d_raw_closest) < 0.0)
+        and (float(j_norm_use) > 1e-6)
+        and (str(hazard) != "none")
+    ):
+        try:
+            d_dot_des = max(0.0, float(penetration_emergency_d_dot))
+            alpha = float(d_dot_des) / (float(j_norm_use) * float(j_norm_use) + 1e-8)
+            qdot_escape = float(alpha) * np.array(j_row_use, dtype=float).reshape(-1)
+
+            depth_ref = max(1e-6, float(penetration_emergency_depth_ref))
+            depth = max(0.0, -float(d_raw_closest))
+            depth_gain = 1.0 + 4.0 * float(np.clip(depth / depth_ref, 0.0, 2.0))
+            qdot_escape *= float(np.clip(depth_gain, 1.0, 5.0))
+
+            maxv = float(max_vel) * float(max(0.1, float(penetration_emergency_max_vel_fraction)))
+            qdot_escape = np.clip(qdot_escape, -maxv, +maxv)
+            return True, np.array(qdot_escape, dtype=float).reshape(-1)
+        except Exception:
+            return False, None
+
+    return False, None
+
+
+def handle_stop_gate(
+    *,
+    now_wall: float,
+    n_dof: int,
+    stop_distance: float,
+    stop_release_distance: float,
+    d_eff_for_stop: float,
+    avoidance_disabled: bool,
+    hazard: str,
+    j_row_use: np.ndarray,
+    j_norm_use: float,
+    emergency_d_dot: float,
+    emergency_max_vel_fraction: float,
+    max_vel: float,
+    velocity_filter_beta: float,
+    velocity_filter_beta_near: float,
+    d_eff_for_weights: float,
+    d_infl: float,
+    cbf_projection_iters: int,
+    cbf_eps: float,
+    normal_correction_max: float,
+    qdot_prev: np.ndarray,
+    state: StopGateState,
+    logger: Any,
+    d_raw_closest: float,
+) -> Tuple[bool, Optional[np.ndarray], np.ndarray, StopGateState]:
+    """Stop gate handler with HOLD/ESCAPE logic and throttled logging."""
+
+    n_dof = int(n_dof)
+
+    # Hysteresis update
+    try:
+        if (not bool(state.stop_active)) and (float(d_eff_for_stop) <= float(stop_distance)):
+            state.stop_active = True
+            state.stop_enter_wall = float(now_wall)
+            state.stop_phase = "HOLD"
+            qdot_prev = np.zeros(n_dof)
+        elif bool(state.stop_active) and (float(d_eff_for_stop) >= float(stop_release_distance)):
+            state.stop_active = False
+            state.stop_enter_wall = None
+            state.stop_phase = "HOLD"
+    except Exception:
+        state.stop_active = bool(state.stop_active)
+
+    # Throttled STOP log (<= 1 Hz)
+    try:
+        if (float(now_wall) - float(state.stop_log_wall)) >= 1.0:
+            state.stop_log_wall = float(now_wall)
+            logger.info(
+                f"[BLENDER-STOP] active={bool(state.stop_active)} phase={str(state.stop_phase)} "
+                f"hazard='{str(hazard)}' d_raw={float(d_raw_closest):.3f} "
+                f"d_eff={float(d_eff_for_stop):.3f} j_norm={float(j_norm_use):.3f} "
+                f"d_dot_cmd={float(state.stop_d_dot_last):.4f}"
+            )
+    except Exception:
+        pass
+
+    if not bool(state.stop_active):
+        return False, None, np.array(qdot_prev, dtype=float).reshape(-1), state
+
+    # HOLD then ESCAPE (identical logic to the node)
+    hold_s = 1.0
+    ramp_s = 0.5
+    t_in = float(now_wall) - float(state.stop_enter_wall or now_wall)
+    if t_in < float(hold_s):
+        state.stop_phase = "HOLD"
+        state.stop_d_dot_last = 0.0
+        return True, np.zeros(n_dof, dtype=float), np.array(qdot_prev, dtype=float).reshape(-1), state
+
+    state.stop_phase = "ESCAPE"
+
+    qdot_escape = np.zeros(n_dof, dtype=float)
+    ramp = float(np.clip((t_in - float(hold_s)) / max(1e-6, float(ramp_s)), 0.0, 1.0))
+    ramp = float(3.0 * ramp * ramp - 2.0 * ramp * ramp * ramp)
+
+    try:
+        if (not bool(avoidance_disabled)) and (float(j_norm_use) > 1e-6) and (str(hazard) != "none"):
+            d_dot_target = max(0.0, float(emergency_d_dot))
+            alpha = float(d_dot_target) / (float(j_norm_use) * float(j_norm_use) + 1e-8)
+            qdot_escape = float(alpha) * np.array(j_row_use, dtype=float).reshape(n_dof)
+            if float(np.dot(np.array(j_row_use, dtype=float).reshape(n_dof), qdot_escape)) < 0.0:
+                qdot_escape = -qdot_escape
+            qdot_escape *= float(ramp)
+
+            maxv = float(max_vel) * float(max(0.1, float(emergency_max_vel_fraction)))
+            qdot_escape = np.clip(qdot_escape, -maxv, +maxv)
+        else:
+            # No reliable hazard/j_row -> stay in HOLD
+            if (float(now_wall) - float(state.stop_warn_wall)) >= 1.0:
+                state.stop_warn_wall = float(now_wall)
+                logger.warn("[BLENDER-STOP] HOLD: no reliable hazard/j_row to escape")
+            qdot_escape = np.zeros(n_dof, dtype=float)
+    except Exception:
+        qdot_escape = np.zeros(n_dof, dtype=float)
+
+    # Smooth + enforce constraints using existing filters/limits
+    dbg = {"stop_escape": True}
+    qdot_cmd, qdot_prev_new, _dbg = apply_final_filters_and_limits(
+        qdot_des=np.array(qdot_escape, dtype=float).reshape(n_dof),
+        qdot_prev=np.array(qdot_prev, dtype=float).reshape(n_dof),
+        velocity_filter_beta=float(velocity_filter_beta),
+        velocity_filter_beta_near=float(velocity_filter_beta_near),
+        max_vel=float(max_vel),
+        d_eff=float(d_eff_for_weights),
+        d_infl=float(d_infl),
+        j_row=np.array(j_row_use, dtype=float).reshape(-1),
+        j_norm=float(j_norm_use),
+        cbf_projection_iters=int(cbf_projection_iters),
+        cbf_eps=float(cbf_eps),
+        normal_correction_max=float(normal_correction_max),
+        qdot_tracking_hint=np.zeros(n_dof, dtype=float),
+        dbg=dbg,
+    )
+
+    # Runtime-safe check: ensure we are not driving into the hazard during STOP.
+    try:
+        if (str(hazard) != "none") and (float(j_norm_use) > 1e-6):
+            d_dot_cmd = float(np.array(j_row_use, dtype=float).reshape(n_dof) @ np.array(qdot_cmd, dtype=float).reshape(n_dof))
+            state.stop_d_dot_last = float(d_dot_cmd)
+            if d_dot_cmd < -1e-6:
+                if (float(now_wall) - float(state.stop_warn_wall)) >= 1.0:
+                    state.stop_warn_wall = float(now_wall)
+                    logger.warn(
+                        f"[BLENDER-STOP] d_dot < 0 (d_dot={d_dot_cmd:.4f}); holding"
+                    )
+                qdot_cmd = np.zeros(n_dof, dtype=float)
+        else:
+            state.stop_d_dot_last = 0.0
+    except Exception:
+        state.stop_d_dot_last = 0.0
+
+    return True, np.array(qdot_cmd, dtype=float).reshape(-1), np.array(qdot_prev_new, dtype=float).reshape(-1), state
 
 
 # -----------------------------------------------------------------------------

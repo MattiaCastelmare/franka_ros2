@@ -94,8 +94,11 @@ online_avoidance_controller:
     # Staged risk zones (30/20/10/5 cm) + stop gate
     # ============================================
     # Soglie di rischio derivate dal raggio (far = r_infl, mid = 2/3, near = 1/3)
-    stop_distance: 0.02
-    stop_release_distance: 0.06
+    risk_d_far: 0.30
+    risk_d_mid: 0.20
+    risk_d_near: 0.10
+    stop_distance: 0.08
+    stop_release_distance: 0.12
 
     # Risk-scaled alpha (defaults keep legacy behavior if min==max==alpha)
     alpha_min: 5.0
@@ -139,3 +142,8 @@ velocity_control_blender:
     influence_distance: 0.30
     safety_margin: 0.0
     distance_inflation: 0.0
+    risk_d_far: 0.30
+    risk_d_mid: 0.20
+    risk_d_near: 0.10
+    stop_distance: 0.08
+    stop_release_distance: 0.12

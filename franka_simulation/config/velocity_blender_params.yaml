@@ -53,11 +53,12 @@ velocity_control_blender:
 
     # Emergency safety: hard override when too close
     emergency_enable: true
-    emergency_enter_m: 0.05
-    emergency_exit_m: 0.10
-    emergency_d_dot: 0.06
-    emergency_max_vel_fraction: 1.0
-    emergency_hazard_prefixes: ["external:"]
+    emergency_enter_m: 0.08
+    emergency_exit_m: 0.12
+    emergency_d_dot: 0.20
+    emergency_max_vel_fraction: 0.30
+    # Empty list => apply emergency to any hazard type
+    emergency_hazard_prefixes: []
 
     # Recovery after emergency clears: slide tangentially then rejoin
     recovery_enable: true

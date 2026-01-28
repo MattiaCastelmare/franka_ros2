@@ -229,6 +229,16 @@ class SafeAvoidanceTest(Node):
         bv = float(np.linalg.norm(qdot_cmd))
         tv = float(np.linalg.norm(qdot_track))
 
+        d_dot_cmd = 0.0
+        d_dot_track = 0.0
+        try:
+            if coherent and (float(jn) > 1e-6):
+                d_dot_cmd = float(np.array(self.closest_j_row, dtype=float).reshape(7) @ np.array(qdot_cmd, dtype=float).reshape(7))
+                d_dot_track = float(np.array(self.closest_j_row, dtype=float).reshape(7) @ np.array(qdot_track, dtype=float).reshape(7))
+        except Exception:
+            d_dot_cmd = 0.0
+            d_dot_track = 0.0
+
         if coherent:
             active = (haz != "none") or (
                 (d < float(self._avoidance_active_distance_m)) and (av > 1e-3) and (jn > 1e-6)
@@ -242,6 +252,7 @@ class SafeAvoidanceTest(Node):
         self.get_logger().info(
             f"{tag} wp={wp_name} d={d:.3f} haz={haz} "
             f"|cmd|={bv:.3f} |avoid|={av:.3f} |track≈|={tv:.3f} "
+            f"d_dot_cmd={d_dot_cmd:.4f} d_dot_track={d_dot_track:.4f} "
             f"src={'closest' if coherent else 'stale'}"
         )
 
