@@ -13,14 +13,14 @@ online_avoidance_controller:
     control_rate: 100.0  # Hz
     
     # Distanze critiche per l'avoidance (ereditate sopra)
-    aggressive_distance: 0.0  # m - zona aggressiva disabilitata
+    aggressive_distance: 0.05  # m - zona aggressiva disabilitata
     
     # Guadagni di controllo
     # Obiettivo: evitare in modo chiaro (soprattutto < 20 cm) senza rendere il moto ingestibile.
     # NOTE: se l'avoidance satura costantemente a max_joint_velocity, tende a cancellare il tracking
     # e può creare deadlock. Riduciamo la saturazione e aumentiamo la componente tangenziale.
     nullspace_gain: 0.15
-    tangential_gain: 0.0
+    tangential_gain: 0.4
     aggressive_gain_scale: 2.5
     max_joint_velocity: 0.25
 
@@ -41,7 +41,7 @@ online_avoidance_controller:
     # (approssimazioni veloci: capsule-capsule e piano z=ground_z)
     # ============================================
     enable_ground_avoidance: false
-    ground_z: 0.0
+    ground_z: 0.10
     ground_influence_distance: 0.15
     ground_safety_margin: 0.05
     ground_gain: 0.15
@@ -105,8 +105,8 @@ online_avoidance_controller:
     alpha_max: 5.0
 
     # QP damping (0 disables)
-    qp_damping_min: 0.0
-    qp_damping_max: 0.0
+    qp_damping_min: 0.1
+    qp_damping_max: 0.6
 
     # Risk-scaled output LPF
     beta_lpf_far: 0.30
@@ -140,8 +140,8 @@ velocity_control_blender:
   ros__parameters:
     # Unica fonte per le distanze di influenza del blender (allineata al controller)
     influence_distance: 0.30
-    safety_margin: 0.0
-    distance_inflation: 0.0
+    safety_margin: 0.1
+    distance_inflation: 0.1
     risk_d_far: 0.30
     risk_d_mid: 0.20
     risk_d_near: 0.10

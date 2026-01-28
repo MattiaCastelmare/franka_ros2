@@ -12,6 +12,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     TimerAction,
     ExecuteProcess,
+    LogInfo,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, Command, FindExecutable, PathJoinSubstitution
@@ -611,7 +612,16 @@ def generate_launch_description():
                 executable='velocity_control_blender',
                 name='velocity_control_blender',
                 output='screen',
-                parameters=[velocity_blender_params_file, avoidance_params_file]
+                parameters=[
+                    velocity_blender_params_file,
+                    avoidance_params_file,
+                    {
+                        # TEST-REACTIVE: override for avoidance-only mode (no trajectory)
+                        'reactive_enable': True,
+                        'hold_position_without_trajectory': False,
+                        'reactive_deadband': 1e-4,
+                    },
+                ]
             )
         ]
     )
@@ -645,6 +655,7 @@ def generate_launch_description():
             run_safe_test_arg,
             enable_moveit_arg,
             enable_camera_arg,
+            LogInfo(msg='AVOIDANCE-ONLY MODE ENABLED: reactive without trajectory'),
             static_tf_world_base,
             static_tf_base_link0,
             static_tf_obstacle_world,

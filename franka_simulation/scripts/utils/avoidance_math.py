@@ -862,6 +862,35 @@ def distance_capsule_to_collision_object_boxes(
             repulsion_spread_half_length=float(repulsion_spread_half_length),
         )
 
+        # Enforce dir = normalize(p_seg - p_box) (box -> capsule).
+        try:
+            v = np.array(p_seg_w, dtype=float).reshape(3) - np.array(p_box_w, dtype=float).reshape(3)
+            vn = float(np.linalg.norm(v))
+            if vn > 1e-9:
+                dir_w = v / vn
+        except Exception:
+            pass
+
+        # Ensure sample directions follow the same convention.
+        try:
+            if isinstance(samples, list) and len(samples) > 0:
+                fixed_samples = []
+                for s in samples:
+                    try:
+                        ps = np.array(s.get("p_seg", p_seg_w), dtype=float).reshape(3)
+                        pb = np.array(s.get("p_box", p_box_w), dtype=float).reshape(3)
+                        vsp = ps - pb
+                        vn = float(np.linalg.norm(vsp))
+                        s2 = dict(s)
+                        if vn > 1e-9:
+                            s2["dir"] = vsp / vn
+                        fixed_samples.append(s2)
+                    except Exception:
+                        fixed_samples.append(s)
+                samples = fixed_samples
+        except Exception:
+            pass
+
         if float(dist) < float(best_d):
             best_d = float(dist)
             best_dir = np.array(dir_w, dtype=float).reshape(3)

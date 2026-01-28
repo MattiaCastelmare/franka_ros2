@@ -52,7 +52,13 @@ from utils.closest_constraint import ClosestConstraintHoldState
 from utils.diagnostics import publish_cbf_diagnostics
 
 # Optional posture objective (used when controller safety filter is disabled)
-from utils.avoidance_math import posture_reference, staged_risk_weight
+from utils.avoidance_math import (
+    posture_reference,
+    staged_risk_weight,
+    build_cbf_constraints,
+    smooth_alpha,
+    point_jacobian_world,
+)
 
 
 class NullSpaceAvoidance(Node):
@@ -154,6 +160,8 @@ class NullSpaceAvoidance(Node):
         # Message format: [d_closest, j_row_0..j_row_6]
         self.closest_constraint_pub = self.create_publisher(Float64MultiArray, "/avoidance/closest_constraint", 10)
         self.closest_hazard_pub = self.create_publisher(String, "/avoidance/closest_hazard", 10)
+        # TODO: Confirm topic name for multi-constraint list if there is an existing convention.
+        self.constraints_pub = self.create_publisher(Float64MultiArray, "/avoidance/constraints", 10)
 
         # riga di Jacobiano (1x7) del punto più critico: d_dot ≈ j_row @ qdot
         self.jac_pub = self.create_publisher(Float64MultiArray, "/avoidance/jacobian", 10)
@@ -167,6 +175,7 @@ class NullSpaceAvoidance(Node):
             min_dist_raw_pub=self.min_dist_raw_pub,
             closest_constraint_pub=self.closest_constraint_pub,
             closest_hazard_pub=self.closest_hazard_pub,
+            constraints_pub=self.constraints_pub,
             jac_pub=self.jac_pub,
             hazard_pub=self.hazard_pub,
             capsule_marker_pub=self.capsule_marker_pub,
@@ -187,6 +196,9 @@ class NullSpaceAvoidance(Node):
         self._dbg_prev_stop = bool(self._cbf_state.stop_gate_active)
         self._dbg_prev_closest_hazard = "none"
         self._dbg_closest_switch_count = 0
+        # TEST-REACTIVE: throttled logs
+        self._test_last_no_obs_wall = 0.0
+        self._test_last_no_js_wall = 0.0
 
     def _control_loop(self):
         # High-level flow:
@@ -198,6 +210,14 @@ class NullSpaceAvoidance(Node):
         #  6) rebuild RViz marker cache (published separately at 10Hz)
 
         if not (self.pin_ok and isinstance(self.q, np.ndarray)):
+            # TEST-REACTIVE: waiting for joint_states
+            try:
+                now_wall = float(time.time())
+                if (now_wall - float(self._test_last_no_js_wall)) >= 1.0:
+                    self._test_last_no_js_wall = now_wall
+                    self.get_logger().info("[TEST-REACTIVE] waiting for joint_states")
+            except Exception:
+                pass
             publish_not_ready_outputs(pubs=self._pubs)
             return
 
@@ -206,11 +226,19 @@ class NullSpaceAvoidance(Node):
         pin.updateFramePlacements(self.model, self.data)
 
         # --- Build world geometry (capsule segments)
+        # TEST-REACTIVE: warn if no obstacles have been received
+        try:
+            now_wall = float(time.time())
+            if (len(self.obstacles) == 0) and ((now_wall - float(self._test_last_no_obs_wall)) >= 1.0):
+                self._test_last_no_obs_wall = now_wall
+                self.get_logger().info("[TEST-REACTIVE] no obstacles received on /obstacle_scene")
+        except Exception:
+            pass
         segments = iter_world_capsule_segments(capsules=self.capsules, frame_ids=self.frame_ids, data=self.data)
 
         # --- Nominal avoidance (external obstacles + ground) + debug distances
         avoid_diag: dict = {}
-        qdot_external_ground, d_min, external_best, ground_best, dist_ext_ground = scan_external_and_ground(
+        qdot_external_ground, d_min, external_best, ground_best, dist_ext_ground, external_candidates = scan_external_and_ground(
             segments=segments,
             obstacles=list(self.obstacles),
             model=self.model,
@@ -237,7 +265,7 @@ class NullSpaceAvoidance(Node):
         )
 
         # --- Nominal avoidance (self-collision) + debug distances
-        qdot_self, d_min, self_best, dist_self = scan_self_collision(
+        qdot_self, d_min, self_best, dist_self, self_candidates = scan_self_collision(
             segments=segments,
             model=self.model,
             data=self.data,
@@ -253,7 +281,108 @@ class NullSpaceAvoidance(Node):
         # Distances list used only for RViz debug markers (ordering preserved)
         self.distances_data = list(dist_ext_ground) + list(dist_self)
 
-        qdot_nom = np.array(qdot_external_ground + qdot_self, dtype=float).reshape(7)
+        # Active contacts for multi-constraint blending (within influence zones only)
+        active_candidates: List[dict] = list(external_candidates) + list(self_candidates)
+
+        # ------------------------------------------------------------------
+        # Nominal avoidance (distance-gradient, normal-only, multi-point sum)
+        # ------------------------------------------------------------------
+        qdot_nom_pre = np.zeros(7, dtype=float)
+        weight_sum = 0.0
+        active_count = 0
+        closest_label = "none"
+        closest_d = float("inf")
+
+        try:
+            act = []
+            for c in list(active_candidates):
+                try:
+                    d = float(c.get("d", 1e9))
+                    if not bool(np.isfinite(d)):
+                        continue
+                    act.append(c)
+                except Exception:
+                    continue
+            act.sort(key=lambda x: float(x.get("d", 1e9)))
+
+            for idx, c in enumerate(act):
+                kind = str(c.get("kind", "external"))
+                d = float(c.get("d", 1e9))
+
+                if kind == "ground":
+                    d_infl = float(self.params.ground_infl)
+                    d_safe = float(self.params.ground_safe)
+                    gain = float(self.params.k_ground)
+                elif kind == "self":
+                    d_infl = float(self.params.self_infl)
+                    d_safe = float(self.params.self_safe)
+                    gain = float(self.params.k_self)
+                else:
+                    d_infl = float(self.params.d_infl)
+                    d_safe = float(self.params.d_safe)
+                    gain = float(self.params.k_null)
+
+                if d >= float(d_infl):
+                    continue
+
+                w = float(smooth_alpha(d, float(d_infl), float(d_safe)))
+                if kind == "external":
+                    if float(self.params.d_aggr) > (float(d_safe) + 1e-9):
+                        alpha_close = float(smooth_alpha(d, float(self.params.d_aggr), float(d_safe)))
+                    else:
+                        alpha_close = 0.0
+                    gain_scale = 1.0 + float(self.params.k_aggr) * float(alpha_close)
+                else:
+                    gain_scale = 1.0
+
+                w = float(w) * float(gain) * float(gain_scale)
+                if w <= 0.0:
+                    continue
+
+                j_row = None
+                if kind in ("external", "ground"):
+                    fid = int(c.get("fid", -1))
+                    p = np.array(c.get("p", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+                    n = np.array(c.get("n", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+                    n = n / (float(np.linalg.norm(n)) + 1e-9)
+                    if fid >= 0:
+                        Jp = point_jacobian_world(self.model, self.data, self.q, fid, p)
+                        j_row = (n.reshape(1, 3) @ Jp).reshape(-1)
+                elif kind == "self":
+                    fid_i = int(c.get("fid_i", -1))
+                    fid_j = int(c.get("fid_j", -1))
+                    p_i = np.array(c.get("p_i", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+                    p_j = np.array(c.get("p_j", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+                    n = np.array(c.get("n", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+                    n = n / (float(np.linalg.norm(n)) + 1e-9)
+                    if (fid_i >= 0) and (fid_j >= 0):
+                        J_i = point_jacobian_world(self.model, self.data, self.q, fid_i, p_i)
+                        J_j = point_jacobian_world(self.model, self.data, self.q, fid_j, p_j)
+                        j_row = (n.reshape(1, 3) @ (J_i - J_j)).reshape(-1)
+
+                if j_row is None:
+                    continue
+
+                jn = float(np.linalg.norm(np.array(j_row, dtype=float).reshape(-1)))
+                if jn <= 1e-6:
+                    continue
+
+                qdot_nom_pre += float(w) * (np.array(j_row, dtype=float).reshape(-1) / float(jn))
+                weight_sum += float(w)
+                active_count += 1
+
+                if float(d) < float(closest_d):
+                    closest_d = float(d)
+                    hazard = str(c.get("hazard", ""))
+                    closest_label = hazard if len(hazard) > 0 else f"idx:{int(idx)}"
+        except Exception:
+            pass
+
+        qdot_nom = np.array(qdot_nom_pre, dtype=float).reshape(7)
+        avoid_diag["active_count"] = int(active_count)
+        avoid_diag["weight_sum"] = float(weight_sum)
+        avoid_diag["closest_label"] = str(closest_label)
+        avoid_diag["qdot_nom_pre_norm"] = float(np.linalg.norm(qdot_nom_pre))
 
         # --- Build candidate list (RAW) for publishing + (EFFECTIVE) for safety decisions.
         candidates_raw: List[dict] = []
@@ -393,6 +522,23 @@ class NullSpaceAvoidance(Node):
         except Exception:
             pass
 
+        # TEST-REACTIVE: ensure visible avoidance output inside influence zone (unless stop gate)
+        try:
+            if (
+                (float(d_min_eff) <= float(self.params.d_infl))
+                and (float(np.linalg.norm(np.array(qdot_out, dtype=float).reshape(-1))) < 1e-6)
+                and (float(np.linalg.norm(np.array(qdot_nom, dtype=float).reshape(-1))) > 1e-6)
+                and (not bool(self._cbf_state.stop_gate_active))
+            ):
+                qdot_out = np.array(qdot_nom, dtype=float).reshape(7)
+                qdot_out = np.clip(
+                    np.array(qdot_out, dtype=float).reshape(7),
+                    -float(self.params.max_qdot),
+                    +float(self.params.max_qdot),
+                )
+        except Exception:
+            pass
+
         # ------------------------------------------------------------------
         # Publish a *coherent* closest hazard pair for downstream blending:
         #   (d_closest_raw, j_row_closest)
@@ -409,6 +555,59 @@ class NullSpaceAvoidance(Node):
             hold_state=self._closest_hold,
             now_wall=float(time.time()),
         )
+
+        # Publish active multi-constraints for the blender (Float64MultiArray format)
+        # Format: [N, d1, j1_0..j1_6, d2, j2_0..j2_6, ...]
+        try:
+            act = [c for c in list(active_candidates) if float(c.get("d", 1e9)) <= float(self.params.d_infl)]
+            act.sort(key=lambda x: float(x.get("d", 1e9)))
+            K = int(max(0, int(self.params.cbf_K)))
+            if K > 0:
+                K = min(K, int(len(act)))
+            if (K <= 0) or (len(act) <= 0):
+                self.constraints_pub.publish(Float64MultiArray(data=[0.0]))
+            else:
+                Gc, _bc_unused, mc, _best_c = build_cbf_constraints(
+                    list(act),
+                    float(self.params.d_infl),
+                    K=int(K),
+                    cbf_eps=float(self.params.cbf_eps),
+                    cbf_d_safe=float(self.params.cbf_d_safe),
+                    approach_speed_limit=float(self.params.cbf_approach_speed_limit),
+                    alpha_min=float(self.params.cbf_alpha_min),
+                    alpha_max=float(self.params.cbf_alpha_max),
+                    risk_d_far=float(self.params.risk_d_far),
+                    risk_d_mid=float(self.params.risk_d_mid),
+                    risk_d_near=float(self.params.risk_d_near),
+                    stop_distance=float(self.params.stop_d_in),
+                    model=self.model,
+                    data=self.data,
+                    q=self.q,
+                )
+
+                payload: List[float] = []
+                for i in range(int(mc)):
+                    try:
+                        di = float(act[i].get("d", 1e9))
+                        gi = np.array(Gc[i, :], dtype=float).reshape(-1)
+                        if gi.shape[0] != 7:
+                            continue
+                        if not bool(np.all(np.isfinite(gi))):
+                            continue
+                        if float(np.linalg.norm(gi)) <= 1e-6:
+                            continue
+                        payload.append(float(di))
+                        payload.extend(gi.tolist())
+                    except Exception:
+                        continue
+
+                if len(payload) <= 0:
+                    self.constraints_pub.publish(Float64MultiArray(data=[0.0]))
+                else:
+                    n_active = int(len(payload) / 8)
+                    self.constraints_pub.publish(Float64MultiArray(data=[float(n_active)] + payload))
+        except Exception:
+            pass
 
         # If the controller safety filter is disabled, reuse the held closest-constraint
         # triplet for legacy diagnostics so downstream debug stays coherent.
@@ -473,18 +672,39 @@ class NullSpaceAvoidance(Node):
                     f"cbf_active={bool(self._cbf_state.cbf_active)}"
                 )
 
+                # TEST-REACTIVE: concise end-to-end status (1 Hz)
+                try:
+                    qn = float(np.linalg.norm(np.array(qdot_nom, dtype=float).reshape(-1)))
+                    qo = float(np.linalg.norm(np.array(qdot_out, dtype=float).reshape(-1)))
+                    self.get_logger().info(
+                        "[TEST-REACTIVE] "
+                        f"d_min_raw={float(d_min_raw):.3f} d_min_eff={float(d_min_eff):.3f} "
+                        f"closest='{ch}' |qdot_nom|={qn:.4f} |qdot_out|={qo:.4f} "
+                        f"stop_gate={bool(self._cbf_state.stop_gate_active)} cbf_active={bool(self._cbf_state.cbf_active)}"
+                    )
+                except Exception:
+                    pass
+
                 alpha_far_max = float(avoid_diag.get("alpha_far_max", 0.0)) if isinstance(avoid_diag, dict) else 0.0
                 alpha_near_zero = bool(alpha_far_max < 1e-3)
-                qdot_ext_norm = float(np.linalg.norm(np.array(qdot_external_ground, dtype=float).reshape(-1)))
                 qdot_pre_max = float(avoid_diag.get("norm_pre_max", 0.0)) if isinstance(avoid_diag, dict) else 0.0
                 qdot_post_max = float(avoid_diag.get("norm_post_max", 0.0)) if isinstance(avoid_diag, dict) else 0.0
                 clamp_count = int(avoid_diag.get("clamp_count", 0)) if isinstance(avoid_diag, dict) else 0
                 clamp_ratio = float(getattr(self.params, "avoidance_contrib_max_ratio", 0.0))
 
+                active_count = int(avoid_diag.get("active_count", 0)) if isinstance(avoid_diag, dict) else 0
+                weight_sum = float(avoid_diag.get("weight_sum", 0.0)) if isinstance(avoid_diag, dict) else 0.0
+                closest_label = str(avoid_diag.get("closest_label", "none")) if isinstance(avoid_diag, dict) else "none"
+
+                qdot_nom_norm = float(avoid_diag.get("qdot_nom_pre_norm", 0.0)) if isinstance(avoid_diag, dict) else 0.0
+                qdot_out_norm = float(np.linalg.norm(np.array(qdot_out, dtype=float).reshape(-1)))
+
                 self.get_logger().info(
                     "[AVOID-NOM] "
                     f"d_raw={float(d_min_raw):.3f}m alpha_max={alpha_far_max:.3f} alpha_zero={alpha_near_zero} "
-                    f"qdot_ext_norm={qdot_ext_norm:.3f} pre_max={qdot_pre_max:.3f} post_max={qdot_post_max:.3f} "
+                    f"active={active_count} w_sum={float(weight_sum):.3f} closest='{closest_label}' "
+                    f"|qdot_avoid_pre|={qdot_nom_norm:.3f} |qdot_out|={qdot_out_norm:.3f} "
+                    f"pre_max={qdot_pre_max:.3f} post_max={qdot_post_max:.3f} "
                     f"clamp_ratio={clamp_ratio:.2f} clamp_count={clamp_count} haz='{ch}'"
                 )
         except Exception:

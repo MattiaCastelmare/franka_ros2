@@ -98,7 +98,7 @@ def scan_external_and_ground(
     ground_safe: float,
     k_ground: float,
     debug_stats: Optional[dict] = None,
-) -> Tuple[np.ndarray, float, Dict[str, dict], Optional[dict], List[dict]]:
+) -> Tuple[np.ndarray, float, Dict[str, dict], Optional[dict], List[dict], List[dict]]:
     """Scan PlanningScene obstacles + ground plane and build the nominal avoidance command.
 
     Returns:
@@ -107,12 +107,14 @@ def scan_external_and_ground(
       - external_best: per-obstacle closest capsule contact (for CBF candidates)
       - ground_best: closest ground contact (for CBF candidate)
       - distances_data: list for RViz debug markers (order preserved)
+            - active_candidates: list of all active contacts (for multi-constraint CBF)
     """
     qdot_avoid = np.zeros(7)
     d_min = 999.0
     external_best: Dict[str, dict] = {}
     ground_best: Optional[dict] = None
     distances_data: List[dict] = []
+    active_candidates: List[dict] = []
 
     clamp_ratio = max(0.0, float(avoidance_contrib_max_ratio))
 
@@ -143,6 +145,32 @@ def scan_external_and_ground(
             if dir_vec is None:
                 continue
 
+            # Ensure direction points from box -> capsule (p_seg - p_box).
+            try:
+                v = np.array(p_seg, dtype=float).reshape(3) - np.array(p_box, dtype=float).reshape(3)
+                dv = np.array(dir_vec, dtype=float).reshape(3)
+                if float(dv @ v) < 0.0:
+                    dir_vec = -dv
+
+                # Fix sample directions too (if any).
+                if isinstance(samples, list) and len(samples) > 0:
+                    fixed_samples = []
+                    for s in samples:
+                        try:
+                            ps = np.array(s.get("p_seg", p_seg), dtype=float).reshape(3)
+                            pb = np.array(s.get("p_box", p_box), dtype=float).reshape(3)
+                            ds = np.array(s.get("dir", dir_vec), dtype=float).reshape(3)
+                            if float(ds @ (ps - pb)) < 0.0:
+                                ds = -ds
+                            s2 = dict(s)
+                            s2["dir"] = ds
+                            fixed_samples.append(s2)
+                        except Exception:
+                            fixed_samples.append(s)
+                    samples = fixed_samples
+            except Exception:
+                pass
+
             # Record best (closest) capsule contact for this obstacle (used by CBF constraints)
             obs_id = str(getattr(obs, "id", ""))
             if obs_id not in external_best or float(d) < float(external_best[obs_id]["d"]):
@@ -154,6 +182,19 @@ def scan_external_and_ground(
                     "p": np.array(p_seg, dtype=float).reshape(3),
                     "n": np.array(dir_vec, dtype=float).reshape(3),
                 }
+
+            # Collect active contacts for multi-constraint CBF (all points within influence)
+            if float(d) <= float(d_infl):
+                active_candidates.append(
+                    {
+                        "kind": "external",
+                        "hazard": f"external:{obs_id}",
+                        "d": float(d),
+                        "fid": int(fid),
+                        "p": np.array(p_seg, dtype=float).reshape(3),
+                        "n": np.array(dir_vec, dtype=float).reshape(3),
+                    }
+                )
 
             # Distance markers (for RViz)
             distances_data.append(
@@ -175,14 +216,14 @@ def scan_external_and_ground(
                 {"p_seg": p_seg, "dir": dir_vec, "distance": float(d), "weight": 1.0}
             ]
 
-            # Combine region samples as a WEIGHTED AVERAGE in joint space.
+            # Combine region samples as a WEIGHTED SUM in joint space.
             qdot_reg = np.zeros(7)
             w_sum = 0.0
             for s in rep_points:
                 ds = float(s.get("distance", d))
 
-                # Base activation (0 at d_infl, 1 at d_aggr or closer)
-                alpha_far = smooth_alpha(ds, float(d_infl), float(d_aggr))
+                # Base activation (0 at d_infl, 1 at d_safe or closer)
+                alpha_far = smooth_alpha(ds, float(d_infl), float(d_safe))
                 if debug_stats is not None:
                     debug_stats["alpha_far_max"] = max(debug_stats["alpha_far_max"], float(alpha_far))
 
@@ -190,8 +231,11 @@ def scan_external_and_ground(
                 if alpha_far <= 0.0:
                     continue
 
-                # Extra aggressive scaling inside the d_aggr zone down to d_safe
-                alpha_close = smooth_alpha(ds, float(d_aggr), float(d_safe))
+                # Extra aggressive scaling inside the d_aggr zone down to d_safe (if enabled)
+                if float(d_aggr) > (float(d_safe) + 1e-9):
+                    alpha_close = smooth_alpha(ds, float(d_aggr), float(d_safe))
+                else:
+                    alpha_close = 0.0
                 gain_scale = 1.0 + float(k_aggr) * float(alpha_close)
 
                 dir_s = np.array(s.get("dir", dir_vec), dtype=float).reshape(3)
@@ -233,7 +277,7 @@ def scan_external_and_ground(
                 w_sum += w
 
             if w_sum > 1e-9:
-                qdot_avoid += (qdot_reg / w_sum)
+                qdot_avoid += qdot_reg
 
         # ===== Ground (floor plane z = ground_z) =====
         if bool(enable_ground):
@@ -261,6 +305,18 @@ def scan_external_and_ground(
                     "n": np.array([0.0, 0.0, 1.0], dtype=float),
                 }
 
+            if float(d_ground) < float(ground_infl):
+                active_candidates.append(
+                    {
+                        "kind": "ground",
+                        "hazard": "ground:plane",
+                        "d": float(d_ground),
+                        "fid": int(fid),
+                        "p": np.array(p_low, dtype=float).reshape(3),
+                        "n": np.array([0.0, 0.0, 1.0], dtype=float),
+                    }
+                )
+
             if d_ground < float(ground_infl):
                 alpha_g = smooth_alpha(float(d_ground), float(ground_infl), float(ground_safe))
                 dir_g = np.array([0.0, 0.0, 1.0], dtype=float)
@@ -268,7 +324,7 @@ def scan_external_and_ground(
                 Jp_g = point_jacobian_world(model, data, q, fid, p_low)
                 qdot_avoid += Jp_g.T @ xdot_g
 
-    return qdot_avoid, float(d_min), external_best, ground_best, distances_data
+    return qdot_avoid, float(d_min), external_best, ground_best, distances_data, active_candidates
 
 
 def scan_self_collision(
@@ -284,7 +340,7 @@ def scan_self_collision(
     self_safe: float,
     k_self: float,
     d_min_in: float,
-) -> Tuple[np.ndarray, float, Optional[dict], List[dict]]:
+) -> Tuple[np.ndarray, float, Optional[dict], List[dict], List[dict]]:
     """Scan capsule-capsule self-collision and build the nominal self-repulsion term.
 
     Returns:
@@ -292,14 +348,16 @@ def scan_self_collision(
       - d_min: possibly updated global minimum distance (including self)
       - self_best: closest self-collision pair (for CBF candidate)
       - distances_data: distance markers for RViz (order preserved)
+            - active_candidates: list of active self-collision contacts (for multi-constraint CBF)
     """
     qdot_self = np.zeros(7)
     d_min = float(d_min_in)
     self_best: Optional[dict] = None
     distances_data: List[dict] = []
+    active_candidates: List[dict] = []
 
     if not (bool(enable_self) and len(segments) >= 2):
-        return qdot_self, d_min, self_best, distances_data
+        return qdot_self, d_min, self_best, distances_data, active_candidates
 
     for i in range(len(segments)):
         si = segments[i]
@@ -315,8 +373,9 @@ def scan_self_collision(
 
             d_min = min(d_min, float(dist))
 
+            n_self = diff / (np.linalg.norm(diff) + 1e-9)
+
             if (self_best is None) or (float(dist) < float(self_best["d"])):
-                n_self = diff / (np.linalg.norm(diff) + 1e-9)
                 self_best = {
                     "kind": "self",
                     "hazard": f"self:{si['parent']}<->{sj['parent']}",
@@ -327,6 +386,20 @@ def scan_self_collision(
                     "p_j": np.array(cp_j, dtype=float).reshape(3),
                     "n": np.array(n_self, dtype=float).reshape(3),
                 }
+
+            if float(dist) < float(self_infl):
+                active_candidates.append(
+                    {
+                        "kind": "self",
+                        "hazard": f"self:{si['parent']}<->{sj['parent']}",
+                        "d": float(dist),
+                        "fid_i": int(si["fid"]),
+                        "p_i": np.array(cp_i, dtype=float).reshape(3),
+                        "fid_j": int(sj["fid"]),
+                        "p_j": np.array(cp_j, dtype=float).reshape(3),
+                        "n": np.array(n_self, dtype=float).reshape(3),
+                    }
+                )
 
             distances_data.append(
                 {
@@ -349,4 +422,4 @@ def scan_self_collision(
             J_rel = (J_i - J_j)
             qdot_self += J_rel.T @ xdot_s
 
-    return qdot_self, float(d_min), self_best, distances_data
+    return qdot_self, float(d_min), self_best, distances_data, active_candidates

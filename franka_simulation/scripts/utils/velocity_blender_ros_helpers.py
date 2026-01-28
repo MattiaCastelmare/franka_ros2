@@ -17,6 +17,7 @@ should not contain heavy math.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,9 +31,14 @@ from .velocity_blender_core import (
     apply_output_filter_and_constraints,
     compute_influence_zone_command,
     emergency_override,
+    compute_polyline_arc_lengths,
 )
 
 from .risk_staging import compute_risk_staging
+
+# NOTE: BlenderRuntimeState is defined in utils.velocity_blender_state to avoid
+# keeping runtime state in the ROS node.
+
 
 
 # -----------------------------------------------------------------------------
@@ -648,6 +654,141 @@ class PolylineProgress:
     progress_s: float = 0.0
 
 
+# -----------------------------------------------------------------------------
+# ROS callbacks (high-level node wrappers)
+# -----------------------------------------------------------------------------
+
+
+def on_joint_state(rt: Any, msg: Any, joint_name_to_i: dict) -> None:
+    """Update joint positions in-place."""
+    update_joint_positions_inplace(rt.q, msg, joint_name_to_i)
+
+
+def on_trajectory(rt: Any, msg: Any, joint_names: list, n_dof: int, logger: Any) -> None:
+    """Handle incoming JointTrajectory and reset progress state."""
+    new_points = joint_trajectory_to_points(
+        msg=msg,
+        joint_names=joint_names,
+        n_dof=int(n_dof),
+        logger=logger,
+    )
+    if not new_points:
+        return
+
+    if is_degenerate_trajectory(new_points, span_eps=1e-3):
+        try:
+            span = float(np.linalg.norm(new_points[-1] - new_points[0]))
+            logger.warn(
+                f"Ignoring degenerate trajectory (span≈{span:.2e} rad, points={len(new_points)})."
+            )
+        except Exception:
+            logger.warn("Ignoring degenerate trajectory.")
+        return
+
+    rt.trajectory_points = list(new_points)
+    rt.traj_s = compute_polyline_arc_lengths(rt.trajectory_points)
+    rt.current_index = 0
+    rt.progress = PolylineProgress(progress_index=0, progress_s=0.0)
+    rt.active = True
+    rt.qdot_prev = np.zeros(int(n_dof), dtype=float)
+    logger.info(f"📈 Nuova traiettoria: {len(rt.trajectory_points)} punti")
+
+
+def on_avoidance(rt: Any, msg: Any, n_dof: int) -> None:
+    """Handle avoidance velocity updates."""
+    if len(msg.data) == int(n_dof):
+        rt.qdot_avoid = np.array(msg.data, dtype=float)
+
+
+def on_closest_constraint(rt: Any, msg: Any, n_dof: int) -> None:
+    """Handle closest constraint updates."""
+    try:
+        if len(msg.data) >= (1 + int(n_dof)):
+            rt.closest_d = float(msg.data[0])
+            rt.closest_j_row = np.array(msg.data[1 : 1 + int(n_dof)], dtype=float).reshape(int(n_dof))
+    except Exception:
+        pass
+
+
+def on_constraints(rt: Any, msg: Any, n_dof: int) -> None:
+    """Handle multi-constraint list: [N, d1, j1.., d2, j2..]."""
+    try:
+        data = list(msg.data)
+        if len(data) <= 0:
+            return
+        n = int(round(float(data[0])))
+        if n <= 0:
+            rt.constraints_rows = np.zeros((0, int(n_dof)), dtype=float)
+            rt.constraints_d = np.zeros((0,), dtype=float)
+            rt.constraints_prev_rows = np.zeros((0, int(n_dof)), dtype=float)
+            return
+        expected = 1 + int(n) * (1 + int(n_dof))
+        if len(data) < expected:
+            return
+
+        rows = []
+        ds = []
+        idx = 1
+        for _ in range(int(n)):
+            d_i = float(data[idx]); idx += 1
+            row = np.array(data[idx : idx + int(n_dof)], dtype=float).reshape(int(n_dof))
+            idx += int(n_dof)
+            if not bool(np.all(np.isfinite(row))):
+                continue
+            if float(np.linalg.norm(row)) <= 1e-6:
+                continue
+            ds.append(float(d_i))
+            rows.append(row)
+
+        if len(rows) <= 0:
+            rt.constraints_rows = np.zeros((0, int(n_dof)), dtype=float)
+            rt.constraints_d = np.zeros((0,), dtype=float)
+            rt.constraints_prev_rows = np.zeros((0, int(n_dof)), dtype=float)
+            return
+
+        rows_arr = np.array(rows, dtype=float).reshape(-1, int(n_dof))
+
+        # Sign alignment to reduce flips (best-effort)
+        try:
+            prev = np.array(rt.constraints_prev_rows, dtype=float).reshape(-1, int(n_dof))
+            if prev.shape[0] > 0:
+                m = min(prev.shape[0], rows_arr.shape[0])
+                for i in range(m):
+                    if float(prev[i] @ rows_arr[i]) < 0.0:
+                        rows_arr[i] = -rows_arr[i]
+            else:
+                cj = np.array(rt.closest_j_row, dtype=float).reshape(int(n_dof))
+                if float(np.linalg.norm(cj)) > 1e-6:
+                    for i in range(rows_arr.shape[0]):
+                        if float(cj @ rows_arr[i]) < 0.0:
+                            rows_arr[i] = -rows_arr[i]
+        except Exception:
+            pass
+
+        rt.constraints_rows = np.array(rows_arr, dtype=float).reshape(-1, int(n_dof))
+        rt.constraints_d = np.array(ds, dtype=float).reshape(-1)
+        rt.constraints_prev_rows = np.array(rows_arr, dtype=float).reshape(-1, int(n_dof))
+        rt.constraints_last_wall = float(time.time())
+    except Exception:
+        pass
+
+
+def on_closest_hazard(rt: Any, msg: Any) -> None:
+    if msg.data:
+        rt.closest_hazard = str(msg.data)
+
+
+def on_hazard(rt: Any, msg: Any) -> None:
+    if msg.data:
+        rt.hazard = str(msg.data)
+
+
+def on_pause(rt: Any, msg: Any, pause_enable: bool) -> None:
+    if not bool(pause_enable):
+        return
+    rt.paused = bool(msg.data)
+
+
 @dataclass
 class StallProgressState:
     """Keep progress-based stall detection state."""
@@ -990,6 +1131,8 @@ def apply_final_filters_and_limits(
     cbf_eps: float,
     normal_correction_max: float,
     qdot_tracking_hint: np.ndarray,
+    multi_j_rows: Optional[np.ndarray] = None,
+    multi_d_dot_min: Optional[np.ndarray] = None,
     dbg: Dict[str, Any],
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     return apply_output_filter_and_constraints(
@@ -1006,6 +1149,8 @@ def apply_final_filters_and_limits(
         cbf_eps=float(cbf_eps),
         normal_correction_max=float(normal_correction_max),
         qdot_tracking_hint=np.array(qdot_tracking_hint, dtype=float).reshape(-1),
+        multi_j_rows=multi_j_rows,
+        multi_d_dot_min=multi_d_dot_min,
         dbg=dbg,
     )
 

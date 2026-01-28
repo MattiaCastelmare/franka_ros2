@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .avoidance_math import enforce_halfspace_with_box
+from .avoidance_math import enforce_halfspace_with_box, pocs_project_halfspaces_with_box
 from .risk_staging import compute_risk_staging, ramp_down_distance
 
 
@@ -276,6 +276,123 @@ class InfluenceParams:
     tangent_escape_err_min: float
 
     tangential_cmd_max_fraction: float
+
+
+def compute_d_dot_min_from_distance(d: float, params: InfluenceParams) -> float:
+    """Compute d_dot_min(d) using the same staged logic as the main blender."""
+    try:
+        d = float(d)
+        d_safe = float(params.d_safe)
+
+        d_eff = float(d) - float(max(0.0, float(params.distance_inflation)))
+        staging = compute_risk_staging(
+            d_eff=float(d_eff),
+            d_far=float(params.risk_d_far),
+            d_mid=float(params.risk_d_mid),
+            d_near=float(params.risk_d_near),
+            d_stop=float(params.stop_distance),
+        )
+        w_d = float(staging.w_total)
+
+        d_dot_min = (1.0 - float(w_d)) * float(params.d_dot_min_far) + float(w_d) * float(params.d_dot_min_close)
+
+        if bool(params.cbf_enable):
+            try:
+                cbf_min = -float(params.cbf_kappa) * float(float(d) - float(d_safe))
+                d_dot_min = max(float(d_dot_min), float(cbf_min))
+            except Exception:
+                pass
+
+        if float(d_eff) < float(d_safe):
+            pen = max(0.0, float(d_safe) - float(d_eff))
+            try:
+                r = float(
+                    ramp_down_distance(
+                        d=float(d_eff),
+                        d_hi=float(d_safe),
+                        d_lo=float(params.stop_distance),
+                    )
+                )
+            except Exception:
+                r = 1.0
+            push = float(params.d_dot_push_gain) * float(pen) * float(np.clip(r, 0.0, 1.0))
+            push = float(np.clip(push, 0.0, float(params.d_dot_push_max)))
+            d_dot_min = max(float(d_dot_min), float(push))
+
+        return float(d_dot_min)
+    except Exception:
+        return 0.0
+
+
+def project_multi_constraints_with_box(
+    *,
+    qdot_des: np.ndarray,
+    G: np.ndarray,
+    b: np.ndarray,
+    max_abs_vel: float,
+    iters: int,
+    eps: float,
+) -> tuple[np.ndarray, int, int, int]:
+    """Project onto multiple half-spaces with a box and return violation counts.
+
+    Returns: (qdot_proj, violations_pre, violations_post, infeasible_count)
+    """
+    qdot_des = np.array(qdot_des, dtype=float).reshape(-1)
+    G = np.array(G, dtype=float)
+    b = np.array(b, dtype=float).reshape(-1)
+
+    n = int(qdot_des.shape[0])
+    if n == 0 or G.size == 0:
+        return qdot_des, 0, 0, 0
+
+    # Filter invalid rows and clamp infeasible bounds
+    rows = []
+    bounds = []
+    infeasible = 0
+    for i in range(int(G.shape[0])):
+        try:
+            g = np.array(G[i, :], dtype=float).reshape(-1)
+            if g.shape[0] != n:
+                continue
+            if not bool(np.all(np.isfinite(g))):
+                continue
+            if float(np.linalg.norm(g)) <= 1e-6:
+                continue
+            bi = float(b[i]) if i < b.shape[0] else -1e9
+            d_dot_max = float(max_abs_vel) * float(np.sum(np.abs(g)))
+            if d_dot_max > 1e-9 and float(bi) > float(d_dot_max):
+                bi = float(d_dot_max) - 1e-6
+                infeasible += 1
+            rows.append(g)
+            bounds.append(float(bi))
+        except Exception:
+            continue
+
+    if len(rows) <= 0:
+        return qdot_des, 0, 0, infeasible
+
+    G_use = np.array(rows, dtype=float).reshape(-1, n)
+    b_use = np.array(bounds, dtype=float).reshape(-1)
+
+    def count_viol(q: np.ndarray) -> int:
+        try:
+            vals = np.array(G_use, dtype=float) @ np.array(q, dtype=float).reshape(-1)
+            return int(np.sum(vals < (b_use - float(eps))))
+        except Exception:
+            return 0
+
+    violations_pre = count_viol(qdot_des)
+    qdot_proj = pocs_project_halfspaces_with_box(
+        qdot_nom=np.array(qdot_des, dtype=float).reshape(-1),
+        G=np.array(G_use, dtype=float),
+        b=np.array(b_use, dtype=float).reshape(-1),
+        max_abs_vel=float(max_abs_vel),
+        iters=int(iters),
+        eps=float(eps),
+    )
+    violations_post = count_viol(qdot_proj)
+
+    return np.array(qdot_proj, dtype=float).reshape(-1), int(violations_pre), int(violations_post), int(infeasible)
 
     diag_cmd_norm_eps: float
 
@@ -548,6 +665,8 @@ def apply_output_filter_and_constraints(
     cbf_eps: float,
     normal_correction_max: float,
     qdot_tracking_hint: Optional[np.ndarray],
+    multi_j_rows: Optional[np.ndarray],
+    multi_d_dot_min: Optional[np.ndarray],
     dbg: Dict[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """LPF + saturation + robust halfspace enforcement.
@@ -566,7 +685,31 @@ def apply_output_filter_and_constraints(
 
     qdot = np.clip(qdot, -float(max_vel), float(max_vel))
 
-    if (float(d) < float(d_infl)) and (float(j_norm) > 1e-6):
+    # Multi-constraint enforcement (if available)
+    multi_used = False
+    try:
+        if (multi_j_rows is not None) and (multi_d_dot_min is not None):
+            Gm = np.array(multi_j_rows, dtype=float).reshape(-1, int(qdot.shape[0]))
+            bm = np.array(multi_d_dot_min, dtype=float).reshape(-1)
+            if (Gm.size > 0) and (bm.size > 0):
+                qdot_mc, v_pre, v_post, infeas = project_multi_constraints_with_box(
+                    qdot_des=qdot,
+                    G=Gm,
+                    b=bm,
+                    max_abs_vel=float(max_vel),
+                    iters=int(cbf_projection_iters),
+                    eps=float(cbf_eps),
+                )
+                qdot = np.array(qdot_mc, dtype=float).reshape(-1)
+                multi_used = True
+                dbg["cbf_multi_active"] = int(Gm.shape[0])
+                dbg["cbf_multi_violations_pre"] = int(v_pre)
+                dbg["cbf_multi_violations_post"] = int(v_post)
+                dbg["cbf_multi_infeasible"] = int(infeas)
+    except Exception:
+        pass
+
+    if (not bool(multi_used)) and (float(d) < float(d_infl)) and (float(j_norm) > 1e-6):
         try:
             j = np.array(j_row, dtype=float).reshape(-1)
             d_dot_min_eff = float(dbg.get("d_dot_min", 0.0))
@@ -631,6 +774,11 @@ def apply_output_filter_and_constraints(
                 return qdot, qdot_prev_new, dbg
 
             dbg["cbf_ok"] = bool(ok)
+        except Exception:
+            dbg["cbf_ok"] = False
+    elif bool(multi_used):
+        try:
+            dbg["cbf_ok"] = bool(int(dbg.get("cbf_multi_violations_post", 0)) == 0)
         except Exception:
             dbg["cbf_ok"] = False
 

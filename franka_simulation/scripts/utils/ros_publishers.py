@@ -25,6 +25,7 @@ class PublishersBundle:
     min_dist_raw_pub: Any
     closest_constraint_pub: Any
     closest_hazard_pub: Any
+    constraints_pub: Any
     jac_pub: Any
     hazard_pub: Any
     capsule_marker_pub: Any
@@ -54,6 +55,12 @@ def publish_not_ready_outputs(*, pubs: PublishersBundle) -> None:
         pubs.closest_constraint_pub.publish(Float64MultiArray(data=[999.0] + [0.0] * 7))
         msg = String(); msg.data = "none"
         pubs.closest_hazard_pub.publish(msg)
+    except Exception:
+        pass
+
+    # Multi-constraint list (avoidance-only blender; [N, d1, j1..] )
+    try:
+        pubs.constraints_pub.publish(Float64MultiArray(data=[0.0]))
     except Exception:
         pass
 
