@@ -275,6 +275,8 @@ class InfluenceParams:
     tangent_escape_speed: float
     tangent_escape_err_min: float
 
+
+    diag_cmd_norm_eps: float
     tangential_cmd_max_fraction: float
 
 
