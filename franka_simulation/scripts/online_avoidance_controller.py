@@ -238,7 +238,15 @@ class NullSpaceAvoidance(Node):
 
         # --- Nominal avoidance (external obstacles + ground) + debug distances
         avoid_diag: dict = {}
-        qdot_external_ground, d_min, external_best, ground_best, dist_ext_ground, external_candidates = scan_external_and_ground(
+        (
+            qdot_external_ground,
+            d_min,
+            external_best,
+            ground_best,
+            dist_ext_ground,
+            external_candidates,
+            tip_to_obstacle_distances,
+        ) = scan_external_and_ground(
             segments=segments,
             obstacles=list(self.obstacles),
             model=self.model,
@@ -279,7 +287,10 @@ class NullSpaceAvoidance(Node):
         )
 
         # Distances list used only for RViz debug markers (ordering preserved)
+        # Add tip-to-obstacle distances for visualization
         self.distances_data = list(dist_ext_ground) + list(dist_self)
+        if tip_to_obstacle_distances:
+            self.distances_data.extend(tip_to_obstacle_distances)
 
         # Active contacts for multi-constraint blending (within influence zones only)
         active_candidates: List[dict] = list(external_candidates) + list(self_candidates)

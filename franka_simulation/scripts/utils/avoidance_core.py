@@ -124,11 +124,19 @@ def scan_external_and_ground(
         debug_stats.setdefault("norm_post_max", 0.0)
         debug_stats.setdefault("clamp_count", 0)
 
+
+    tip_to_obstacle_distances = []  # For end-effector tip distance visualization
+
     for seg in segments:
+        link_idx = int(seg.get("link_idx", 0))
+        # Exclude the first and second link from repulsion calculations
+        if link_idx in (1, 2):
+            continue
         p0 = np.array(seg["p0"], dtype=float).reshape(3)
         p1 = np.array(seg["p1"], dtype=float).reshape(3)
         fid = int(seg["fid"])
         radius = float(seg["radius"])
+
 
         # ===== External obstacles (PlanningScene boxes) =====
         for obs in obstacles:
@@ -144,6 +152,26 @@ def scan_external_and_ground(
             )
             if dir_vec is None:
                 continue
+
+            # --- End-effector tip distance calculation ---
+            # If this segment is the last link (fr3_link8), treat p1 as the tip
+            if link_idx == 8:
+                tip_dist, tip_dir_vec, tip_p_seg, tip_p_box, _ = distance_capsule_to_collision_object_boxes(
+                    p0_world=p1,  # Use p1 as the tip
+                    p1_world=p1,
+                    radius=radius,
+                    obs=obs,
+                    box_projection_iters=int(box_projection_iters),
+                    repulsion_spread_enable=False,
+                    repulsion_spread_samples=0,
+                    repulsion_spread_half_length=0.0,
+                )
+                tip_to_obstacle_distances.append({
+                    "p_tip": tip_p_seg,
+                    "p_obstacle": tip_p_box,
+                    "distance": tip_dist,
+                    "infl": float(d_infl),
+                })
 
             # Ensure direction points from box -> capsule (p_seg - p_box).
             try:
@@ -324,7 +352,7 @@ def scan_external_and_ground(
                 Jp_g = point_jacobian_world(model, data, q, fid, p_low)
                 qdot_avoid += Jp_g.T @ xdot_g
 
-    return qdot_avoid, float(d_min), external_best, ground_best, distances_data, active_candidates
+    return qdot_avoid, float(d_min), external_best, ground_best, distances_data, active_candidates, tip_to_obstacle_distances
 
 
 def scan_self_collision(
