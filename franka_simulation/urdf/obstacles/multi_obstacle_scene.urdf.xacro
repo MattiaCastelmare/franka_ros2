@@ -16,12 +16,12 @@
   <!-- ========================================== -->
   <!-- OSTACOLO 1: BOX CENTRALE (Rosso)           -->
   <!-- ========================================== -->
-  <xacro:arg name="box1_x" default="10.5"/>
-  <xacro:arg name="box1_y" default="-0.4"/>
+  <xacro:arg name="box1_x" default="10.0"/>
+  <xacro:arg name="box1_y" default="-0.2"/>
   <xacro:arg name="box1_z" default="0.15"/>
   <xacro:arg name="box1_size_x" default="0.05"/>
   <xacro:arg name="box1_size_y" default="0.05"/>
-  <xacro:arg name="box1_size_z" default="0.55"/>
+  <xacro:arg name="box1_size_z" default="0.85"/>
   
   <link name="obstacle_box_central" >
     <visual>
@@ -66,12 +66,12 @@
   <!-- ========================================== -->
   <!-- OSTACOLO 2: BOX LATERALE (Giallo)          -->
   <!-- ========================================== -->
-  <xacro:arg name="box2_x" default="0.2"/>
+  <xacro:arg name="box2_x" default="10.0"/>
   <xacro:arg name="box2_y" default="0.3"/>
   <xacro:arg name="box2_z" default="0.20"/>
   <xacro:arg name="box2_size_x" default="0.05"/>
   <xacro:arg name="box2_size_y" default="0.05"/>
-  <xacro:arg name="box2_size_z" default="0.60"/>
+  <xacro:arg name="box2_size_z" default="0.80"/>
   
   <link name="obstacle_box_lateral" >
     <visual>

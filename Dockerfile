@@ -103,7 +103,6 @@ RUN sudo apt-get update && \
 # Python environment (MediaPipe FIX)
 # ------------------------
 ENV PATH=/home/${USERNAME}/.local/bin:$PATH
-ENV PYTHONPATH=/home/${USERNAME}/.local/lib/python3.10/site-packages:$PYTHONPATH
 
 RUN pip3 install --user --upgrade "pip" "setuptools<80" "wheel" && \
     pip3 install --user \
@@ -125,7 +124,6 @@ COPY . /ros2_ws/src
 
 RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws && \
     vcs import src < src/franka.repos --recursive --skip-existing && \
-    vcs import src < src/extras.repos --recursive --skip-existing && \
     sudo apt-get update && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y --skip-keys=pymoveit2 && \
