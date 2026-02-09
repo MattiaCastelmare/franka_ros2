@@ -131,8 +131,8 @@ class NullSpaceAvoidanceParams:
     rate: float
 
     # External/nominal avoidance
-    d_infl: float
-    d_safe: float
+    influence_distance: float
+    safety_margin: float
     d_aggr: float
     k_aggr: float
     k_null: float
@@ -231,8 +231,8 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
     p_list_str = lambda n: [str(x) for x in list(p(n))]
 
     rate = p_float("control_rate")
-    d_infl = p_float("influence_distance")
-    d_safe = p_float("safety_margin")
+    influence_distance = p_float("influence_distance")
+    safety_margin = p_float("safety_margin")
     d_aggr = p_float("aggressive_distance")
     k_aggr = p_float("aggressive_gain_scale")
     k_null = p_float("nullspace_gain")
@@ -286,10 +286,10 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
 
     # --- Risk-scaled staging / stop gate ---
     # Derive risk thresholds from influence_distance for a single-parameter workflow.
-    # far = d_infl, mid = 2/3 * d_infl, near = 1/3 * d_infl
-    risk_d_far = float(d_infl)
-    risk_d_mid = float(d_infl) * (2.0 / 3.0)
-    risk_d_near = float(d_infl) * (1.0 / 3.0)
+    # far = influence_distance, mid = 2/3 * influence_distance, near = 1/3 * influence_distance
+    risk_d_far = float(influence_distance)
+    risk_d_mid = float(influence_distance) * (2.0 / 3.0)
+    risk_d_near = float(influence_distance) * (1.0 / 3.0)
     stop_d_in = float(node.get_parameter("stop_distance").value)
     stop_d_out = float(node.get_parameter("stop_release_distance").value)
 
@@ -366,8 +366,8 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
 
     return NullSpaceAvoidanceParams(
         rate=float(rate),
-        d_infl=float(d_infl),
-        d_safe=float(d_safe),
+        influence_distance=float(influence_distance),
+        safety_margin=float(safety_margin),
         d_aggr=float(d_aggr),
         k_aggr=float(k_aggr),
         k_null=float(k_null),

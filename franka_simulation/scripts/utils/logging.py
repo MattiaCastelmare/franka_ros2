@@ -14,8 +14,8 @@ def log_controller_config(*, logger: Any, params: Any, qp_available: bool, cbf_s
     Intentionally matches the previous `get_logger().info(...)` lines.
     """
     logger.info("📊 Parametri CARICATI (da file YAML o default):")
-    logger.info(f"   d_infl (influence_distance): {params.d_infl}")
-    logger.info(f"   d_safe (safety_margin): {params.d_safe}")
+    logger.info(f"   influence_distance: {params.influence_distance}")
+    logger.info(f"   safety_margin: {params.safety_margin}")
     logger.info(f"   k_null (nullspace_gain): {params.k_null}")
     logger.info(f"   k_tan (tangential_gain): {params.k_tan}")
     logger.info(f"   max_qdot (max_joint_velocity): {params.max_qdot}")

@@ -122,9 +122,9 @@ def step(
                         f"|qdot_avoid|={av:.4f} |qdot_cmd|={bv:.4f} max_vel={float(getattr(params, 'max_vel')):.3f} "
                         f"active={bool(rt.active)} traj_len={traj_len}"
                     )
-                    if (av <= 1e-4) and (d_closest < float(getattr(params, "d_infl"))):
+                    if (av <= 1e-4) and (d_closest < float(getattr(params, "influence_distance"))):
                         logger.warn(
-                            "[TEST-REACTIVE] avoidance ~0 while within d_infl; check /obstacle_scene updates"
+                            "[TEST-REACTIVE] avoidance ~0 while within influence_distance; check /obstacle_scene updates"
                         )
             except Exception:
                 pass
@@ -208,7 +208,7 @@ def step(
         velocity_filter_beta=float(getattr(params, "velocity_filter_beta")),
         velocity_filter_beta_near=float(getattr(params, "velocity_filter_beta_near")),
         d_eff_for_weights=float(d_eff_for_weights),
-        d_infl=float(getattr(params, "d_infl")),
+        influence_distance=float(getattr(params, "influence_distance")),
         cbf_projection_iters=int(getattr(params, "cbf_projection_iters")),
         cbf_eps=float(getattr(params, "cbf_eps")),
         normal_correction_max=float(getattr(params, "normal_correction_max")),
@@ -354,7 +354,7 @@ def step(
         now_wall=float(now),
         d_raw=float(safety.d_raw),
         d_eff=float(d_eff_for_weights),
-        d_infl=float(getattr(params, "d_infl")),
+        influence_distance=float(getattr(params, "influence_distance")),
         j_row=np.array(j_row_use, dtype=float).reshape(-1),
         j_norm=float(j_norm_use),
         staging=staging_clip,
@@ -373,7 +373,7 @@ def step(
     try:
         if (
             (str(safety.hazard) != "none")
-            and (float(d_eff_for_weights) < float(getattr(params, "d_infl")))
+            and (float(d_eff_for_weights) < float(getattr(params, "influence_distance")))
             and (float(error_norm) > float(max(threshold, float(getattr(params, "tangent_escape_err_min")))))
             and (float(j_norm_use) > 1e-6)
         ):
@@ -444,7 +444,7 @@ def step(
         if (
             bool(getattr(params, "tangent_tracking_escape_enable"))
             and (str(safety.hazard) != "none")
-            and (float(d_eff_for_weights) < float(getattr(params, "d_infl")))
+            and (float(d_eff_for_weights) < float(getattr(params, "influence_distance")))
             and (float(error_norm) > float(max(threshold, float(getattr(params, "tangent_escape_err_min")))))
         ):
             cmd_norm_pre = float(np.linalg.norm(np.array(qdot_des, dtype=float).reshape(n)))
@@ -452,8 +452,8 @@ def step(
             vt_min = float(max(0.0, float(getattr(params, "tangent_tracking_vt_min"))))
 
             if (cmd_norm_pre < cmd_small) and (float(d_dot_track) < 0.0) and (float(v_t_norm) > vt_min):
-                denom = float(max(1e-6, float(getattr(params, "d_infl")) - float(getattr(params, "stop_distance"))))
-                x = float(np.clip((float(getattr(params, "d_infl")) - float(d_eff_for_weights)) / denom, 0.0, 1.0))
+                denom = float(max(1e-6, float(getattr(params, "influence_distance")) - float(getattr(params, "stop_distance"))))
+                x = float(np.clip((float(getattr(params, "influence_distance")) - float(d_eff_for_weights)) / denom, 0.0, 1.0))
                 smooth = float(3.0 * x * x - 2.0 * x * x * x)
                 alpha_t = float(np.clip(float(getattr(params, "tangent_tracking_alpha_max")) * smooth, 0.0, float(getattr(params, "tangent_tracking_alpha_max"))))
 
@@ -506,7 +506,7 @@ def step(
         velocity_filter_beta_near=float(getattr(params, "velocity_filter_beta_near")),
         max_vel=float(getattr(params, "max_vel")),
         d_eff=float(d_eff_for_weights),
-        d_infl=float(getattr(params, "d_infl")),
+        influence_distance=float(getattr(params, "influence_distance")),
         j_row=np.array(j_row_use, dtype=float).reshape(-1),
         j_norm=float(j_norm_use),
         cbf_projection_iters=int(getattr(params, "cbf_projection_iters")),
@@ -527,7 +527,7 @@ def step(
         diag_period_s=float(getattr(params, "diag_period_s")),
         dbg=dbg,
         cmd_norm=float(np.linalg.norm(qdot)),
-        d_infl=float(getattr(params, "d_infl")),
+        influence_distance=float(getattr(params, "influence_distance")),
         diag_cmd_norm_eps=float(getattr(params, "diag_cmd_norm_eps")),
     )
 
@@ -554,7 +554,7 @@ def step(
                     f"|qdot_avoid|={av:.4f} |qdot_cmd|={bv:.4f} "
                     f"viol_pre={vpre} viol_post={vpost} infeas={infeas}"
                 )
-                if (av <= 1e-4) and (d_min < float(getattr(params, "d_infl"))):
+                if (av <= 1e-4) and (d_min < float(getattr(params, "influence_distance"))):
                     logger.warn(
                         "[BLENDER-MULTI] active constraints but avoidance ~0; check controller output"
                     )

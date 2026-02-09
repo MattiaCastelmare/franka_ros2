@@ -256,9 +256,9 @@ class NullSpaceAvoidance(Node):
             repulsion_spread_enable=bool(self.params.repulsion_spread_enable),
             repulsion_spread_samples=int(self.params.repulsion_spread_samples),
             repulsion_spread_half_length=float(self.params.repulsion_spread_half_length),
-            d_infl=float(self.params.d_infl),
+            influence_distance=float(self.params.influence_distance),
             d_aggr=float(self.params.d_aggr),
-            d_safe=float(self.params.d_safe),
+            safety_margin=float(self.params.safety_margin),
             k_aggr=float(self.params.k_aggr),
             k_null=float(self.params.k_null),
             k_tan=float(self.params.k_tan),
@@ -321,25 +321,25 @@ class NullSpaceAvoidance(Node):
                 d = float(c.get("d", 1e9))
 
                 if kind == "ground":
-                    d_infl = float(self.params.ground_infl)
-                    d_safe = float(self.params.ground_safe)
+                    influence_radius = float(self.params.ground_infl)
+                    safety_limit = float(self.params.ground_safe)
                     gain = float(self.params.k_ground)
                 elif kind == "self":
-                    d_infl = float(self.params.self_infl)
-                    d_safe = float(self.params.self_safe)
+                    influence_radius = float(self.params.self_infl)
+                    safety_limit = float(self.params.self_safe)
                     gain = float(self.params.k_self)
                 else:
-                    d_infl = float(self.params.d_infl)
-                    d_safe = float(self.params.d_safe)
+                    influence_radius = float(self.params.influence_distance)
+                    safety_limit = float(self.params.safety_margin)
                     gain = float(self.params.k_null)
 
-                if d >= float(d_infl):
+                if d >= float(influence_radius):
                     continue
 
-                w = float(smooth_alpha(d, float(d_infl), float(d_safe)))
+                w = float(smooth_alpha(d, float(influence_radius), float(safety_limit)))
                 if kind == "external":
-                    if float(self.params.d_aggr) > (float(d_safe) + 1e-9):
-                        alpha_close = float(smooth_alpha(d, float(self.params.d_aggr), float(d_safe)))
+                    if float(self.params.d_aggr) > (float(safety_limit) + 1e-9):
+                        alpha_close = float(smooth_alpha(d, float(self.params.d_aggr), float(safety_limit)))
                     else:
                         alpha_close = 0.0
                     gain_scale = 1.0 + float(self.params.k_aggr) * float(alpha_close)
@@ -536,7 +536,7 @@ class NullSpaceAvoidance(Node):
         # TEST-REACTIVE: ensure visible avoidance output inside influence zone (unless stop gate)
         try:
             if (
-                (float(d_min_eff) <= float(self.params.d_infl))
+                (float(d_min_eff) <= float(self.params.influence_distance))
                 and (float(np.linalg.norm(np.array(qdot_out, dtype=float).reshape(-1))) < 1e-6)
                 and (float(np.linalg.norm(np.array(qdot_nom, dtype=float).reshape(-1))) > 1e-6)
                 and (not bool(self._cbf_state.stop_gate_active))
@@ -570,7 +570,7 @@ class NullSpaceAvoidance(Node):
         # Publish active multi-constraints for the blender (Float64MultiArray format)
         # Format: [N, d1, j1_0..j1_6, d2, j2_0..j2_6, ...]
         try:
-            act = [c for c in list(active_candidates) if float(c.get("d", 1e9)) <= float(self.params.d_infl)]
+            act = [c for c in list(active_candidates) if float(c.get("d", 1e9)) <= float(self.params.influence_distance)]
             act.sort(key=lambda x: float(x.get("d", 1e9)))
             K = int(max(0, int(self.params.cbf_K)))
             if K > 0:
@@ -580,7 +580,7 @@ class NullSpaceAvoidance(Node):
             else:
                 Gc, _bc_unused, mc, _best_c = build_cbf_constraints(
                     list(act),
-                    float(self.params.d_infl),
+                    float(self.params.influence_distance),
                     K=int(K),
                     cbf_eps=float(self.params.cbf_eps),
                     cbf_d_safe=float(self.params.cbf_d_safe),
@@ -727,7 +727,7 @@ class NullSpaceAvoidance(Node):
             frame_ids=self.frame_ids,
             data=self.data,
             distances_data=self.distances_data,
-            d_infl=float(self.params.d_infl),
+            influence_distance=float(self.params.influence_distance),
             distance_inflation=float(self.params.distance_inflation),
             stamp_msg=self.get_clock().now().to_msg(),
             logger=self.get_logger(),

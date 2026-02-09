@@ -162,8 +162,8 @@ def load_nullspace_avoidance_parameters(node: Any, target: Any) -> None:
     p_list_str = lambda n: [str(x) for x in list(p(n))]
 
     target.rate = p_float("control_rate")
-    target.d_infl = p_float("influence_distance")
-    target.d_safe = p_float("safety_margin")
+    target.influence_distance = p_float("influence_distance")
+    target.safety_margin = p_float("safety_margin")
     target.d_aggr = p_float("aggressive_distance")
     target.k_aggr = p_float("aggressive_gain_scale")
     target.k_null = p_float("nullspace_gain")
@@ -317,8 +317,8 @@ def setup_optional_qp_solver(*, target: Any) -> QpSetup:
 def log_loaded_parameters(node: Any, target: Any, *, qp_available: bool) -> None:
     """Emit the same parameter log lines as before."""
     node.get_logger().info("📊 Parametri CARICATI (da file YAML o default):")
-    node.get_logger().info(f"   d_infl (influence_distance): {target.d_infl}")
-    node.get_logger().info(f"   d_safe (safety_margin): {target.d_safe}")
+    node.get_logger().info(f"   influence_distance: {target.influence_distance}")
+    node.get_logger().info(f"   safety_margin: {target.safety_margin}")
     node.get_logger().info(f"   k_null (nullspace_gain): {target.k_null}")
     node.get_logger().info(f"   k_tan (tangential_gain): {target.k_tan}")
     node.get_logger().info(f"   max_qdot (max_joint_velocity): {target.max_qdot}")

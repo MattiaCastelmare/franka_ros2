@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-VELOCITY CONTROL BLENDER - VERSIONE SEMPLICE (con vincolo su ḋ)
-================================================================
-
-Segue la traiettoria punto per punto e combina il tracking con
-l'avoidance usando una proiezione in spazio di giunto che garantisce:
-
-    d_dot = j_row @ qdot >= d_dot_min(d)
-
-Questo evita:
- - blocchi sull'ostacolo
- - collassi sull'ostacolo
- - spinte eccessive e rientri bruschi
-"""
 
 import time
 
@@ -51,7 +37,7 @@ class SimpleVelocityBlender(Node):
         vh.load_velocity_blender_parameters(self, self)
 
         # Flag: if influence_distance <= 0, force pure tracking (no avoidance/CBF/emergency).
-        self.avoidance_disabled = (float(self.d_infl) <= 0.0)
+        self.avoidance_disabled = (float(self.influence_distance) <= 0.0)
 
         # ===== RUNTIME STATE =====
         self._rt = BlenderRuntimeState(n_dof=int(self.n_dof))
@@ -128,7 +114,7 @@ class SimpleVelocityBlender(Node):
         logger = self.get_logger()
         for line in (
             "✅ Simple Velocity Blender (ḋ-constrained) started",
-            f"   Kp={self.kp}, max_vel={self.max_vel}, d_safe={self.d_safe}, d_infl={self.d_infl}",
+            f"   Kp={self.kp}, max_vel={self.max_vel}, safety_margin={self.safety_margin}, influence_distance={self.influence_distance}",
             f"   use_avoidance_velocity={self.use_avoidance_velocity}, avoidance_normal_only={self.avoidance_normal_only}, "
             f"null_boost_max={self.null_boost_max}, avoidance_ratio_max={self.avoidance_ratio_max}",
             f"   d_dot_min_far={self.d_dot_min_far}, d_dot_min_close={self.d_dot_min_close}, "

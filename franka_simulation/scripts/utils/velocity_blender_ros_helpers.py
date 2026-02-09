@@ -170,8 +170,8 @@ def make_influence_params_from_attrs(node_like: Any) -> InfluenceParams:
 
     return InfluenceParams(
         n_dof=int(getattr(node_like, "n_dof")),
-        d_infl=float(getattr(node_like, "d_infl")),
-        d_safe=float(getattr(node_like, "d_safe")),
+        influence_distance=float(getattr(node_like, "influence_distance")),
+        safety_margin=float(getattr(node_like, "safety_margin")),
         max_vel=float(getattr(node_like, "max_vel")),
         avoidance_weight_max=float(getattr(node_like, "avoidance_weight_max")),
         slowdown_factor_max=float(getattr(node_like, "slowdown_factor_max")),
@@ -230,8 +230,8 @@ def load_velocity_blender_parameters(node: Any, target: Any) -> None:
     target.rejoin_lookahead_distance_rad = float(p("rejoin_lookahead_distance_rad"))
     target.rejoin_search_ahead_points = int(p("rejoin_search_ahead_points"))
 
-    target.d_infl = float(p("influence_distance"))
-    target.d_safe = float(p("safety_margin"))
+    target.influence_distance = float(p("influence_distance"))
+    target.safety_margin = float(p("safety_margin"))
 
     target.distance_inflation = float(p("distance_inflation"))
 
@@ -1060,7 +1060,7 @@ def blend_tracking_and_avoidance(
     now_wall: float,
     d_raw: float,
     d_eff: float,
-    d_infl: float,
+    influence_distance: float,
     j_row: np.ndarray,
     j_norm: float,
     staging: Any,
@@ -1095,7 +1095,7 @@ def blend_tracking_and_avoidance(
         "stall_detected": bool(stall_detected),
     }
 
-    if (float(d_eff) >= float(d_infl)) or (float(j_norm) < 1e-6):
+    if (float(d_eff) >= float(influence_distance)) or (float(j_norm) < 1e-6):
         return np.array(qdot_tracking, dtype=float).reshape(-1), dbg
 
     qdot_des, dbg2 = compute_influence_zone_command(
@@ -1124,7 +1124,7 @@ def apply_final_filters_and_limits(
     velocity_filter_beta_near: float,
     max_vel: float,
     d_eff: float,
-    d_infl: float,
+    influence_distance: float,
     j_row: np.ndarray,
     j_norm: float,
     cbf_projection_iters: int,
@@ -1142,7 +1142,7 @@ def apply_final_filters_and_limits(
         velocity_filter_beta_near=float(velocity_filter_beta_near),
         max_vel=float(max_vel),
         d=float(d_eff),
-        d_infl=float(d_infl),
+        influence_distance=float(influence_distance),
         j_row=np.array(j_row, dtype=float).reshape(-1),
         j_norm=float(j_norm),
         cbf_projection_iters=int(cbf_projection_iters),
@@ -1223,7 +1223,7 @@ def handle_stop_gate(
     velocity_filter_beta: float,
     velocity_filter_beta_near: float,
     d_eff_for_weights: float,
-    d_infl: float,
+    influence_distance: float,
     cbf_projection_iters: int,
     cbf_eps: float,
     normal_correction_max: float,
@@ -1310,7 +1310,7 @@ def handle_stop_gate(
         velocity_filter_beta_near=float(velocity_filter_beta_near),
         max_vel=float(max_vel),
         d_eff=float(d_eff_for_weights),
-        d_infl=float(d_infl),
+        influence_distance=float(influence_distance),
         j_row=np.array(j_row_use, dtype=float).reshape(-1),
         j_norm=float(j_norm_use),
         cbf_projection_iters=int(cbf_projection_iters),
@@ -1390,14 +1390,14 @@ class VelocityBlenderDiagnostics:
         diag_period_s: float,
         dbg: Dict[str, Any],
         cmd_norm: float,
-        d_infl: float,
+        influence_distance: float,
         diag_cmd_norm_eps: float,
     ) -> None:
         if not bool(diag_enable):
             return
 
         try:
-            avoid_active = bool((float(dbg["d"]) < float(d_infl)) and (float(dbg["j_norm"]) > 1e-6))
+            avoid_active = bool((float(dbg["d"]) < float(influence_distance)) and (float(dbg["j_norm"]) > 1e-6))
             if avoid_active and (float(cmd_norm) <= float(diag_cmd_norm_eps)):
                 should, last_new = _throttle(
                     now_wall=float(now_wall),

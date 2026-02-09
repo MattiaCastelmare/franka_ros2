@@ -24,7 +24,7 @@ def build_marker_array(
     frame_ids: Dict[str, int],
     data: Any,
     distances_data: List[dict],
-    d_infl: float,
+    influence_distance: float,
     distance_inflation: float,
     stamp_msg: Any,
     logger: Any = None,
@@ -60,7 +60,7 @@ def build_marker_array(
         p_obs = dist_data["p_obstacle"]
         d = float(dist_data["distance"])
         d_eff = float(d) - float(infl_bias)
-        infl = float(d_infl)
+        infl = float(influence_distance)
         is_active = bool(d_eff <= float(infl))
         rgba = (1.0, 0.0, 0.0, 0.8) if is_active else (0.0, 0.0, 1.0, 0.8)
 

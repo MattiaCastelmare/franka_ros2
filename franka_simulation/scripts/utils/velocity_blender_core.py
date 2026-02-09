@@ -229,8 +229,8 @@ def emergency_override(
 @dataclass
 class InfluenceParams:
     n_dof: int
-    d_infl: float
-    d_safe: float
+    influence_distance: float
+    safety_margin: float
 
     max_vel: float
 
@@ -284,7 +284,7 @@ def compute_d_dot_min_from_distance(d: float, params: InfluenceParams) -> float:
     """Compute d_dot_min(d) using the same staged logic as the main blender."""
     try:
         d = float(d)
-        d_safe = float(params.d_safe)
+        safety_margin = float(params.safety_margin)
 
         d_eff = float(d) - float(max(0.0, float(params.distance_inflation)))
         staging = compute_risk_staging(
@@ -300,18 +300,18 @@ def compute_d_dot_min_from_distance(d: float, params: InfluenceParams) -> float:
 
         if bool(params.cbf_enable):
             try:
-                cbf_min = -float(params.cbf_kappa) * float(float(d) - float(d_safe))
+                cbf_min = -float(params.cbf_kappa) * float(float(d) - float(safety_margin))
                 d_dot_min = max(float(d_dot_min), float(cbf_min))
             except Exception:
                 pass
 
-        if float(d_eff) < float(d_safe):
-            pen = max(0.0, float(d_safe) - float(d_eff))
+        if float(d_eff) < float(safety_margin):
+            pen = max(0.0, float(safety_margin) - float(d_eff))
             try:
                 r = float(
                     ramp_down_distance(
                         d=float(d_eff),
-                        d_hi=float(d_safe),
+                        d_hi=float(safety_margin),
                         d_lo=float(params.stop_distance),
                     )
                 )
@@ -436,11 +436,10 @@ def compute_influence_zone_command(
     }
 
     # If no sensible avoidance info -> tracking only (caller typically checks too)
-    if (float(d) >= float(params.d_infl)) or (float(j_norm) < 1e-6):
+    if (float(d) >= float(params.influence_distance)) or (float(j_norm) < 1e-6):
         return np.array(qdot_tracking, dtype=float).reshape(n_dof), dbg
 
-    d_safe = float(params.d_safe)
-    d_infl = float(params.d_infl)
+    safety_margin = float(params.safety_margin)
 
     # Projectors for the distance normal and its nullspace
     J = np.array(j_row, dtype=float).reshape(1, n_dof)
@@ -512,21 +511,21 @@ def compute_influence_zone_command(
 
     if params.cbf_enable:
         try:
-            cbf_min = -float(params.cbf_kappa) * float(float(d) - float(d_safe))
+            cbf_min = -float(params.cbf_kappa) * float(float(d) - float(safety_margin))
             d_dot_min = max(float(d_dot_min), float(cbf_min))
         except Exception:
             pass
 
     # Extra push only when inside the safety margin.
-    # Use a smooth ramp so we don't introduce a discontinuity at d_safe (reduces jitter).
-    if float(d_eff) < float(d_safe):
-        pen = max(0.0, float(d_safe) - float(d_eff))
-        # 0 at d_safe, 1 near stop_distance.
+    # Use a smooth ramp so we don't introduce a discontinuity at the safety margin (reduces jitter).
+    if float(d_eff) < float(safety_margin):
+        pen = max(0.0, float(safety_margin) - float(d_eff))
+        # 0 at safety_margin, 1 near stop_distance.
         try:
             r = float(
                 ramp_down_distance(
                     d=float(d_eff),
-                    d_hi=float(d_safe),
+                    d_hi=float(safety_margin),
                     d_lo=float(params.stop_distance),
                 )
             )
@@ -660,7 +659,7 @@ def apply_output_filter_and_constraints(
     max_vel: float,
     # constraint inputs
     d: float,
-    d_infl: float,
+    influence_distance: float,
     j_row: np.ndarray,
     j_norm: float,
     cbf_projection_iters: int,
@@ -711,7 +710,7 @@ def apply_output_filter_and_constraints(
     except Exception:
         pass
 
-    if (not bool(multi_used)) and (float(d) < float(d_infl)) and (float(j_norm) > 1e-6):
+    if (not bool(multi_used)) and (float(d) < float(influence_distance)) and (float(j_norm) > 1e-6):
         try:
             j = np.array(j_row, dtype=float).reshape(-1)
             d_dot_min_eff = float(dbg.get("d_dot_min", 0.0))

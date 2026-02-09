@@ -83,9 +83,9 @@ def scan_external_and_ground(
     repulsion_spread_samples: int,
     repulsion_spread_half_length: float,
     # external avoidance params
-    d_infl: float,
+    influence_distance: float,
     d_aggr: float,
-    d_safe: float,
+    safety_margin: float,
     k_aggr: float,
     k_null: float,
     k_tan: float,
@@ -170,7 +170,7 @@ def scan_external_and_ground(
                     "p_tip": tip_p_seg,
                     "p_obstacle": tip_p_box,
                     "distance": tip_dist,
-                    "infl": float(d_infl),
+                    "infl": float(influence_distance),
                 })
 
             # Ensure direction points from box -> capsule (p_seg - p_box).
@@ -212,7 +212,7 @@ def scan_external_and_ground(
                 }
 
             # Collect active contacts for multi-constraint CBF (all points within influence)
-            if float(d) <= float(d_infl):
+            if float(d) <= float(influence_distance):
                 active_candidates.append(
                     {
                         "kind": "external",
@@ -230,7 +230,7 @@ def scan_external_and_ground(
                     "p_capsule": p_seg,
                     "p_obstacle": p_box,
                     "distance": d,
-                    "infl": float(d_infl),
+                    "infl": float(influence_distance),
                 }
             )
 
@@ -250,8 +250,8 @@ def scan_external_and_ground(
             for s in rep_points:
                 ds = float(s.get("distance", d))
 
-                # Base activation (0 at d_infl, 1 at d_safe or closer)
-                alpha_far = smooth_alpha(ds, float(d_infl), float(d_safe))
+                # Base activation (0 at influence_distance, 1 at safety_margin or closer)
+                alpha_far = smooth_alpha(ds, float(influence_distance), float(safety_margin))
                 if debug_stats is not None:
                     debug_stats["alpha_far_max"] = max(debug_stats["alpha_far_max"], float(alpha_far))
 
@@ -259,9 +259,9 @@ def scan_external_and_ground(
                 if alpha_far <= 0.0:
                     continue
 
-                # Extra aggressive scaling inside the d_aggr zone down to d_safe (if enabled)
-                if float(d_aggr) > (float(d_safe) + 1e-9):
-                    alpha_close = smooth_alpha(ds, float(d_aggr), float(d_safe))
+                # Extra aggressive scaling inside the d_aggr zone down to safety_margin (if enabled)
+                if float(d_aggr) > (float(safety_margin) + 1e-9):
+                    alpha_close = smooth_alpha(ds, float(d_aggr), float(safety_margin))
                 else:
                     alpha_close = 0.0
                 gain_scale = 1.0 + float(k_aggr) * float(alpha_close)
