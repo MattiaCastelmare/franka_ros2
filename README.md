@@ -50,18 +50,13 @@ git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git
 ### Additional dependencies via .repos
 
 In addition to the official Franka dependencies, this fork relies on extra source-level repositories
-(e.g. MoveIt2 and PyMoveIt2) that are not vendored directly in this repository.
+(e.g. MoveIt2) that are not vendored directly in this repository. These dependencies are managed using the
+`franka.repos` file. The `pymoveit2` Python wrapper is provided via the binary package `ros-humble-pymoveit2`,
+so it no longer needs to be imported from source.
 
-These dependencies are managed using a separate .repos file:
-
-- franka.repos – official Franka dependencies
-
-- extras.repos – additional research dependencies (e.g. MoveIt2, PyMoveIt2)
-
-To import all required repositories manually: 
+To import the required repositories manually: 
 ```bash
 vcs import src < src/franka.repos --recursive --skip-existing
-vcs import src < src/extras.repos --recursive --skip-existing
 ```
 
 ## Caution
@@ -207,10 +202,10 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
       ```
 
   5. **Open a terminal and build the workspace:**
-     The **first** time you build the workspace use the following command:
-      ```bash
-      colcon build   --symlink-install   --executor sequential   --parallel-workers 1   --cmake-args -DCMAKE_BUILD_TYPE=Release
-      ```
+      The **first** time you build the workspace, on systems with ~32 GB of RAM we recommend parallel execution with four workers:
+        ```bash
+        colcon build --symlink-install --executor parallel --parallel-workers 4 --cmake-args -DCMAKE_BUILD_TYPE=Release
+        ```
      The **others** time use the following command:
       ```bash
       colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release

@@ -88,8 +88,10 @@ RUN sudo apt-get update && \
         ros-humble-moveit-servo \
         ros-humble-joint-trajectory-controller \
         ros-humble-moveit-simple-controller-manager \
+        ros-humble-pymoveit2 \
         ros-humble-rviz2 \
         ros-humble-xacro \
+        ros-humble-tf2-geometry-msgs \
         ros-humble-ros-testing \
         ros-humble-ros2test \
         ros-humble-ros2-control \
@@ -126,7 +128,7 @@ RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws && \
     vcs import src < src/franka.repos --recursive --skip-existing && \
     sudo apt-get update && \
     rosdep update && \
-    rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y --skip-keys=pymoveit2 && \
+    rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y && \
     sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/* && \
     rm -rf /home/$USERNAME/.ros && \
