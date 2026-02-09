@@ -16,7 +16,7 @@
   <!-- ========================================== -->
   <!-- OSTACOLO 1: BOX CENTRALE (Rosso)           -->
   <!-- ========================================== -->
-  <xacro:arg name="box1_x" default="10.0"/>
+  <xacro:arg name="box1_x" default="0.6"/>
   <xacro:arg name="box1_y" default="-0.2"/>
   <xacro:arg name="box1_z" default="0.15"/>
   <xacro:arg name="box1_size_x" default="0.05"/>

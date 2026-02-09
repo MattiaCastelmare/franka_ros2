@@ -2,7 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="collision_box">
   
   <!-- Parametri configurabili -->
-  <xacro:arg name="box_x" default="0.5"/>
+  <xacro:arg name="box_x" default="10.9"/>
   <xacro:arg name="box_y" default="0.0"/>
   <xacro:arg name="box_z" default="0.15"/>
   <xacro:arg name="box_size_x" default="0.15"/>

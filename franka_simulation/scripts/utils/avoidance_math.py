@@ -529,6 +529,7 @@ def build_capsules_for_link_pairs(
     r = list(capsule_radii) if isinstance(capsule_radii, list) else []
     if len(r) != 3:
         r = [0.15, 0.12, 0.13]
+    radius_single = float(max(r))
 
     for parent, child in link_pairs:
         fid_p = int(frame_ids[parent])
@@ -540,20 +541,10 @@ def build_capsules_for_link_pairs(
 
         capsules[parent] = [
             {
-                "p0": float(fr[0]) * p_child_local,
-                "p1": float(fr[1]) * p_child_local,
-                "radius": float(r[0]),
-            },
-            {
-                "p0": float(fr[2]) * p_child_local,
-                "p1": float(fr[3]) * p_child_local,
-                "radius": float(r[1]),
-            },
-            {
-                "p0": float(fr[4]) * p_child_local,
-                "p1": float(fr[5]) * p_child_local,
-                "radius": float(r[2]),
-            },
+                "p0": np.zeros_like(p_child_local),
+                "p1": np.array(p_child_local, dtype=float),
+                "radius": float(radius_single),
+            }
         ]
 
     return frame_ids, capsules

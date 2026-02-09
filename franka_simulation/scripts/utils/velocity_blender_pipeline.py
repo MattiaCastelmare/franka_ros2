@@ -116,7 +116,7 @@ def step(
                     d_closest = float(rt.closest_d)
                     haz = str(rt.closest_hazard or "none")
                     traj_len = int(len(rt.trajectory_points))
-                    logger.info(
+                    logger.debug(
                         "[TEST-REACTIVE] "
                         f"d_closest={d_closest:.3f} haz='{haz}' "
                         f"|qdot_avoid|={av:.4f} |qdot_cmd|={bv:.4f} max_vel={float(getattr(params, 'max_vel')):.3f} "
@@ -153,6 +153,8 @@ def step(
         closest_d=float(rt.closest_d),
         closest_j_row=np.array(rt.closest_j_row, dtype=float).reshape(-1),
         closest_hazard=str(rt.closest_hazard or "none"),
+        multi_distances=rt.constraints_d,
+        multi_rows=rt.constraints_rows,
         distance_inflation=float(getattr(params, "distance_inflation")),
         risk_d_far=float(getattr(params, "risk_d_far")),
         risk_d_mid=float(getattr(params, "risk_d_mid")),
@@ -548,11 +550,12 @@ def step(
                 vpre = int(dbg.get("cbf_multi_violations_pre", 0))
                 vpost = int(dbg.get("cbf_multi_violations_post", 0))
                 infeas = int(dbg.get("cbf_multi_infeasible", 0))
-                logger.info(
+                logger.debug(
                     "[BLENDER-MULTI] "
                     f"N_active={n_active} d_min={d_min:.3f} d_2={d_2:.3f} "
                     f"|qdot_avoid|={av:.4f} |qdot_cmd|={bv:.4f} "
-                    f"viol_pre={vpre} viol_post={vpost} infeas={infeas}"
+                    f"viol_pre={vpre} viol_post={vpost} infeas={infeas} "
+                    f"closest='{rt.closest_hazard}' stop={bool(rt.stop_active)}"
                 )
                 if (av <= 1e-4) and (d_min < float(getattr(params, "influence_distance"))):
                     logger.warn(

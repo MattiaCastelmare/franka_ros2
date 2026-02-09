@@ -524,6 +524,8 @@ def compute_safety_and_jrow(
     closest_d: float,
     closest_j_row: np.ndarray,
     closest_hazard: str,
+    multi_distances: Optional[np.ndarray] = None,
+    multi_rows: Optional[np.ndarray] = None,
     distance_inflation: float,
     risk_d_far: float,
     risk_d_mid: float,
@@ -576,10 +578,56 @@ def compute_safety_and_jrow(
             bool(closest_j_row_filt_init),
         )
 
+    hazard_use = str(closest_hazard or "none")
+    closest_j_arr = np.array(closest_j_row, dtype=float).reshape(-1)
+    if closest_j_arr.shape[0] != int(n_dof):
+        arr_tmp = np.zeros(int(n_dof), dtype=float)
+        m = min(int(n_dof), closest_j_arr.shape[0])
+        if m > 0:
+            arr_tmp[:m] = closest_j_arr[:m]
+        closest_j_arr = arr_tmp
+    closest_d_use = float(closest_d)
+
+    try:
+        if multi_distances is not None and multi_rows is not None:
+            ds = np.array(multi_distances, dtype=float).reshape(-1)
+            rows = np.array(multi_rows, dtype=float)
+            try:
+                rows = rows.reshape(-1, int(n_dof))
+            except Exception:
+                rows = np.zeros((0, int(n_dof)), dtype=float)
+
+            count = min(rows.shape[0], ds.shape[0])
+            if count > 0 and rows.shape[1] == int(n_dof):
+                best_i = -1
+                best_d = float("inf")
+                for i in range(count):
+                    di = float(ds[i])
+                    if not np.isfinite(di):
+                        continue
+                    row = rows[i, :].reshape(-1)
+                    if not bool(np.all(np.isfinite(row))):
+                        continue
+                    if float(np.linalg.norm(row)) <= 1e-6:
+                        continue
+                    if di < best_d:
+                        best_d = float(di)
+                        best_i = int(i)
+
+                if best_i >= 0:
+                    closest_d_use = float(best_d)
+                    closest_j_arr = rows[best_i, :].reshape(-1)
+                    if hazard_use == "none":
+                        hazard_use = "multi"
+                    else:
+                        hazard_use = f"multi:{hazard_use}"
+    except Exception:
+        pass
+
     safety = compute_safety_signal_context(
-        closest_d=float(closest_d),
-        closest_j_row=np.array(closest_j_row, dtype=float).reshape(-1),
-        closest_hazard=str(closest_hazard or "none"),
+        closest_d=float(closest_d_use),
+        closest_j_row=np.array(closest_j_arr, dtype=float).reshape(-1),
+        closest_hazard=str(hazard_use),
         distance_inflation=float(distance_inflation),
         risk_d_far=float(risk_d_far),
         risk_d_mid=float(risk_d_mid),
@@ -769,6 +817,16 @@ def on_constraints(rt: Any, msg: Any, n_dof: int) -> None:
         rt.constraints_d = np.array(ds, dtype=float).reshape(-1)
         rt.constraints_prev_rows = np.array(rows_arr, dtype=float).reshape(-1, int(n_dof))
         rt.constraints_last_wall = float(time.time())
+
+        # Update closest estimates from multi-constraint data (primary source for safety)
+        try:
+            if rt.constraints_d.shape[0] > 0:
+                idx_min = int(np.argmin(rt.constraints_d))
+                if 0 <= idx_min < rt.constraints_rows.shape[0]:
+                    rt.closest_d = float(rt.constraints_d[idx_min])
+                    rt.closest_j_row = np.array(rt.constraints_rows[idx_min, :], dtype=float).reshape(int(n_dof))
+        except Exception:
+            pass
     except Exception:
         pass
 

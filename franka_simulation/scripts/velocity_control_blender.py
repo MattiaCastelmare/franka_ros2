@@ -163,7 +163,7 @@ class SimpleVelocityBlender(Node):
                                 f"[REACTIVE-NORMAL] d_dot={d_dot:.5f} (negative, check dir sign)"
                             )
                         else:
-                            self.get_logger().info(
+                            self.get_logger().debug(
                                 f"[REACTIVE-NORMAL] d_dot={d_dot:.5f}"
                             )
         except Exception:

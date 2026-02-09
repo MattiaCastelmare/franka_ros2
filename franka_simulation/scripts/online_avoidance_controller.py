@@ -199,6 +199,10 @@ class NullSpaceAvoidance(Node):
         # TEST-REACTIVE: throttled logs
         self._test_last_no_obs_wall = 0.0
         self._test_last_no_js_wall = 0.0
+        # Manual stop gate for architecture-B (blender-enforced safety)
+        self._manual_stop_active = False
+        self._multi_stop_zone_active = False
+        self._scene_log_last_ns = 0
 
     def _control_loop(self):
         # High-level flow:
@@ -215,7 +219,7 @@ class NullSpaceAvoidance(Node):
                 now_wall = float(time.time())
                 if (now_wall - float(self._test_last_no_js_wall)) >= 1.0:
                     self._test_last_no_js_wall = now_wall
-                    self.get_logger().info("[TEST-REACTIVE] waiting for joint_states")
+                    self.get_logger().debug("[TEST-REACTIVE] waiting for joint_states")
             except Exception:
                 pass
             publish_not_ready_outputs(pubs=self._pubs)
@@ -231,7 +235,7 @@ class NullSpaceAvoidance(Node):
             now_wall = float(time.time())
             if (len(self.obstacles) == 0) and ((now_wall - float(self._test_last_no_obs_wall)) >= 1.0):
                 self._test_last_no_obs_wall = now_wall
-                self.get_logger().info("[TEST-REACTIVE] no obstacles received on /obstacle_scene")
+                self.get_logger().debug("[TEST-REACTIVE] no obstacles received on /obstacle_scene")
         except Exception:
             pass
         segments = iter_world_capsule_segments(capsules=self.capsules, frame_ids=self.frame_ids, data=self.data)
@@ -300,9 +304,19 @@ class NullSpaceAvoidance(Node):
         # ------------------------------------------------------------------
         qdot_nom_pre = np.zeros(7, dtype=float)
         weight_sum = 0.0
+        zone_weight_sum = 0.0
+        zone_weight_max = 0.0
         active_count = 0
         closest_label = "none"
-        closest_d = float("inf")
+        closest_d_raw = float("inf")
+        closest_d_eff = float("inf")
+        stop_zone_active = False
+
+        inflation = float(max(0.0, float(self.params.distance_inflation)))
+        stop_threshold = float(self.params.stop_d_in)
+        risk_far_ext = float(self.params.risk_d_far)
+        risk_mid_ext = float(self.params.risk_d_mid)
+        risk_near_ext = float(self.params.risk_d_near)
 
         try:
             act = []
@@ -324,16 +338,44 @@ class NullSpaceAvoidance(Node):
                     influence_radius = float(self.params.ground_infl)
                     safety_limit = float(self.params.ground_safe)
                     gain = float(self.params.k_ground)
+                    risk_far = float(influence_radius)
+                    risk_mid = float(influence_radius) * (2.0 / 3.0)
+                    risk_near = float(influence_radius) * (1.0 / 3.0)
                 elif kind == "self":
                     influence_radius = float(self.params.self_infl)
                     safety_limit = float(self.params.self_safe)
                     gain = float(self.params.k_self)
+                    risk_far = float(influence_radius)
+                    risk_mid = float(influence_radius) * (2.0 / 3.0)
+                    risk_near = float(influence_radius) * (1.0 / 3.0)
                 else:
                     influence_radius = float(self.params.influence_distance)
                     safety_limit = float(self.params.safety_margin)
                     gain = float(self.params.k_null)
+                    risk_far = float(risk_far_ext)
+                    risk_mid = float(risk_mid_ext)
+                    risk_near = float(risk_near_ext)
 
                 if d >= float(influence_radius):
+                    continue
+
+                d_eff = float(d) - float(inflation)
+
+                try:
+                    w_zone = float(
+                        staged_risk_weight(
+                            float(d_eff),
+                            d_far=float(risk_far),
+                            d_mid=float(risk_mid),
+                            d_near=float(risk_near),
+                            d_stop=float(stop_threshold),
+                        )
+                    )
+                except Exception:
+                    w_zone = 0.0
+
+                w_zone = float(np.clip(w_zone, 0.0, 1.0))
+                if w_zone <= 0.0:
                     continue
 
                 w = float(smooth_alpha(d, float(influence_radius), float(safety_limit)))
@@ -346,7 +388,7 @@ class NullSpaceAvoidance(Node):
                 else:
                     gain_scale = 1.0
 
-                w = float(w) * float(gain) * float(gain_scale)
+                w = float(w) * float(w_zone) * float(gain) * float(gain_scale)
                 if w <= 0.0:
                     continue
 
@@ -380,12 +422,32 @@ class NullSpaceAvoidance(Node):
 
                 qdot_nom_pre += float(w) * (np.array(j_row, dtype=float).reshape(-1) / float(jn))
                 weight_sum += float(w)
+                zone_weight_sum += float(w_zone)
+                zone_weight_max = max(zone_weight_max, float(w_zone))
                 active_count += 1
 
-                if float(d) < float(closest_d):
-                    closest_d = float(d)
+                stop_zone_active = stop_zone_active or (float(d_eff) <= float(stop_threshold))
+
+                if float(d) < float(closest_d_raw):
+                    closest_d_raw = float(d)
+                    closest_d_eff = float(d_eff)
                     hazard = str(c.get("hazard", ""))
-                    closest_label = hazard if len(hazard) > 0 else f"idx:{int(idx)}"
+                    if kind == "self":
+                        link_desc = f"{c.get('link_i', '?')}↔{c.get('link_j', '?')}"
+                    else:
+                        link_desc = str(c.get("link", ""))
+                    if len(hazard) > 0 and len(link_desc) > 0:
+                        if "@" in hazard:
+                            closest_label = hazard
+                        else:
+                            closest_label = f"{hazard}@{link_desc}"
+                    elif len(hazard) > 0:
+                        closest_label = hazard
+                    elif len(link_desc) > 0:
+                        closest_label = f"{link_desc} (idx:{int(idx)})"
+                    else:
+                        closest_label = f"idx:{int(idx)}"
+                    avoid_diag["closest_link"] = link_desc
         except Exception:
             pass
 
@@ -393,7 +455,18 @@ class NullSpaceAvoidance(Node):
         avoid_diag["active_count"] = int(active_count)
         avoid_diag["weight_sum"] = float(weight_sum)
         avoid_diag["closest_label"] = str(closest_label)
+        avoid_diag["closest_distance_raw"] = float(closest_d_raw if np.isfinite(closest_d_raw) else 999.0)
+        avoid_diag["closest_distance_eff"] = float(closest_d_eff if np.isfinite(closest_d_eff) else 999.0)
+        avoid_diag["stop_zone_active"] = bool(stop_zone_active)
+        avoid_diag["zone_weight_sum"] = float(zone_weight_sum)
+        avoid_diag["zone_weight_max"] = float(zone_weight_max)
         avoid_diag["qdot_nom_pre_norm"] = float(np.linalg.norm(qdot_nom_pre))
+        self._multi_stop_zone_active = bool(stop_zone_active)
+
+        scene_active = int(active_count)
+        scene_hazard = str(closest_label if scene_active > 0 else "none")
+        scene_distance = float(closest_d_raw if np.isfinite(closest_d_raw) else 999.0)
+        influence_distance_val = float(self.params.influence_distance)
 
         # --- Build candidate list (RAW) for publishing + (EFFECTIVE) for safety decisions.
         candidates_raw: List[dict] = []
@@ -469,6 +542,7 @@ class NullSpaceAvoidance(Node):
                 qp_solver=self._qp_solver,
                 qp_available=bool(self._qp_available),
             )
+            self._manual_stop_active = False
         else:
             # Architecture B (recommended): controller is nominal, blender is the single point
             # of safety enforcement for the FINAL command (tracking + avoidance).
@@ -527,6 +601,55 @@ class NullSpaceAvoidance(Node):
             m_active = 0
             active_best = None
 
+        if not bool(getattr(self.params, "controller_safety_filter_enable", True)):
+            try:
+                stop_release = float(self.params.stop_d_out)
+            except Exception:
+                stop_release = float(self.params.stop_d_in) + 1e-3
+
+            manual_stop = bool(self._manual_stop_active)
+            if bool(self._multi_stop_zone_active):
+                manual_stop = True
+            elif manual_stop and (float(d_min_eff) >= float(stop_release)):
+                manual_stop = False
+
+            self._manual_stop_active = bool(manual_stop)
+            self._cbf_state.stop_gate_active = bool(manual_stop)
+            if manual_stop:
+                qdot_out = np.zeros(7, dtype=float)
+                self._cbf_state.qdot_pub_prev = np.zeros(7, dtype=float)
+
+        try:
+            now_scene_ns = int(self.get_clock().now().nanoseconds)
+        except Exception:
+            now_scene_ns = int(float(time.time()) * 1e9)
+        if (now_scene_ns - int(self._scene_log_last_ns)) >= 500_000_000:
+            self._scene_log_last_ns = now_scene_ns
+            scene_stop = bool(self._cbf_state.stop_gate_active)
+            link_summary = "-"
+            try:
+                plc = avoid_diag.get("per_link_closest", {}) if isinstance(avoid_diag, dict) else {}
+                if isinstance(plc, dict) and len(plc) > 0:
+                    parts = []
+                    for link_name in sorted(plc.keys()):
+                        entry = plc.get(link_name, {})
+                        dist = float(entry.get("distance", 1e9))
+                        if not bool(np.isfinite(dist)):
+                            continue
+                        short = str(link_name).replace("fr3_", "")
+                        parts.append(f"{short}:{dist:.3f}")
+                    if len(parts) > 0:
+                        link_summary = " ".join(parts[:5])
+            except Exception:
+                link_summary = "-"
+            if isinstance(avoid_diag, dict):
+                avoid_diag["per_link_summary"] = link_summary
+
+            self.get_logger().info(
+                f"[SCENE] active={scene_active:02d} infl={influence_distance_val:.3f} "
+                f"closest='{scene_hazard}' d={scene_distance:.3f} stop={scene_stop} links={link_summary}"
+            )
+
         # Always respect max joint velocity at the controller output (keeps nominal avoidance bounded).
         try:
             qdot_out = np.clip(np.array(qdot_out, dtype=float).reshape(7), -float(self.params.max_qdot), +float(self.params.max_qdot))
@@ -577,6 +700,7 @@ class NullSpaceAvoidance(Node):
                 K = min(K, int(len(act)))
             if (K <= 0) or (len(act) <= 0):
                 self.constraints_pub.publish(Float64MultiArray(data=[0.0]))
+                avoid_diag["constraints_published"] = 0
             else:
                 Gc, _bc_unused, mc, _best_c = build_cbf_constraints(
                     list(act),
@@ -614,8 +738,10 @@ class NullSpaceAvoidance(Node):
 
                 if len(payload) <= 0:
                     self.constraints_pub.publish(Float64MultiArray(data=[0.0]))
+                    avoid_diag["constraints_published"] = 0
                 else:
                     n_active = int(len(payload) / 8)
+                    avoid_diag["constraints_published"] = int(n_active)
                     self.constraints_pub.publish(Float64MultiArray(data=[float(n_active)] + payload))
         except Exception:
             pass
@@ -675,11 +801,12 @@ class NullSpaceAvoidance(Node):
                     self._dbg_closest_switch_count += 1
                     self._dbg_prev_closest_hazard = str(ch)
 
-                self.get_logger().info(
+                self.get_logger().debug(
                     "[AVOID-ROBUST] "
                     f"d_raw={float(d_min_raw):.3f}m infl={float(inflation):.3f}m d_eff={float(d_min_eff):.3f}m "
                     f"closest='{ch}' switches={int(self._dbg_closest_switch_count)} "
-                    f"stop={bool(self._cbf_state.stop_gate_active)} enter={int(self._dbg_stop_enter_count)} exit={int(self._dbg_stop_exit_count)} "
+                    f"stop={bool(self._cbf_state.stop_gate_active)} multi_stop={bool(self._multi_stop_zone_active)} "
+                    f"enter={int(self._dbg_stop_enter_count)} exit={int(self._dbg_stop_exit_count)} "
                     f"cbf_active={bool(self._cbf_state.cbf_active)}"
                 )
 
@@ -687,7 +814,7 @@ class NullSpaceAvoidance(Node):
                 try:
                     qn = float(np.linalg.norm(np.array(qdot_nom, dtype=float).reshape(-1)))
                     qo = float(np.linalg.norm(np.array(qdot_out, dtype=float).reshape(-1)))
-                    self.get_logger().info(
+                    self.get_logger().debug(
                         "[TEST-REACTIVE] "
                         f"d_min_raw={float(d_min_raw):.3f} d_min_eff={float(d_min_eff):.3f} "
                         f"closest='{ch}' |qdot_nom|={qn:.4f} |qdot_out|={qo:.4f} "
@@ -710,12 +837,17 @@ class NullSpaceAvoidance(Node):
                 qdot_nom_norm = float(avoid_diag.get("qdot_nom_pre_norm", 0.0)) if isinstance(avoid_diag, dict) else 0.0
                 qdot_out_norm = float(np.linalg.norm(np.array(qdot_out, dtype=float).reshape(-1)))
 
-                self.get_logger().info(
+                self.get_logger().debug(
                     "[AVOID-NOM] "
                     f"d_raw={float(d_min_raw):.3f}m alpha_max={alpha_far_max:.3f} alpha_zero={alpha_near_zero} "
                     f"active={active_count} w_sum={float(weight_sum):.3f} closest='{closest_label}' "
+                    f"closest_d_raw={float(avoid_diag.get('closest_distance_raw', 999.0)):.3f} "
+                    f"closest_link='{avoid_diag.get('closest_link', '-')}' "
+                    f"per_link='{avoid_diag.get('per_link_summary', '-')}' "
                     f"|qdot_avoid_pre|={qdot_nom_norm:.3f} |qdot_out|={qdot_out_norm:.3f} "
                     f"pre_max={qdot_pre_max:.3f} post_max={qdot_post_max:.3f} "
+                    f"constraints={int(avoid_diag.get('constraints_published', 0))} "
+                    f"stop_zone={bool(avoid_diag.get('stop_zone_active', False))} manual_stop={bool(self._manual_stop_active)} "
                     f"clamp_ratio={clamp_ratio:.2f} clamp_count={clamp_count} haz='{ch}'"
                 )
         except Exception:

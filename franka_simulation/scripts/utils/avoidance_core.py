@@ -98,7 +98,7 @@ def scan_external_and_ground(
     ground_safe: float,
     k_ground: float,
     debug_stats: Optional[dict] = None,
-) -> Tuple[np.ndarray, float, Dict[str, dict], Optional[dict], List[dict], List[dict]]:
+) -> Tuple[np.ndarray, float, Dict[str, dict], Optional[dict], List[dict], List[dict], List[dict]]:
     """Scan PlanningScene obstacles + ground plane and build the nominal avoidance command.
 
     Returns:
@@ -107,7 +107,8 @@ def scan_external_and_ground(
       - external_best: per-obstacle closest capsule contact (for CBF candidates)
       - ground_best: closest ground contact (for CBF candidate)
       - distances_data: list for RViz debug markers (order preserved)
-            - active_candidates: list of all active contacts (for multi-constraint CBF)
+      - active_candidates: per-link closest contacts within influence distance
+      - tip_to_obstacle_distances: closest points for the tool tip (for visualization)
     """
     qdot_avoid = np.zeros(7)
     d_min = 999.0
@@ -123,6 +124,7 @@ def scan_external_and_ground(
         debug_stats.setdefault("norm_pre_max", 0.0)
         debug_stats.setdefault("norm_post_max", 0.0)
         debug_stats.setdefault("clamp_count", 0)
+        debug_stats.setdefault("per_link_closest", {})
 
 
     tip_to_obstacle_distances = []  # For end-effector tip distance visualization
@@ -136,6 +138,8 @@ def scan_external_and_ground(
         p1 = np.array(seg["p1"], dtype=float).reshape(3)
         fid = int(seg["fid"])
         radius = float(seg["radius"])
+        parent_link = str(seg.get("parent", ""))
+        best_link_candidate: Optional[dict] = None
 
 
         # ===== External obstacles (PlanningScene boxes) =====
@@ -201,28 +205,22 @@ def scan_external_and_ground(
 
             # Record best (closest) capsule contact for this obstacle (used by CBF constraints)
             obs_id = str(getattr(obs, "id", ""))
-            if obs_id not in external_best or float(d) < float(external_best[obs_id]["d"]):
-                external_best[obs_id] = {
-                    "kind": "external",
-                    "hazard": f"external:{obs_id}",
-                    "d": float(d),
-                    "fid": int(fid),
-                    "p": np.array(p_seg, dtype=float).reshape(3),
-                    "n": np.array(dir_vec, dtype=float).reshape(3),
-                }
+            candidate = {
+                "kind": "external",
+                "hazard": f"external:{obs_id}@{parent_link}",
+                "d": float(d),
+                "fid": int(fid),
+                "p": np.array(p_seg, dtype=float).reshape(3),
+                "n": np.array(dir_vec, dtype=float).reshape(3),
+                "link": parent_link,
+                "link_idx": int(link_idx),
+            }
 
-            # Collect active contacts for multi-constraint CBF (all points within influence)
-            if float(d) <= float(influence_distance):
-                active_candidates.append(
-                    {
-                        "kind": "external",
-                        "hazard": f"external:{obs_id}",
-                        "d": float(d),
-                        "fid": int(fid),
-                        "p": np.array(p_seg, dtype=float).reshape(3),
-                        "n": np.array(dir_vec, dtype=float).reshape(3),
-                    }
-                )
+            if obs_id not in external_best or float(d) < float(external_best[obs_id]["d"]):
+                external_best[obs_id] = dict(candidate)
+
+            if (best_link_candidate is None) or (float(d) < float(best_link_candidate["d"])):
+                best_link_candidate = dict(candidate)
 
             # Distance markers (for RViz)
             distances_data.append(
@@ -307,6 +305,21 @@ def scan_external_and_ground(
             if w_sum > 1e-9:
                 qdot_avoid += qdot_reg
 
+        if best_link_candidate is not None:
+            if debug_stats is not None:
+                try:
+                    plc = debug_stats.setdefault("per_link_closest", {})
+                    plc[parent_link] = {
+                        "distance": float(best_link_candidate.get("d", 1e9)),
+                        "hazard": str(best_link_candidate.get("hazard", "")),
+                        "link_idx": int(best_link_candidate.get("link_idx", -1)),
+                    }
+                except Exception:
+                    pass
+
+            if float(best_link_candidate["d"]) <= float(influence_distance):
+                active_candidates.append(best_link_candidate)
+
         # ===== Ground (floor plane z = ground_z) =====
         if bool(enable_ground):
             p_low = p0 if p0[2] <= p1[2] else p1
@@ -326,22 +339,39 @@ def scan_external_and_ground(
             if (ground_best is None) or (float(d_ground) < float(ground_best["d"])):
                 ground_best = {
                     "kind": "ground",
-                    "hazard": "ground:plane",
+                    "hazard": f"ground:plane@{parent_link}",
                     "d": float(d_ground),
                     "fid": int(fid),
                     "p": np.array(p_low, dtype=float).reshape(3),
                     "n": np.array([0.0, 0.0, 1.0], dtype=float),
+                    "link": parent_link,
+                    "link_idx": int(link_idx),
                 }
+
+            if debug_stats is not None:
+                try:
+                    plc = debug_stats.setdefault("per_link_closest", {})
+                    prev = plc.get(parent_link)
+                    if (prev is None) or (float(d_ground) < float(prev.get("distance", 1e9))):
+                        plc[parent_link] = {
+                            "distance": float(d_ground),
+                            "hazard": f"ground:plane@{parent_link}",
+                            "link_idx": int(link_idx),
+                        }
+                except Exception:
+                    pass
 
             if float(d_ground) < float(ground_infl):
                 active_candidates.append(
                     {
                         "kind": "ground",
-                        "hazard": "ground:plane",
+                        "hazard": f"ground:plane@{parent_link}",
                         "d": float(d_ground),
                         "fid": int(fid),
                         "p": np.array(p_low, dtype=float).reshape(3),
                         "n": np.array([0.0, 0.0, 1.0], dtype=float),
+                        "link": parent_link,
+                        "link_idx": int(link_idx),
                     }
                 )
 
@@ -426,6 +456,10 @@ def scan_self_collision(
                         "fid_j": int(sj["fid"]),
                         "p_j": np.array(cp_j, dtype=float).reshape(3),
                         "n": np.array(n_self, dtype=float).reshape(3),
+                        "link_i": str(si.get("parent", "")),
+                        "link_j": str(sj.get("parent", "")),
+                        "link_idx_i": int(si.get("link_idx", 0)),
+                        "link_idx_j": int(sj.get("link_idx", 0)),
                     }
                 )
 
