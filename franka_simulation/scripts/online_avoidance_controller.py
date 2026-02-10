@@ -24,6 +24,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
 from visualization_msgs.msg import MarkerArray
 from moveit_msgs.msg import PlanningScene
+from trajectory_msgs.msg import JointTrajectory
 
 import pinocchio as pin
 
@@ -71,6 +72,7 @@ class NullSpaceAvoidance(Node):
             "fr3_joint1", "fr3_joint2", "fr3_joint3", "fr3_joint4",
             "fr3_joint5", "fr3_joint6", "fr3_joint7",
         ]
+        self.n_dof = len(self.joint_names)
 
         # ================= PARAMETERS =================
         # Single call: declare + load + validate (keeps node readable).
@@ -113,6 +115,9 @@ class NullSpaceAvoidance(Node):
         self.pin_ok = False
         self.marker_id_counter = 0  # Contatore stabile per marker ID
         self.distances_data = []    # Lista di (capsula_p0, capsula_p1, obs_point, distance)
+        self._tracking_active = False
+        self._tracking_last_wall = 0.0
+        self._tracking_status_log_wall = 0.0
 
         # ================= PINOCCHIO =================
         self.pin_ok, self.model, self.data, self.frame_ids, self.capsules = init_pinocchio_and_capsules(
@@ -148,6 +153,18 @@ class NullSpaceAvoidance(Node):
             "/obstacle_scene",
             make_planning_scene_callback(controller=self, excluded_substrings=list(self.params.excluded)),
             1,
+        )
+
+        traj_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(
+            JointTrajectory,
+            "/velocity_blender/trajectory",
+            self._trajectory_cmd_cb,
+            traj_qos,
         )
 
         self.pub = self.create_publisher(Float64MultiArray, "/avoidance/velocity", 10)
@@ -204,6 +221,39 @@ class NullSpaceAvoidance(Node):
         self._multi_stop_zone_active = False
         self._scene_log_last_ns = 0
 
+    def _trajectory_cmd_cb(self, msg: JointTrajectory) -> None:
+        """Aggiorna lo stato di tracking in base ai messaggi di traiettoria."""
+        try:
+            now_wall = float(time.time())
+            points = list(getattr(msg, "points", [])) if msg is not None else []
+            if len(points) > 0:
+                self._tracking_active = True
+                self._tracking_last_wall = float(now_wall)
+            else:
+                self._tracking_active = False
+                self._tracking_last_wall = float(now_wall)
+        except Exception:
+            pass
+
+    def _tracking_active_now(self, now_wall: float) -> bool:
+        timeout = float(getattr(self.params, "tracking_timeout_s", 0.5))
+        try:
+            timeout = max(0.0, float(timeout))
+        except Exception:
+            timeout = 0.5
+
+        if not bool(self._tracking_active):
+            return False
+
+        last = float(self._tracking_last_wall)
+        if timeout <= 0.0:
+            return True
+        if (float(now_wall) - float(last)) <= float(timeout):
+            return True
+
+        self._tracking_active = False
+        return False
+
     def _control_loop(self):
         # High-level flow:
         #  1) sanity check / publish zeros if not ready
@@ -213,10 +263,11 @@ class NullSpaceAvoidance(Node):
         #  5) publish commands + diagnostics
         #  6) rebuild RViz marker cache (published separately at 10Hz)
 
+        now_wall = float(time.time())
+
         if not (self.pin_ok and isinstance(self.q, np.ndarray)):
             # TEST-REACTIVE: waiting for joint_states
             try:
-                now_wall = float(time.time())
                 if (now_wall - float(self._test_last_no_js_wall)) >= 1.0:
                     self._test_last_no_js_wall = now_wall
                     self.get_logger().debug("[TEST-REACTIVE] waiting for joint_states")
@@ -678,7 +729,7 @@ class NullSpaceAvoidance(Node):
         #   (d_closest_raw, j_row_closest)
         # This intentionally does NOT depend on whether the CBF is active.
         # ------------------------------------------------------------------
-        publish_closest_constraint(
+        closest_constraint_info = publish_closest_constraint(
             candidates=list(candidates_raw),
             model=self.model,
             data=self.data,
@@ -756,6 +807,64 @@ class NullSpaceAvoidance(Node):
                     active_best = {"hazard": str(getattr(self._closest_hold, "last_hazard", "none"))}
             except Exception:
                 pass
+
+        qdot_base = np.array(qdot_out, dtype=float).reshape(self.n_dof)
+        qdot_normal = np.array(qdot_base, dtype=float).reshape(self.n_dof)
+        qdot_tangent = np.zeros(self.n_dof, dtype=float)
+
+        hazard_from_constraint = "none"
+        if closest_constraint_info is not None:
+            hazard_from_constraint = str(closest_constraint_info.get("hazard", "none"))
+            j_candidate = np.array(closest_constraint_info.get("j_row", []), dtype=float).reshape(-1)
+            if (
+                hazard_from_constraint != "none"
+                and j_candidate.shape[0] == int(self.n_dof)
+                and bool(np.all(np.isfinite(j_candidate)))
+            ):
+                j_norm_sq = float(j_candidate @ j_candidate)
+                if j_norm_sq > 1e-9:
+                    proj = float(j_candidate @ qdot_base) / float(j_norm_sq)
+                    qdot_normal = float(proj) * j_candidate
+                    qdot_tangent = qdot_base - qdot_normal
+                else:
+                    qdot_normal = qdot_base
+                    qdot_tangent = np.zeros(self.n_dof, dtype=float)
+        qdot_normal_norm = float(np.linalg.norm(qdot_normal))
+        qdot_tangent_norm = float(np.linalg.norm(qdot_tangent))
+
+        tracking_active_now = self._tracking_active_now(now_wall)
+        tan_weight = float(getattr(self.params, "tan_weight", 1.0))
+        if tracking_active_now:
+            qdot_pub = qdot_normal + float(tan_weight) * qdot_tangent
+        else:
+            qdot_pub = qdot_normal
+
+        qdot_pub = np.clip(
+            np.array(qdot_pub, dtype=float).reshape(self.n_dof),
+            -float(self.params.max_qdot),
+            +float(self.params.max_qdot),
+        )
+
+        try:
+            self._cbf_state.qdot_pub_prev = np.array(qdot_pub, dtype=float).reshape(self.n_dof)
+        except Exception:
+            pass
+
+        qdot_out = np.array(qdot_pub, dtype=float).reshape(self.n_dof)
+
+        try:
+            if (float(now_wall) - float(self._tracking_status_log_wall)) >= 1.0:
+                self._tracking_status_log_wall = float(now_wall)
+                self.get_logger().debug(
+                    "[AVOIDANCE-COMP] tracking_active=%s |qdot_normal|=%.4f |qdot_tangent|=%.4f tan_weight=%.3f hazard='%s'",
+                    tracking_active_now,
+                    qdot_normal_norm,
+                    qdot_tangent_norm,
+                    float(tan_weight),
+                    hazard_from_constraint,
+                )
+        except Exception:
+            pass
 
         # Publish the joint velocity command (same topic/type as before)
         self.pub.publish(Float64MultiArray(data=np.array(qdot_out, dtype=float).reshape(-1).tolist()))

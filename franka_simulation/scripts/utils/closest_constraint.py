@@ -38,7 +38,7 @@ def publish_closest_constraint(
     d_min_default: float,
     hold_state: Optional[ClosestConstraintHoldState] = None,
     now_wall: Optional[float] = None,
-) -> None:
+) -> Optional[dict]:
     """Publish:
 
     - `/avoidance/closest_constraint`: Float64MultiArray [d_closest, j_row_0..j_row_6]
@@ -53,7 +53,11 @@ def publish_closest_constraint(
             pubs.closest_constraint_pub.publish(Float64MultiArray(data=[999.0] + [0.0] * 7))
             msg = String(); msg.data = "none"
             pubs.closest_hazard_pub.publish(msg)
-            return
+            if hold_state is not None:
+                hold_state.last_hazard = "none"
+                hold_state.last_d = 999.0
+                hold_state.last_j_row = None
+            return None
 
         cp = params.cbf_params
         # Build constraints for all candidates, then select the FIRST closest one whose
@@ -145,7 +149,11 @@ def publish_closest_constraint(
             pubs.closest_constraint_pub.publish(Float64MultiArray(data=[float(d_closest)] + j_row_closest.tolist()))
             msg = String(); msg.data = str(hazard)
             pubs.closest_hazard_pub.publish(msg)
-            return
+            return {
+                "d": float(d_closest),
+                "j_row": np.array(j_row_closest, dtype=float).reshape(-1),
+                "hazard": str(hazard),
+            }
 
         # If we could not compute a usable constraint, prefer holding the last coherent
         # triplet (if available) instead of publishing an invalid "no hazard" signal.
@@ -158,12 +166,17 @@ def publish_closest_constraint(
                     )
                     msg = String(); msg.data = str(hold_state.last_hazard)
                     pubs.closest_hazard_pub.publish(msg)
-                    return
+                    return {
+                        "d": float(hold_state.last_d),
+                        "j_row": j_row_hold,
+                        "hazard": str(hold_state.last_hazard),
+                    }
             except Exception:
                 pass
 
         pubs.closest_constraint_pub.publish(Float64MultiArray(data=[999.0] + [0.0] * 7))
         msg = String(); msg.data = "none"
         pubs.closest_hazard_pub.publish(msg)
+        return None
     except Exception:
-        pass
+        return None

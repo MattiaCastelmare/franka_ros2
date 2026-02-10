@@ -41,7 +41,6 @@ class SimpleVelocityBlender(Node):
 
         # ===== RUNTIME STATE =====
         self._rt = BlenderRuntimeState(n_dof=int(self.n_dof))
-        self._reactive_log_wall = 0.0
 
         # ===== SUBSCRIBERS =====
         self.create_subscription(
@@ -141,33 +140,6 @@ class SimpleVelocityBlender(Node):
 
     def avoidance_cb(self, msg: Float64MultiArray):
         vh.on_avoidance(self._rt, msg, self.n_dof)
-
-        # Reactive test: enforce normal-only avoidance when no trajectory is active.
-        try:
-            if bool(getattr(self, "reactive_enable", False)) and (
-                (not bool(self._rt.active)) or (len(self._rt.trajectory_points) == 0)
-            ):
-                j = np.array(self._rt.closest_j_row, dtype=float).reshape(-1)
-                jn2 = float(j @ j)
-                if jn2 > 1e-9:
-                    qdot = np.array(self._rt.qdot_avoid, dtype=float).reshape(-1)
-                    qdot_n = (float(j @ qdot) / float(jn2)) * j
-                    self._rt.qdot_avoid = np.array(qdot_n, dtype=float).reshape(-1)
-
-                    now = float(time.time())
-                    if (now - float(self._reactive_log_wall)) >= 1.0:
-                        self._reactive_log_wall = now
-                        d_dot = float(j @ np.array(self._rt.qdot_avoid, dtype=float).reshape(-1))
-                        if d_dot < -1e-6:
-                            self.get_logger().warn(
-                                f"[REACTIVE-NORMAL] d_dot={d_dot:.5f} (negative, check dir sign)"
-                            )
-                        else:
-                            self.get_logger().debug(
-                                f"[REACTIVE-NORMAL] d_dot={d_dot:.5f}"
-                            )
-        except Exception:
-            pass
 
     def closest_constraint_cb(self, msg: Float64MultiArray):
         vh.on_closest_constraint(self._rt, msg, self.n_dof)

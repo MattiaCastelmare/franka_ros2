@@ -24,6 +24,8 @@ from .cbf_filter import CbfFilterParams
 DEFAULT_NULLSPACE_AVOIDANCE_PARAMS: Dict[str, Any] = {
     # Control
     "control_rate": 100.0,
+    "tracking_timeout_s": 0.5,
+    "tan_weight": 1.0,
 
     # Distances / gains
     "influence_distance": 0.30,
@@ -129,6 +131,8 @@ DEFAULT_NULLSPACE_AVOIDANCE_PARAMS: Dict[str, Any] = {
 class NullSpaceAvoidanceParams:
     # Control
     rate: float
+    tracking_timeout_s: float
+    tan_weight: float
 
     # External/nominal avoidance
     influence_distance: float
@@ -231,6 +235,8 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
     p_list_str = lambda n: [str(x) for x in list(p(n))]
 
     rate = p_float("control_rate")
+    tracking_timeout_s = p_float("tracking_timeout_s")
+    tan_weight = p_float("tan_weight")
     influence_distance = p_float("influence_distance")
     safety_margin = p_float("safety_margin")
     d_aggr = p_float("aggressive_distance")
@@ -366,6 +372,8 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
 
     return NullSpaceAvoidanceParams(
         rate=float(rate),
+        tracking_timeout_s=float(tracking_timeout_s),
+        tan_weight=float(tan_weight),
         influence_distance=float(influence_distance),
         safety_margin=float(safety_margin),
         d_aggr=float(d_aggr),
