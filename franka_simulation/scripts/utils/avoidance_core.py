@@ -106,6 +106,7 @@ def iter_world_capsule_segments(
                     "parent": capsule_name,
                     "fid": start_id,  # kept for compatibility
                     "link_idx": link_idx,
+                    "capsule_idx": idx,  # for logging
                     "p0": p0,
                     "p1": p1,
                     "radius": float(caps["radius"]),
@@ -274,6 +275,8 @@ def scan_external_and_ground(
                     "p_obstacle": p_box,
                     "distance": d,
                     "infl": float(influence_distance),
+                    "capsule_idx": int(seg.get("capsule_idx", -1)),  # for logging
+                    "obstacle_name": obs_id,  # for logging
                 }
             )
 

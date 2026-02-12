@@ -54,6 +54,7 @@ class NullSpaceAvoidance(Node):
         self.distances_data: List[dict] = []
         self.last_marker_array = MarkerArray()
         self._scene_log_last_wall = 0.0
+        self._distance_log_last_wall = 0.0
 
         # Initialize Pinocchio model and joint-to-joint capsules
         # Capsules are now built directly from joint positions (8 capsules total)
@@ -275,6 +276,10 @@ class NullSpaceAvoidance(Node):
 
         active_count = sum(1 for cand in active_candidates if _is_active(cand))
         d_for_log = d_min_raw if np.isfinite(d_min_raw) else 999.0
+        
+        # Throttled logging of capsule-obstacle distances (every 0.5s)
+        self._log_capsule_distances_throttled(dist_ext_ground, now_wall)
+        
         if (now_wall - float(self._scene_log_last_wall)) >= 0.5:
             self._scene_log_last_wall = now_wall
             self.get_logger().info(
@@ -305,6 +310,71 @@ class NullSpaceAvoidance(Node):
             logger=self.get_logger(),
             debug_capsule_index=int(self.params.debug_capsule_index),
         )
+
+    def _log_capsule_distances_throttled(self, distances_data: List[dict], now_wall: float):
+        """Log capsule-obstacle distances in a compact, readable format (throttled to 0.5s).
+        
+        Excludes capsule 0 (link0→joint1) as requested.
+        Formats: capsule1: obstacleA=24cm obstacleB=34cm
+        """
+        if (now_wall - float(self._distance_log_last_wall)) < 0.5:
+            return
+        
+        self._distance_log_last_wall = now_wall
+        
+        if not distances_data or len(self.obstacles) == 0:
+            self.get_logger().info("[CAPSULE-DISTANCES] no obstacles")
+            return
+        
+        # Build map: {capsule_idx: {obstacle_name: min_distance}}
+        distances_by_capsule = {}
+        for dist_dict in distances_data:
+            capsule_idx = int(dist_dict.get("capsule_idx", -1))
+            obstacle_name = str(dist_dict.get("obstacle_name", "")).strip()
+            distance = float(dist_dict.get("distance", 999.0))
+            
+            # Skip capsule 0 (link0→joint1)
+            if capsule_idx == 0:
+                continue
+            
+            # Skip invalid data
+            if capsule_idx < 0 or not obstacle_name:
+                continue
+            
+            if capsule_idx not in distances_by_capsule:
+                distances_by_capsule[capsule_idx] = {}
+            
+            # Keep minimum distance for each capsule-obstacle pair
+            obs_distances = distances_by_capsule[capsule_idx]
+            if obstacle_name not in obs_distances or distance < obs_distances[obstacle_name]:
+                obs_distances[obstacle_name] = distance
+        
+        if not distances_by_capsule:
+            self.get_logger().info("[CAPSULE-DISTANCES] no data (all filtered)")
+            return
+        
+        # Build compact log output
+        log_lines = []
+        for capsule_idx in sorted(distances_by_capsule.keys()):
+            obs_dict = distances_by_capsule[capsule_idx]
+            if not obs_dict:
+                log_lines.append(f"  capsule{capsule_idx}: -")
+                continue
+            
+            # Format: "obstacleA=24cm obstacleB=34cm"
+            obs_parts = []
+            for obs_name in sorted(obs_dict.keys()):
+                distance_m = obs_dict[obs_name]
+                distance_cm = distance_m * 100.0
+                # Use integer if close to whole number, otherwise 1 decimal
+                if abs(distance_cm - round(distance_cm)) < 0.05:
+                    obs_parts.append(f"{obs_name}={int(round(distance_cm))}cm")
+                else:
+                    obs_parts.append(f"{obs_name}={distance_cm:.1f}cm")
+            
+            log_lines.append(f"  capsule{capsule_idx}: {' '.join(obs_parts)}")
+        
+        self.get_logger().info("[CAPSULE-DISTANCES]\n" + "\n".join(log_lines))
 
     def _publish_markers_only(self):
         if len(self.last_marker_array.markers) > 0:

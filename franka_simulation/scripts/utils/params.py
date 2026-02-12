@@ -61,7 +61,7 @@ DEFAULT_NULLSPACE_AVOIDANCE_PARAMS: Dict[str, Any] = {
     #    7 = solo capsula 7: joint7 → link8 (flange → end-effector)
     # 
     # PER DEBUGGARE: cambia questo numero, salva, rilancia il launch file
-    "debug_capsule_index": 7,  # ← CAMBIA QUI (0..7 per debug, -1 per normale)
+    "debug_capsule_index": -1,  # ← CAMBIA QUI (0..7 per debug, -1 per normale)
     # ================================================================
 
     # Distance model knobs
