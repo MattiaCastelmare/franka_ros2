@@ -550,6 +550,130 @@ def build_capsules_for_link_pairs(
     return frame_ids, capsules
 
 
+def build_joint_to_joint_capsules(
+    *,
+    model: Any,
+    capsule_radii: Any,
+) -> dict[str, list[dict[str, Any]]]:
+    """Build joint-to-joint capsules for FR3 robot.
+    
+    Creates exactly 8 capsules:
+    - Capsule 0: fr3_link0  → fr3_joint1
+    - Capsule 1: fr3_joint1 → fr3_joint2
+    - Capsule 2: fr3_joint2 → fr3_joint3 (SHORTENED to link2 length)
+    - Capsule 3: fr3_joint3 → fr3_joint4
+    - Capsule 4: fr3_joint4 → fr3_joint5 (SHORTENED to link4 length)
+    - Capsule 5: fr3_joint5 → fr3_joint6 (START from cap4 endpoint)
+    - Capsule 6: fr3_joint6 → fr3_joint7
+    - Capsule 7: fr3_joint7 → fr3_link8 (end-effector)
+    
+    This replaces the old link_pairs + capsule_fractions approach.
+    
+    Capsules 2, 4, 5 are modified based on exact link lengths from FR3 kinematics.yaml:
+    - Link2 length: 0.316 m (from joint2 origin to joint3 origin along -y)
+    - Link4 length: ~0.3927 m (from joint4 to joint5, accounting for offsets)
+    
+    Returns:
+      capsules: Dict[capsule_name, List[capsule_info_dict]]
+                Each capsule_info_dict contains:
+                  - "type": "joint_joint", "frame_joint", or "joint_frame"
+                  - "start_id": joint_id or frame_id
+                  - "end_id": joint_id or frame_id
+                  - "start_type": "joint" or "frame"
+                  - "end_type": "joint" or "frame"
+                  - "radius": float
+                  - "link_idx": int (for exclusion logic)
+                  - "target_length": float (optional, for shortening)
+                  - "use_prev_capsule_end": bool (optional, for cap5)
+    """
+    import pinocchio as pin  # type: ignore
+    
+    # Link lengths from FR3 kinematics.yaml (explicit values from DH parameters)
+    # Link2: joint2→joint3 has xyz=[0, -0.316, 0] => length = 0.316 m
+    # Link4: joint4→joint5 has xyz=[-0.0825, 0.384, 0] => length = sqrt(0.0825² + 0.384²)
+    LINK2_LENGTH = 0.15  # m
+    LINK4_LENGTH = 0.15  # m (sqrt(0.0825**2 + 0.384**2))
+    
+    # Prepare radii (if not enough values, repeat the last one)
+    radii = list(capsule_radii) if isinstance(capsule_radii, list) else []
+    if not radii:
+        radii = [0.12]
+    while len(radii) < 8:
+        radii.append(radii[-1])
+    
+    # Get frame ID for link0
+    try:
+        link0_frame_id = int(model.getFrameId("fr3_link0"))
+    except Exception:
+        # Fallback to universe frame if link0 doesn't exist
+        link0_frame_id = 0
+    
+    # Get joint IDs for joints 1-7
+    joint_ids = []
+    for i in range(1, 8):
+        joint_id = int(model.getJointId(f"fr3_joint{i}"))
+        joint_ids.append(joint_id)
+    
+    # Get frame ID for end-effector link8
+    ee_frame_id = int(model.getFrameId("fr3_link8"))
+    
+    capsules: dict[str, list[dict[str, Any]]] = {}
+    
+    # Capsule 0: link0 → joint1
+    capsules["fr3_cap_0"] = [{
+        "type": "frame_joint",
+        "start_id": link0_frame_id,
+        "end_id": joint_ids[0],
+        "start_type": "frame",
+        "end_type": "joint",
+        "radius": float(radii[0]),
+        "link_idx": 0,
+        "name": "cap_link0_joint1",
+    }]
+    
+    # Capsules 1-6: joint_i → joint_i+1
+    # Special handling for capsules 2, 4, 5 (modified geometry)
+    for i in range(6):
+        cap_dict = {
+            "type": "joint_joint",
+            "start_id": joint_ids[i],
+            "end_id": joint_ids[i + 1],
+            "start_type": "joint",
+            "end_type": "joint",
+            "radius": float(radii[i + 1]),
+            "link_idx": i + 1,
+            "name": f"cap_joint{i+1}_joint{i+2}",
+        }
+        
+        # Cap2 (i=1): Shorten to link2 length
+        if i == 1:
+            cap_dict["target_length"] = LINK2_LENGTH
+        
+        # Cap4 (i=3): Shorten to link4 length
+        elif i == 3:
+            cap_dict["target_length"] = LINK4_LENGTH
+        
+        # Cap5 (i=4): Start from cap4 endpoint instead of joint5
+        elif i == 4:
+            cap_dict["use_prev_capsule_end"] = True
+        
+        capsules[f"fr3_cap_{i+1}"] = [cap_dict]
+    
+    # Capsule 7: joint7 → link8
+    capsules["fr3_cap_7"] = [{
+        "type": "joint_frame",
+        "start_id": joint_ids[6],
+        "end_id": ee_frame_id,
+        "start_type": "joint",
+        "end_type": "frame",
+        "radius": float(radii[7]),
+        "link_idx": 7,
+        "name": "cap_joint7_link8",
+    }]
+    
+    return capsules
+
+
 def ordered_joint_positions_from_joint_state(msg: Any, joint_names: list[str]) -> Optional[np.ndarray]:
     """Extract joint positions in a specified order from a JointState-like message.
 

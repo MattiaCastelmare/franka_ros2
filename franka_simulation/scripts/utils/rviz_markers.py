@@ -28,23 +28,66 @@ def build_marker_array(
     distance_inflation: float,
     stamp_msg: Any,
     logger: Any = None,
+    debug_capsule_index: int = -1,
 ) -> MarkerArray:
     """Build a MarkerArray for robot capsules + debug distance segments."""
     marker_array = MarkerArray()
     marker_id = 0
+    prev_capsule_end = None  # For cap5 start point
 
     # ================= RViz CAPSULE VISUALIZATION =================
-    for parent in capsules:
-        fid = int(frame_ids[parent])
+    for idx, capsule_name in enumerate(sorted(capsules.keys())):
+        capsule_list = capsules[capsule_name]
 
-        for caps in capsules[parent]:
-            oMp = data.oMf[fid]
-            p0 = oMp.translation + oMp.rotation @ caps["p0"]
-            p1 = oMp.translation + oMp.rotation @ caps["p1"]
+        for caps in capsule_list:
+            # Extract positions based on type (joint-to-joint capsules)
+            start_id = int(caps["start_id"])
+            end_id = int(caps["end_id"])
+            start_type = str(caps["start_type"])
+            end_type = str(caps["end_type"])
+            
+            # Get p0 (start point)
+            # Special case: cap5 uses the previous capsule's endpoint
+            if caps.get("use_prev_capsule_end", False) and prev_capsule_end is not None:
+                p0 = prev_capsule_end
+            elif start_type == "joint":
+                p0 = data.oMi[start_id].translation
+            elif start_type == "frame":
+                p0 = data.oMf[start_id].translation
+            else:
+                continue
+            
+            # Get p1 (end point)
+            if end_type == "joint":
+                p1 = data.oMi[end_id].translation
+            elif end_type == "frame":
+                p1 = data.oMf[end_id].translation
+            else:
+                continue
+            
+            # Convert to numpy arrays
+            p0 = np.array(p0, dtype=float).reshape(3)
+            p1 = np.array(p1, dtype=float).reshape(3)
+            
+            # Apply shortening if target_length is specified (cap2, cap4)
+            if "target_length" in caps:
+                target_len = float(caps["target_length"])
+                direction = p1 - p0
+                current_len = float(np.linalg.norm(direction))
+                if current_len > 1e-6:  # avoid division by zero
+                    direction_normalized = direction / current_len
+                    p1 = p0 + direction_normalized * target_len
+            
+            # Store endpoint for next capsule (needed for cap5)
+            prev_capsule_end = p1.copy()
+            
+            # Apply debug filter AFTER computing prev_capsule_end
+            if debug_capsule_index >= 0 and idx != debug_capsule_index:
+                continue
 
             markers = make_capsule_markers(
-                np.array(p0, dtype=float).reshape(3),
-                np.array(p1, dtype=float).reshape(3),
+                p0,
+                p1,
                 float(caps["radius"]),
                 int(marker_id),
                 stamp_msg=stamp_msg,

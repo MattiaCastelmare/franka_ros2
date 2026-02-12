@@ -47,6 +47,22 @@ DEFAULT_NULLSPACE_AVOIDANCE_PARAMS: Dict[str, Any] = {
     "capsule_radii": [0.15, 0.12, 0.13],
     # Format: [p0_0, p1_0, p0_1, p1_1, p0_2, p1_2]
     "capsule_fractions": [0.00, 0.35, 0.25, 0.75, 0.60, 0.95],
+    
+    # ==================== DEBUG: CAPSULE DISPLAY ====================
+    # Mostra solo la capsula N-esima durante il debug:
+    #   -1 = tutte le capsule (NORMALE)
+    #    0 = solo capsula 0: link0  → joint1 (base → shoulder)
+    #    1 = solo capsula 1: joint1 → joint2
+    #    2 = solo capsula 2: joint2 → joint3
+    #    3 = solo capsula 3: joint3 → joint4
+    #    4 = solo capsula 4: joint4 → joint5
+    #    5 = solo capsula 5: joint5 → joint6
+    #    6 = solo capsula 6: joint6 → joint7
+    #    7 = solo capsula 7: joint7 → link8 (flange → end-effector)
+    # 
+    # PER DEBUGGARE: cambia questo numero, salva, rilancia il launch file
+    "debug_capsule_index": 7,  # ← CAMBIA QUI (0..7 per debug, -1 per normale)
+    # ================================================================
 
     # Distance model knobs
     "box_projection_iters": 8,
@@ -148,6 +164,7 @@ class NullSpaceAvoidanceParams:
     # Geometry
     capsule_radii: List[float]
     capsule_fractions: List[float]
+    debug_capsule_index: int
 
     # Distance model
     box_projection_iters: int
@@ -249,6 +266,7 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
 
     capsule_radii = p_list_float("capsule_radii")
     capsule_fractions = p_list_float("capsule_fractions")
+    debug_capsule_index = p_int("debug_capsule_index")
 
     box_projection_iters = p_int("box_projection_iters")
     repulsion_spread_enable = p_bool("repulsion_spread_enable")
@@ -385,6 +403,7 @@ def load_controller_params(node: Any) -> NullSpaceAvoidanceParams:
         excluded=list(excluded),
         capsule_radii=list(capsule_radii),
         capsule_fractions=list(capsule_fractions),
+        debug_capsule_index=int(debug_capsule_index),
         box_projection_iters=int(box_projection_iters),
         repulsion_spread_enable=bool(repulsion_spread_enable),
         repulsion_spread_samples=int(repulsion_spread_samples),

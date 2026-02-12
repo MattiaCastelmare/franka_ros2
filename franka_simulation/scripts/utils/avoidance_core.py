@@ -39,30 +39,75 @@ def iter_world_capsule_segments(
     capsules: Dict[str, List[dict]],
     frame_ids: Dict[str, int],
     data: Any,
+    debug_capsule_index: int = -1,
 ) -> List[dict]:
-    """Build capsule segments (p0/p1 in world) used for ground/self-collision checks.
-
-    IMPORTANT: order is kept identical to the controller's iteration order to avoid
-    changing marker IDs and the ordering of debug distance markers.
+    """Build capsule segments (p0/p1 in world) for joint-to-joint capsules.
+    
+    Now uses direct joint/frame positions from Pinocchio instead of local coordinates.
+    Applies geometry modifications for capsules 2, 4, 5 based on exact link lengths.
+    
+    IMPORTANT: order is kept identical to maintain stable marker IDs.
     """
     segments: List[dict] = []
-    link_to_index = {f"fr3_link{i}": i for i in range(1, 9)}
+    prev_capsule_end: Optional[np.ndarray] = None  # For cap5 start point
 
-    for parent in capsules:
-        fid = int(frame_ids[parent])
-        link_idx = int(link_to_index.get(parent, 0))
-
-        for caps in capsules[parent]:
-            oMp = data.oMf[fid]
-            p0 = oMp.translation + oMp.rotation @ caps["p0"]
-            p1 = oMp.translation + oMp.rotation @ caps["p1"]
+    for idx, capsule_name in enumerate(sorted(capsules.keys())):
+        capsule_list = capsules[capsule_name]
+        
+        for caps in capsule_list:
+            # Extract positions based on type
+            start_id = int(caps["start_id"])
+            end_id = int(caps["end_id"])
+            start_type = str(caps["start_type"])
+            end_type = str(caps["end_type"])
+            link_idx = int(caps.get("link_idx", 0))
+            
+            # Get p0 (start point)
+            # Special case: cap5 uses the previous capsule's endpoint
+            if caps.get("use_prev_capsule_end", False) and prev_capsule_end is not None:
+                p0 = prev_capsule_end
+            elif start_type == "joint":
+                p0 = data.oMi[start_id].translation
+            elif start_type == "frame":
+                p0 = data.oMf[start_id].translation
+            else:
+                raise ValueError(f"Unknown start_type: {start_type}")
+            
+            # Get p1 (end point)
+            if end_type == "joint":
+                p1 = data.oMi[end_id].translation
+            elif end_type == "frame":
+                p1 = data.oMf[end_id].translation
+            else:
+                raise ValueError(f"Unknown end_type: {end_type}")
+            
+            # Convert to numpy arrays
+            p0 = np.array(p0, dtype=float).reshape(3)
+            p1 = np.array(p1, dtype=float).reshape(3)
+            
+            # Apply shortening if target_length is specified (cap2, cap4)
+            if "target_length" in caps:
+                target_len = float(caps["target_length"])
+                direction = p1 - p0
+                current_len = float(np.linalg.norm(direction))
+                if current_len > 1e-6:  # avoid division by zero
+                    direction_normalized = direction / current_len
+                    p1 = p0 + direction_normalized * target_len
+            
+            # Store endpoint for next capsule (needed for cap5)
+            prev_capsule_end = p1.copy()
+            
+            # Apply debug filter AFTER computing prev_capsule_end
+            if debug_capsule_index >= 0 and idx != debug_capsule_index:
+                continue
+            
             segments.append(
                 {
-                    "parent": parent,
-                    "fid": fid,
+                    "parent": capsule_name,
+                    "fid": start_id,  # kept for compatibility
                     "link_idx": link_idx,
-                    "p0": np.array(p0, dtype=float).reshape(3),
-                    "p1": np.array(p1, dtype=float).reshape(3),
+                    "p0": p0,
+                    "p1": p1,
                     "radius": float(caps["radius"]),
                 }
             )
