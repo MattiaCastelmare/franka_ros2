@@ -454,6 +454,71 @@ def point_jacobian_world(
     return Jv - (skew(r) @ Jw)
 
 
+def compute_closest_constraint_jacobian(
+    closest_candidate: Optional[dict],
+    model: Any,
+    data: Any,
+    q: np.ndarray,
+    n_dof: int = 7,
+) -> np.ndarray:
+    """Compute the distance Jacobian row for the closest constraint.
+    
+    Args:
+        closest_candidate: Candidate dict with 'kind', 'fid', 'p', 'n' (external/ground)
+                          or 'fid_i', 'fid_j', 'p_i', 'p_j', 'n' (self-collision).
+        model: Pinocchio model.
+        data: Pinocchio data (must have computed FK).
+        q: Joint configuration.
+        n_dof: Number of degrees of freedom (default 7).
+    
+    Returns:
+        Jacobian row (n_dof,) where d_dot ≈ j_row @ qdot.
+        Returns zeros if computation fails.
+    """
+    j_row = np.zeros(n_dof, dtype=float)
+    
+    if closest_candidate is None:
+        return j_row
+    
+    kind = str(closest_candidate.get("kind", "")).strip()
+    
+    try:
+        if kind in ("external", "ground"):
+            fid = int(closest_candidate.get("fid", -1))
+            p = np.array(closest_candidate.get("p", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+            n = np.array(closest_candidate.get("n", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+            
+            if fid >= 0:
+                n_norm = float(np.linalg.norm(n))
+                if n_norm > 1e-9:
+                    n_unit = n / n_norm
+                    Jp = point_jacobian_world(model, data, q, fid, p)
+                    j_vec = (n_unit.reshape(1, 3) @ Jp).reshape(-1)
+                    if j_vec.shape[0] == n_dof and np.all(np.isfinite(j_vec)):
+                        j_row = j_vec
+        
+        elif kind == "self":
+            fid_i = int(closest_candidate.get("fid_i", -1))
+            fid_j = int(closest_candidate.get("fid_j", -1))
+            p_i = np.array(closest_candidate.get("p_i", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+            p_j = np.array(closest_candidate.get("p_j", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+            n = np.array(closest_candidate.get("n", [0.0, 0.0, 0.0]), dtype=float).reshape(3)
+            
+            n_norm = float(np.linalg.norm(n))
+            if fid_i >= 0 and fid_j >= 0 and n_norm > 1e-9:
+                n_unit = n / n_norm
+                J_i = point_jacobian_world(model, data, q, fid_i, p_i)
+                J_j = point_jacobian_world(model, data, q, fid_j, p_j)
+                j_vec = (n_unit.reshape(1, 3) @ (J_i - J_j)).reshape(-1)
+                if j_vec.shape[0] == n_dof and np.all(np.isfinite(j_vec)):
+                    j_row = j_vec
+    
+    except Exception:
+        pass
+    
+    return j_row
+
+
 def build_reduced_pinocchio_model_from_urdf(
     urdf_xml: str,
     *,
@@ -792,128 +857,9 @@ def ramp_smooth(d: float, d_hi: float, d_lo: float) -> float:
     return smoothstep01(x)
 
 
-def staged_risk_weight(
-    d: float,
-    d_far: float = 0.30,
-    d_mid: float = 0.20,
-    d_near: float = 0.10,
-    d_stop: float = 0.05,
-) -> float:
-    """Distance-based risk weight w(d) in [0,1] with staged ramps.
-
-    Mapping:
-      d >= d_far            -> w = 0
-      d_far..d_mid          -> w ramps 0 .. 0.25
-      d_mid..d_near         -> w ramps 0.25 .. 0.75
-      d_near..d_stop        -> w ramps 0.75 .. 1.0
-      d <= d_stop           -> w = 1
-    """
-    d = float(d)
-    d_far = float(d_far)
-    d_mid = float(d_mid)
-    d_near = float(d_near)
-    d_stop = float(d_stop)
-
-    # enforce monotonic thresholds (best-effort)
-    d_far = max(d_far, d_mid + 1e-9)
-    d_mid = max(d_mid, d_near + 1e-9)
-    d_near = max(d_near, d_stop + 1e-9)
-    d_stop = max(0.0, d_stop)
-
-    if d >= d_far:
-        return 0.0
-    if d <= d_stop:
-        return 1.0
-
-    if d > d_mid:
-        x = ramp_smooth(d, d_far, d_mid)
-        return 0.25 * x
-    if d > d_near:
-        x = ramp_smooth(d, d_mid, d_near)
-        return 0.25 + 0.50 * x
-    x = ramp_smooth(d, d_near, d_stop)
-    return 0.75 + 0.25 * x
-
-
-def alpha_from_distance(
-    d: float,
-    *,
-    alpha_min: float,
-    alpha_max: float,
-    d_far: float,
-    d_mid: float,
-    d_near: float,
-    d_stop: float,
-) -> float:
-    """Risk-scaled CBF alpha(d) = lerp(alpha_min, alpha_max, w(d))."""
-    w = staged_risk_weight(float(d), d_far=float(d_far), d_mid=float(d_mid), d_near=float(d_near), d_stop=float(d_stop))
-    a0 = float(alpha_min)
-    a1 = float(alpha_max)
-    return float(a0 + w * (a1 - a0))
-
-
-def qp_gamma_from_distance(
-    d: float,
-    *,
-    gamma_min: float,
-    gamma_max: float,
-    d_far: float,
-    d_mid: float,
-    d_near: float,
-    d_stop: float,
-) -> float:
-    """Risk-scaled QP damping gamma(d) = lerp(gamma_min, gamma_max, w(d))."""
-    w = staged_risk_weight(float(d), d_far=float(d_far), d_mid=float(d_mid), d_near=float(d_near), d_stop=float(d_stop))
-    g0 = float(gamma_min)
-    g1 = float(gamma_max)
-    return float(g0 + w * (g1 - g0))
-
-
-def beta_lpf_from_distance(
-    d: float,
-    *,
-    beta_far: float,
-    beta_near: float,
-    d_far: float,
-    d_mid: float,
-    d_near: float,
-    d_stop: float,
-) -> float:
-    """Risk-scaled output LPF coefficient beta in [0,1]."""
-    w = staged_risk_weight(float(d), d_far=float(d_far), d_mid=float(d_mid), d_near=float(d_near), d_stop=float(d_stop))
-    b = float(beta_far) + float(w) * (float(beta_near) - float(beta_far))
-    return float(np.clip(b, 0.0, 1.0))
-
-
-def posture_reference(
-    posture_reference_param: Any,
-    *,
-    model: Any,
-) -> Optional[np.ndarray]:
-    """Return a 7D posture reference (radians) if available.
-
-    Behaviour matches the controller's previous `_posture_reference`:
-    - if `posture_reference_param` is a list of 7 values, use it
-    - else try Pinocchio neutral(model) and take first 7 values
-    - else return None
-    """
-    try:
-        if isinstance(posture_reference_param, list) and len(posture_reference_param) == 7:
-            return np.array([float(x) for x in posture_reference_param], dtype=float).reshape(7)
-    except Exception:
-        pass
-
-    try:
-        import pinocchio as pin  # type: ignore
-
-        q0 = pin.neutral(model)
-        q0 = np.array(q0, dtype=float).reshape(-1)
-        if q0.shape[0] >= 7:
-            return q0[:7].copy()
-    except Exception:
-        pass
-
-    return None
+# Legacy velocity avoidance functions removed (staged_risk_weight, alpha_from_distance,
+# qp_gamma_from_distance, beta_lpf_from_distance, posture_reference).
+# Distance-only controller does not compute velocities.
 
 
 def distance_capsule_to_collision_object_boxes(
@@ -1016,291 +962,8 @@ def distance_capsule_to_collision_object_boxes(
     return float(best_d), best_dir, best_p_seg, best_p_box, best_samples
 
 
-def build_cbf_constraints(
-    candidates: list[dict],
-    active_threshold: float,
-    *,
-    K: int,
-    cbf_eps: float,
-    cbf_d_safe: float,
-    approach_speed_limit: float,
-    # risk-scaled alpha
-    alpha_min: float,
-    alpha_max: float,
-    risk_d_far: float,
-    risk_d_mid: float,
-    risk_d_near: float,
-    stop_distance: float,
-    # pinocchio
-    model: Any,
-    data: Any,
-    q: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int, Optional[dict]]:
-    """Build top-K CBF constraints from hazard candidates.
-
-    This matches the controller's former `compute_constraints` method.
-    """
-    K = max(0, int(K))
-    G = np.zeros((K, 7), dtype=float)
-    b = np.full((K,), -1e9, dtype=float)  # inactive constraints
-    if K == 0:
-        return G, b, 0, None
-
-    act = [c for c in candidates if float(c.get("d", 1e9)) <= float(active_threshold)]
-    act.sort(key=lambda x: float(x.get("d", 1e9)))
-
-    m_active = min(K, len(act))
-    active_best = act[0] if m_active > 0 else None
-
-    eps = float(cbf_eps)
-    for i in range(m_active):
-        c = act[i]
-        d = float(c["d"])
-        kind = str(c.get("kind", ""))
-        v_obs_proj = 0.0
-
-        if kind in ("external", "ground"):
-            fid = int(c["fid"])
-            p = np.array(c["p"], dtype=float).reshape(3)
-            n = np.array(c["n"], dtype=float).reshape(3)
-            n = n / (float(np.linalg.norm(n)) + eps)
-            Jp = point_jacobian_world(model, data, q, fid, p)
-            g = (n.reshape(1, 3) @ Jp).reshape(-1)
-        elif kind == "self":
-            fid_i = int(c["fid_i"])
-            fid_j = int(c["fid_j"])
-            p_i = np.array(c["p_i"], dtype=float).reshape(3)
-            p_j = np.array(c["p_j"], dtype=float).reshape(3)
-            n = np.array(c["n"], dtype=float).reshape(3)
-            n = n / (float(np.linalg.norm(n)) + eps)
-            J_i = point_jacobian_world(model, data, q, fid_i, p_i)
-            J_j = point_jacobian_world(model, data, q, fid_j, p_j)
-            g = (n.reshape(1, 3) @ (J_i - J_j)).reshape(-1)
-        else:
-            continue
-
-        alpha_i = alpha_from_distance(
-            d,
-            alpha_min=float(alpha_min),
-            alpha_max=float(alpha_max),
-            d_far=float(risk_d_far),
-            d_mid=float(risk_d_mid),
-            d_near=float(risk_d_near),
-            d_stop=float(stop_distance),
-        )
-
-        bi = float(v_obs_proj - float(alpha_i) * (d - float(cbf_d_safe)))
-        v_lim = float(approach_speed_limit)
-        if v_lim > 0.0:
-            bi = max(bi, -v_lim)
-
-        G[i, :] = g
-        b[i] = bi
-
-    return G, b, m_active, active_best
-
-
-class OsqpCbfQpSolver:
-    """OSQP-based QP solver for the CBF safety filter.
-
-    This wraps the controller's former `_init_osqp_solver` + `solve_qp_safety_filter`.
-    All heavy deps are imported lazily.
-    """
-
-    def __init__(
-        self,
-        *,
-        K: int,
-        W_diag: np.ndarray,
-        lambda_reg: float,
-        rho_slack: float,
-        max_abs_vel: float,
-        max_iter: int = 100,
-    ):
-        self.K = int(K)
-        self.W_diag = np.array(W_diag, dtype=float).reshape(-1)
-        self.lambda_reg = float(lambda_reg)
-        self.rho_slack = float(rho_slack)
-        self.max_abs_vel = float(max_abs_vel)
-        self.max_iter = int(max_iter)
-
-        self.available = False
-        self.init_status = "disabled"
-
-        self._sp = None
-        self._osqp_mod = None
-        self._solver = None
-
-        self._A_data_template = None
-        self._A_data_work = None
-        self._A_g_slices = None
-        self._qp_q_work = None
-        self._qp_l_work = None
-        self._P_data_template = None
-        self._P_data_work = None
-
-        if self.K <= 0:
-            self.available = False
-            self.init_status = "disabled"
-            return
-
-        try:
-            import osqp  # type: ignore
-            import scipy.sparse as sp  # type: ignore
-
-            self._sp = sp
-            self._osqp_mod = osqp
-            self._init_solver()
-            self.available = True
-            self.init_status = "ready"
-        except Exception as e:
-            self.available = False
-            self._solver = None
-            self.init_status = f"no_osqp:{e.__class__.__name__}"
-
-    def _init_solver(self) -> None:
-        K = int(self.K)
-        if K <= 0:
-            return
-
-        sp = self._sp
-        osqp = self._osqp_mod
-        if sp is None or osqp is None:
-            raise RuntimeError("OSQP/Scipy not available")
-
-        n = 7 + K
-        m = (2 * K) + 7
-
-        P_diag = np.zeros(n, dtype=float)
-        P_diag[:7] = 2.0 * (np.maximum(self.W_diag, 1e-9) + float(self.lambda_reg))
-        P_diag[7:] = 2.0 * float(self.rho_slack)
-        P = sp.diags(P_diag, offsets=0, format="csc")
-
-        indptr = [0]
-        indices: list[int] = []
-        data: list[float] = []
-        self._A_g_slices = []
-
-        for j in range(7):
-            col_rows = list(range(0, K)) + [2 * K + j]
-            col_data = [0.0] * K + [1.0]
-            start = len(data)
-            indices.extend(col_rows)
-            data.extend(col_data)
-            end = start + K
-            self._A_g_slices.append((start, end))
-            indptr.append(len(data))
-
-        for k in range(K):
-            col_rows = [k, K + k]
-            col_data = [1.0, 1.0]
-            indices.extend(col_rows)
-            data.extend(col_data)
-            indptr.append(len(data))
-
-        A = sp.csc_matrix(
-            (
-                np.array(data, dtype=float),
-                np.array(indices, dtype=int),
-                np.array(indptr, dtype=int),
-            ),
-            shape=(m, n),
-        )
-
-        l = np.full(m, -np.inf, dtype=float)
-        u = np.full(m, +np.inf, dtype=float)
-        l[:K] = -1e9
-        l[K : 2 * K] = 0.0
-
-        qmin = -float(self.max_abs_vel)
-        qmax = +float(self.max_abs_vel)
-        l[2 * K : 2 * K + 7] = qmin
-        u[2 * K : 2 * K + 7] = qmax
-
-        q = np.zeros(n, dtype=float)
-        solver = osqp.OSQP()
-        solver.setup(
-            P=P,
-            q=q,
-            A=A,
-            l=l,
-            u=u,
-            warm_start=True,
-            verbose=False,
-            polish=False,
-            max_iter=int(self.max_iter),
-        )
-
-        self._solver = solver
-        self._A_data_template = A.data.copy()
-        self._A_data_work = A.data.copy()
-        self._P_data_template = P.data.copy()
-        self._P_data_work = P.data.copy()
-        self._qp_q_work = q.copy()
-        self._qp_l_work = l.copy()
-
-    def solve(
-        self,
-        qdot_nom: np.ndarray,
-        G: np.ndarray,
-        b: np.ndarray,
-        *,
-        gamma: float,
-        qdot_prev: np.ndarray,
-    ) -> Optional[tuple[np.ndarray, float, str]]:
-        if (not self.available) or (self._solver is None):
-            return None
-
-        K = int(self.K)
-        if K <= 0:
-            qn = np.array(qdot_nom, dtype=float).reshape(7)
-            return qn, 0.0, "no_constraints"
-
-        qdot_nom = np.array(qdot_nom, dtype=float).reshape(7)
-        qdot_prev = np.array(qdot_prev, dtype=float).reshape(7)
-        G = np.array(G, dtype=float)
-        b = np.array(b, dtype=float).reshape(-1)
-
-        gamma = float(max(0.0, gamma))
-
-        self._qp_q_work[:] = 0.0
-        self._qp_q_work[:7] = -2.0 * (np.maximum(self.W_diag, 1e-9) * qdot_nom + gamma * qdot_prev)
-
-        self._qp_l_work[:K] = b.reshape(-1)[:K]
-
-        self._A_data_work[:] = self._A_data_template
-        for j in range(7):
-            sl = self._A_g_slices[j]
-            self._A_data_work[sl[0] : sl[1]] = G[:, j]
-
-        if (self._P_data_template is not None) and (self._P_data_work is not None):
-            self._P_data_work[:] = self._P_data_template
-            self._P_data_work[:7] = self._P_data_template[:7] + (2.0 * gamma)
-
-        try:
-            if self._P_data_work is not None:
-                self._solver.update(
-                    Px=self._P_data_work,
-                    q=self._qp_q_work,
-                    l=self._qp_l_work,
-                    Ax=self._A_data_work,
-                )
-            else:
-                self._solver.update(q=self._qp_q_work, l=self._qp_l_work, Ax=self._A_data_work)
-            res = self._solver.solve()
-        except Exception:
-            return None
-
-        status = str(getattr(res.info, "status", ""))
-        status_ok = status.lower().startswith("solved")
-        if (not status_ok) or (res.x is None):
-            return None
-
-        x = np.array(res.x, dtype=float).reshape(-1)
-        qdot = x[:7]
-        slack = x[7 : 7 + K] if x.shape[0] >= (7 + K) else np.zeros(K)
-        slack_max = float(np.max(slack)) if slack.size > 0 else 0.0
-        return qdot, slack_max, status
+# Legacy CBF constraint builder and OSQP QP solver removed.
+# Distance-only controller does not compute velocities or apply CBF safety filters.
 
 
 def make_capsule_markers(

@@ -1,146 +1,65 @@
-# Parametri per Online Avoidance Controller v3
-# =============================================
-# PRIORITÀ: EVITARE COLLISIONI
+# ========================================================================
+# MINIMAL AVOIDANCE CONTROLLER PARAMETERS (DISTANCE-ONLY MODE)
+# ========================================================================
+# This controller ONLY computes distances to obstacles and publishes:
+# - Minimum distance (raw and smoothed)
+# - Closest constraint Jacobian
+# - Closest hazard label
+# - Visualization markers
+#
+# NO velocity avoidance computation (placeholder qdot=0)
+# ========================================================================
 
 online_avoidance_controller:
   ros__parameters:
-    # Distanze critiche per l'avoidance
-    # Unico parametro master: raggio di influenza
-    influence_distance: 0.30   # m
-    safety_margin: 0.0         # m
-    distance_inflation: 0.0    # m (inflazione conservativa opzionale)
-    # Frequenza di controllo (alta per reattività)
+    # =====================
+    # CONTROL RATE
+    # =====================
     control_rate: 100.0  # Hz
+
+    # =====================
+    # EXTERNAL OBSTACLES
+    # =====================
+    influence_distance: 0.30  # [m] detection/tracking radius
     
-    # Distanze critiche per l'avoidance (ereditate sopra)
-    aggressive_distance: 0.05  # m - zona aggressiva disabilitata
-    
-    # Guadagni di controllo
-    # Obiettivo: evitare in modo chiaro (soprattutto < 20 cm) senza rendere il moto ingestibile.
-    # NOTE: se l'avoidance satura costantemente a max_joint_velocity, tende a cancellare il tracking
-    # e può creare deadlock. Riduciamo la saturazione e aumentiamo la componente tangenziale.
-    nullspace_gain: 0.15
-    tangential_gain: 0.4
-    aggressive_gain_scale: 2.5
-    max_joint_velocity: 0.25
-
-    # Capsule geometry (m)
-    # NOTE: ripristinati i raggi originali (i più grandi). Quelli piccoli anticipano falsi contatti
-    # e possono rendere l'avoidance troppo "timida" o incoerente sul WP1.
-    capsule_radii: [0.15, 0.12, 0.13]
-    capsule_fractions: [0.00, 0.35, 0.25, 0.75, 0.60, 0.95]
-
-    # Capsule↔OBB distance computation
-    box_projection_iters: 8
-    repulsion_spread_enable: false
-    repulsion_spread_samples: 5
-    repulsion_spread_half_length: 0.10
-
-    # ============================================
-    # EXTRA SAFETY: PAVIMENTO + AUTOCOLLISIONE
-    # (approssimazioni veloci: capsule-capsule e piano z=ground_z)
-    # ============================================
-    enable_ground_avoidance: false
-    ground_z: 0.10
-    ground_influence_distance: 0.15
-    ground_safety_margin: 0.05
-    ground_gain: 0.15
-
-    # Requested: disable self-collision check (keep large capsule radii for external obstacles).
-    enable_self_collision_avoidance: false
-    self_influence_distance: 0.12
-    self_safety_margin: 0.03
-    self_gain: 0.25
-    # NOTE: self-collision via coarse capsules can create false positives near HOME.
-    # Skipping more nearby links reduces constant self-repulsion and mid-way stalls.
-    self_skip_adjacent_links: 3
-    
-    # Ostacoli da escludere dalla collisione detection
     excluded_obstacles:
       - "ground_plane"
       - "ground"
       - "floor"
       - "plane"
 
-    # ============================================
-    # CBF / SAFETY FILTER (optional but supported)
-    # ============================================
-    # Barrier: h = d - d_safe
-    # Constraint (conceptually): d_dot >= -alpha * (d - d_safe)
-    d_safe: 0.08
-    d_buffer: 0.30
-    # 0.0 -> auto (1.1 * d_buffer)
-    d_buffer_out: 0.0
-    alpha: 5.0
-    max_constraints: 5
-    lambda_reg: 1.0e-6
-    rho_slack: 100.0
-    beta_lpf: 0.80
-    output_accel_limit: 0.0
-    approach_speed_limit: 0.0
-    use_qp: true
-    eps: 1.0e-9
-    qp_weight_diag: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-
-    # =====================================================
-    # ARCHITECTURE SWITCH (recommended)
-    # =====================================================
-    # To avoid double-safety conservatism (controller CBF/QP + blender d_dot/CBF),
-    # keep the controller NOMINAL and enforce safety ONLY in velocity_control_blender
-    # (which sees the FINAL command = tracking + avoidance).
-    controller_safety_filter_enable: false
-
-    # ============================================
-    # Staged risk zones (calculated from influence_distance):
-    #   risk_d_far = influence_distance
-    #   risk_d_mid = 2/3 * risk_d_far
-    #   risk_d_near = 1/3 * risk_d_far
-    # These are set in code, not fixed here.
-    stop_distance: 0.08
-    stop_release_distance: 0.12
-
-    # Risk-scaled alpha (defaults keep legacy behavior if min==max==alpha)
-    alpha_min: 5.0
-    alpha_max: 5.0
-
-    # QP damping (0 disables)
-    qp_damping_min: 0.1
-    qp_damping_max: 0.6
-
-    # Risk-scaled output LPF
-    beta_lpf_far: 0.30
-    beta_lpf_near: 0.15
-
-    # Filtering for published min distance (downstream blending/rviz)
-    min_distance_lpf: 0.50
-
-    # ============================================
-    # Robustness options
-    # ============================================
-    # Conservative distance for ALL safety decisions: d_eff = d_raw - distance_inflation
-    # (closest_constraint still publishes d_raw for coherent blender enforcement)
-    # Nota: valore condiviso via *avoidance_distances
-
-    # Reduce hazard switching in /avoidance/closest_hazard when distances are similar
-    hazard_hold_time_s: 0.20
-    hazard_switch_delta_m: 0.010
-
-    # Optional posture bias (OFF by default)
-    posture_bias_gain: 0.0
-    posture_reference: []
+    # =====================
+    # CAPSULE GEOMETRY
+    # =====================
+    # Radii for 3 capsule groups (8 total capsules: base, 6 joints, flange)
+    capsule_radii: [0.15, 0.12, 0.13]
     
-    # NOTE:
-    # In questo repo ci sono stati in passato parametri "legacy" (repulsive_gain, use_null_space, ecc.)
-    # che NON vengono letti dall'attuale online_avoidance_controller.
-    # Li rimuoviamo per evitare chiavi duplicate (es. tangential_gain) che in YAML possono sovrascriversi.
+    # Fractions along joint segments: [p0_0, p1_0, p0_1, p1_1, p0_2, p1_2]
+    capsule_fractions: [0.00, 0.35, 0.25, 0.75, 0.60, 0.95]
+    
+    # Debug: show only capsule N (-1 = all)
+    #   -1 = all capsules (NORMAL)
+    #    0 = base → joint1
+    #    1 = joint1 → joint2
+    #    2 = joint2 → joint3
+    #    3 = joint3 → joint4
+    #    4 = joint4 → joint5
+    #    5 = joint5 → joint6
+    #    6 = joint6 → joint7
+    #    7 = joint7 → flange
+    debug_capsule_index: -1
 
- # Parametri condivisi anche per il velocity blender (solo distanze/inflaction)
-velocity_control_blender:
-  ros__parameters:
-    # Unica fonte per le distanze di influenza del blender (allineata al controller)
-    influence_distance: 0.30
-    safety_margin: 0.1
-    distance_inflation: 0.1
-    # risk_d_far, risk_d_mid, risk_d_near are inherited/calculated from influence_distance (see above)
-    stop_distance: 0.08
-    stop_release_distance: 0.12
+    # =====================
+    # DISTANCE COMPUTATION
+    # =====================
+    box_projection_iters: 8
+    
+    # Multi-point repulsion spread (sample multiple points along capsule segment)
+    repulsion_spread_enable: true
+    repulsion_spread_samples: 5        # odd number recommended
+    repulsion_spread_half_length: 0.10  # [m]
+
+    # =====================
+    # VISUALIZATION
+    # =====================
+    distance_inflation: 0.0  # [m] conservative offset for display

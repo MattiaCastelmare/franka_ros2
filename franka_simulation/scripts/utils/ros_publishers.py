@@ -70,3 +70,57 @@ def publish_not_ready_outputs(*, pubs: PublishersBundle) -> None:
         pubs.hazard_pub.publish(msg)
     except Exception:
         pass
+
+
+def publish_minimal_avoidance_outputs(
+    *,
+    pubs: PublishersBundle,
+    qdot: Any,
+    d_min_raw: float,
+    closest_j_row: Any,
+    closest_label: str,
+) -> None:
+    """Publish standard minimal avoidance outputs.
+    
+    This consolidates all repetitive publishing in the minimal (avoidance-only) controller.
+    
+    Args:
+        pubs: PublishersBundle with all publishers.
+        qdot: Joint velocity command (n_dof,).
+        d_min_raw: Raw minimum distance [m].
+        closest_j_row: Distance Jacobian row for closest constraint (n_dof,).
+        closest_label: Human-readable hazard label.
+    """
+    import numpy as np
+    
+    try:
+        qdot_arr = np.array(qdot, dtype=float).reshape(-1)
+        pubs.pub.publish(Float64MultiArray(data=qdot_arr.tolist()))
+    except Exception:
+        pass
+    
+    try:
+        pubs.min_dist_raw_pub.publish(Float64MultiArray(data=[float(d_min_raw)]))
+        pubs.min_dist_pub.publish(Float64MultiArray(data=[float(d_min_raw)]))
+    except Exception:
+        pass
+    
+    try:
+        j_row_arr = np.array(closest_j_row, dtype=float).reshape(-1)
+        closest_payload = [float(d_min_raw)] + j_row_arr.tolist()
+        pubs.closest_constraint_pub.publish(Float64MultiArray(data=closest_payload))
+        pubs.jac_pub.publish(Float64MultiArray(data=j_row_arr.tolist()))
+    except Exception:
+        pass
+    
+    try:
+        hazard_msg = String(data=str(closest_label))
+        pubs.hazard_pub.publish(hazard_msg)
+        pubs.closest_hazard_pub.publish(hazard_msg)
+    except Exception:
+        pass
+    
+    try:
+        pubs.constraints_pub.publish(Float64MultiArray(data=[0.0]))
+    except Exception:
+        pass

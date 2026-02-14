@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
+# ============================================================================
+# DISABLED: LEGACY FULL-VELOCITY AVOIDANCE CONTROLLER (WITH CBF/QP)
+# ============================================================================
+# This file is kept for reference but is NOT functional after removing
+# NullSpaceAvoidanceParams from utils/params.py.
+#
+# TODO: If you need the legacy velocity avoidance controller with CBF/QP,
+# restore the legacy params code or use a separate branch.
+# ============================================================================
 """
+ORIGINAL DESCRIPTION:
 ONLINE AVOIDANCE CONTROLLER — NULL SPACE VERSION
-===============================================
+================================================
 
 • Capsule-based distance estimation
 • Potential field used ONLY as direction metric
@@ -12,40 +22,11 @@ ONLINE AVOIDANCE CONTROLLER — NULL SPACE VERSION
 Author: Mattia (Null-space refactor)
 """
 
-import numpy as np
-from typing import List
-import time
-
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-
-from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray, String
-from visualization_msgs.msg import MarkerArray
-from moveit_msgs.msg import PlanningScene
-from trajectory_msgs.msg import JointTrajectory
-
-import pinocchio as pin
-
-# Controller decomposition (keeps this file high-level).
-from utils.avoidance_core import iter_world_capsule_segments, scan_external_and_ground, scan_self_collision
-from utils.cbf_filter import (
-    CbfFilterState,
-    apply_cbf_qp_safety_filter,
-    debug_throttled,
+raise RuntimeError(
+    "backup_online_avoidance_controller.py is DISABLED.\n"
+    "The legacy NullSpaceAvoidanceParams has been removed from utils/params.py.\n"
+    "Use online_avoidance_controller.py (distance-only mode) instead."
 )
-from utils.rviz_markers import build_marker_array
-
-# ROS-facing glue (service call + callback factories).
-from utils.ros_setup import (
-    init_pinocchio_and_capsules,
-    make_joint_state_callback,
-    make_planning_scene_callback,
-)
-
-# High-level-only refactor: params, logging and repetitive publishing live in utils.
-from utils.params import NullSpaceAvoidanceParams, load_controller_params, setup_optional_qp_solver
 from utils.logging import log_controller_config
 from utils.ros_publishers import PublishersBundle, publish_not_ready_outputs
 from utils.closest_constraint import publish_closest_constraint
@@ -62,7 +43,7 @@ from utils.avoidance_math import (
 )
 
 
-class NullSpaceAvoidance(Node):
+class AvoidanceController(Node):
 
     def __init__(self):
         super().__init__("online_avoidance_controller")
@@ -986,7 +967,7 @@ class NullSpaceAvoidance(Node):
 # ======================================================
 def main(args=None):
     rclpy.init(args=args)
-    node = NullSpaceAvoidance()
+    node = AvoidanceController()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
