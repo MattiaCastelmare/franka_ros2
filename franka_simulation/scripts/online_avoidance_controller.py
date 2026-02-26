@@ -22,8 +22,18 @@ from utils.avoidance_core import (
     iter_world_capsule_segments,
     scan_external,
 )
-from utils.avoidance_math import compute_closest_constraint_jacobian
-from utils.closest_constraint import select_closest_candidate, format_closest_label
+from utils.avoidance_math import (
+    compute_closest_constraint_jacobian,
+    solve_cbf_qp_1constraint_box,
+    pocs_project_halfspaces_with_box,
+    check_all_halfspaces_feasible,
+    capsule_risk_weight,
+)
+from utils.closest_constraint import (
+    select_closest_candidate,
+    select_closest_candidate_risk_weighted,
+    format_closest_label,
+)
 from utils.logging import log_capsule_distances_throttled
 from utils.params import AvoidanceControllerParams, load_avoidance_controller_params
 from utils.rviz_markers import build_marker_array
@@ -116,7 +126,10 @@ class AvoidanceController(Node):
         self.create_timer(1.0 / float(self.params.rate), self._control_loop)
         self.create_timer(0.1, self._publish_markers_only)
 
-        self.get_logger().info("🟢 Null-Space Avoidance Controller READY (minimal mode)")
+        self.get_logger().info(
+            f"🟢 Avoidance Controller READY (CBF-QP mode: "
+            f"d_safe={self.params.d_safe}, k_alpha={self.params.k_alpha}, "
+            f"k_rep={self.params.k_rep}, max_vel={self.params.max_joint_vel})")
 
     def _control_loop(self):
         now_wall = float(time.time())
@@ -133,6 +146,7 @@ class AvoidanceController(Node):
             frame_ids=self.frame_ids,
             data=self.data,
             debug_capsule_index=int(self.params.debug_capsule_index),
+            min_capsule_index=int(self.params.min_capsule_index_for_distance),
         )
 
         (
@@ -160,8 +174,15 @@ class AvoidanceController(Node):
         if isinstance(external_best, dict):
             best_candidates.extend(list(external_best.values()))
 
-        # A) Select closest candidate
-        closest_candidate, closest_distance, d_min_raw = select_closest_candidate(best_candidates)
+        # A) Select closest candidate (risk-weighted)
+        closest_candidate, d_min_raw, risk_score, cap_weight = \
+            select_closest_candidate_risk_weighted(
+                best_candidates,
+                weight_last2=float(self.params.capsule_weight_last2),
+                weight_last3=float(self.params.capsule_weight_last3),
+                weight_default=float(self.params.capsule_weight_default),
+                use_risk_scoring=bool(self.params.risk_selection_enable),
+            )
 
         # B) Format closest label
         closest_label = format_closest_label(closest_candidate)
@@ -178,10 +199,114 @@ class AvoidanceController(Node):
         # D) Count active candidates (external obstacles only)
         active_candidates = list(external_candidates)
         active_count = len(active_candidates)
-        
+
         d_for_log = d_min_raw if np.isfinite(d_min_raw) else 999.0
-        
-        # F) Throttled logging of capsule-obstacle distances (every 0.5s)
+
+        # ============================================================
+        # E) Multi-constraint CBF-QP velocity avoidance
+        # ============================================================
+        # Build one CBF constraint per active candidate (capsule >= 3
+        # is already enforced by iter_world_capsule_segments).
+        #
+        # For each candidate i:
+        #   h_i = d_i - d_safe_eff_i        (risk-weighted barrier)
+        #   a_i = J_{d_i}                   (distance Jacobian row)
+        #   constraint: a_i @ qdot >= -k_alpha * h_i
+        #
+        # Nominal repulsive velocity = sum of per-capsule contributions.
+        # Projection via POCS (pocs_project_halfspaces_with_box).
+        # ============================================================
+        qdot_cmd = np.zeros(self.n_dof, dtype=float)
+        cbf_active = False
+        cbf_feasible = True
+        n_constraints = 0
+
+        k_alpha = float(self.params.k_alpha)
+        k_rep = float(self.params.k_rep)
+        max_vel = float(self.params.max_joint_vel)
+        infl_base = float(self.params.influence_distance)
+        d_safe_base = float(self.params.d_safe)
+        scale_infl = bool(self.params.capsule_influence_scale_enable)
+
+        G_rows: List[np.ndarray] = []
+        b_vals: List[float] = []
+        qdot_nom = np.zeros(self.n_dof, dtype=float)
+
+        for cand in active_candidates:
+            d_i = float(cand.get("d", float("inf")))
+            if not (np.isfinite(d_i) and d_i < 900.0):
+                continue
+
+            cap_idx_i = int(cand.get("capsule_idx", -1))
+            # Guard: only capsules >= 3 (should already be filtered)
+            if cap_idx_i < 3:
+                continue
+
+            j_row_i = compute_closest_constraint_jacobian(
+                cand, self.model, self.data, self.q, n_dof=self.n_dof,
+            )
+            j_norm_i = float(np.linalg.norm(j_row_i))
+            if j_norm_i < 1e-9:
+                continue
+
+            # Per-capsule risk weight
+            # last_idx is computed from the full set of active candidates
+            last_cap = max(
+                (int(c.get("capsule_idx", -1)) for c in active_candidates),
+                default=7,
+            )
+            w_i = capsule_risk_weight(
+                cap_idx_i, last_cap,
+                weight_last2=float(self.params.capsule_weight_last2),
+                weight_last3=float(self.params.capsule_weight_last3),
+                weight_default=float(self.params.capsule_weight_default),
+            )
+
+            d_safe_i = d_safe_base * w_i
+            infl_i = (infl_base * w_i) if scale_infl else infl_base
+
+            if d_i >= infl_i:
+                continue  # outside this capsule's influence zone
+
+            # CBF constraint row
+            h_i = d_i - d_safe_i
+            b_i = -k_alpha * h_i
+            G_rows.append(j_row_i.copy())
+            b_vals.append(b_i)
+
+            # Nominal repulsive contribution
+            s_i = float(np.clip((infl_i - d_i) / infl_i, 0.0, 1.0))
+            qdot_nom += k_rep * s_i * (j_row_i / j_norm_i)
+
+        n_constraints = len(G_rows)
+
+        if n_constraints > 0:
+            cbf_active = True
+
+            # Clip nominal to box
+            qdot_nom = np.clip(qdot_nom, -max_vel, +max_vel)
+
+            # Assemble constraint matrix
+            G = np.array(G_rows, dtype=float)       # (M, 7)
+            b_vec = np.array(b_vals, dtype=float)    # (M,)
+
+            # Multi-halfspace + box projection (POCS)
+            qdot_cmd = pocs_project_halfspaces_with_box(
+                qdot_nom=qdot_nom,
+                G=G,
+                b=b_vec,
+                max_abs_vel=max_vel,
+                iters=5,
+                eps=1e-9,
+            )
+
+            cbf_feasible = check_all_halfspaces_feasible(
+                qdot_cmd, G, b_vec, tol=1e-4,
+            )
+
+        # ============================================================
+        # F) Throttled logging
+        # ============================================================
         self._distance_log_last_wall = log_capsule_distances_throttled(
             distances_data=dist_ext_ground,
             obstacles=self.obstacles,
@@ -193,15 +318,20 @@ class AvoidanceController(Node):
         
         if (now_wall - float(self._scene_log_last_wall)) >= 0.5:
             self._scene_log_last_wall = now_wall
+            qdot_norm = float(np.linalg.norm(qdot_cmd))
+            cap_idx_log = int(closest_candidate.get("capsule_idx", -1)) if closest_candidate else -1
             self.get_logger().info(
-                f"[SCENE-MIN] obs={len(self.obstacles)} active={active_count} closest='{closest_label}' d_min={d_for_log:.3f}"
+                f"[SCENE-MIN] obs={len(self.obstacles)} active={active_count} "
+                f"closest='{closest_label}' cap={cap_idx_log} w={cap_weight:.1f} "
+                f"d_min={d_for_log:.3f} score={risk_score:.3f} "
+                f"M={n_constraints} cbf={'ON' if cbf_active else 'off'} "
+                f"feasible={cbf_feasible} |qdot|={qdot_norm:.4f}"
             )
 
-        # E) Publish all outputs via consolidated helper
-        qdot_zeros = np.zeros(self.n_dof, dtype=float)
+        # G) Publish all outputs via consolidated helper
         publish_minimal_avoidance_outputs(
             pubs=self._pubs,
-            qdot=qdot_zeros,
+            qdot=qdot_cmd,
             d_min_raw=d_min_raw,
             closest_j_row=closest_j_row,
             closest_label=closest_label,

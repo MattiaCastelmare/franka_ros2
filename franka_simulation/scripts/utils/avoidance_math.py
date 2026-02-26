@@ -1,3 +1,4 @@
+
 """Utilities shared by avoidance-related scripts.
 
 Design goals
@@ -344,6 +345,211 @@ def enforce_halfspace_with_box(
         ok = False
 
     return qdot, ok
+
+
+def check_halfspace_feasible(
+    qdot: np.ndarray,
+    a_row: np.ndarray,
+    b_scalar: float,
+    tol: float = 1e-6,
+) -> bool:
+    """Verify that a joint velocity satisfies the CBF half-space constraint.
+
+    Checks:  a_row @ qdot >= b_scalar - tol
+
+    This is the post-solver verification for the CBF safety filter.
+    When this returns True the barrier constraint  J_d · q̇ ≥ −α(h)  holds
+    within numerical tolerance.
+    """
+    q = np.array(qdot, dtype=float).reshape(-1)
+    a = np.array(a_row, dtype=float).reshape(-1)
+    if q.shape[0] != a.shape[0]:
+        return False
+    return float(a @ q) >= float(b_scalar) - float(tol)
+
+
+def check_all_halfspaces_feasible(
+    qdot: np.ndarray,
+    G: np.ndarray,
+    b: np.ndarray,
+    tol: float = 1e-6,
+) -> bool:
+    """Verify that *qdot* satisfies **all** CBF half-space constraints.
+
+    Checks:  G[i] @ qdot >= b[i] - tol   for every row i.
+
+    Returns True only when every single constraint is met within tolerance.
+    If G is empty (no constraints) the result is trivially True.
+    """
+    q = np.array(qdot, dtype=float).reshape(-1)
+    G = np.array(G, dtype=float)
+    b = np.array(b, dtype=float).reshape(-1)
+    if G.size == 0 or G.ndim != 2:
+        return True
+    M = int(G.shape[0])
+    for i in range(M):
+        if float(G[i] @ q) < float(b[i]) - float(tol):
+            return False
+    return True
+
+
+def capsule_risk_weight(
+    cap_idx: int,
+    last_idx: int,
+    *,
+    weight_last2: float = 2.0,
+    weight_last3: float = 1.5,
+    weight_default: float = 1.0,
+) -> float:
+    """Risk weight for a capsule based on proximity to end-effector.
+
+    End-effector capsules are more "dangerous" and should maintain a larger
+    safety distance.  This function maps a capsule index to a scalar weight
+    that amplifies ``d_safe`` and (optionally) ``influence_distance``.
+
+    Weight tiers (counted from the end)::
+
+        last 2  (cap_idx >= last_idx - 1) → weight_last2   (default 2.0)
+        last 3  (cap_idx == last_idx - 2) → weight_last3   (default 1.5)
+        others                            → weight_default  (default 1.0)
+
+    Args:
+      cap_idx:  capsule index (0-based, e.g. 0..7 for FR3).
+      last_idx: maximum capsule index among active capsules.
+      weight_last2/last3/default: per-tier multipliers.
+
+    Returns:
+      Scalar weight  w ≥ weight_default.
+    """
+    if last_idx < 0 or cap_idx < 0:
+        return float(weight_default)
+    if cap_idx >= last_idx - 1:      # last 2 capsules
+        return float(weight_last2)
+    if cap_idx == last_idx - 2:      # 3rd from end
+        return float(weight_last3)
+    return float(weight_default)
+
+
+def solve_cbf_qp_1constraint_box(
+    qdot_des: np.ndarray,
+    a_row: np.ndarray,
+    b_scalar: float,
+    max_vel: float,
+    *,
+    iters: int = 6,
+    eps: float = 1e-4,
+) -> tuple[np.ndarray, bool]:
+    """CBF-QP safety filter: 1 linear constraint + symmetric box bounds.
+
+    Solves:
+
+      min  ‖q̇ − q̇_des‖²
+      s.t. a_row · q̇ ≥ b_scalar          (CBF constraint)
+           |q̇_i| ≤ max_vel   ∀ i         (joint velocity box)
+
+    Three-stage algorithm
+    ---------------------
+    1. **Alternating projection** (via :func:`enforce_halfspace_with_box`):
+       iterates half-space projection → box clip.  This finds a good
+       approximate solution near *q̇_des* but may fail when the box clip
+       after the last half-space projection re-introduces a small violation.
+
+    2. **Post-verification** (via :func:`check_halfspace_feasible`):
+       if the constraint is satisfied within tolerance, return immediately.
+
+    3. **Best-effort fallback** — when alternating projection could not
+       satisfy the constraint (box bounds conflict with the half-space),
+       compute the *maximum feasible growth rate* inside the box:
+
+           q̇_best_i = max_vel · sign(a_row_i)
+
+       This is the closed-form solution of:
+
+           argmax_{|q_i| ≤ v_max}  a_row · q
+
+       (each component independently maximises its contribution to d_dot).
+
+       • If a_row · q̇_best ≥ b_scalar → the problem *is* feasible and
+         q̇_best satisfies the CBF; return (q̇_best, True).
+       • Otherwise the constraint is **geometrically infeasible** inside the
+         box (the robot's velocity limits physically cannot produce a large
+         enough d_dot).  Return (q̇_best, False) — this is the safest
+         possible action: it maximises the distance growth rate even though
+         the hard CBF bound cannot be met.
+
+    Degenerate cases
+    ~~~~~~~~~~~~~~~~
+    • a_row ≈ 0 (‖a_row‖ < 1e-12):  the constraint is vacuous (or
+      numerically meaningless).  Return clip(q̇_des) as feasible.
+    • max_vel ≤ 0:  only q̇ = 0 is admissible.  Return zeros.
+
+    Args:
+      qdot_des: nominal (desired) joint velocity (N,).
+      a_row: constraint gradient row (N,), i.e. J_d.
+      b_scalar: constraint lower bound, i.e. −k_α · h.
+      max_vel: symmetric per-joint velocity bound [rad/s].
+      iters: alternating projection iterations (default 6).
+      eps: feasibility tolerance.
+
+    Returns:
+      (qdot_safe, feasible) — projected velocity and feasibility flag.
+      ``feasible`` is True **iff** a_row · qdot_safe ≥ b_scalar − eps.
+    """
+    q_des = np.array(qdot_des, dtype=float).reshape(-1)
+    a = np.array(a_row, dtype=float).reshape(-1)
+    b = float(b_scalar)
+    maxv = float(max_vel)
+    n = q_des.shape[0]
+
+    # --- Edge case: empty vector ---
+    if n == 0:
+        return q_des, True
+
+    # --- Edge case: zero velocity bound ---
+    if maxv <= 0.0:
+        return np.zeros(n, dtype=float), (b <= float(eps))
+
+    # --- Edge case: a_row numerically zero ---
+    #     The constraint  0 · q̇ ≥ b  is satisfied iff b ≤ 0 (vacuous).
+    #     No direction can influence d, so just clip the desired velocity.
+    a_norm2 = float(a @ a)
+    if a_norm2 < 1e-12:
+        return np.clip(q_des, -maxv, +maxv), (b <= float(eps))
+
+    # --- Stage 1: alternating projection (closest to qdot_des) ---
+    qdot_proj, ok_ap = enforce_halfspace_with_box(
+        qdot_des=q_des,
+        j_row=a,
+        d_dot_min=b,
+        max_abs_vel=maxv,
+        iters=int(iters),
+        eps=float(eps),
+    )
+
+    # --- Stage 2: rigorous post-verification ---
+    if check_halfspace_feasible(qdot_proj, a, b, tol=float(eps)):
+        return qdot_proj, True
+
+    # --- Stage 3: best-effort fallback ---
+    #
+    #   The alternating projection failed to reconcile the half-space with
+    #   the box.  This happens when the box clip after the last half-space
+    #   projection pushes the solution back outside the half-space.
+    #
+    #   Compute the point inside the box that maximises  a · q̇ :
+    #       q̇_best_i = max_vel · sign(a_i)
+    #   This is the LP vertex that gives the highest possible d_dot.
+    qdot_best = maxv * np.sign(a)
+
+    if check_halfspace_feasible(qdot_best, a, b, tol=float(eps)):
+        # The problem IS feasible — alternating projection just failed
+        # to find the solution close to qdot_des.  Return the LP vertex.
+        return qdot_best, True
+
+    # Geometrically infeasible: even the maximum-effort velocity cannot
+    # satisfy the CBF bound.  Return it anyway — it maximises the distance
+    # growth rate, which is the safest achievable action.
+    return qdot_best, False
 
 
 def pocs_project_halfspaces_with_box(

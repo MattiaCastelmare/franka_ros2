@@ -1,15 +1,14 @@
-"""Parameter declaration + loading for distance-only avoidance controller.
+"""Parameter declaration + loading for avoidance controller.
 
-This module provides ONLY the minimal parameter set for the distance-only
-avoidance controller (online_avoidance_controller.py).
+This module provides the parameter set for the avoidance controller
+(online_avoidance_controller.py).
 
 The controller computes:
 - Distances to external obstacles
 - Closest constraint Jacobian
 - Closest hazard label
 - Visualization markers
-
-NO velocity computation, NO CBF/QP, NO self-collision.
+- CBF-QP velocity avoidance (when obstacles are within influence distance)
 """
 
 from __future__ import annotations
@@ -41,6 +40,9 @@ DEFAULT_AVOIDANCE_CONTROLLER_PARAMS: Dict[str, Any] = {
     "capsule_fractions": [0.00, 0.35, 0.25, 0.75, 0.60, 0.95],
     "debug_capsule_index": -1,  # -1 = all capsules; 0-7 = single capsule debug
 
+    # Capsule distance filter
+    "min_capsule_index_for_distance": 3,  # only capsules >= this index contribute to distances/CBF
+
     # Distance computation tuning
     "box_projection_iters": 8,
     "repulsion_spread_enable": True,
@@ -49,15 +51,29 @@ DEFAULT_AVOIDANCE_CONTROLLER_PARAMS: Dict[str, Any] = {
 
     # Visualization
     "distance_inflation": 0.0,  # [m] conservative offset for display
+
+    # CBF velocity avoidance
+    "d_safe": 0.05,            # [m] safety margin (h = d - d_safe)
+    "k_alpha": 1.0,            # CBF class-K linear gain (alpha(h) = k_alpha * h)
+    "k_rep": 0.5,              # repulsion gain for nominal velocity
+    "max_joint_vel": 0.5,      # [rad/s] symmetric per-joint velocity bound
+
+    # Capsule risk weights (end-effector priority)
+    "capsule_weight_last2": 2.0,               # last 2 capsules (highest priority)
+    "capsule_weight_last3": 1.5,               # 3rd from end
+    "capsule_weight_default": 1.0,             # all other capsules
+    "capsule_influence_scale_enable": True,     # scale influence_distance by weight
+    "risk_selection_enable": True,              # select candidate by min(d/w)
 }
 
 
 @dataclass(frozen=True)
 class AvoidanceControllerParams:
-    """Parameter set for distance-only avoidance controller.
+    """Parameter set for avoidance controller with CBF-QP velocity generation.
     
-    Computes distances to obstacles but does NOT generate velocities.
-    Publishes: min distance, closest constraint Jacobian, hazard label, markers.
+    Computes distances to obstacles and generates repulsive joint velocities
+    via a Control Barrier Function (CBF) safety filter when obstacles are
+    within influence distance.
     """
     # Control
     rate: float
@@ -71,6 +87,9 @@ class AvoidanceControllerParams:
     capsule_fractions: List[float]
     debug_capsule_index: int
 
+    # Capsule distance filter
+    min_capsule_index_for_distance: int
+
     # Distance model
     box_projection_iters: int
     repulsion_spread_enable: bool
@@ -79,6 +98,19 @@ class AvoidanceControllerParams:
 
     # Visualization
     distance_inflation: float
+
+    # CBF velocity avoidance
+    d_safe: float
+    k_alpha: float
+    k_rep: float
+    max_joint_vel: float
+
+    # Capsule risk weights
+    capsule_weight_last2: float
+    capsule_weight_last3: float
+    capsule_weight_default: float
+    capsule_influence_scale_enable: bool
+    risk_selection_enable: bool
 
 
 def load_avoidance_controller_params(node: Any) -> AvoidanceControllerParams:
@@ -107,12 +139,25 @@ def load_avoidance_controller_params(node: Any) -> AvoidanceControllerParams:
     capsule_fractions = p_list_float("capsule_fractions")
     debug_capsule_index = p_int("debug_capsule_index")
 
+    min_capsule_index_for_distance = p_int("min_capsule_index_for_distance")
+
     box_projection_iters = p_int("box_projection_iters")
     repulsion_spread_enable = p_bool("repulsion_spread_enable")
     repulsion_spread_samples = p_int("repulsion_spread_samples")
     repulsion_spread_half_length = p_float("repulsion_spread_half_length")
 
     distance_inflation = p_float("distance_inflation")
+
+    d_safe = p_float("d_safe")
+    k_alpha = p_float("k_alpha")
+    k_rep = p_float("k_rep")
+    max_joint_vel = p_float("max_joint_vel")
+
+    capsule_weight_last2 = p_float("capsule_weight_last2")
+    capsule_weight_last3 = p_float("capsule_weight_last3")
+    capsule_weight_default = p_float("capsule_weight_default")
+    capsule_influence_scale_enable = p_bool("capsule_influence_scale_enable")
+    risk_selection_enable = p_bool("risk_selection_enable")
 
     return AvoidanceControllerParams(
         rate=float(rate),
@@ -121,9 +166,19 @@ def load_avoidance_controller_params(node: Any) -> AvoidanceControllerParams:
         capsule_radii=list(capsule_radii),
         capsule_fractions=list(capsule_fractions),
         debug_capsule_index=int(debug_capsule_index),
+        min_capsule_index_for_distance=int(min_capsule_index_for_distance),
         box_projection_iters=int(box_projection_iters),
         repulsion_spread_enable=bool(repulsion_spread_enable),
         repulsion_spread_samples=int(repulsion_spread_samples),
         repulsion_spread_half_length=float(repulsion_spread_half_length),
         distance_inflation=float(distance_inflation),
+        d_safe=float(d_safe),
+        k_alpha=float(k_alpha),
+        k_rep=float(k_rep),
+        max_joint_vel=float(max_joint_vel),
+        capsule_weight_last2=float(capsule_weight_last2),
+        capsule_weight_last3=float(capsule_weight_last3),
+        capsule_weight_default=float(capsule_weight_default),
+        capsule_influence_scale_enable=bool(capsule_influence_scale_enable),
+        risk_selection_enable=bool(risk_selection_enable),
     )

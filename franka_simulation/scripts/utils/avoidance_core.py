@@ -38,11 +38,17 @@ def iter_world_capsule_segments(
     frame_ids: Dict[str, int],
     data: Any,
     debug_capsule_index: int = -1,
+    min_capsule_index: int = 0,
 ) -> List[dict]:
     """Build capsule segments (p0/p1 in world) for joint-to-joint capsules.
     
     Now uses direct joint/frame positions from Pinocchio instead of local coordinates.
     Applies geometry modifications for capsules 2, 4, 5 based on exact link lengths.
+    
+    Args:
+      min_capsule_index: only include capsules with idx >= this value in the
+          returned list.  Geometry for skipped capsules is still computed so
+          that chain-dependent capsules (e.g. cap5) remain correct.
     
     IMPORTANT: order is kept identical to maintain stable marker IDs.
     """
@@ -94,6 +100,11 @@ def iter_world_capsule_segments(
             
             # Store endpoint for next capsule (needed for cap5)
             prev_capsule_end = p1.copy()
+            
+            # Skip capsules below min_capsule_index (geometry already
+            # computed above so chain-dependent capsules stay correct)
+            if idx < int(min_capsule_index):
+                continue
             
             # Apply debug filter AFTER computing prev_capsule_end
             if debug_capsule_index >= 0 and idx != debug_capsule_index:
@@ -150,10 +161,13 @@ def scan_external(
 
     for seg in segments:
         link_idx = int(seg.get("link_idx", 0))
-        # Exclude the first link from repulsion calculations
+        # Exclude the second link (link_idx=1, fr3_cap_1: joint1→joint2) from
+        # distance calculations — this capsule is too close to the base and
+        # produces spurious closest-distance detections.
         if link_idx == 1:
             continue
-        # Exclude the first capsule (capsule_idx == 0) from external/ground collision checks
+        # Exclude the base capsule (capsule_idx == 0, fr3_cap_0: link0→joint1)
+        # from external/ground collision checks
         capsule_idx = int(seg.get("capsule_idx", -1))
         if capsule_idx == 0:
             continue
@@ -237,6 +251,8 @@ def scan_external(
                 "n": np.array(dir_vec, dtype=float).reshape(3),
                 "link": parent_link,
                 "link_idx": int(link_idx),
+                "capsule_idx": capsule_idx,
+                "cap_name": parent_link,
             }
 
             if obs_id not in external_best or float(d) < float(external_best[obs_id]["d"]):
