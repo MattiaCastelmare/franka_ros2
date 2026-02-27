@@ -1,0 +1,6 @@
+# Parameters for joint_velocity_example_controller with mock/fake hardware.
+# Setting gazebo:=true skips the set_full_collision_behavior service call
+# which does not exist with mock hardware and would deadlock the controller_manager.
+joint_velocity_example_controller:
+  ros__parameters:
+    gazebo: true
