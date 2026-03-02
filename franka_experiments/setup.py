@@ -32,6 +32,7 @@ setup(
             'velocity_commander = franka_experiments.nodes.velocity_commander:main',
             'smooth_velocity_commander = franka_experiments.nodes.smooth_velocity_commander:main',
             'ee_pentagon_velocity_commander = franka_experiments.nodes.ee_pentagon_velocity_commander:main',
+            'velocity_blender = franka_experiments.nodes.velocity_blender_node:main',
         ],
     },
 )

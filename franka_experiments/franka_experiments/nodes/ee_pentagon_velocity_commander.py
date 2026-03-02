@@ -2,8 +2,8 @@
 """End-effector pentagon trajectory tracker via joint-velocity commands.
 
 Publishes ``std_msgs/Float64MultiArray`` (7 joints) to the
-``fr3_forward_velocity_controller/commands`` topic using Pinocchio for
-Jacobian-based resolved-rate control.
+``tracking_qdot`` topic (consumed by the **velocity_blender** node) using
+Pinocchio for Jacobian-based resolved-rate control.
 
 The end-effector follows a **smooth pentagon** trajectory on a configurable
 plane (default XY) around a given centre, with minimum-jerk (5th-order) time
@@ -32,8 +32,11 @@ Usage
 
 Parameters
 ----------
-command_topic : str
-    Velocity-command topic (auto-resolved by default).
+tracking_topic : str
+    Output topic for tracking joint velocities (auto-resolved by default).
+    Consumed by the ``velocity_blender`` node.
+    The deprecated alias ``command_topic`` is still accepted but will
+    emit a warning.
 joint_state_topic : str
     Joint-state subscription topic.  Default ``"__auto__"`` triggers
     auto-detection: the node reads the namespace from
@@ -120,7 +123,7 @@ except ImportError as exc:
 # Constants
 # ---------------------------------------------------------------------------
 NUM_JOINTS = 7
-CONTROLLER_NAME = 'fr3_forward_velocity_controller'
+TRACKING_TOPIC_SUFFIX = 'tracking_qdot'
 FR3_JOINT_NAMES = [f'fr3_joint{i}' for i in range(1, NUM_JOINTS + 1)]
 
 # Sentinel value: when joint_state_topic equals this, auto-detect is used.
@@ -150,15 +153,14 @@ def _get_namespace_from_config(robot_key: str = 'ROBOT1') -> str:
 
 
 # ---------------------------------------------------------------------------
-# Topic auto-resolution (command topic)
+# Topic auto-resolution (tracking topic)
 # ---------------------------------------------------------------------------
 def _resolve_default_topic(robot_key: str = 'ROBOT1') -> str:
-    """Auto-detect namespace → build velocity-command topic."""
-    topic_suffix = f'{CONTROLLER_NAME}/commands'
+    """Auto-detect namespace → build tracking_qdot topic."""
     ns = _get_namespace_from_config(robot_key)
     if ns:
-        return f'/{ns}/{topic_suffix}'
-    return f'/{topic_suffix}'
+        return f'/{ns}/{TRACKING_TOPIC_SUFFIX}'
+    return f'/{TRACKING_TOPIC_SUFFIX}'
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +341,15 @@ class EEPentagonVelocityCommander(Node):
         self._stop_end_time = 0.0
 
         # ---- Declare parameters -----------------------------------------
-        self.declare_parameter('command_topic', DEFAULT_TOPIC)
+        self.declare_parameter('tracking_topic', DEFAULT_TOPIC)
+        self.declare_parameter('command_topic', '')  # deprecated alias
         self.declare_parameter('joint_state_topic', _AUTO)
         self.declare_parameter('ee_frame', 'fr3_hand_tcp')
         self.declare_parameter('rate_hz', 200.0)
         self.declare_parameter('warmup_s', 2.0)
         self.declare_parameter('ramp_s', 2.0)
         self.declare_parameter('center_xyz', [0.4, 0.0, 0.4])
-        self.declare_parameter('radius', 0.03)
+        self.declare_parameter('radius', 0.2)
         self.declare_parameter('plane', 'front')
         self.declare_parameter('plane_frame', 'fr3_link0')
         self.declare_parameter('cycle_time', 15.0)
@@ -355,8 +358,17 @@ class EEPentagonVelocityCommander(Node):
         self.declare_parameter('qdot_max', 0.3)
         self.declare_parameter('lpf_alpha', 0.8)
 
-        # ---- Read parameters --------------------------------------------
-        self.cmd_topic: str = self.get_parameter('command_topic').value
+        # ---- Read parameters (tracking_topic + deprecated alias) --------
+        _tracking_param: str = self.get_parameter('tracking_topic').value
+        _cmd_param: str = self.get_parameter('command_topic').value
+        if _cmd_param:  # user passed the deprecated alias
+            self.get_logger().warn(
+                "Parameter 'command_topic' is DEPRECATED — "
+                "use 'tracking_topic' instead.")
+            # tracking_topic wins if also explicitly set (not default)
+            if _tracking_param == DEFAULT_TOPIC:
+                _tracking_param = _cmd_param
+        self.tracking_topic: str = _tracking_param
         js_topic_param: str = self.get_parameter('joint_state_topic').value
         self.ee_frame_name: str = self.get_parameter('ee_frame').value
         self.rate_hz: float = self.get_parameter('rate_hz').value
@@ -485,7 +497,7 @@ class EEPentagonVelocityCommander(Node):
         )
 
         # ---- Publisher + timer -------------------------------------------
-        self.pub = self.create_publisher(Float64MultiArray, self.cmd_topic, 10)
+        self.pub = self.create_publisher(Float64MultiArray, self.tracking_topic, 10)
         period = 1.0 / self.rate_hz
         self.timer = self.create_timer(period, self._timer_cb)
         self.t0 = self.get_clock().now()
@@ -500,11 +512,11 @@ class EEPentagonVelocityCommander(Node):
 
         # ---- Startup log -------------------------------------------------
         topic_note = ('(auto-resolved from franka.config.yaml)'
-                      if self.cmd_topic == DEFAULT_TOPIC
+                      if self.tracking_topic == DEFAULT_TOPIC
                       else '(overridden via parameter)')
         self.get_logger().info(
             f'ee_pentagon_velocity_commander started\n'
-            f'  cmd topic   : {self.cmd_topic}  {topic_note}\n'
+            f'  tracking    : {self.tracking_topic}  {topic_note}\n'
             f'  js topic    : {self._js_topic_resolved or "(auto-detecting…)"}\n'
             f'  ee frame    : {self.ee_frame_name}\n'
             f'  rate        : {self.rate_hz} Hz\n'
