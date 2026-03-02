@@ -1,0 +1,61 @@
+# Controller configuration for REAL Franka FR3 hardware with forward velocity control.
+# Namespace-agnostic (/**:) — works with any namespace or no namespace.
+#
+# Includes ONLY the controllers needed for velocity-forwarding experiments:
+#   - joint_state_broadcaster
+#   - franka_robot_state_broadcaster  (required by franka_hardware on real robot)
+#   - fr3_forward_velocity_controller (ForwardCommandController in velocity mode)
+#
+# update_rate MUST be 1000 Hz to match the real-time loop expected by libfranka;
+# lower values cause "communication_constraints_violation" reflex aborts.
+
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000  # Hz — must match libfranka real-time cycle
+      thread_priority: 98
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+
+      fr3_forward_velocity_controller:
+        type: forward_command_controller/ForwardCommandController
+
+# ---------- Controller parameters ----------
+
+/**:
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      lock_try_count: 200
+      lock_sleep_interval: 50        # microseconds between lock attempts
+      lock_log_error: false
+      lock_update_success: true
+
+/**:
+  joint_state_broadcaster:
+    ros__parameters:
+      arm_id: "fr3"
+      joints:
+        - fr3_joint1
+        - fr3_joint2
+        - fr3_joint3
+        - fr3_joint4
+        - fr3_joint5
+        - fr3_joint6
+        - fr3_joint7
+
+/**:
+  fr3_forward_velocity_controller:
+    ros__parameters:
+      interface_name: velocity
+      joints:
+        - fr3_joint1
+        - fr3_joint2
+        - fr3_joint3
+        - fr3_joint4
+        - fr3_joint5
+        - fr3_joint6
+        - fr3_joint7

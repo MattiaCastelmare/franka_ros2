@@ -5,16 +5,20 @@ package_name = 'franka_experiments'
 setup(
     name=package_name,
     version='0.0.1',
-    packages=[package_name],
+    packages=[package_name, package_name + '.nodes'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', [
             'launch/wrapper_min.launch.py',
             'launch/wrapper_velocity.launch.py',
+            'launch/wrapper_forward_velocity.launch.py',
+            'launch/experiment_velocity_forward.launch.py',
         ]),
         ('share/' + package_name + '/config', [
             'config/fake_hw_controller_params.yaml',
+            'config/controllers_velocity_forward.yaml',
+            'config/controllers_velocity_forward_real.yaml',
         ]),
     ],
     install_requires=['setuptools'],
@@ -24,6 +28,9 @@ setup(
     description='Experiment launch files for Franka robots',
     license='Apache-2.0',
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'velocity_commander = franka_experiments.nodes.velocity_commander:main',
+            'smooth_velocity_commander = franka_experiments.nodes.smooth_velocity_commander:main',
+        ],
     },
 )

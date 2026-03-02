@@ -1,0 +1,45 @@
+# Controller configuration for FAKE / MOCK hardware with forward velocity control.
+# Namespace-agnostic (/**:) — works with any namespace or no namespace.
+#
+# franka_robot_state_broadcaster is NOT needed here because franka.launch.py
+# only spawns it when use_fake_hardware:=false (UnlessCondition).
+# update_rate can be lower than 1000 Hz since there is no real-time constraint.
+
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 100  # Hz — sufficient for mock hardware
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      fr3_forward_velocity_controller:
+        type: forward_command_controller/ForwardCommandController
+
+# ---------- Controller parameters ----------
+
+/**:
+  joint_state_broadcaster:
+    ros__parameters:
+      arm_id: "fr3"
+      joints:
+        - fr3_joint1
+        - fr3_joint2
+        - fr3_joint3
+        - fr3_joint4
+        - fr3_joint5
+        - fr3_joint6
+        - fr3_joint7
+
+/**:
+  fr3_forward_velocity_controller:
+    ros__parameters:
+      interface_name: velocity
+      joints:
+        - fr3_joint1
+        - fr3_joint2
+        - fr3_joint3
+        - fr3_joint4
+        - fr3_joint5
+        - fr3_joint6
+        - fr3_joint7
