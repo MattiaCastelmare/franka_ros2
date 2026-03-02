@@ -7,20 +7,56 @@ Timeline:
       envelope = 0.5*(1 - cos(π·tr/ramp_s))  while tr < ramp_s, then 1.0
       cmd[i]  = offsets[i] + envelope * amplitudes[i] * sin(2π·freq[i]·tr)
 
-On shutdown (Ctrl-C) the node publishes zero-velocity commands for 0.5 s
-at the configured rate before exiting cleanly.
+On shutdown (SIGINT / SIGTERM / Ctrl-C):
+  1. The timer callback switches to a *stopping* state.
+  2. Zero-velocity messages are published for ~0.5 s inside the timer.
+  3. After the stop window expires the timer calls rclpy.shutdown(),
+     which unblocks spin() and lets main() tear down cleanly.
+  → The process returns to the shell prompt within ~1 s, with no
+    blocking loops in the ``finally`` block.
 """
 
 import math
+import os
 import time
+
+import yaml
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
 NUM_JOINTS = 7
+CONTROLLER_NAME = 'fr3_forward_velocity_controller'
 
-DEFAULT_TOPIC = '/fr3_forward_velocity_controller/commands'
+
+def _resolve_default_topic(robot_key='ROBOT1'):
+    """Auto-detect namespace from franka.config.yaml → build command topic.
+
+    Reads  franka_bringup/config/franka.config.yaml  (installed share),
+    extracts the *namespace* field for *robot_key*, and returns
+      /<namespace>/<controller>/commands   (if namespace is non-empty)
+      /<controller>/commands               (if namespace is empty / missing)
+
+    Falls back silently to the non-namespaced topic on any error.
+    """
+    topic_suffix = f'{CONTROLLER_NAME}/commands'
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        bringup_share = get_package_share_directory('franka_bringup')
+        config_path = os.path.join(bringup_share, 'config', 'franka.config.yaml')
+        with open(config_path, 'r') as fh:
+            config = yaml.safe_load(fh)
+        if config and robot_key in config:
+            ns = str(config[robot_key].get('namespace', '')).strip()
+            if ns:
+                return f'/{ns}/{topic_suffix}'
+    except Exception:  # noqa: BLE001
+        pass
+    return f'/{topic_suffix}'
+
+
+DEFAULT_TOPIC = _resolve_default_topic()
 DEFAULT_RATE_HZ = 200.0
 DEFAULT_AMPLITUDES = [0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 DEFAULT_FREQUENCIES = [0.0, 0.0, 0.0, 0.2, 0.2, 0.0, 0.0]
@@ -34,6 +70,10 @@ class SmoothVelocityCommander(Node):
 
     def __init__(self):
         super().__init__('smooth_velocity_commander')
+
+        # ---- Stopping state machine ------------------------------------
+        self._stopping = False
+        self._stop_end_time = 0.0        # time.monotonic() deadline
 
         # ---- Declare parameters -----------------------------------------
         self.declare_parameter('command_topic', DEFAULT_TOPIC)
@@ -70,10 +110,17 @@ class SmoothVelocityCommander(Node):
         self.t0 = self.get_clock().now()
         self._last_debug_sec = -1.0  # force first debug log at t≈0
 
+        # ---- Prebuilt stop message (avoid allocation in hot path) ------
+        self._stop_msg = Float64MultiArray()
+        self._stop_msg.data = [0.0] * NUM_JOINTS
+
         # ---- Startup log ------------------------------------------------
+        topic_note = ('(auto-resolved from franka.config.yaml)'
+                      if self.topic == DEFAULT_TOPIC
+                      else '(overridden via parameter)')
         self.get_logger().info(
             f'smooth_velocity_commander started\n'
-            f'  topic  : {self.topic}\n'
+            f'  topic  : {self.topic}  {topic_note}\n'
             f'  rate   : {self.rate_hz} Hz\n'
             f'  warmup : {self.warmup_s} s\n'
             f'  ramp   : {self.ramp_s} s\n'
@@ -82,7 +129,36 @@ class SmoothVelocityCommander(Node):
             f'  offset : {self.offsets}')
 
     # -----------------------------------------------------------------
+    def request_stop(self, stop_duration_s: float = 0.5):
+        """Enter the *stopping* state: publish zeros for *stop_duration_s*.
+
+        Safe to call multiple times (idempotent).
+        """
+        if self._stopping:
+            return
+        self._stopping = True
+        self._stop_end_time = time.monotonic() + stop_duration_s
+        self.get_logger().info(
+            f'Stopping: publishing zero velocities for {stop_duration_s} s')
+
+    # -----------------------------------------------------------------
     def _timer_cb(self):
+        # ---- Stopping state: publish zeros, then trigger shutdown ----
+        if self._stopping:
+            try:
+                self.pub.publish(self._stop_msg)
+            except Exception:
+                pass
+            if time.monotonic() >= self._stop_end_time:
+                self.get_logger().info('Stop complete, shutting down')
+                self.timer.cancel()
+                try:
+                    rclpy.shutdown()
+                except Exception:
+                    pass
+            return
+
+        # ---- Normal operation: warmup + cosine-ramp sinusoids -------
         t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
         msg = Float64MultiArray()
 
@@ -131,28 +207,26 @@ class SmoothVelocityCommander(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=rclpy.SignalHandlerOptions.NO)
     node = SmoothVelocityCommander()
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        # CTRL-C: enter stopping state, then let spin() continue
+        # so the timer can publish zeros and call rclpy.shutdown().
+        node.request_stop()
+        try:
+            rclpy.spin(node)
+        except Exception:
+            pass
+    except Exception as exc:
+        try:
+            node.get_logger().error(f'Unexpected error: {exc}')
+        except Exception:
+            pass
     finally:
-        # Send zero velocities for 0.5 s at rate_hz then exit
-        if rclpy.ok():
-            stop_msg = Float64MultiArray()
-            stop_msg.data = [0.0] * NUM_JOINTS
-            period = 1.0 / node.rate_hz
-            stop_end = time.monotonic() + 0.5
-            node.get_logger().info(
-                'Shutdown: publishing zero velocities for 0.5 s …')
-            while time.monotonic() < stop_end:
-                try:
-                    node.pub.publish(stop_msg)
-                    time.sleep(period)
-                except Exception:
-                    break
-            node.get_logger().info('Zero-velocity ramp complete — exiting.')
+        # Minimal teardown — no blocking loops, no time.sleep()
         try:
             node.destroy_node()
         except Exception:
