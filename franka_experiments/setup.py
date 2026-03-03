@@ -5,7 +5,7 @@ package_name = 'franka_experiments'
 setup(
     name=package_name,
     version='0.0.1',
-    packages=[package_name, package_name + '.nodes'],
+    packages=[package_name, package_name + '.nodes', package_name + '.utils'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -14,6 +14,7 @@ setup(
             'launch/wrapper_velocity.launch.py',
             'launch/wrapper_forward_velocity.launch.py',
             'launch/experiment_velocity_forward.launch.py',
+            'launch/random_waypoints_velocity.launch.py',
         ]),
         ('share/' + package_name + '/config', [
             'config/fake_hw_controller_params.yaml',
@@ -34,6 +35,7 @@ setup(
             'velocity_commander = franka_experiments.nodes.velocity_commander:main',
             'smooth_velocity_commander = franka_experiments.nodes.smooth_velocity_commander:main',
             'ee_pentagon_velocity_commander = franka_experiments.nodes.ee_pentagon_velocity_commander:main',
+            'ee_random_waypoints_velocity_commander = franka_experiments.nodes.ee_random_waypoints_velocity_commander:main',
             'velocity_blender = franka_experiments.nodes.velocity_blender_node:main',
         ],
     },

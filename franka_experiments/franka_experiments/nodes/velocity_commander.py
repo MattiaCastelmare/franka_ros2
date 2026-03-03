@@ -7,7 +7,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
-NUM_JOINTS = 7
+from franka_experiments.utils.constants import NUM_JOINTS
 
 DEFAULT_TOPIC = '/fr3_forward_velocity_controller/commands'
 DEFAULT_RATE_HZ = 100.0

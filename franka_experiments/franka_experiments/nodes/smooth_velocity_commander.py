@@ -17,46 +17,17 @@ On shutdown (SIGINT / SIGTERM / Ctrl-C):
 """
 
 import math
-import os
 import time
-
-import yaml
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
-NUM_JOINTS = 7
-CONTROLLER_NAME = 'fr3_forward_velocity_controller'
+from franka_experiments.utils.constants import NUM_JOINTS, CONTROLLER_NAME
+from franka_experiments.utils.ros import resolve_controller_topic, teardown
+from franka_experiments.utils.math_utils import cosine_ramp
 
-
-def _resolve_default_topic(robot_key='ROBOT1'):
-    """Auto-detect namespace from franka.config.yaml → build command topic.
-
-    Reads  franka_bringup/config/franka.config.yaml  (installed share),
-    extracts the *namespace* field for *robot_key*, and returns
-      /<namespace>/<controller>/commands   (if namespace is non-empty)
-      /<controller>/commands               (if namespace is empty / missing)
-
-    Falls back silently to the non-namespaced topic on any error.
-    """
-    topic_suffix = f'{CONTROLLER_NAME}/commands'
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        bringup_share = get_package_share_directory('franka_bringup')
-        config_path = os.path.join(bringup_share, 'config', 'franka.config.yaml')
-        with open(config_path, 'r') as fh:
-            config = yaml.safe_load(fh)
-        if config and robot_key in config:
-            ns = str(config[robot_key].get('namespace', '')).strip()
-            if ns:
-                return f'/{ns}/{topic_suffix}'
-    except Exception:  # noqa: BLE001
-        pass
-    return f'/{topic_suffix}'
-
-
-DEFAULT_TOPIC = _resolve_default_topic()
+DEFAULT_TOPIC = resolve_controller_topic()
 DEFAULT_RATE_HZ = 200.0
 DEFAULT_AMPLITUDES = [0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 DEFAULT_FREQUENCIES = [0.0, 0.0, 0.0, 0.2, 0.2, 0.0, 0.0]
@@ -73,7 +44,7 @@ class SmoothVelocityCommander(Node):
 
         # ---- Stopping state machine ------------------------------------
         self._stopping = False
-        self._stop_end_time = 0.0        # time.monotonic() deadline
+        self._stop_end_time = 0.0
 
         # ---- Declare parameters -----------------------------------------
         self.declare_parameter('command_topic', DEFAULT_TOPIC)
@@ -108,7 +79,7 @@ class SmoothVelocityCommander(Node):
         period = 1.0 / self.rate_hz
         self.timer = self.create_timer(period, self._timer_cb)
         self.t0 = self.get_clock().now()
-        self._last_debug_sec = -1.0  # force first debug log at t≈0
+        self._last_debug_sec = -1.0
 
         # ---- Prebuilt stop message (avoid allocation in hot path) ------
         self._stop_msg = Float64MultiArray()
@@ -130,10 +101,7 @@ class SmoothVelocityCommander(Node):
 
     # -----------------------------------------------------------------
     def request_stop(self, stop_duration_s: float = 0.5):
-        """Enter the *stopping* state: publish zeros for *stop_duration_s*.
-
-        Safe to call multiple times (idempotent).
-        """
+        """Enter the *stopping* state (idempotent)."""
         if self._stopping:
             return
         self._stopping = True
@@ -163,15 +131,13 @@ class SmoothVelocityCommander(Node):
         msg = Float64MultiArray()
 
         if t < self.warmup_s:
-            # Warmup phase: publish offsets only (typically zeros)
             msg.data = list(self.offsets)
+            phase = 'warmup'
+            envelope = 0.0
         else:
             tr = t - self.warmup_s
-            # Cosine ramp envelope: 0 → 1 over ramp_s seconds
-            if self.ramp_s > 0.0 and tr < self.ramp_s:
-                envelope = 0.5 * (1.0 - math.cos(math.pi * tr / self.ramp_s))
-            else:
-                envelope = 1.0
+            envelope = cosine_ramp(tr, self.ramp_s)
+            phase = 'active'
 
             data = []
             for i in range(NUM_JOINTS):
@@ -181,7 +147,8 @@ class SmoothVelocityCommander(Node):
                     val = (self.offsets[i]
                            + envelope
                            * self.amplitudes[i]
-                           * math.sin(2.0 * math.pi * self.frequencies[i] * tr))
+                           * math.sin(
+                               2.0 * math.pi * self.frequencies[i] * tr))
                 data.append(val)
             msg.data = data
 
@@ -190,20 +157,9 @@ class SmoothVelocityCommander(Node):
         # Throttled debug log (~1 Hz)
         if t - self._last_debug_sec >= 1.0:
             self._last_debug_sec = t
-            d = msg.data
-            if t < self.warmup_s:
-                phase = 'warmup'
-                env_val = 0.0
-            else:
-                phase = 'active'
-                tr_now = t - self.warmup_s
-                if self.ramp_s > 0.0 and tr_now < self.ramp_s:
-                    env_val = 0.5 * (1.0 - math.cos(math.pi * tr_now / self.ramp_s))
-                else:
-                    env_val = 1.0
-            cmd_str = ', '.join(f'{v:.4f}' for v in d)
+            cmd_str = ', '.join(f'{v:.4f}' for v in msg.data)
             self.get_logger().info(
-                f'[t={t:.1f}s {phase} env={env_val:.3f}] cmd=[{cmd_str}]')
+                f'[t={t:.1f}s {phase} env={envelope:.3f}] cmd=[{cmd_str}]')
 
 
 def main(args=None):
@@ -213,8 +169,6 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # CTRL-C: enter stopping state, then let spin() continue
-        # so the timer can publish zeros and call rclpy.shutdown().
         node.request_stop()
         try:
             rclpy.spin(node)
@@ -226,16 +180,7 @@ def main(args=None):
         except Exception:
             pass
     finally:
-        # Minimal teardown — no blocking loops, no time.sleep()
-        try:
-            node.destroy_node()
-        except Exception:
-            pass
-        try:
-            if rclpy.ok():
-                rclpy.shutdown()
-        except Exception:
-            pass
+        teardown(node)
 
 
 if __name__ == '__main__':
