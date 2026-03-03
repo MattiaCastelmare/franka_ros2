@@ -1,0 +1,13 @@
+<library path="franka_rt_controllers">
+    <class name="franka_rt_controllers/RtVelocityBlenderController"
+           type="franka_rt_controllers::RtVelocityBlenderController"
+           base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Real-time velocity blending controller for Franka FR3.
+            Subscribes to tracking and avoidance velocity topics, blends them
+            in the 1 kHz RT loop with optional rate limiting, smooth timeout
+            ramp, and a single final velocity clamp.  Eliminates sample-and-hold
+            jitter caused by non-RT Python blenders publishing at lower rates.
+        </description>
+    </class>
+</library>

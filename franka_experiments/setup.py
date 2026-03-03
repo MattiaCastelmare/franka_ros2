@@ -19,6 +19,8 @@ setup(
             'config/fake_hw_controller_params.yaml',
             'config/controllers_velocity_forward.yaml',
             'config/controllers_velocity_forward_real.yaml',
+            'config/controllers_rt_velocity_blender.yaml',
+            'config/controllers_rt_velocity_blender_real.yaml',
         ]),
     ],
     install_requires=['setuptools'],
