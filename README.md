@@ -6,6 +6,7 @@
 
 ## Table of Contents
 - [About](#about)
+- [Research Extensions in This Fork](#research-extensions-in-this-fork)
 - [Caution](#caution)
 - [Setup](#setup)
   - [Local Machine Installation](#local-machine-installation)
@@ -20,11 +21,14 @@
 ## About
 The **franka_ros2** repository provides a **ROS 2** integration of **libfranka**, allowing efficient control of the Franka Robotics arm within the ROS 2 framework. This project is designed to facilitate robotic research and development by providing a robust interface for controlling the research versions of Franka Robotics robots.
 
-For convenience, we provide Dockerfile and docker-compose.yml files. While it is possible to build **franka_ros2** directly on your local machine, this approach requires manual installation of certain dependencies, while many others will be automatically installed by the **ROS 2** build system (e.g., via **rosdep**). This can result in a large number of libraries being installed on your system, potentially causing conflicts. Using Docker encapsulates these dependencies within the container, minimizing such risks. Docker also ensures a consistent and reproducible build environment across systems. For these reasons, we recommend using Docker.
-## Fork-specific Information (Extended Simulation and Research Branch)
+This repository is a fork of the official `frankarobotics/franka_ros2` project and includes additional configurations, simulation support, MoveIt2 integration, and Docker-based environments aimed at facilitating robotics research workflows.
 
-This repository is a fork of the official `frankarobotics/franka_ros2` project and includes additional
-research-oriented extensions, simulation tools, and Docker support developed in this fork.
+For convenience, we provide Dockerfile and docker-compose.yml files. While it is possible to build **franka_ros2** directly on your local machine, this approach requires manual installation of certain dependencies, while many others will be automatically installed by the **ROS 2** build system (e.g., via **rosdep**). This can result in a large number of libraries being installed on your system, potentially causing conflicts. Using Docker encapsulates these dependencies within the container, minimizing such risks. Docker also ensures a consistent and reproducible build environment across systems. For these reasons, we recommend using Docker.
+
+## Research Extensions in This Fork
+
+This fork extends the official `frankarobotics/franka_ros2` project with additional
+research-oriented extensions, including a custom `franka_simulation` package that provides RViz2 and Gazebo (Ignition) simulation environments with MoveIt integration for collision avoidance research, as well as Docker support developed in this fork.
 
 ### Branch structure
 
@@ -32,32 +36,13 @@ This fork follows a clear branching strategy to ensure portability and easy sync
 
 - **`humble`**
   - Mirrors the official upstream branch `frankarobotics/franka_ros2:humble`
-  - Kept aligned with upstream
+  - Intended to track the upstream branch, although temporary deviations may occur due to libfranka and firmware compatibility requirements
   - Not intended for custom development in this fork
 
-- **`humble-mattia`** ✅ *(recommended)*
+- **`humble-mattia`** 
   - Stable branch including additional simulation packages, Docker extensions, and research tooling
   - This is the **recommended branch for users who want to clone and use this fork**
   - Actively maintained and periodically rebased/merged with upstream updates
-
-### Recommended clone command
-
-To use the extended features provided by this fork, clone the repository as follows:
-
-```bash
-git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git
-```
-### Additional dependencies via .repos
-
-In addition to the official Franka dependencies, this fork relies on extra source-level repositories
-(e.g. MoveIt2) that are not vendored directly in this repository. These dependencies are managed using the
-`franka.repos` file. The `pymoveit2` Python wrapper is provided via the binary package `ros-humble-pymoveit2`,
-so it no longer needs to be imported from source.
-
-To import the required repositories manually: 
-```bash
-vcs import src < src/franka.repos --recursive --skip-existing
-```
 
 ## Caution
 This package is in rapid development. Users should expect breaking changes and are encouraged to report any bugs via [GitHub Issues page](https://github.com/frankarobotics/franka_ros2/issues).
@@ -135,8 +120,9 @@ The **franka_ros2** package includes a `Dockerfile` and a `docker-compose.yml`, 
 For detailed instructions, on preparing VSCode to use the `.devcontainer` follow the setup guide from [VSCode devcontainer_setup](https://code.visualstudio.com/docs/devcontainers/tutorial).
 
 1. **Clone the Repositories:**
+
     ```bash
-    git clone --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git 
+    git clone -b humble-mattia --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git
     cd franka_ros2
     ```
     We provide separate instructions for using Docker with Visual Studio Code or the command line. Choose one of the following options:
@@ -222,6 +208,16 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
    ```
 > Remember, franka_ros2 is under development.
 > Warnings can be expected.
+
+## Test the Setup
+
+### Run the simulation environment (franka_simulation)
+
+To quickly test the extended simulation framework provided in this fork, launch the `franka_simulation` package:
+
+```bash
+ros2 launch franka_simulation move_group.launch.py
+```
 
 ## Test the Setup
 
