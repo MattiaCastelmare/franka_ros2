@@ -292,7 +292,7 @@ def generate_launch_description():
     )
     enable_camera_arg = DeclareLaunchArgument(
         'enable_camera',
-        default_value='false',
+        default_value='true',
         description='Enable RealSense + image pipeline (realsense2_camera -> image_publisher -> human_pose_node)',
     )
     spawn_obstacles = LaunchConfiguration("spawn_obstacles")
