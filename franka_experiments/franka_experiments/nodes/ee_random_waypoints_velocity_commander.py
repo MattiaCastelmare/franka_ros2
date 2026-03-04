@@ -50,8 +50,8 @@ from franka_experiments.utils.kinematics import (
     compute_ee_fk,
     compute_arm_jacobian,
     dls_solve,
+    JointStateManager,
 )
-from franka_experiments.utils.joint_state import JointStateManager
 from franka_experiments.utils.trajectory import (
     sample_waypoints, sample_single_waypoint,
 )

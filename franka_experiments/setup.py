@@ -10,10 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', [
-            'launch/wrapper_min.launch.py',
-            'launch/wrapper_velocity.launch.py',
             'launch/wrapper_forward_velocity.launch.py',
-            'launch/experiment_velocity_forward.launch.py',
             'launch/random_waypoints_velocity.launch.py',
         ]),
         ('share/' + package_name + '/config', [

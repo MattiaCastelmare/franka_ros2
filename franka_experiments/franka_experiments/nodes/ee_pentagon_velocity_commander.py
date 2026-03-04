@@ -47,8 +47,8 @@ from franka_experiments.utils.kinematics import (
     compute_arm_jacobian,
     transform_ee_to_frame,
     dls_solve,
+    JointStateManager,
 )
-from franka_experiments.utils.joint_state import JointStateManager
 from franka_experiments.utils.trajectory import PentagonTrajectory
 from franka_experiments.utils.logging_utils import ThrottledLogger, vec_to_str
 
