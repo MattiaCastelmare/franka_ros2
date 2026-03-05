@@ -38,3 +38,11 @@ output_command_topic: "__auto__"
 blender_rate_hz: 200.0
 blender_qdot_max: 1.0
 blender_watchdog_s: 0.2
+
+# ── Scheduling / jitter reduction ─────────────────────────────────────
+control_spawner_delay_s: 10.0
+start_rviz: true
+rviz_delay_s: 5.0
+camera_delay_s: 0.0
+start_human_pose: true
+human_pose_delay_s: 0.0

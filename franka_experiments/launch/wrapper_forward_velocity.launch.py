@@ -16,7 +16,6 @@ import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
@@ -58,15 +57,22 @@ _ALL_PARAMS = [
     'blender_qdot_max', 'blender_watchdog_s',
     'enable_camera',
     'do_calibration',
+    'control_spawner_delay_s', 'start_rviz', 'rviz_delay_s',
+    'camera_delay_s', 'start_human_pose', 'human_pose_delay_s',
 ]
+
+
+def _as_bool(x: str) -> bool:
+    """Interpret a launch-arg string as boolean (tolerant)."""
+    return str(x).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
 
 
 def _launch_all(context):
     """Resolve all parameters, include bringup, spawn controller."""
     # ── Resolve every param once ──────────────────────────────────────
     p = {k: LaunchConfiguration(k).perform(context) for k in _ALL_PARAMS}
-    use_rt = p['use_rt_blender'].lower() == 'true'
-    use_fake = p['use_fake_hardware'].lower() == 'true'
+    use_rt = _as_bool(p['use_rt_blender'])
+    use_fake = _as_bool(p['use_fake_hardware'])
 
     # ── Build RT param dict for YAML generation ───────────────────────
     rt_params = None
@@ -119,12 +125,13 @@ def _launch_all(context):
         p, use_rt, _CONFIG_PATH, controllers_yaml, controller_name, cm_name)
     actions += [
         franka_launch,
-        TimerAction(period=10.0, actions=[controller_spawner]),
+        TimerAction(period=float(p['control_spawner_delay_s']),
+                    actions=[controller_spawner]),
     ]
 
     # ── Legacy mode: optional Python velocity_blender ─────────────────
     if not use_rt:
-        if p['start_blender'].lower() == 'true':
+        if _as_bool(p['start_blender']):
             prefix = ('/' + p['namespace']) if p['namespace'] else ''
             trk = (prefix + '/tracking_qdot'
                    if p['tracking_topic'] == '__auto__'
@@ -171,17 +178,21 @@ def _launch_all(context):
                              '(start_blender:=false)']))
 
     # ── RViz2 (minimal, no MoveIt) ────────────────────────────────────
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-f', 'fr3_link0'],
-        output='screen',
-    )
-    actions.append(TimerAction(period=5.0, actions=[rviz_node]))
+    if _as_bool(p['start_rviz']):
+        rviz_node = Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            arguments=['-f', 'fr3_link0'],
+            output='screen',
+        )
+        actions.append(TimerAction(period=float(p['rviz_delay_s']),
+                                   actions=[rviz_node]))
 
     # ── Camera pipeline (optional) ────────────────────────────────────
-    if p['enable_camera'].lower() == 'true':
+    if _as_bool(p['enable_camera']):
+        cam_delay = float(p['camera_delay_s'])
+
         # RealSense driver
         realsense_driver = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([
@@ -189,7 +200,8 @@ def _launch_all(context):
                 'launch', 'rs_launch.py',
             ]).perform(context)),
         )
-        actions.append(realsense_driver)
+        actions.append(TimerAction(period=cam_delay,
+                                   actions=[realsense_driver]))
 
         # Image republisher (delayed so the driver is up)
         image_republisher = Node(
@@ -198,48 +210,38 @@ def _launch_all(context):
             name='image_republisher',
             output='screen',
         )
-        actions.append(TimerAction(period=3.0, actions=[image_republisher]))
+        actions.append(TimerAction(period=cam_delay + 3.0,
+                                   actions=[image_republisher]))
 
-        # Human pose node — gated on /my_camera/image being published
-        human_pose_node = Node(
-            package='franka_simulation',
-            executable='human_pose_node',
-            name='human_pose_node',
-            output='screen',
-        )
-
-        # One-shot process: exits as soon as one message arrives on the topic
-        wait_for_my_camera_image = ExecuteProcess(
-            cmd=['ros2', 'topic', 'echo', '--once', '/my_camera/image'],
-            output='screen',
-        )
-
-        # Start human_pose_node only after the wait process succeeds
-        start_human_pose_when_image_ready = RegisterEventHandler(
-            OnProcessExit(
-                target_action=wait_for_my_camera_image,
-                on_exit=[
-                    LogInfo(msg=['[wrapper] /my_camera/image detected '
-                                 '— starting human_pose_node']),
-                    human_pose_node,
-                ],
+        # Human pose node (timer-based, no process gating)
+        if _as_bool(p['start_human_pose']):
+            human_pose_node = Node(
+                package='franka_simulation',
+                executable='human_pose_node',
+                name='human_pose_node',
+                output='screen',
             )
-        )
-
-        # Launch the wait probe after the image republisher, then register the gate
-        actions.append(TimerAction(period=4.0,
-                                   actions=[wait_for_my_camera_image]))
-        actions.append(start_human_pose_when_image_ready)
+            hp_delay = cam_delay + 4.0 + float(p['human_pose_delay_s'])
+            actions.append(TimerAction(period=hp_delay,
+                                       actions=[human_pose_node]))
+            actions.append(
+                LogInfo(msg=['[wrapper] human_pose_node    : ENABLED '
+                             '(delay=', str(hp_delay), 's)']))
+        else:
+            actions.append(
+                LogInfo(msg=['[wrapper] human_pose_node    : DISABLED '
+                             '(start_human_pose:=false)']))
 
         actions.append(
-            LogInfo(msg=['[wrapper] Camera pipeline     : ENABLED']))
+            LogInfo(msg=['[wrapper] Camera pipeline     : ENABLED '
+                         '(delay=', str(cam_delay), 's)']))
     else:
         actions.append(
             LogInfo(msg=['[wrapper] Camera pipeline     : DISABLED '
                          '(enable_camera:=false)']))
 
     # ── Camera extrinsics static TF (from YAML) ──────────────────────
-    if p['enable_camera'].lower() == 'true' and p['do_calibration'].lower() != 'true':
+    if _as_bool(p['enable_camera']) and not _as_bool(p['do_calibration']):
         extrinsics_path = PathJoinSubstitution([
             FindPackageShare('franka_experiments'),
             'config', 'camera_extrinsics.yaml',
@@ -269,7 +271,7 @@ def _launch_all(context):
         actions.append(
             LogInfo(msg=['[wrapper] Camera extrinsics TF : ENABLED '
                          '(', ext['parent_frame'], ' -> ', ext['child_frame'], ')']))
-    elif p['enable_camera'].lower() == 'true':
+    elif _as_bool(p['enable_camera']):
         actions.append(
             LogInfo(msg=['[wrapper] Camera extrinsics TF : DISABLED '
                          '(do_calibration:=true)']))
@@ -285,13 +287,38 @@ def generate_launch_description():
         + [
             DeclareLaunchArgument(
                 'enable_camera',
-                default_value=_DEFAULTS.get('enable_camera', 'true'),
+                default_value=str(_DEFAULTS.get('enable_camera', 'true')),
                 description='Enable RealSense driver + image republisher'),
             DeclareLaunchArgument(
                 'do_calibration',
-                default_value=_DEFAULTS.get('do_calibration', 'false'),
+                default_value=str(_DEFAULTS.get('do_calibration', 'false')),
                 description='Calibration mode: skip YAML static TF so '
                             'calibration tools can publish their own'),
+            DeclareLaunchArgument(
+                'control_spawner_delay_s',
+                default_value=str(_DEFAULTS.get('control_spawner_delay_s', '10.0')),
+                description='Seconds before spawning the controller'),
+            DeclareLaunchArgument(
+                'start_rviz',
+                default_value=str(_DEFAULTS.get('start_rviz', 'true')),
+                description='Launch RViz2'),
+            DeclareLaunchArgument(
+                'rviz_delay_s',
+                default_value=str(_DEFAULTS.get('rviz_delay_s', '5.0')),
+                description='Seconds before launching RViz2'),
+            DeclareLaunchArgument(
+                'camera_delay_s',
+                default_value=str(_DEFAULTS.get('camera_delay_s', '0.0')),
+                description='Seconds before launching camera pipeline'),
+            DeclareLaunchArgument(
+                'start_human_pose',
+                default_value=str(_DEFAULTS.get('start_human_pose', 'true')),
+                description='Launch human_pose_node'),
+            DeclareLaunchArgument(
+                'human_pose_delay_s',
+                default_value=str(_DEFAULTS.get('human_pose_delay_s', '0.0')),
+                description='Extra seconds before human_pose_node '
+                            '(added to camera_delay_s + 4)'),
             OpaqueFunction(function=_launch_all),
         ]
     )
