@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Launch defaults for wrapper_forward_velocity.launch.py
+# ═══════════════════════════════════════════════════════════════════════════
+# Edit this file to change launch argument defaults WITHOUT touching Python.
+# Every key maps 1-to-1 to a ros2 launch argument:
+#   ros2 launch franka_experiments wrapper_forward_velocity.launch.py <key>:=<value>
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Robot / hardware ──────────────────────────────────────────────────────
+robot_ip: "192.168.1.10"
+arm_id: "fr3"
+namespace: ""
+use_fake_hardware: false
+fake_sensor_commands: false
+load_gripper: true
+controllers_yaml: "__auto__"
+
+# ── Camera & calibration ─────────────────────────────────────────────────
+enable_camera: true
+do_calibration: false
+
+# ── RT velocity blender ──────────────────────────────────────────────────
+use_rt_blender: true
+qdot_max: 1.5
+alpha: 0.5
+max_accel: 2.0
+timeout_threshold_s: 0.5
+timeout_ramp_s: 1.0
+gazebo: false
+enable_interpolation: true
+alpha_topic: "blend_alpha"
+tracking_topic: "__auto__"
+avoidance_topic: "__auto__"
+
+# ── Legacy Python blender ────────────────────────────────────────────────
+start_blender: false
+output_command_topic: "__auto__"
+blender_rate_hz: 200.0
+blender_qdot_max: 1.0
+blender_watchdog_s: 0.2

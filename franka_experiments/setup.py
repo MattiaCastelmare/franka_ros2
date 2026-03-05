@@ -19,6 +19,8 @@ setup(
             'config/controllers_velocity_forward_real.yaml',
             'config/controllers_rt_velocity_blender.yaml',
             'config/controllers_rt_velocity_blender_real.yaml',
+            'config/camera_extrinsics.yaml',
+            'config/launch_defaults.yaml',
         ]),
     ],
     install_requires=['setuptools'],

@@ -34,10 +34,6 @@ class ImageRepublisher(Node):
 
     def callback(self, msg):
         self.pub.publish(msg)
-        self.counter += 1
-        if self.counter % 30 == 0:
-            self.get_logger().info(f"Republished {self.counter} frames")
-
 
 def main():
     rclpy.init()

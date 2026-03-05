@@ -176,6 +176,39 @@ def load_franka_config_defaults(robot_key='ROBOT1'):
     return defaults, config_path
 
 
+def load_launch_defaults():
+    """Load ``franka_experiments/config/launch_defaults.yaml``.
+
+    Returns
+    -------
+    defaults : dict
+        Every key is a launch-argument name; every value is already a *string*
+        suitable for ``DeclareLaunchArgument(default_value=…)``.
+    defaults_path : str
+        Absolute path to the YAML file that was loaded (for logging).
+    """
+    defaults = {}  # empty → callers fall back to their own hardcoded values
+    defaults_path = '<not found>'
+
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        pkg_share = get_package_share_directory('franka_experiments')
+        defaults_path = os.path.join(pkg_share, 'config', 'launch_defaults.yaml')
+        with open(defaults_path, 'r') as fh:
+            raw = yaml.safe_load(fh) or {}
+        # Normalise: bools → 'true'/'false', everything else → str
+        for k, v in raw.items():
+            if isinstance(v, bool):
+                defaults[k] = 'true' if v else 'false'
+            else:
+                defaults[k] = str(v)
+    except Exception as exc:  # noqa: BLE001
+        print(f'[load_launch_defaults] WARN: could not read '
+              f'{defaults_path}: {exc} — helpers will use hard-coded defaults.')
+
+    return defaults, defaults_path
+
+
 # ---------------------------------------------------------------------------
 # Controller manager
 # ---------------------------------------------------------------------------
@@ -331,100 +364,109 @@ def declare_robot_args(defaults=None):
     Parameters
     ----------
     defaults : dict or None
-        Override default values (e.g. from :func:`load_franka_config_defaults`).
+        Override default values.  Typically the dict returned by
+        :func:`load_launch_defaults` (or :func:`load_franka_config_defaults`).
     """
     from launch.actions import DeclareLaunchArgument
-    d = {
-        'arm_id': 'fr3', 'robot_ip': '192.168.2.10',
-        'use_fake_hardware': 'false', 'namespace': '',
-        'fake_sensor_commands': 'false', 'load_gripper': 'false',
-    }
-    if defaults:
-        d.update(defaults)
+    d = defaults or {}
     return [
         DeclareLaunchArgument(
-            'arm_id', default_value=d['arm_id'],
+            'arm_id', default_value=d.get('arm_id', 'fr3'),
             description='Robot arm model identifier'),
         DeclareLaunchArgument(
-            'robot_ip', default_value=d['robot_ip'],
+            'robot_ip', default_value=d.get('robot_ip', '192.168.2.10'),
             description='IP address of the robot'),
         DeclareLaunchArgument(
-            'namespace', default_value=d['namespace'],
+            'namespace', default_value=d.get('namespace', ''),
             description='Namespace for the robot (empty = no namespace)'),
         DeclareLaunchArgument(
-            'use_fake_hardware', default_value=d['use_fake_hardware'],
+            'use_fake_hardware', default_value=d.get('use_fake_hardware', 'false'),
             description='Use fake (mock) hardware'),
         DeclareLaunchArgument(
-            'fake_sensor_commands', default_value=d['fake_sensor_commands'],
+            'fake_sensor_commands', default_value=d.get('fake_sensor_commands', 'false'),
             description='Fake sensor commands'),
         DeclareLaunchArgument(
-            'load_gripper', default_value=d['load_gripper'],
+            'load_gripper', default_value=d.get('load_gripper', 'false'),
             description='Load Franka Gripper'),
         DeclareLaunchArgument(
-            'controllers_yaml', default_value='__auto__',
+            'controllers_yaml', default_value=d.get('controllers_yaml', '__auto__'),
             description='Path to controllers YAML (__auto__ = auto-select)'),
     ]
 
 
-def declare_rt_blender_args():
-    """Return RT-mode ``DeclareLaunchArgument`` list."""
+def declare_rt_blender_args(defaults=None):
+    """Return RT-mode ``DeclareLaunchArgument`` list.
+
+    Parameters
+    ----------
+    defaults : dict or None
+        Override default values (from :func:`load_launch_defaults`).
+    """
     from launch.actions import DeclareLaunchArgument
+    d = defaults or {}
     return [
         DeclareLaunchArgument(
-            'use_rt_blender', default_value='true',
+            'use_rt_blender', default_value=d.get('use_rt_blender', 'true'),
             description='true = RT C++ blending controller; '
                         'false = legacy ForwardCommandController + Python blender.'),
         DeclareLaunchArgument(
-            'qdot_max', default_value='0.2',
+            'qdot_max', default_value=d.get('qdot_max', '0.2'),
             description='[RT] Per-joint velocity clamp [rad/s]. 0.0 = disabled.'),
         DeclareLaunchArgument(
-            'alpha', default_value='1.0',
+            'alpha', default_value=d.get('alpha', '1.0'),
             description='[RT] Blend weight: qdot = alpha*tracking + (1-alpha)*avoidance.'),
         DeclareLaunchArgument(
-            'max_accel', default_value='0.0',
+            'max_accel', default_value=d.get('max_accel', '0.0'),
             description='[RT] Max joint acceleration [rad/s²]. 0.0 = disabled.'),
         DeclareLaunchArgument(
-            'timeout_threshold_s', default_value='0.0',
+            'timeout_threshold_s', default_value=d.get('timeout_threshold_s', '0.0'),
             description='[RT] Seconds before smooth timeout ramp. 0.0 = disabled.'),
         DeclareLaunchArgument(
-            'timeout_ramp_s', default_value='0.0',
+            'timeout_ramp_s', default_value=d.get('timeout_ramp_s', '0.0'),
             description='[RT] Linear ramp to zero duration [s]. 0.0 = disabled.'),
         DeclareLaunchArgument(
-            'gazebo', default_value='false',
+            'gazebo', default_value=d.get('gazebo', 'false'),
             description='[RT] Set true when running in Gazebo.'),
         DeclareLaunchArgument(
-            'enable_interpolation', default_value='true',
+            'enable_interpolation', default_value=d.get('enable_interpolation', 'true'),
             description='[RT] Linear interpolation between low-rate samples.'),
         DeclareLaunchArgument(
-            'alpha_topic', default_value='blend_alpha',
+            'alpha_topic', default_value=d.get('alpha_topic', 'blend_alpha'),
             description='[RT] Topic for runtime alpha updates (std_msgs/Float64).'),
         DeclareLaunchArgument(
-            'tracking_topic', default_value='__auto__',
+            'tracking_topic', default_value=d.get('tracking_topic', '__auto__'),
             description='Tracking qdot topic (__auto__ = tracking_qdot).'),
         DeclareLaunchArgument(
-            'avoidance_topic', default_value='__auto__',
+            'avoidance_topic', default_value=d.get('avoidance_topic', '__auto__'),
             description='Avoidance qdot topic (__auto__ = avoidance_qdot).'),
     ]
 
 
-def declare_legacy_blender_args():
-    """Return legacy-blender ``DeclareLaunchArgument`` list."""
+def declare_legacy_blender_args(defaults=None):
+    """Return legacy-blender ``DeclareLaunchArgument`` list.
+
+    Parameters
+    ----------
+    defaults : dict or None
+        Override default values (from :func:`load_launch_defaults`).
+    """
     from launch.actions import DeclareLaunchArgument
+    d = defaults or {}
     return [
         DeclareLaunchArgument(
-            'start_blender', default_value='true',
+            'start_blender', default_value=d.get('start_blender', 'true'),
             description='[Legacy] Start Python velocity_blender node.'),
         DeclareLaunchArgument(
-            'output_command_topic', default_value='__auto__',
+            'output_command_topic', default_value=d.get('output_command_topic', '__auto__'),
             description='[Legacy] Blender output topic.'),
         DeclareLaunchArgument(
-            'blender_rate_hz', default_value='200.0',
+            'blender_rate_hz', default_value=d.get('blender_rate_hz', '200.0'),
             description='[Legacy] Python blender publish rate [Hz].'),
         DeclareLaunchArgument(
-            'blender_qdot_max', default_value='0.2',
+            'blender_qdot_max', default_value=d.get('blender_qdot_max', '0.2'),
             description='[Legacy] Python blender per-joint velocity clamp [rad/s].'),
         DeclareLaunchArgument(
-            'blender_watchdog_s', default_value='0.2',
+            'blender_watchdog_s', default_value=d.get('blender_watchdog_s', '0.2'),
             description='[Legacy] Python blender per-channel watchdog timeout [s].'),
     ]
 
