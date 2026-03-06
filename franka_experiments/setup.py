@@ -12,6 +12,7 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/wrapper_forward_velocity.launch.py',
             'launch/random_waypoints_velocity.launch.py',
+            'launch/handeye_calibration_bringup.launch.py',
         ]),
         ('share/' + package_name + '/config', [
             'config/fake_hw_controller_params.yaml',
@@ -36,6 +37,7 @@ setup(
             'ee_pentagon_velocity_commander = franka_experiments.nodes.ee_pentagon_velocity_commander:main',
             'ee_random_waypoints_velocity_commander = franka_experiments.nodes.ee_random_waypoints_velocity_commander:main',
             'velocity_blender = franka_experiments.nodes.velocity_blender_node:main',
+            'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
         ],
     },
 )

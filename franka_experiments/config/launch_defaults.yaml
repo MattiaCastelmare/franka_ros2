@@ -17,7 +17,7 @@ controllers_yaml: "__auto__"
 
 # ── Camera & calibration ─────────────────────────────────────────────────
 enable_camera: true
-do_calibration: false
+do_calibration: true
 
 # ── RT velocity blender ──────────────────────────────────────────────────
 use_rt_blender: true
