@@ -6,12 +6,12 @@ Wrapper launch files and experiment nodes for Franka robots.
 
 | Launch file | Description |
 |---|---|
-| `wrapper_forward_velocity.launch.py` | Bringup + velocity controller (RT blender or legacy forward-velocity) |
+| `wrapper_forward_velocity.launch.py` | Bringup + RT velocity blender controller spawner |
 | `random_waypoints_velocity.launch.py` | Random end-effector waypoint commander (requires a running velocity controller) |
 
 ## Quick start
 
-### RT velocity blender (default)
+### RT velocity blender
 
 ```bash
 # Fake hardware (no real robot needed)
@@ -22,12 +22,6 @@ ros2 launch franka_experiments wrapper_forward_velocity.launch.py use_fake_hardw
 
 # Real hardware (default)
 ros2 launch franka_experiments wrapper_forward_velocity.launch.py robot_ip:=192.168.2.10
-```
-
-### Legacy forward-velocity controller
-
-```bash
-ros2 launch franka_experiments wrapper_forward_velocity.launch.py use_rt_blender:=false use_fake_hardware:=true
 ```
 
 ### Random waypoints commander

@@ -19,8 +19,7 @@ controllers_yaml: "__auto__"
 enable_camera: true
 do_calibration: true
 
-# ── RT velocity blender ──────────────────────────────────────────────────
-use_rt_blender: true
+# ── RT velocity blender controller ────────────────────────────────────────
 qdot_max: 1.5
 alpha: 0.5
 max_accel: 2.0
@@ -31,13 +30,6 @@ enable_interpolation: true
 alpha_topic: "blend_alpha"
 tracking_topic: "__auto__"
 avoidance_topic: "__auto__"
-
-# ── Legacy Python blender ────────────────────────────────────────────────
-start_blender: false
-output_command_topic: "__auto__"
-blender_rate_hz: 200.0
-blender_qdot_max: 1.0
-blender_watchdog_s: 0.2
 
 # ── Scheduling / jitter reduction ─────────────────────────────────────
 control_spawner_delay_s: 10.0

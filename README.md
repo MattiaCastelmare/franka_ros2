@@ -445,15 +445,13 @@ The `franka_experiments` package provides **launch files and ROS 2 nodes** for r
 
 ### What it provides
 
-- A wrapper launch file that brings up the full Franka robot driver with velocity control
+- A wrapper launch file that brings up the full Franka robot driver with the RT velocity blender controller
 - Multiple velocity commander nodes for generating joint-velocity commands
-- A Python-based velocity blender for merging tracking and avoidance velocity channels
 - A hand–eye calibration pipeline using AprilTags
-- Support for both the real-time C++ blender (`franka_rt_controllers`) and the legacy Python-based forward velocity controller
 
 ### Velocity control pipeline
 
-The experiments package uses a **velocity-based control architecture**. Joint-velocity commands are published by commander nodes and consumed by a velocity controller running on the robot hardware interface:
+The experiments package uses a **velocity-based control architecture**. Joint-velocity commands are published by commander nodes and blended by the `rt_velocity_blender_controller` (C++ at 1 kHz) before being sent to the hardware interface:
 
 ```
   ┌──────────────────────┐
@@ -462,19 +460,17 @@ The experiments package uses a **velocity-based control architecture**. Joint-ve
   └──────────────────────┘
               │
               ▼
-  ┌──────────────────────┐
-  │  Velocity Blender    │──▶ /fr3_forward_velocity_controller/commands
-  │  (Python or RT C++)  │       OR
-  └──────────────────────┘    /rt_velocity_blender_controller (hw interface)
+  ┌─────────────────────────────────────────┐
+  │  rt_velocity_blender_controller (C++)   │──▶ joint velocity hw interface
+  │  blend → interpolate → rate-limit →    │
+  │  clamp → command_interfaces @ 1 kHz    │
+  └─────────────────────────────────────────┘
               ▲
               │
   /avoidance_qdot ◀── (avoidance node, if running)
 ```
 
-**Two blending modes are available:**
-
-- **RT mode** (default, `use_rt_blender:=true`): Uses `rt_velocity_blender_controller` from `franka_rt_controllers` — C++ blending at 1 kHz inside the real-time loop.
-- **Legacy mode** (`use_rt_blender:=false`): Uses `fr3_forward_velocity_controller` (a standard `ForwardCommandController`) with an optional Python `velocity_blender` node.
+The `rt_velocity_blender_controller` from `franka_rt_controllers` performs blending, optional linear interpolation, rate limiting, smooth timeout ramp, and velocity clamping inside the 1 kHz real-time loop.
 
 ### Nodes
 
@@ -484,7 +480,6 @@ The experiments package uses a **velocity-based control architecture**. Joint-ve
 | `smooth_velocity_commander` | Like `velocity_commander` but with a **warmup phase** and **cosine-ramp envelope** for smooth startup. Publishes at 200 Hz. |
 | `ee_pentagon_velocity_commander` | Tracks a **pentagon trajectory** in Cartesian space using Pinocchio Jacobian-based resolved-rate control. Publishes to `tracking_qdot`. |
 | `ee_random_waypoints_velocity_commander` | Tracks **random Cartesian waypoints** within a configurable bounding box using Jacobian-based resolved-rate control with minimum-jerk time profiles. Publishes to `tracking_qdot`. |
-| `velocity_blender` | Python velocity blender/mux. Subscribes to `tracking_qdot` and `avoidance_qdot`, blends them, applies per-joint clamping and watchdog safety, and publishes the result to the forward velocity controller. |
 | `handeye_calibration_node` | Full hand–eye calibration pipeline. Supports manual (move-by-hand + ENTER) and automatic (velocity-based random waypoints) acquisition modes. Solves the AX=XB calibration problem using nonlinear SE(3) optimization with outlier filtering. |
 
 ### Launch files
@@ -494,19 +489,15 @@ The experiments package uses a **velocity-based control architecture**. Joint-ve
 This is the primary launch file for running experiments. It:
 
 1. Includes `franka_bringup/franka.launch.py` to start the robot driver, URDF, and standard broadcasters
-2. Spawns the velocity controller (RT blender or legacy forward velocity controller)
-3. Optionally starts the Python velocity blender (legacy mode only)
-4. Optionally starts RViz2, the RealSense camera pipeline, and the human pose node
+2. Spawns the `rt_velocity_blender_controller`
+3. Optionally starts RViz2, the RealSense camera pipeline, and the human pose node
 
 ```bash
-# RT velocity blender with fake hardware (no real robot)
+# Fake hardware (no real robot needed)
 ros2 launch franka_experiments wrapper_forward_velocity.launch.py use_fake_hardware:=true
 
-# RT velocity blender with real hardware
+# Real hardware
 ros2 launch franka_experiments wrapper_forward_velocity.launch.py robot_ip:=192.168.2.10
-
-# Legacy forward velocity controller
-ros2 launch franka_experiments wrapper_forward_velocity.launch.py use_rt_blender:=false use_fake_hardware:=true
 
 # With a namespace
 ros2 launch franka_experiments wrapper_forward_velocity.launch.py use_fake_hardware:=true namespace:=NS_1
@@ -516,14 +507,13 @@ ros2 launch franka_experiments wrapper_forward_velocity.launch.py use_fake_hardw
 
 | Argument | Default | Description |
 |---|---|---|
-| `use_rt_blender` | `true` | Use RT C++ blender (true) or legacy Python forward velocity (false) |
 | `use_fake_hardware` | `false` | Use fake hardware interface (no real robot) |
 | `robot_ip` | `192.168.1.10` | IP address of the real robot |
 | `namespace` | `""` | ROS 2 namespace for the robot |
 | `load_gripper` | `true` | Load the Franka Hand |
 | `enable_camera` | `true` | Enable RealSense camera pipeline |
 | `start_rviz` | `true` | Launch RViz2 |
-| `qdot_max` | `1.5` | Maximum joint velocity (rad/s) for the RT blender |
+| `qdot_max` | `1.5` | Maximum joint velocity (rad/s) |
 | `alpha` | `0.5` | Blend weight: `alpha * tracking + (1 - alpha) * avoidance` |
 
 Default values can be edited in `franka_experiments/config/launch_defaults.yaml` without modifying Python code.
@@ -632,7 +622,6 @@ This launch file:
 | Scenario | Controller | Package |
 |---|---|---|
 | Real hardware, real-time blending at 1 kHz | `rt_velocity_blender_controller` | `franka_rt_controllers` |
-| Real hardware, simple forward velocity | `fr3_forward_velocity_controller` + Python blender | `franka_experiments` |
 | Gazebo simulation | `fr3_velocity_controller` + Python velocity blender | `franka_simulation` |
 
 ---

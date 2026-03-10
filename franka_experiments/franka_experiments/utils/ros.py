@@ -313,22 +313,7 @@ def write_temp_yaml(content, prefix='franka_rt_blender_'):
     return path
 
 
-def resolve_legacy_controllers_yaml(use_fake):
-    """Return absolute path to the legacy static controllers YAML.
-
-    Parameters
-    ----------
-    use_fake : bool
-        If True, returns the fake-hardware YAML; otherwise the real one.
-    """
-    from ament_index_python.packages import get_package_share_directory
-    pkg_share = get_package_share_directory('franka_experiments')
-    yaml_file = ('controllers_velocity_forward.yaml' if use_fake
-                 else 'controllers_velocity_forward_real.yaml')
-    return os.path.join(pkg_share, 'config', yaml_file)
-
-
-def pick_controllers_yaml(explicit, use_fake, use_rt, rt_params=None):
+def pick_controllers_yaml(explicit, use_fake, rt_params):
     """Select (or generate) the correct controllers YAML path.
 
     Parameters
@@ -337,18 +322,13 @@ def pick_controllers_yaml(explicit, use_fake, use_rt, rt_params=None):
         CLI override value (``'__auto__'`` means auto-select).
     use_fake : bool
         Whether fake hardware is being used.
-    use_rt : bool
-        Whether RT blender mode is active.
-    rt_params : dict or None
-        Keyword arguments for :func:`generate_rt_controllers_yaml`
-        (required when *use_rt* is True).
+    rt_params : dict
+        Keyword arguments for :func:`generate_rt_controllers_yaml`.
     """
     if explicit != '__auto__':
         return explicit
-    if use_rt:
-        content = generate_rt_controllers_yaml(**rt_params)
-        return write_temp_yaml(content)
-    return resolve_legacy_controllers_yaml(use_fake)
+    content = generate_rt_controllers_yaml(**rt_params)
+    return write_temp_yaml(content)
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +375,7 @@ def declare_robot_args(defaults=None):
 
 
 def declare_rt_blender_args(defaults=None):
-    """Return RT-mode ``DeclareLaunchArgument`` list.
+    """Return RT-controller ``DeclareLaunchArgument`` list.
 
     Parameters
     ----------
@@ -405,10 +385,6 @@ def declare_rt_blender_args(defaults=None):
     from launch.actions import DeclareLaunchArgument
     d = defaults or {}
     return [
-        DeclareLaunchArgument(
-            'use_rt_blender', default_value=d.get('use_rt_blender', 'true'),
-            description='true = RT C++ blending controller; '
-                        'false = legacy ForwardCommandController + Python blender.'),
         DeclareLaunchArgument(
             'qdot_max', default_value=d.get('qdot_max', '0.2'),
             description='[RT] Per-joint velocity clamp [rad/s]. 0.0 = disabled.'),
@@ -442,41 +418,12 @@ def declare_rt_blender_args(defaults=None):
     ]
 
 
-def declare_legacy_blender_args(defaults=None):
-    """Return legacy-blender ``DeclareLaunchArgument`` list.
-
-    Parameters
-    ----------
-    defaults : dict or None
-        Override default values (from :func:`load_launch_defaults`).
-    """
-    from launch.actions import DeclareLaunchArgument
-    d = defaults or {}
-    return [
-        DeclareLaunchArgument(
-            'start_blender', default_value=d.get('start_blender', 'true'),
-            description='[Legacy] Start Python velocity_blender node.'),
-        DeclareLaunchArgument(
-            'output_command_topic', default_value=d.get('output_command_topic', '__auto__'),
-            description='[Legacy] Blender output topic.'),
-        DeclareLaunchArgument(
-            'blender_rate_hz', default_value=d.get('blender_rate_hz', '200.0'),
-            description='[Legacy] Python blender publish rate [Hz].'),
-        DeclareLaunchArgument(
-            'blender_qdot_max', default_value=d.get('blender_qdot_max', '0.2'),
-            description='[Legacy] Python blender per-joint velocity clamp [rad/s].'),
-        DeclareLaunchArgument(
-            'blender_watchdog_s', default_value=d.get('blender_watchdog_s', '0.2'),
-            description='[Legacy] Python blender per-channel watchdog timeout [s].'),
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Launch logging helpers
 # ---------------------------------------------------------------------------
 
 def build_wrapper_log_actions(
-    params, use_rt, config_path, controllers_yaml, controller_name, cm_name,
+    params, config_path, controllers_yaml, controller_name, cm_name,
 ):
     """Build ``LogInfo`` actions for ``wrapper_forward_velocity`` launch.
 
@@ -484,8 +431,6 @@ def build_wrapper_log_actions(
     ----------
     params : dict
         All resolved launch parameters (string values).
-    use_rt : bool
-        Whether RT blender mode is active.
     config_path : str
         Path to the ``franka.config.yaml`` that was loaded.
     controllers_yaml : str
@@ -497,13 +442,16 @@ def build_wrapper_log_actions(
     """
     from launch.actions import LogInfo
 
-    mode_str = ('RT (rt_velocity_blender_controller)' if use_rt
-                else 'LEGACY (fr3_forward_velocity_controller)')
     ns_display = params['namespace'] or '<none>'
+    p = params
+    trk_raw = p['tracking_topic']
+    avd_raw = p['avoidance_topic']
+    trk = 'tracking_qdot' if trk_raw == '__auto__' else trk_raw
+    avd = 'avoidance_qdot' if avd_raw == '__auto__' else avd_raw
 
     actions = [
         LogInfo(msg=['╔══ wrapper_forward_velocity ══════════════════════════╗']),
-        LogInfo(msg=['[wrapper] mode               : ', mode_str]),
+        LogInfo(msg=['[wrapper] mode               : RT (rt_velocity_blender_controller)']),
         LogInfo(msg=['[wrapper] franka.config.yaml : ', config_path]),
         LogInfo(msg=['[wrapper] arm_id             : ', params['arm_id']]),
         LogInfo(msg=['[wrapper] robot_ip           : ', params['robot_ip']]),
@@ -513,55 +461,34 @@ def build_wrapper_log_actions(
         LogInfo(msg=['[wrapper] controllers_yaml   : ', controllers_yaml]),
         LogInfo(msg=['[wrapper] controller_to_spawn: ', controller_name]),
         LogInfo(msg=['[wrapper] controller-manager : ', cm_name]),
+        LogInfo(msg=['[wrapper] ── RT controller parameters ──']),
+        LogInfo(msg=['[wrapper]   tracking_topic   : ', trk,
+                     '  (relative to controller NS)']),
+        LogInfo(msg=['[wrapper]   avoidance_topic  : ', avd,
+                     '  (relative to controller NS)']),
+        LogInfo(msg=['[wrapper]   alpha_topic      : ',
+                     p['alpha_topic']]),
+        LogInfo(msg=['[wrapper]   alpha            : ', p['alpha']]),
+        LogInfo(msg=['[wrapper]   qdot_max         : ', p['qdot_max'],
+                     ' rad/s (scalar, same for all 7 joints)']),
+        LogInfo(msg=['[wrapper]   max_accel        : ', p['max_accel'],
+                     ' rad/s²',
+                     '  [ACTIVE]' if float(p['max_accel']) > 0
+                     else '  [DISABLED]']),
+        LogInfo(msg=['[wrapper]   timeout_threshold: ',
+                     p['timeout_threshold_s'], ' s',
+                     '  [ACTIVE]' if (float(p['timeout_threshold_s']) > 0
+                                      and float(p['timeout_ramp_s']) > 0)
+                     else '  [DISABLED]']),
+        LogInfo(msg=['[wrapper]   timeout_ramp     : ',
+                     p['timeout_ramp_s'], ' s']),
+        LogInfo(msg=['[wrapper]   gazebo           : ', p['gazebo']]),
+        LogInfo(msg=['[wrapper]   interpolation    : ',
+                     p['enable_interpolation'],
+                     '  [ACTIVE]' if p['enable_interpolation'] == 'true'
+                     else '  [DISABLED]']),
+        LogInfo(msg=['╚═════════════════════════════════════════════════════╝']),
     ]
-
-    if use_rt:
-        p = params
-        trk_raw = p['tracking_topic']
-        avd_raw = p['avoidance_topic']
-        trk = 'tracking_qdot' if trk_raw == '__auto__' else trk_raw
-        avd = 'avoidance_qdot' if avd_raw == '__auto__' else avd_raw
-
-        actions += [
-            LogInfo(msg=['[wrapper] ── RT controller parameters ──']),
-            LogInfo(msg=['[wrapper]   tracking_topic   : ', trk,
-                         '  (relative to controller NS)']),
-            LogInfo(msg=['[wrapper]   avoidance_topic  : ', avd,
-                         '  (relative to controller NS)']),
-            LogInfo(msg=['[wrapper]   alpha_topic      : ',
-                         p['alpha_topic']]),
-            LogInfo(msg=['[wrapper]   alpha            : ', p['alpha']]),
-            LogInfo(msg=['[wrapper]   qdot_max         : ', p['qdot_max'],
-                         ' rad/s (scalar, same for all 7 joints)']),
-            LogInfo(msg=['[wrapper]   max_accel        : ', p['max_accel'],
-                         ' rad/s²',
-                         '  [ACTIVE]' if float(p['max_accel']) > 0
-                         else '  [DISABLED]']),
-            LogInfo(msg=['[wrapper]   timeout_threshold: ',
-                         p['timeout_threshold_s'], ' s',
-                         '  [ACTIVE]' if (float(p['timeout_threshold_s']) > 0
-                                          and float(p['timeout_ramp_s']) > 0)
-                         else '  [DISABLED]']),
-            LogInfo(msg=['[wrapper]   timeout_ramp     : ',
-                         p['timeout_ramp_s'], ' s']),
-            LogInfo(msg=['[wrapper]   gazebo           : ', p['gazebo']]),
-            LogInfo(msg=['[wrapper]   interpolation    : ',
-                         p['enable_interpolation'],
-                         '  [ACTIVE]' if p['enable_interpolation'] == 'true'
-                         else '  [DISABLED]']),
-        ]
-
-        if p.get('start_blender', 'false').lower() == 'true':
-            actions.append(
-                LogInfo(msg=['[wrapper] ⚠  start_blender=true IGNORED '
-                             '— RT controller handles blending internally']))
-
-        actions.append(
-            LogInfo(msg=['[wrapper] Python velocity_blender: DISABLED '
-                         '(RT mode — blending in C++ update())']))
-
-    actions.append(
-        LogInfo(msg=['╚═════════════════════════════════════════════════════╝']))
 
     return actions
 

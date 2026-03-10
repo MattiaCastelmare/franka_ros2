@@ -11,7 +11,6 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', [
             'launch/wrapper_forward_velocity.launch.py',
-            'launch/random_waypoints_velocity.launch.py',
             'launch/handeye_calibration_bringup.launch.py',
         ]),
         ('share/' + package_name + '/config', [
