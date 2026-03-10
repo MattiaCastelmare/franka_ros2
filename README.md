@@ -31,13 +31,36 @@ The goal of this fork is to provide a **reproducible robotics research environme
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
-
 ## About
-The **franka_ros2** repository provides a **ROS 2** integration of **libfranka**, allowing efficient control of the Franka Robotics arm within the ROS 2 framework. This project is designed to facilitate robotic research and development by providing a robust interface for controlling the research versions of Franka Robotics robots.
 
-This repository is a fork of the official `frankarobotics/franka_ros2` project and includes additional configurations, simulation support, MoveIt2 integration, and Docker-based environments aimed at facilitating robotics research workflows.
+The **franka_ros2** project provides the official **ROS 2 interface for Franka Robotics research robots**, built on top of the low-level **libfranka** control library.
 
-For convenience, we provide Dockerfile and docker-compose.yml files. While it is possible to build **franka_ros2** directly on your local machine, this approach requires manual installation of certain dependencies, while many others will be automatically installed by the **ROS 2** build system (e.g., via **rosdep**). This can result in a large number of libraries being installed on your system, potentially causing conflicts. Using Docker encapsulates these dependencies within the container, minimizing such risks. Docker also ensures a consistent and reproducible build environment across systems. For these reasons, we recommend using Docker.
+It enables developers to control Franka robots within the **ROS 2 ecosystem**, providing access to:
+
+- real-time robot control
+- ROS 2 control interfaces
+- integration with the ROS 2 toolchain (RViz2, MoveIt2, Gazebo)
+- modular controllers and hardware abstractions
+
+This repository is a **fork of the official [`frankarobotics/franka_ros2`](https://github.com/frankarobotics/franka_ros2)** project and extends it with additional features aimed at robotics research workflows.
+
+The main additions of this fork include:
+
+- simulation environments based on **RViz2** and **Gazebo**
+- **MoveIt2 integration** for motion planning
+- a **Docker-based development environment**
+- additional utilities for robotics experimentation
+
+### Why Docker?
+
+While it is possible to install all dependencies directly on the host system, the **Docker-based workflow** provides several advantages:
+
+- reproducible development environments
+- simplified dependency management
+- reduced risk of library conflicts
+- easier onboarding for new users
+
+For these reasons, **using Docker is the recommended installation method** for this repository.
 
 ## Research Extensions in This Fork
 
