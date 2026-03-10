@@ -1,8 +1,22 @@
-# ROS 2 Integration for Franka Robotics Research Robots
+# Franka ROS 2 Research Framework
 
 [![CI](https://github.com/frankarobotics/franka_ros2/actions/workflows/ci.yml/badge.svg)](https://github.com/frankarobotics/franka_ros2/actions/workflows/ci.yml)
 
-> **Note:** _franka_ros2_ is not officially supported on Windows.
+This repository provides a **ROS 2 integration framework for Franka Robotics research robots**, extending the official [`franka_ros2`](https://github.com/frankarobotics/franka_ros2) project with additional tools for:
+
+- 🧪 **Robotics research experiments**
+- 🖥 **Simulation environments (RViz2 + Gazebo)**
+- 🤖 **MoveIt2 motion planning**
+- 📦 **Docker-based development environments**
+
+The goal of this fork is to provide a **reproducible robotics research environment** for developing and testing algorithms such as:
+
+- motion control
+- collision avoidance
+- perception-driven control
+- human–robot interaction
+
+> **Note:** `franka_ros2` is not officially supported on Windows.
 
 ## Table of Contents
 - [About](#about)
