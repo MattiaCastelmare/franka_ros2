@@ -15,6 +15,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 
@@ -55,11 +56,12 @@ find_package(robot_state_publisher REQUIRED)
 # Visualization
 find_package(rviz2 REQUIRED)
 
-# Generate all custom action interfaces (for motion + hybrid planning)
+# Generate all custom interfaces (actions + messages)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/MoveToPose.action"
   "action/MoveToJoint.action"
   "action/PlanGlobalPath.action"
+  "msg/HumanPose2D.msg"
   DEPENDENCIES 
     builtin_interfaces
     geometry_msgs 
@@ -103,6 +105,12 @@ install(DIRECTORY rviz/
 install(DIRECTORY action/
   DESTINATION share/${PROJECT_NAME}/action
   FILES_MATCHING PATTERN "*.action"
+)
+
+# Install message definitions
+install(DIRECTORY msg/
+  DESTINATION share/${PROJECT_NAME}/msg
+  FILES_MATCHING PATTERN "*.msg"
 )
 
 # Installa tutti gli script Python in scripts/ come nodi eseguibili senza .py
