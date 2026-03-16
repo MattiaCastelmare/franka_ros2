@@ -23,11 +23,11 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
-from franka_experiments.utils.constants import NUM_JOINTS, CONTROLLER_NAME
-from franka_experiments.utils.ros import resolve_controller_topic, teardown
+from franka_experiments.utils.constants import NUM_JOINTS
+from franka_experiments.utils.ros import resolve_tracking_topic, teardown
 from franka_experiments.utils.math_utils import cosine_ramp
 
-DEFAULT_TOPIC = resolve_controller_topic()
+DEFAULT_TOPIC = resolve_tracking_topic()
 DEFAULT_RATE_HZ = 200.0
 DEFAULT_AMPLITUDES = [0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
 DEFAULT_FREQUENCIES = [0.0, 0.0, 0.0, 0.2, 0.2, 0.0, 0.0]

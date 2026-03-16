@@ -1,4 +1,4 @@
-"""Publish sinusoidal joint-velocity commands to a ForwardCommandController."""
+"""Publish sinusoidal joint-velocity commands to a velocity controller."""
 
 import math
 import time
@@ -8,8 +8,9 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.constants import NUM_JOINTS
+from franka_experiments.utils.ros import resolve_tracking_topic
 
-DEFAULT_TOPIC = '/fr3_forward_velocity_controller/commands'
+DEFAULT_TOPIC = resolve_tracking_topic()
 DEFAULT_RATE_HZ = 100.0
 DEFAULT_AMPLITUDES = [0.0, 0.0, 0.0, 0.3, 0.3, 0.0, 0.0]
 DEFAULT_FREQUENCIES = [0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0]

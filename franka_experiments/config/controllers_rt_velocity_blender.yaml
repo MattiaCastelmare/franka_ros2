@@ -1,9 +1,8 @@
 # Controller configuration for FAKE / MOCK hardware with RT velocity blender.
 # Namespace-agnostic (/**:) — works with any namespace or no namespace.
 #
-# Replaces fr3_forward_velocity_controller with rt_velocity_blender_controller
-# from the franka_rt_controllers package.  Blending, rate-limiting, clamping
-# all happen inside the RT update() loop — no Python blender needed.
+# Uses rt_velocity_blender_controller from the franka_rt_controllers package.
+# Blending, rate-limiting, clamping all happen inside the RT update() loop.
 #
 # NOTE: This is a STATIC fallback YAML.  In normal operation the launch file
 # generates a runtime YAML with resolved parameters (qdot_max, alpha, topics).

@@ -17,7 +17,6 @@ controllers_yaml: "__auto__"
 
 # ── Camera & calibration ─────────────────────────────────────────────────
 enable_camera: true
-do_calibration: true
 
 # ── RT velocity blender controller ────────────────────────────────────────
 qdot_max: 1.5

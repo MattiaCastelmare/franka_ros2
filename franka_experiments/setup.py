@@ -15,8 +15,6 @@ setup(
         ]),
         ('share/' + package_name + '/config', [
             'config/fake_hw_controller_params.yaml',
-            'config/controllers_velocity_forward.yaml',
-            'config/controllers_velocity_forward_real.yaml',
             'config/controllers_rt_velocity_blender.yaml',
             'config/controllers_rt_velocity_blender_real.yaml',
             'config/camera_extrinsics.yaml',
@@ -35,7 +33,6 @@ setup(
             'smooth_velocity_commander = franka_experiments.nodes.smooth_velocity_commander:main',
             'ee_pentagon_velocity_commander = franka_experiments.nodes.ee_pentagon_velocity_commander:main',
             'ee_random_waypoints_velocity_commander = franka_experiments.nodes.ee_random_waypoints_velocity_commander:main',
-            'velocity_blender = franka_experiments.nodes.velocity_blender_node:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
         ],
     },

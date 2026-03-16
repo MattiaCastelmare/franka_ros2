@@ -2,8 +2,8 @@
 """End-effector pentagon trajectory tracker via joint-velocity commands.
 
 Publishes ``std_msgs/Float64MultiArray`` (7 joints) to the
-``tracking_qdot`` topic (consumed by the **velocity_blender** node) using
-Pinocchio for Jacobian-based resolved-rate control.
+``tracking_qdot`` topic (consumed by the **rt_velocity_blender_controller**)
+using Pinocchio for Jacobian-based resolved-rate control.
 
 The end-effector follows a **smooth pentagon** trajectory on a configurable
 plane (default XY) around a given centre, with minimum-jerk (5th-order) time

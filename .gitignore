@@ -10,3 +10,6 @@ install/
 log/
 libfranka
 franka_description
+# local datasets
+datasets/
+datasets.zip

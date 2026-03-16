@@ -48,7 +48,6 @@ _ALL_PARAMS = [
     'gazebo', 'enable_interpolation', 'alpha_topic', 'tracking_topic',
     'avoidance_topic',
     'enable_camera',
-    'do_calibration',
     'control_spawner_delay_s', 'start_rviz', 'rviz_delay_s',
     'camera_delay_s', 'start_human_pose', 'human_pose_delay_s',
 ]
@@ -181,7 +180,7 @@ def _launch_all(context):
                          '(enable_camera:=false)']))
 
     # ── Camera extrinsics static TF (from YAML) ──────────────────────
-    if _as_bool(p['enable_camera']) and not _as_bool(p['do_calibration']):
+    if _as_bool(p['enable_camera']):
         extrinsics_path = PathJoinSubstitution([
             FindPackageShare('franka_experiments'),
             'config', 'camera_extrinsics.yaml',
@@ -211,10 +210,6 @@ def _launch_all(context):
         actions.append(
             LogInfo(msg=['[wrapper] Camera extrinsics TF : ENABLED '
                          '(', ext['parent_frame'], ' -> ', ext['child_frame'], ')']))
-    elif _as_bool(p['enable_camera']):
-        actions.append(
-            LogInfo(msg=['[wrapper] Camera extrinsics TF : DISABLED '
-                         '(do_calibration:=true)']))
 
     return actions
 
@@ -228,11 +223,6 @@ def generate_launch_description():
                 'enable_camera',
                 default_value=str(_DEFAULTS.get('enable_camera', 'true')),
                 description='Enable RealSense driver + image republisher'),
-            DeclareLaunchArgument(
-                'do_calibration',
-                default_value=str(_DEFAULTS.get('do_calibration', 'false')),
-                description='Calibration mode: skip YAML static TF so '
-                            'calibration tools can publish their own'),
             DeclareLaunchArgument(
                 'control_spawner_delay_s',
                 default_value=str(_DEFAULTS.get('control_spawner_delay_s', '10.0')),

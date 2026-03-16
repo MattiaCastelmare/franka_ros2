@@ -2,9 +2,8 @@
 """End-effector random-waypoints trajectory tracker via joint-velocity commands.
 
 Publishes ``std_msgs/Float64MultiArray`` (7 joints) to the
-``tracking_qdot`` topic (consumed by the **velocity_blender** /
-**rt_velocity_blender_controller**) using Pinocchio for Jacobian-based
-resolved-rate control.
+``tracking_qdot`` topic (consumed by the **rt_velocity_blender_controller**)
+using Pinocchio for Jacobian-based resolved-rate control.
 
 The end-effector follows a sequence of **random Cartesian waypoints**
 inside a configurable axis-aligned bounding box.  Each segment uses a
@@ -508,7 +507,7 @@ if __name__ == '__main__':
 # ======================================================================
 # TEST COMMANDS
 # ======================================================================
-# 1) Start the RT velocity blender (or legacy forward-velocity controller):
+# 1) Start the RT velocity blender controller:
 #
 #    ros2 launch franka_experiments wrapper_forward_velocity.launch.py
 #

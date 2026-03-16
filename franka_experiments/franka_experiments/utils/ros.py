@@ -11,7 +11,7 @@ import rclpy
 import rclpy.executors
 from rclpy.node import Node
 
-from .constants import TRACKING_TOPIC_SUFFIX, CONTROLLER_NAME
+from .constants import TRACKING_TOPIC_SUFFIX
 
 
 # ---------------------------------------------------------------------------
@@ -48,11 +48,6 @@ def build_namespaced_topic(suffix: str, robot_key: str = 'ROBOT1') -> str:
 def resolve_tracking_topic(robot_key: str = 'ROBOT1') -> str:
     """Auto-detect namespace → build ``tracking_qdot`` topic."""
     return build_namespaced_topic(TRACKING_TOPIC_SUFFIX, robot_key)
-
-
-def resolve_controller_topic(robot_key: str = 'ROBOT1') -> str:
-    """Auto-detect namespace → build ``<controller>/commands`` topic."""
-    return build_namespaced_topic(f'{CONTROLLER_NAME}/commands', robot_key)
 
 
 def resolve_topic_with_deprecated_alias(
@@ -237,7 +232,7 @@ def generate_rt_controllers_yaml(
     """
     lines = [
         '# Auto-generated at launch time by wrapper_forward_velocity.launch.py',
-        '# Mode: RT velocity blender  —  DO NOT EDIT (regenerated every launch)',
+        '# Controller: rt_velocity_blender_controller  —  DO NOT EDIT (regenerated every launch)',
         '',
         '/**:',
         '  controller_manager:',
@@ -516,13 +511,12 @@ def selfcheck_run():
     try:
         from franka_experiments.utils.constants import (
             NUM_JOINTS, FR3_JOINT_NAMES, TRACKING_TOPIC_SUFFIX,
-            CONTROLLER_NAME, AUTO_SENTINEL,
+            AUTO_SENTINEL,
         )
         assert NUM_JOINTS == 7
         assert len(FR3_JOINT_NAMES) == 7
         assert FR3_JOINT_NAMES[0] == 'fr3_joint1'
         assert isinstance(TRACKING_TOPIC_SUFFIX, str)
-        assert isinstance(CONTROLLER_NAME, str)
         assert isinstance(AUTO_SENTINEL, str)
         print('[OK] constants')
     except Exception as e:
