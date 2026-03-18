@@ -374,9 +374,13 @@ class HandEyeCalibrationNode(Node):
         self.declare_parameter('ramp_s', 2.0)
         self.declare_parameter('capture_pos_tol_m', 0.02)
         self.declare_parameter('min_safe_z_m', 0.30)
-        self.declare_parameter('lock_ee_orientation', True)
+        self.declare_parameter('orientation_excitation_enabled', True)
         self.declare_parameter('orientation_kp', 1.0)
         self.declare_parameter('capture_rot_tol_deg', 5.0)
+        self.declare_parameter('orientation_roll_deg_max', 8.0)
+        self.declare_parameter('orientation_pitch_deg_max', 8.0)
+        self.declare_parameter('orientation_yaw_deg_max', 12.0)
+        self.declare_parameter('orientation_confidence_threshold', 0.5)
 
         self._base_frame: str = self.get_parameter('robot_base_frame').value
         self._tool_frame: str = self.get_parameter('robot_tool_frame').value
@@ -417,12 +421,22 @@ class HandEyeCalibrationNode(Node):
             'capture_pos_tol_m').value
         self._min_safe_z_m: float = self.get_parameter(
             'min_safe_z_m').value
-        self._lock_ee_orientation: bool = self.get_parameter(
-            'lock_ee_orientation').value
+        self._orientation_excitation_enabled: bool = self.get_parameter(
+            'orientation_excitation_enabled').value
         self._orientation_kp: float = self.get_parameter(
             'orientation_kp').value
         self._capture_rot_tol_deg: float = self.get_parameter(
             'capture_rot_tol_deg').value
+        self._orient_roll_max_deg: float = self.get_parameter(
+            'orientation_roll_deg_max').value
+        self._orient_pitch_max_deg: float = self.get_parameter(
+            'orientation_pitch_deg_max').value
+        self._orient_yaw_max_deg: float = self.get_parameter(
+            'orientation_yaw_deg_max').value
+        self._orient_confidence_threshold: float = self.get_parameter(
+            'orientation_confidence_threshold').value
+        # Adaptive perturbation amplitude scale (reduced on low confidence)
+        self._orient_perturbation_scale: float = 1.0
 
         # ── TF listener ───────────────────────────────────────────────
         self._tf_buffer = tf2_ros.Buffer()
@@ -863,8 +877,12 @@ class HandEyeCalibrationNode(Node):
         self._auto_stopping: bool = False
         self._auto_stop_end: float = 0.0
 
-        # Locked EE orientation (captured on first active tick)
+        # Reference EE orientation (captured on first active tick)
+        self._auto_R_ref: Optional[np.ndarray] = None
+        # Per-waypoint desired orientation (R_ref with perturbation)
         self._auto_R_des: Optional[np.ndarray] = None
+        # Reference quaternion (x,y,z,w) stored alongside R_ref
+        self._auto_q_ref: Optional[tuple] = None
 
         # Statistics
         self._auto_n_ok: int = 0
@@ -910,7 +928,10 @@ class HandEyeCalibrationNode(Node):
             f'  lpf_alpha      : {self._auto_lpf_alpha}\n'
             f'  capture_tol    : {self._capture_pos_tol_m * 1000:.1f} mm\n'
             f'  capture_rot_tol: {self._capture_rot_tol_deg:.1f} deg\n'
-            f'  lock_ee_orient : {self._lock_ee_orientation}\n'
+            f'  orient_excite  : {self._orientation_excitation_enabled}\n'
+            f'  orient_roll_max: {self._orient_roll_max_deg:.1f} deg\n'
+            f'  orient_pitch_max: {self._orient_pitch_max_deg:.1f} deg\n'
+            f'  orient_yaw_max : {self._orient_yaw_max_deg:.1f} deg\n'
             f'  orientation_kp : {self._orientation_kp}\n'
             f'  min_safe_z     : {self._min_safe_z_m:.3f} m')
 
@@ -985,13 +1006,21 @@ class HandEyeCalibrationNode(Node):
             self._auto_seg_p_start = p_ee.copy()
             self._auto_phase = 'move'
 
-            # Lock the current EE orientation as the desired orientation
-            # for the entire calibration run.
-            if self._lock_ee_orientation and self._auto_R_des is None:
-                self._auto_R_des = R_ee.copy()
+            # Store the initial EE orientation as q_ref / R_ref.
+            if self._orientation_excitation_enabled and self._auto_R_ref is None:
+                self._auto_R_ref = R_ee.copy()
+                self._auto_q_ref = _rot_to_quat(R_ee)
                 self.get_logger().info(
-                    'EE orientation LOCKED to current pose '
-                    '(will be maintained throughout auto-motion).')
+                    f'Reference EE orientation stored as q_ref = '
+                    f'({self._auto_q_ref[0]:.4f}, {self._auto_q_ref[1]:.4f}, '
+                    f'{self._auto_q_ref[2]:.4f}, {self._auto_q_ref[3]:.4f})')
+                # Generate first perturbed orientation for waypoint 0
+                self._auto_R_des = self._generate_orientation_perturbation()
+                self.get_logger().info(
+                    'Orientation excitation ENABLED — small perturbations '
+                    f'around q_ref (roll±{self._orient_roll_max_deg}°, '
+                    f'pitch±{self._orient_pitch_max_deg}°, '
+                    f'yaw±{self._orient_yaw_max_deg}°).')
 
             wp = self._auto_waypoints[0]
             self.get_logger().info(
@@ -1112,9 +1141,9 @@ class HandEyeCalibrationNode(Node):
         e_pos = p_d - p_ee
         v_lin = v_d + self._auto_kp * e_pos
 
-        # Orientation control: keep EE orientation locked to R_des.
-        if self._lock_ee_orientation and self._auto_R_des is not None:
-            # Orientation error: log-map of R_des^T · R_ee → 3-vector
+        # Orientation control: track R_des (perturbed around R_ref).
+        if self._orientation_excitation_enabled and self._auto_R_des is not None:
+            # Orientation error: log-map of R_des · R_ee^{-1} → 3-vector
             # (expressed in world frame, matching LOCAL_WORLD_ALIGNED
             # Jacobian convention).
             R_err = self._auto_R_des @ R_ee.T  # R_des · R_ee^{-1}
@@ -1125,7 +1154,7 @@ class HandEyeCalibrationNode(Node):
             twist_cmd = np.concatenate([v_lin, v_ang])  # (6,)
             J_ctrl = J_arm                               # 6×7
         else:
-            # Fallback: position-only control (no orientation lock).
+            # Fallback: position-only control (no orientation regulation).
             twist_cmd = v_lin                             # (3,)
             J_ctrl = J_arm[:3, :]                         # 3×7
 
@@ -1153,7 +1182,7 @@ class HandEyeCalibrationNode(Node):
         if self._auto_tlog.due(t):
             n_cap = len(self._samples_base_tool)
             rot_str = ''
-            if self._lock_ee_orientation and self._auto_R_des is not None:
+            if self._orientation_excitation_enabled and self._auto_R_des is not None:
                 rot_err_d = rotation_error_deg(self._auto_R_des, R_ee)
                 rot_str = f' |e_rot|={rot_err_d:.1f}°'
             self._auto_tlog.info(
@@ -1167,6 +1196,83 @@ class HandEyeCalibrationNode(Node):
     # ------------------------------------------------------------------
     # Auto-motion helpers
     # ------------------------------------------------------------------
+
+    def _generate_orientation_perturbation(self) -> np.ndarray:
+        """Generate a small random orientation perturbation around q_ref.
+
+        Returns the perturbed desired rotation matrix R_des = R_ref @ R_delta.
+        Perturbation bounds (in degrees) are taken from ROS parameters:
+          roll  ∈ [-orientation_roll_deg_max,  +orientation_roll_deg_max]
+          pitch ∈ [-orientation_pitch_deg_max, +orientation_pitch_deg_max]
+          yaw   ∈ [-orientation_yaw_deg_max,   +orientation_yaw_deg_max]
+
+        If the AprilTag detection confidence is low, perturbation amplitude
+        is reduced by 50 %.
+        """
+        scale = self._orient_perturbation_scale
+
+        roll_max  = math.radians(self._orient_roll_max_deg)  * scale
+        pitch_max = math.radians(self._orient_pitch_max_deg) * scale
+        yaw_max   = math.radians(self._orient_yaw_max_deg)   * scale
+
+        rng = self._auto_rng
+
+        d_roll  = float(rng.uniform(-roll_max,  roll_max))
+        d_pitch = float(rng.uniform(-pitch_max, pitch_max))
+        d_yaw   = float(rng.uniform(-yaw_max,   yaw_max))
+
+        # Compose R_delta = Rz(yaw) · Ry(pitch) · Rx(roll)  (intrinsic ZYX)
+        cx, sx = math.cos(d_roll),  math.sin(d_roll)
+        cy, sy = math.cos(d_pitch), math.sin(d_pitch)
+        cz, sz = math.cos(d_yaw),   math.sin(d_yaw)
+
+        Rx = np.array([[1, 0,  0],
+                        [0, cx, -sx],
+                        [0, sx,  cx]], dtype=np.float64)
+        Ry = np.array([[ cy, 0, sy],
+                        [  0, 1,  0],
+                        [-sy, 0, cy]], dtype=np.float64)
+        Rz = np.array([[cz, -sz, 0],
+                        [sz,  cz, 0],
+                        [ 0,   0, 1]], dtype=np.float64)
+
+        R_delta = Rz @ Ry @ Rx
+
+        # q_target = q_ref ⊗ q_delta  →  R_target = R_ref @ R_delta
+        R_target = self._auto_R_ref @ R_delta
+
+        # Convert delta to quaternion for norm check logging
+        qx, qy, qz, qw = _rot_to_quat(R_delta)
+        q_norm = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+
+        self.get_logger().debug(
+            f'Orientation perturbation: '
+            f'Δroll={math.degrees(d_roll):.2f}° '
+            f'Δpitch={math.degrees(d_pitch):.2f}° '
+            f'Δyaw={math.degrees(d_yaw):.2f}° '
+            f'(scale={scale:.2f})  '
+            f'|q_delta|={q_norm:.6f}')
+
+        return R_target
+
+    def _check_tag_confidence_and_adapt(self) -> None:
+        """Reduce perturbation amplitude if AprilTag confidence is low.
+
+        If the tag has not been detected recently, halve the perturbation
+        scale.  When the tag is detected again, restore full scale.
+        """
+        if self._is_tag_detected_recently():
+            if self._orient_perturbation_scale < 1.0:
+                self._orient_perturbation_scale = 1.0
+                self.get_logger().info(
+                    'AprilTag detected — orientation perturbation '
+                    'scale restored to 1.0')
+        else:
+            if self._orient_perturbation_scale >= 1.0:
+                self._orient_perturbation_scale = 0.5
+                self.get_logger().warn(
+                    'AprilTag NOT detected — reducing orientation '
+                    'perturbation scale to 0.5')
 
     def _auto_advance_waypoint(
         self, tr: float, p_ee: np.ndarray,
@@ -1196,6 +1302,13 @@ class HandEyeCalibrationNode(Node):
             self._auto_phase = 'move'
             self._auto_seg_start = tr
             self._auto_seg_p_start = p_ee.copy()
+
+            # Generate a new orientation perturbation for this waypoint.
+            if (self._orientation_excitation_enabled
+                    and self._auto_R_ref is not None):
+                self._check_tag_confidence_and_adapt()
+                self._auto_R_des = self._generate_orientation_perturbation()
+
             wp = self._auto_waypoints[self._auto_wp_idx]
             self.get_logger().info(
                 f'  → Waypoint [{self._auto_wp_idx}/'
