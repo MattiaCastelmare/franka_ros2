@@ -10,6 +10,14 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>franka_msgs</exec_depend>
+  <exec_depend>franka_description</exec_depend>
+  <exec_depend>franka_simulation</exec_depend>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

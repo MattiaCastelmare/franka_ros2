@@ -11,7 +11,7 @@ import rclpy
 import rclpy.executors
 from rclpy.node import Node
 
-from .constants import TRACKING_TOPIC_SUFFIX
+from .constants import AVOIDANCE_TOPIC_SUFFIX, TRACKING_TOPIC_SUFFIX
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +48,11 @@ def build_namespaced_topic(suffix: str, robot_key: str = 'ROBOT1') -> str:
 def resolve_tracking_topic(robot_key: str = 'ROBOT1') -> str:
     """Auto-detect namespace → build ``tracking_qdot`` topic."""
     return build_namespaced_topic(TRACKING_TOPIC_SUFFIX, robot_key)
+
+
+def resolve_avoidance_topic(robot_key: str = 'ROBOT1') -> str:
+    """Auto-detect namespace → build ``avoidance_qdot`` topic."""
+    return build_namespaced_topic(AVOIDANCE_TOPIC_SUFFIX, robot_key)
 
 
 def resolve_topic_with_deprecated_alias(

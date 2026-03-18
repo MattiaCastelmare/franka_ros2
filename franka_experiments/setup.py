@@ -12,6 +12,7 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/wrapper_forward_velocity.launch.py',
             'launch/handeye_calibration_bringup.launch.py',
+            'launch/human_avoidance.launch.py',
         ]),
         ('share/' + package_name + '/config', [
             'config/fake_hw_controller_params.yaml',
@@ -19,6 +20,10 @@ setup(
             'config/controllers_rt_velocity_blender_real.yaml',
             'config/camera_extrinsics.yaml',
             'config/launch_defaults.yaml',
+            'config/human_avoidance_params.yaml',
+            'config/human_distance_estimator_params.yaml',
+            'config/rgb_intrinsics.yaml',
+            'config/depth_intrinsics.yaml',
         ]),
     ],
     install_requires=['setuptools'],
@@ -34,6 +39,9 @@ setup(
             'ee_pentagon_velocity_commander = franka_experiments.nodes.ee_pentagon_velocity_commander:main',
             'ee_random_waypoints_velocity_commander = franka_experiments.nodes.ee_random_waypoints_velocity_commander:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
+            'human_avoidance_controller = franka_experiments.nodes.human_avoidance_controller:main',
+            'human_distance_estimator = franka_experiments.nodes.human_distance_estimator:main',
+            'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
         ],
     },
 )
