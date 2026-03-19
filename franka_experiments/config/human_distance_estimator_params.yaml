@@ -1,0 +1,56 @@
+# ========================================================================
+# HUMAN-ROBOT DISTANCE ESTIMATOR PARAMETERS
+# ========================================================================
+# Estimates minimum distance between detected human body landmarks and
+# the robot kinematic chain. Publishes HumanRobotDistance messages
+# compatible with the human_avoidance_controller node.
+# ========================================================================
+
+human_distance_estimator:
+  ros__parameters:
+    # =====================
+    # RATE
+    # =====================
+    rate: 30.0  # Hz
+
+    # =====================
+    # OUTPUT TOPIC
+    # =====================
+    output_topic: "/human_robot/closest_distance"
+
+    # =====================
+    # INPUT TOPICS
+    # =====================
+    joint_state_topic: "/joint_states"
+    landmarks_topic: "/human_pose/landmarks"
+    depth_image_topic: "/camera/camera/depth/image_rect_raw"
+    depth_info_topic: "/camera/camera/depth/camera_info"
+    rgb_image_topic: "/camera/camera/color/image_raw"
+    rgb_info_topic: "/camera/camera/color/camera_info"
+
+    # =====================
+    # LANDMARK FILTERING
+    # =====================
+    min_visibility: 0.5        # MediaPipe visibility threshold [0-1]
+    min_valid_landmarks: 3     # minimum 3-D points required
+
+    # =====================
+    # DEPTH PROCESSING
+    # =====================
+    depth_min_m: 0.15          # [m] reject depth below this
+    depth_max_m: 5.0           # [m] reject depth above this
+    depth_scale: 0.001         # RealSense: 1 depth unit = 0.001 m
+
+    # =====================
+    # CAMERA EXTRINSIC
+    # =====================
+    # Transform: camera_optical_frame → robot base frame.
+    # Defaults match config/camera_extrinsics.yaml.
+    cam_extrinsic:
+      tx: 1.603373
+      ty: 0.668697
+      tz: 0.548549
+      qx: -0.413455
+      qy: -0.56679
+      qz: 0.641158
+      qw: 0.311001

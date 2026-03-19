@@ -21,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Errors.msg"
   "msg/GraspEpsilon.msg"
   "msg/FrankaRobotState.msg"
+  "msg/HumanRobotDistance.msg"
   "srv/SetCartesianStiffness.srv"
   "srv/SetTCPFrame.srv"
   "srv/SetForceTorqueCollisionBehavior.srv"
