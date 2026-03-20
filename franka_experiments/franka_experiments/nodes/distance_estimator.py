@@ -171,6 +171,22 @@ class HumanDistanceEstimator(Node):
         self._last_q_for_fk: Optional[np.ndarray] = None
         self._cached_segments: Optional[List[Dict]] = None
 
+        # ── Self-mask cache ────────────────────────────────────────────
+        # Keyed on _q_gen: mask is rebuilt only when joints change.
+        self._self_mask_cache: Optional[np.ndarray] = None
+        self._self_mask_gen: int = -1      # _q_gen at last mask build
+        self._morph_kernel: Optional[np.ndarray] = None
+        self._morph_kernel_size: int = -1  # cached kernel side-length
+
+        # ── Timing metrics (exponential moving average, α = 0.1) ──────
+        _A = 0.1
+        self._timing_alpha: float = _A
+        self._t_mask_avg:   float = 0.0   # [s] self-mask build time
+        self._t_search_avg: float = 0.0   # [s] distance-search time
+        self._t_render_avg: float = 0.0   # [s] debug-render time
+        self._mask_cache_hits:   int = 0
+        self._mask_cache_misses: int = 0
+
         # ── Logging ───────────────────────────────────────────────────
         self._tlog = ThrottledLogger(self.get_logger(), period_s=1.0)
 
@@ -279,14 +295,14 @@ class HumanDistanceEstimator(Node):
         # ── Robot-centric depth-space pipeline ─────────────────────────
         # Number of control points sampled along each robot capsule axis.
         # Placed at t_k = (k+1)/(N+1), k=0..N-1 (interior, never at endpoints).
-        self.declare_parameter("robot_control_points_per_segment", 7)
+        self.declare_parameter("robot_control_points_per_segment", 5)
         # Half-side of the fallback square surveillance window [px] used when
         # the adaptive window is disabled (use_adaptive_surveillance_window=False).
         self.declare_parameter("surveillance_half_window_px", 30)
         # Metric radius [m] of the adaptive surveillance sphere around each CP.
         # Projected to pixels as half_w = fx * rho_m / z_cp, so the window
         # shrinks with distance: a CP 1 m away with rho=0.4 m → ~250 px at fx=640.
-        self.declare_parameter("surveillance_radius_m", 0.4)
+        self.declare_parameter("surveillance_radius_m", 0.30)
         # When True (default) use the depth-adaptive window; when False fall back
         # to the fixed surveillance_half_window_px.
         self.declare_parameter("use_adaptive_surveillance_window", True)
@@ -307,10 +323,10 @@ class HumanDistanceEstimator(Node):
         self.declare_parameter("robot_self_mask_radius_px", 15)
         # Extra dilation margin [px] added on top of the painted circles.
         # Increase to add safety margin around the robot body.
-        self.declare_parameter("robot_self_mask_dilate_px", 12)
+        self.declare_parameter("robot_self_mask_dilate_px", 8)
         # Number of points sampled along each capsule axis for mask painting.
         # More samples → smoother coverage for curved/long capsules.
-        self.declare_parameter("robot_self_mask_samples_per_segment", 40)
+        self.declare_parameter("robot_self_mask_samples_per_segment", 20)
         # Overlay the self-mask on the final debug image (magenta tint).
         self.declare_parameter("robot_self_mask_draw_on_debug", True)
 
@@ -1218,14 +1234,46 @@ class HumanDistanceEstimator(Node):
                         -r_px <= v < self._depth_height + r_px):
                     cv2.circle(mask_u8, (u, v), r_px, 255, -1)
 
-        # Dilate for a conservative safety margin around the painted silhouette
+        # Dilate for a conservative safety margin around the painted silhouette.
+        # The kernel is cached so getStructuringElement runs only when the
+        # dilation parameter changes (typically never at runtime).
         if self._self_mask_dilate_px > 0:
             k_size = 2 * self._self_mask_dilate_px + 1
-            kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, (k_size, k_size))
-            mask_u8 = cv2.dilate(mask_u8, kernel)
+            if self._morph_kernel is None or self._morph_kernel_size != k_size:
+                self._morph_kernel      = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (k_size, k_size))
+                self._morph_kernel_size = k_size
+            mask_u8 = cv2.dilate(mask_u8, self._morph_kernel)
 
         return mask_u8 > 0   # boolean array
+
+    def _maybe_rebuild_robot_self_mask(
+        self,
+        segments: List[Dict],
+    ) -> Optional[np.ndarray]:
+        """Return the robot self-mask, rebuilding it only when joints changed.
+
+        The mask is keyed on ``_q_gen``.  As long as the joint-state generation
+        counter has not advanced since the last build, the cached boolean array
+        is returned immediately (O(1)).  A full rebuild is triggered only when
+        the robot moved (``_q_gen`` changed), which is the only thing that can
+        alter the projected capsule silhouette.
+
+        Cache-hit:  returns ``_self_mask_cache`` without any computation.
+        Cache-miss: calls ``_build_robot_self_mask``, stores result + gen.
+        """
+        if not self._enable_self_mask or not _HAS_CV2:
+            return None
+        if (self._self_mask_cache is not None
+                and self._self_mask_gen == self._q_gen):
+            self._mask_cache_hits += 1
+            return self._self_mask_cache
+        # Rebuild needed: new joint configuration
+        mask = self._build_robot_self_mask(segments)
+        self._self_mask_cache  = mask
+        self._self_mask_gen    = self._q_gen
+        self._mask_cache_misses += 1
+        return mask
 
     def _compute_surveillance_window_px(self, cp_cam: np.ndarray) -> int:
         """Convert the metric surveillance radius to depth-image pixels.
@@ -1277,7 +1325,14 @@ class HumanDistanceEstimator(Node):
           n_evaluated   — candidates examined before early exit
           n_total       — total candidates in window (before pruning)
         """
-        n_total  = len(obs_cam)
+        n_total = len(obs_cam)
+
+        # Fast path: single candidate — skip argsort entirely.
+        if n_total == 1:
+            d3d   = float(np.linalg.norm(obs_cam[0] - cp_cam))
+            d_eff = max(d3d - radius, 0.0)
+            return obs_cam[0], d_eff, 1, 1
+
         dists    = np.linalg.norm(obs_cam - cp_cam, axis=1)   # (M,)
         order    = np.argsort(dists)                           # near → far
 
@@ -1296,8 +1351,11 @@ class HumanDistanceEstimator(Node):
             if d_eff < best_d_eff:
                 best_d_eff = d_eff
                 best_i     = int(i)
+                # Perfect early exit: contact (d_eff == 0) cannot be beaten.
+                if best_d_eff == 0.0:
+                    break
 
-        return obs_cam[best_i].copy(), best_d_eff, n_eval, n_total
+        return obs_cam[best_i], best_d_eff, n_eval, n_total
 
     def _select_local_obstacle_robust(
         self,
@@ -1380,9 +1438,10 @@ class HumanDistanceEstimator(Node):
         R_bc = self._T_base_cam[:3, :3]   # camera → base
         t_bc = self._T_base_cam[:3, 3]
 
-        # Build robot self-mask once for the whole cycle (uses ALL segments so
-        # the excluded capsules also contribute to the masked silhouette).
-        robot_mask = self._build_robot_self_mask(segments)
+        # ── Self-mask: cached across cycles while robot pose is unchanged ──
+        _t0_mask  = time.perf_counter()
+        robot_mask = self._maybe_rebuild_robot_self_mask(segments)
+        _t_mask   = time.perf_counter() - _t0_mask
 
         best_dist          = float("inf")
         best_cp            = None
@@ -1395,6 +1454,7 @@ class HumanDistanceEstimator(Node):
         n_cps_no_cands     = 0
         sum_half_w         = 0
 
+        _t0_search = time.perf_counter()
         for cp in ctrl_pts:
             p_base = cp["pt_base"]
             radius = cp["radius"]
@@ -1438,6 +1498,13 @@ class HumanDistanceEstimator(Node):
                 best_n_pts   = n_total
                 best_n_eval  = n_eval
                 best_half_w  = half_w
+
+        _t_search = time.perf_counter() - _t0_search
+
+        # ── Update timing EMAs ─────────────────────────────────────────
+        _a = self._timing_alpha
+        self._t_mask_avg   = (1.0 - _a) * self._t_mask_avg   + _a * _t_mask
+        self._t_search_avg = (1.0 - _a) * self._t_search_avg + _a * _t_search
 
         if best_cp is None or not np.isfinite(best_dist) or best_dist > 5.0:
             return None
@@ -1484,6 +1551,7 @@ class HumanDistanceEstimator(Node):
             "avg_half_w":          avg_half_w,
             "winner_cp":           best_cp,
             "robot_mask":          robot_mask,
+            "ctrl_pts":            ctrl_pts,   # reused by debug overlay
         }
 
     # ================================================================
@@ -2302,16 +2370,27 @@ class HumanDistanceEstimator(Node):
         if self._should_publish_debug_image(t_wall):
             if result is not None or self._debug_draw_no_valid:
                 if self._debug_robot_centric:
-                    # Robot-centric overlay: all CPs + winner + obstacle point
-                    # + robot self-mask tint.  The mask is taken from the result
-                    # dict (already built during Stage 1) so we don't recompute.
-                    ctrl_pts = (self._build_robot_control_points(
-                        self._cached_segments)
-                        if self._cached_segments else None)
-                    robot_mask = (result.get("robot_mask")
-                                  if result is not None else None)
+                    # Robot-centric overlay: ctrl_pts and robot_mask are taken
+                    # from the result dict (built during Stage 1) to avoid
+                    # redundant recomputation.  Fall back to rebuilding ctrl_pts
+                    # only when there is no valid result (e.g. no obstacle found
+                    # but debug_draw_no_valid_distance is True).
+                    if result is not None:
+                        ctrl_pts   = result.get("ctrl_pts")
+                        robot_mask = result.get("robot_mask")
+                    else:
+                        ctrl_pts   = (self._build_robot_control_points(
+                            self._cached_segments)
+                            if self._cached_segments else None)
+                        robot_mask = self._self_mask_cache  # use cached mask
+
+                    _t0_render = time.perf_counter()
                     self._draw_robot_centric_debug_overlay(
                         result, ctrl_pts, now, robot_mask=robot_mask)
+                    _t_render = time.perf_counter() - _t0_render
+                    _a = self._timing_alpha
+                    self._t_render_avg = (
+                        (1.0 - _a) * self._t_render_avg + _a * _t_render)
                 else:
                     # Legacy landmark-based overlay
                     lm_diag   = None
@@ -2344,10 +2423,9 @@ class HumanDistanceEstimator(Node):
                     if self._segment_is_excluded(s))
                 n_cps = self._robot_cps_per_seg * (n_segs_total - n_segs_excluded)
                 mask_px = 0
-                if result is not None:
-                    rm = result.get("robot_mask")
-                    if rm is not None:
-                        mask_px = int(np.count_nonzero(rm))
+                cached_mask = self._self_mask_cache
+                if cached_mask is not None:
+                    mask_px = int(np.count_nonzero(cached_mask))
                 self._tlog.info(
                     f"RC pipeline: {n_segs_total} capsules total, "
                     f"{n_segs_excluded} excluded (fr3_cap_0..{n_segs_excluded-1}), "
@@ -2355,6 +2433,18 @@ class HumanDistanceEstimator(Node):
                     f"self-mask: r_px={self._self_mask_radius_px} "
                     f"dilate={self._self_mask_dilate_px} "
                     f"covered={mask_px}px"
+                )
+                # ── Timing report ──────────────────────────────────────
+                total_ops = self._mask_cache_hits + self._mask_cache_misses
+                hit_pct   = (100.0 * self._mask_cache_hits / total_ops
+                             if total_ops > 0 else 0.0)
+                self._tlog.info(
+                    f"TIMING [ms] mask={self._t_mask_avg*1e3:.1f} "
+                    f"search={self._t_search_avg*1e3:.1f} "
+                    f"render={self._t_render_avg*1e3:.1f} | "
+                    f"mask-cache hits={self._mask_cache_hits} "
+                    f"miss={self._mask_cache_misses} "
+                    f"({hit_pct:.0f}% reuse)"
                 )
             if result is not None:
                 ph = result["closest_point_human"]
