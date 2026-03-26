@@ -98,6 +98,7 @@ RUN sudo apt-get update && \
         ros-humble-realsense2-camera \
         ros-humble-realsense2-description \
         freeglut3-dev \
+        ros-humble-apriltag-ros \
     && sudo apt-get clean && \
     sudo rm -rf /var/lib/apt/lists/*
 
