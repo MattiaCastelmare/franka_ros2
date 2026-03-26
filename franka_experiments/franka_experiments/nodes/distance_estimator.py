@@ -91,6 +91,20 @@ _ZONE_WARNING  = 0.40
 # from the old "fr3_link0/fr3_link1" assumption.
 _N_EXCLUDED_CAPSULES: int = 2
 
+# Control points per capsule (keyed on capsule_idx).
+# Capsules 0-1 are excluded from distance calculations; their entry is 0.
+# Any capsule_idx not present in the dict falls back to _DEFAULT_CPS_PER_SEG.
+_DEFAULT_CPS_PER_SEG: int = 5
+_CPS_PER_CAPSULE: Dict[int, int] = {
+    0: 0,   # fr3_cap_0 — excluded
+    1: 0,   # fr3_cap_1 — excluded
+    2: 0,   # link 3
+    3: 5,   # link 4
+    4: 5,   # link 5
+    5: 5,   # link 6
+    6: 5,   # link 7
+}
+
 # Significant landmarks for ROI definition (avoids noisy face/foot details)
 _LANDMARK_WHITELIST: frozenset = frozenset([
     0,          # nose            (head proximity)
@@ -324,6 +338,9 @@ class HumanDistanceEstimator(Node):
         # Extra dilation margin [px] added on top of the painted circles.
         # Increase to add safety margin around the robot body.
         self.declare_parameter("robot_self_mask_dilate_px", 8)
+        # Minimum depth difference [m] between a candidate and the robot surface
+        # at that control point. Candidates at or behind the robot are rejected.
+        self.declare_parameter("robot_self_mask_depth_gate_m", 0.10)
         # Number of points sampled along each capsule axis for mask painting.
         # More samples → smoother coverage for curved/long capsules.
         self.declare_parameter("robot_self_mask_samples_per_segment", 20)
@@ -386,6 +403,7 @@ class HumanDistanceEstimator(Node):
         self._enable_self_mask      = bool(p("enable_robot_self_mask"))
         self._self_mask_radius_px   = max(1, int(p("robot_self_mask_radius_px")))
         self._self_mask_dilate_px   = max(0, int(p("robot_self_mask_dilate_px")))
+        self._self_mask_depth_gate_m = float(p("robot_self_mask_depth_gate_m"))
         self._self_mask_samples     = max(2, int(p("robot_self_mask_samples_per_segment")))
         self._self_mask_draw        = bool(p("robot_self_mask_draw_on_debug"))
         self._debug_method_topic    = str(p("debug_method_topic"))
@@ -1053,12 +1071,15 @@ class HumanDistanceEstimator(Node):
             seg_idx  — int, index in the segments list
             cp_idx   — int, 0 … N-1
         """
-        n = self._robot_cps_per_seg
-        ts = [(k + 1) / (n + 1) for k in range(n)]
         ctrl_pts: List[Dict] = []
         for seg_idx, seg in enumerate(segments):
             if self._segment_is_excluded(seg):
                 continue
+            cap_idx = int(seg.get("capsule_idx", seg_idx))
+            n = _CPS_PER_CAPSULE.get(cap_idx, _DEFAULT_CPS_PER_SEG)
+            if n == 0:
+                continue
+            ts = [(k + 1) / (n + 1) for k in range(n)]
             name = str(seg.get("parent", ""))
             p0  = np.asarray(seg["p0"], dtype=float)
             p1  = np.asarray(seg["p1"], dtype=float)
@@ -1484,6 +1505,15 @@ class HumanDistanceEstimator(Node):
             n_cps_evaluated += 1
 
             if obs_cam is None:
+                n_cps_no_cands += 1
+                continue
+
+            # ── Depth gate: reject candidates at or behind the robot ───
+            z_robot = float(cp_cam[2])
+            z_threshold = z_robot - self._self_mask_depth_gate_m
+            keep = obs_cam[:, 2] < z_threshold
+            obs_cam = obs_cam[keep]
+            if obs_cam.shape[0] == 0:
                 n_cps_no_cands += 1
                 continue
 
@@ -2099,9 +2129,7 @@ class HumanDistanceEstimator(Node):
         font     = cv2.FONT_HERSHEY_SIMPLEX
         col_text = (255, 255, 255)
         col_bg   = (20,  20,  20)
-        f_scale  = 0.55
         f_thick  = 1
-        pad      = 7
 
         overlay = base.copy()
 
@@ -2195,50 +2223,6 @@ class HumanDistanceEstimator(Node):
                           col_bg, -1)
             cv2.putText(overlay, mid_label, (mid_x, mid_y),
                         font, f2, col_text, f_thick, cv2.LINE_AA)
-
-        # ── Layer 8: info panel ───────────────────────────────────────
-        mask_px = (int(np.count_nonzero(robot_mask))
-                   if robot_mask is not None else 0)
-        n_cps   = len(ctrl_pts) if ctrl_pts else 0
-
-        if result is not None:
-            n_cps_tot  = result.get("n_cps_total",    n_cps)
-            n_cps_eval = result.get("n_cps_evaluated", "?")
-            n_no_cands = result.get("n_cps_no_cands",  "?")
-            n_eval     = result.get("winner_n_eval",   "?")
-            win_hw     = result.get("winner_half_w",   "?")
-            avg_hw_val = result.get("avg_half_w",      "?")
-            avg_hw_str = (f"{avg_hw_val:.0f}" if isinstance(avg_hw_val, float)
-                          else str(avg_hw_val))
-            lines = [
-                f"DEPTH-RC  {result['robot_link_name']}",
-                f"d_eff:   {result['distance']:.3f} m",
-                f"zone:    {result['zone']}",
-                f"conf:    {result['confidence']:.2f}",
-                f"CPs tot/eval: {n_cps_tot}/{n_cps_eval}",
-                f"no-cands CPs: {n_no_cands}",
-                f"win cands/eval: {result.get('n_valid_pts','?')}/{n_eval}",
-                f"win_hw: {win_hw}px  avg_hw: {avg_hw_str}px",
-                f"masked: {result.get('n_masked_total','?')}  mask_px: {mask_px}",
-                f"method: true-min + contraction",
-            ]
-        else:
-            lines = [
-                "DEPTH-RC  no distance",
-                f"CPs: {n_cps}  mask_px: {mask_px}",
-            ]
-
-        sizes   = [cv2.getTextSize(ln, font, f_scale, f_thick) for ln in lines]
-        panel_w = max(s[0][0] for s in sizes) + 2 * pad
-        line_h  = sizes[0][0][1]
-        gap     = 5
-        panel_h = len(lines) * line_h + (len(lines) - 1) * gap + 2 * pad
-        cv2.rectangle(overlay, (6, 6), (6 + panel_w, 6 + panel_h), col_bg, -1)
-        y_txt = 6 + pad + line_h
-        for ln in lines:
-            cv2.putText(overlay, ln, (6 + pad, y_txt),
-                        font, f_scale, col_text, f_thick, cv2.LINE_AA)
-            y_txt += line_h + gap
 
         # ── Publish ───────────────────────────────────────────────────
         out = Image()
@@ -2421,7 +2405,11 @@ class HumanDistanceEstimator(Node):
                 n_segs_excluded = sum(
                     1 for s in self._cached_segments
                     if self._segment_is_excluded(s))
-                n_cps = self._robot_cps_per_seg * (n_segs_total - n_segs_excluded)
+                n_cps = sum(
+                    _CPS_PER_CAPSULE.get(int(s.get("capsule_idx", i)), _DEFAULT_CPS_PER_SEG)
+                    for i, s in enumerate(self._cached_segments)
+                    if not self._segment_is_excluded(s)
+                )
                 mask_px = 0
                 cached_mask = self._self_mask_cache
                 if cached_mask is not None:
