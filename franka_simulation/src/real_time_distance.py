@@ -89,21 +89,48 @@ class RealTimeDistance(Node):
         step = 8
         margin = 10
 
-        segments = self.get_robot_segments()
+        transforms = self.get_all_link_transforms()
+        if transforms is None:
+            return
+
+        segments = self.get_robot_segments_from_transforms(transforms)
         if segments is None:
             return
+
+        robot_mask = self.build_robot_mask_from_transforms(transforms, dilate_px=8)
+        search_exclusion_mask = self.build_search_exclusion_mask(robot_mask, extra_px=10)
+
+        # Search only in a ROI around the robot, instead of the whole image
+        roi_pad = 80  # pixels around the robot area
+
+        if search_exclusion_mask is not None:
+            ys, xs = np.where(search_exclusion_mask)
+
+            if len(xs) > 0 and len(ys) > 0:
+                x0 = max(margin, int(xs.min()) - roi_pad)
+                x1 = min(W - margin, int(xs.max()) + roi_pad)
+                y0 = max(margin, int(ys.min()) - roi_pad)
+                y1 = min(H - margin, int(ys.max()) + roi_pad)
+            else:
+                x0, x1 = margin, W - margin
+                y0, y1 = margin, H - margin
+        else:
+            x0, x1 = margin, W - margin
+            y0, y1 = margin, H - margin
 
         min_dist = np.inf
         closest_Z = None
         closest_point = None
         closest_robot_point = None
+        closest_uv_obs = None
 
-        for v in range(margin, H - margin, step):
-            for u in range(margin, W - margin, step):
-                
+        for v in range(y0, y1, step):
+            for u in range(x0, x1, step):
+                if search_exclusion_mask is not None and search_exclusion_mask[v, u]:
+                    continue
                 # convert depth from mm to meters
                 Z = float(self.last_depth[v, u]) / 1000.0
-                if Z <= 0:
+                if Z < 0.15 or Z > 3.0:
                     continue
 
                 uv1 = np.array([u, v, 1.0], dtype=float) # pixel homogeneous coordinates
@@ -121,30 +148,42 @@ class RealTimeDistance(Node):
                         closest_Z = Z
                         closest_point = p
                         closest_robot_point = proj
+                        closest_uv_obs = (u, v)
 
         if min_dist < np.inf:
             print(f"Min distance: {min_dist:.3f} m")
             print(f"Closest depth Z: {closest_Z:.3f} m")
             print(f"Closest point in base: {closest_point}")
             print(f"Closest point on robot: {closest_robot_point}")
+            print(f"Closest pixel: {closest_uv_obs}")
 
             # visualize distance on depth image
             depth_vis = cv2.normalize(self.last_depth, None, 0, 255, cv2.NORM_MINMAX)
             depth_vis = depth_vis.astype(np.uint8)
             depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
 
-            # draw robot semgents in green
+            if robot_mask is not None:
+                depth_vis[robot_mask] = (0, 0, 0)
+            if robot_mask is not None:
+                contours, _ = cv2.findContours(
+                    (robot_mask.astype(np.uint8) * 255),
+                    cv2.RETR_EXTERNAL,
+                    cv2.CHAIN_APPROX_SIMPLE
+                )
+                cv2.drawContours(depth_vis, contours, -1, (0, 255, 0), 1)
+
+            # draw robot segments in green
             for a, b in segments:
                 uv_a = self.project_point_to_image(a)
                 uv_b = self.project_point_to_image(b)
 
                 if uv_a is not None and uv_b is not None:
-                    cv2.line(depth_vis, uv_a, uv_b, (0, 255, 0), 2)
-                    cv2.circle(depth_vis, uv_a, 3, (0, 255, 0), -1)
-                    cv2.circle(depth_vis, uv_b, 3, (0, 255, 0), -1)
+                    cv2.line(depth_vis, uv_a, uv_b, (0, 255, 0), 1)
+                    cv2.circle(depth_vis, uv_a, 2, (0, 255, 0), -1)
+                    cv2.circle(depth_vis, uv_b, 2, (0, 255, 0), -1)
 
             for link_name in self.link_mesh_samples.keys():
-                points_base = self.get_link_mesh_points_in_base(link_name)
+                points_base = self.get_link_mesh_points_in_base_from_transforms(link_name, transforms)
                 if points_base is None:
                     continue
 
@@ -153,24 +192,23 @@ class RealTimeDistance(Node):
                     if uv is not None:
                         cv2.circle(depth_vis, uv, 1, (0, 255, 0), -1)
 
-            # closest point on obstacle in red
-            uv_obs = self.project_point_to_image(closest_point)
-            if uv_obs is not None:
-                u, v = uv_obs
+            # closest obstacle pixel in red
+            if closest_uv_obs is not None:
+                u, v = closest_uv_obs
                 cv2.circle(depth_vis, (u, v), 5, (0, 0, 255), -1)
             else:
                 u, v = 20, 20
                 cv2.circle(depth_vis, (u, v), 5, (0, 0, 255), -1)
 
-            # closest point on robot in blue
+            # closest point on robot in cyan
             uv_robot = self.project_point_to_image(closest_robot_point)
-            if uv_robot is not None:
-                cv2.circle(depth_vis, uv_robot, 5, (0, 0, 255), -1)
+            if uv_robot is not None and closest_uv_obs is not None:
+                cv2.circle(depth_vis, uv_robot, 5, (255, 255, 0), -1)
 
-                # euclidean distance line in yellow
-                cv2.line(depth_vis, (u, v), uv_robot, (0, 0, 255), 2)
-                
-            # plot distance text
+                # distance segment in white
+                cv2.line(depth_vis, closest_uv_obs, uv_robot, (255, 255, 255), 2)
+
+            # distance text
             cv2.putText(
                 depth_vis,
                 f"{min_dist:.3f} m",
@@ -241,7 +279,29 @@ class RealTimeDistance(Node):
         except TransformException:
             return None, None
         
-    def get_robot_segments(self):
+    def get_all_link_transforms(self):
+        link_names = [
+            'fr3_link0',
+            'fr3_link1',
+            'fr3_link2',
+            'fr3_link3',
+            'fr3_link4',
+            'fr3_link5',
+            'fr3_link6',
+            'fr3_link7',
+            'fr3_link8'
+        ]
+
+        transforms = {}
+        for name in link_names:
+            R, t = self.get_link_rotation_translation(name)
+            if R is None or t is None:
+                return None
+            transforms[name] = (R, t)
+
+        return transforms
+        
+    def get_robot_segments_from_transforms(self, transforms):
         link_names = [
             'fr3_link1',
             'fr3_link2',
@@ -255,21 +315,22 @@ class RealTimeDistance(Node):
 
         points = []
         for name in link_names:
-            p = self.get_link_position(name) # get position of each link in the base frame
-            if p is None:
+            if name not in transforms:
                 return None
-            points.append(p)
+            _, t = transforms[name]
+            points.append(t)
 
         segments = []
         for i in range(len(points) - 1):
-            segments.append((points[i], points[i + 1])) # create segments between consecutive links
+            segments.append((points[i], points[i + 1]))
+
         return segments
     
-    def get_link_mesh_points_in_base(self, link_name):
-        R, t = self.get_link_rotation_translation(link_name)
-        if R is None:
+    def get_link_mesh_points_in_base_from_transforms(self, link_name, transforms):
+        if link_name not in transforms:
             return None
 
+        R, t = transforms[link_name]
         points_local = self.link_mesh_samples[link_name]
         points_base = (R @ points_local.T).T + t
         return points_base
@@ -297,7 +358,44 @@ class RealTimeDistance(Node):
             return (u, v)
 
         return None
+
+    def build_robot_mask_from_transforms(self, transforms, dilate_px=10):
+        if self.last_depth is None:
+            return None
+
+        H, W = self.last_depth.shape
+        mask = np.zeros((H, W), dtype=np.uint8)
+
+        for link_name in self.link_mesh_samples.keys():
+            points_base = self.get_link_mesh_points_in_base_from_transforms(link_name, transforms)
+            if points_base is None:
+                continue
+
+            for p in points_base:
+                uv = self.project_point_to_image(p)
+                if uv is not None:
+                    cv2.circle(mask, uv, 2, 255, -1)
+
+        if dilate_px > 0:
+            k = 2 * dilate_px + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            mask = cv2.dilate(mask, kernel)
+
+        return mask > 0
     
+    def build_search_exclusion_mask(self, robot_mask, extra_px=12):
+        if robot_mask is None:
+            return None
+
+        excl = (robot_mask.astype(np.uint8) * 255)
+        if extra_px > 0:
+            k = 2 * extra_px + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            excl = cv2.dilate(excl, kernel)
+
+        return excl > 0
+
+
 def main(args=None):
     rclpy.init(args=args)
     distance_calculator = RealTimeDistance()
