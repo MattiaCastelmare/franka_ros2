@@ -891,6 +891,8 @@ class HandEyeCalibrationNode(Node):
 
         # Low-pass filter state
         self._auto_qdot_prev = np.zeros(NUM_JOINTS)
+        # Separate LPF for angular velocity command (smooths orientation transitions)
+        self._auto_v_ang_filt = np.zeros(3)
 
         # ── Velocity publisher ────────────────────────────────────────
         self._pub_vel = self.create_publisher(
@@ -950,7 +952,7 @@ class HandEyeCalibrationNode(Node):
         State machine: warmup → move → hold → settle → [capture] → next.
         Publishes 7-DOF joint velocities via resolved-rate Cartesian control.
         """
-        # ── Clean shutdown: zeros then solve ──────────────────────────
+        # ── Clean shutdown: publish zeros, then solve ────────────────
         if self._auto_stopping:
             try:
                 self._pub_vel.publish(self._auto_zero_msg)
@@ -979,11 +981,15 @@ class HandEyeCalibrationNode(Node):
         js = self._auto_js_mgr
         if js.q is None or js.q_full is None:
             self._pub_vel.publish(self._auto_zero_msg)
+            self._auto_qdot_prev = np.zeros(NUM_JOINTS)
+            self._auto_v_ang_filt = np.zeros(3)
             return
 
         js_age = (self.get_clock().now() - js.stamp).nanoseconds * 1e-9
         if js_age > 0.1:
             self._pub_vel.publish(self._auto_zero_msg)
+            self._auto_qdot_prev = np.zeros(NUM_JOINTS)
+            self._auto_v_ang_filt = np.zeros(3)
             return
 
         # ── Forward kinematics + Jacobian ─────────────────────────────
@@ -1035,13 +1041,11 @@ class HandEyeCalibrationNode(Node):
             self.get_logger().info(
                 f'Collected {self._num_samples} target samples — stopping.')
             self._request_auto_stop()
-            self._pub_vel.publish(self._auto_zero_msg)
             return
 
         # ── Waypoints exhausted ───────────────────────────────────────
         if self._auto_wp_idx >= len(self._auto_waypoints):
             self._request_auto_stop()
-            self._pub_vel.publish(self._auto_zero_msg)
             return
 
         # ── State: MOVE ───────────────────────────────────────────────
@@ -1148,13 +1152,22 @@ class HandEyeCalibrationNode(Node):
             # Jacobian convention).
             R_err = self._auto_R_des @ R_ee.T  # R_des · R_ee^{-1}
             e_rot = _so3_log(R_err)             # 3-vector, radians
-            v_ang = self._orientation_kp * e_rot
+            v_ang_raw = self._orientation_kp * e_rot
+            # Low-pass the angular velocity command: prevents the instantaneous
+            # v_ang jump when R_des changes at each waypoint transition.
+            # alpha=0.92 at 200Hz gives ~50ms time constant — fast enough to
+            # track orientation, slow enough to keep qdot steps within Franka's
+            # acceleration limit (kMaxJointAcceleration=10 rad/s² @ 1kHz).
+            self._auto_v_ang_filt = lpf(self._auto_v_ang_filt, v_ang_raw, 0.92)
+            v_ang = self._auto_v_ang_filt
 
             # Stack into 6D twist and use full 6×7 Jacobian.
             twist_cmd = np.concatenate([v_lin, v_ang])  # (6,)
             J_ctrl = J_arm                               # 6×7
         else:
             # Fallback: position-only control (no orientation regulation).
+            # Reset filter so it starts clean if orientation is re-enabled.
+            self._auto_v_ang_filt = np.zeros(3)
             twist_cmd = v_lin                             # (3,)
             J_ctrl = J_arm[:3, :]                         # 3×7
 
@@ -1166,6 +1179,7 @@ class HandEyeCalibrationNode(Node):
             if qdot_raw is None:
                 self._pub_vel.publish(self._auto_zero_msg)
                 self._auto_qdot_prev *= 0.0
+                self._auto_v_ang_filt *= 0.0
                 return
 
         qdot_scaled = envelope * qdot_raw
