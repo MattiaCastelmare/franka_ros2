@@ -115,7 +115,8 @@ RUN pip3 install --user --upgrade "pip" "setuptools<80" "wheel" && \
         sentencepiece \
         sounddevice \
         numpy==1.26.4 \
-        opencv-contrib-python==4.11.0.86 && \
+        opencv-contrib-python==4.11.0.86 \
+        trimesh && \
     pip3 install --user mediapipe==0.10.20
 
 
