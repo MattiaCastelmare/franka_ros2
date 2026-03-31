@@ -81,9 +81,12 @@ topics:
 distance:
   min_depth_m: 0.15
   max_depth_m: 4.0
-  pixel_step: 6
+  pixel_step: 2
   image_margin_px: 10
   roi_pad_px: 90
+  thresholds:
+    min_thresh: 0.09
+    max_thresh: 0.5
 
 mask:
   robot_mask_dilate_px: 8

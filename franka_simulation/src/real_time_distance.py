@@ -365,14 +365,18 @@ class RealTimeDistance(Node):
         closest_uv_obs = None
 
         # Filter out invalid results where distance is still inf
-        valid_results = [r for r in cp_results if r["distance"] < np.inf]
+        self.thresholds = self.distance_cfg["thresholds"]
+        valid_results = [
+            r for r in cp_results
+            if r["distance"] < np.inf
+            and self.thresholds['min_thresh'] <= r["distance"] <= self.thresholds['max_thresh']
+        ]
+
         if len(valid_results) == 0:
             return
-
         # Find the control point with the minimum distance to an obstacle
         best_result = min(valid_results, key=lambda r: r["distance"])
 
-        # Extract info from best result
         min_dist = best_result["distance"]
         closest_point = best_result["closest_obstacle_point"]
         closest_robot_point = best_result["point"]
