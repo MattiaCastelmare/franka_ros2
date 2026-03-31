@@ -144,8 +144,8 @@ class RealTimeDistance(Node):
         return None
 
 
-    # === Robot Mask ===
-    def build_robot_mask_from_transforms(self, transforms, dilate_px=10):
+    # === Robot Mask ===  
+    def build_robot_mask_from_transforms(self, transforms, dilate_px=10, ee_dilate_px=12):
         if self.last_depth is None:
             return None
 
@@ -157,15 +157,16 @@ class RealTimeDistance(Node):
             if points_base is None:
                 continue
 
+            # Different dilation for end-effector vs rest of the robot
+            if link_name == "fr3_link8":
+                r = ee_dilate_px
+            else:
+                r = dilate_px
+
             for p in points_base:
                 uv = self.project_point_to_image(p)
                 if uv is not None:
-                    cv2.circle(mask, uv, 2, 255, -1)
-
-        if dilate_px > 0:
-            k = 2 * dilate_px + 1
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-            mask = cv2.dilate(mask, kernel)
+                    cv2.circle(mask, uv, r, 255, -1)
 
         return mask > 0
 
