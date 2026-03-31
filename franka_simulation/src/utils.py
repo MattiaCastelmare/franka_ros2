@@ -26,19 +26,11 @@ def load_extrinsics():
 
     return R, t
 
-def load_link_mesh_files():
-    filename = '/ros2_ws/src/franka_simulation/config/fr3_collision.yaml'
+def load_robot_config():
+    filename = '/ros2_ws/src/franka_simulation/config/fr3_complete.yaml'
     with open(filename, 'r') as f:
         data = yaml.safe_load(f)
-
-    return data['link_mesh_files']
-
-def load_link_names():
-    filename = '/ros2_ws/src/franka_simulation/config/fr3_links.yaml'
-    with open(filename, 'r') as f:
-        data = yaml.safe_load(f)
-
-    return data['link_names']
+    return data
 
 def point_to_segment_distance_with_projection(p, a, b):
         ab = b - a # segment vector
@@ -55,7 +47,7 @@ def point_to_segment_distance_with_projection(p, a, b):
         return d, proj
     
 def get_robot_segments_from_transforms(transforms):
-    link_names = load_link_names()
+    link_names = load_robot_config()['robot']['segment_links']
     link_names = [name for name in link_names if name != 'fr3_link0']  # Exclude the base link
 
     points = []

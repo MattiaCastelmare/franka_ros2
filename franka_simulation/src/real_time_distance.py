@@ -7,8 +7,7 @@ import cv2
 import yaml
 from tf2_ros import Buffer, TransformListener, TransformException
 import trimesh
-from utils import load_extrinsics, load_link_mesh_files, point_to_segment_distance_with_projection
-from utils import load_link_names, get_robot_segments_from_transforms, get_rotation_from_quaternion
+from utils import load_extrinsics, load_robot_config, get_robot_segments_from_transforms, get_rotation_from_quaternion
 
 
 class RealTimeDistance(Node):
@@ -35,8 +34,15 @@ class RealTimeDistance(Node):
             self.camera_info_callback,
             10)
         
+        self.config = load_robot_config()
+        self.robot_cfg = self.config['robot']
+        self.distance_cfg = self.config['distance']
+        self.mask_cfg = self.config['mask']
+        self.mesh_cfg = self.config['meshes']
+        self.topics_cfg = self.config['topics']
+        
         # Load mesh files for each link and sample points on them
-        self.link_mesh_files = load_link_mesh_files()
+        self.link_mesh_files = self.mesh_cfg['files']
         self.link_meshes = {}
         self.link_mesh_samples = {}
         for link_name, mesh_path in self.link_mesh_files.items():
@@ -93,7 +99,7 @@ class RealTimeDistance(Node):
             return None, None
         
     def get_all_link_transforms(self):
-        link_names = load_link_names()
+        link_names = self.robot_cfg['segment_links']
 
         transforms = {}
         for name in link_names:
@@ -177,75 +183,75 @@ class RealTimeDistance(Node):
         
 
     # === Control Points ===
-    def define_control_points(self, transforms, n_total=16):
-        target_links = ['fr3_link3', 'fr3_link4', 'fr3_link5', 'fr3_link6', 'fr3_link7']
-
-        weights = {
-            'fr3_link3': 2,
-            'fr3_link4': 4,
-            'fr3_link5': 4,
-            'fr3_link6': 4,
-            'fr3_link7': 2
-        }
-
-        total_weight = sum(weights.values())
+    def define_control_points(self, transforms):
         control_points = []
 
-        for link_name in target_links:
-            if link_name not in transforms:
+        for seg in self.robot_cfg['segments']:
+            seg_idx = int(seg['seg_idx'])
+            start_link = seg['start_link']
+            end_link = seg['end_link']
+            n_cp = int(seg.get('control_points', 0))
+            radius = float(seg.get('radius', 0.0))
+
+            if n_cp <= 0:
                 continue
 
-            link_idx = int(link_name.replace('fr3_link', ''))
-
-            parent_name = f'fr3_link{link_idx - 1}'
-            child_name = link_name
-
-            if parent_name not in transforms or child_name not in transforms:
+            if start_link not in transforms or end_link not in transforms:
                 continue
 
-            _, p0 = transforms[parent_name]
-            _, p1 = transforms[child_name]
+            _, p0 = transforms[start_link]
+            _, p1 = transforms[end_link]
 
-            n_link = max(2, int(round(n_total * weights[link_name] / total_weight)))
-
-            ts = np.linspace(0.2, 0.8, n_link)
-
-            for t in ts:
+            for k in range(n_cp):
+                t = (k + 1) / (n_cp + 1)
                 p = p0 + t * (p1 - p0)
-                control_points.append(p)
+
+                control_points.append({
+                    'point': p,
+                    'seg_idx': seg_idx,
+                    'cp_idx': k,
+                    'radius': radius,
+                    'start_link': start_link,
+                    'end_link': end_link
+                })
 
         if len(control_points) == 0:
             return None
 
-        return np.array(control_points, dtype=float)
+        return control_points
     
-    def draw_control_points(self, image, control_points_base, color=(0, 165, 255)):
-        if control_points_base is None:
+    def draw_control_points(self, image, control_points, color=(0, 165, 255)):
+        if control_points is None:
             return
 
-        for p in control_points_base:
-            uv = self.project_point_to_image(p)
+        for cp in control_points:
+            uv = self.project_point_to_image(cp['point'])
             if uv is not None:
-                cv2.circle(image, uv, 3, color, -1)
+                cv2.circle(image, uv, 3, color, -1)    
 
-    def compute_closest_distance(self, control_points_base, x0, x1, y0, y1, step, search_exclusion_mask):
-        if self.last_depth is None or control_points_base is None:
+    def compute_closest_distance(self, control_points, x, y, step, search_exclusion_mask):
+        if self.last_depth is None or control_points is None:
             return None
 
-        n_cp = control_points_base.shape[0]
+        n_cp = len(control_points)
+        cp_positions = np.array([cp['point'] for cp in control_points], dtype=float)
+        radii = np.array([cp['radius'] for cp in control_points], dtype=float)
 
         min_dists = np.full(n_cp, np.inf, dtype=float)
         closest_obs_points = [None] * n_cp
         closest_obs_pixels = [None] * n_cp
 
-        for v in range(y0, y1, step):
-            for u in range(x0, x1, step):
+        min_depth = float(self.distance_cfg['min_depth_m'])
+        max_depth = float(self.distance_cfg['max_depth_m'])
+
+        for v in range(y[0], y[1], step):
+            for u in range(x[0], x[1], step):
 
                 if search_exclusion_mask is not None and search_exclusion_mask[v, u]:
                     continue
 
                 Z = float(self.last_depth[v, u]) / 1000.0
-                if Z < 0.15 or Z > 3.0:
+                if Z < min_depth or Z > max_depth:
                     continue
 
                 uv1 = np.array([u, v, 1.0], dtype=float)
@@ -255,23 +261,28 @@ class RealTimeDistance(Node):
                 if p_obs is None:
                     continue
 
-                dists = np.linalg.norm(control_points_base - p_obs, axis=1)
+                raw_dists = np.linalg.norm(cp_positions - p_obs, axis=1)
+                dists = np.maximum(raw_dists - radii, 0.0)
 
                 better = dists < min_dists
-
                 for i in np.where(better)[0]:
                     min_dists[i] = dists[i]
                     closest_obs_points[i] = p_obs
                     closest_obs_pixels[i] = (u, v)
 
-        # Build final results list
         results = []
         for i in range(n_cp):
+            cp = control_points[i]
             results.append({
-                "control_point": control_points_base[i],
-                "distance": min_dists[i],
-                "closest_obstacle_point": closest_obs_points[i],
-                "closest_pixel": closest_obs_pixels[i]
+                'point': cp['point'],
+                'seg_idx': cp['seg_idx'],
+                'cp_idx': cp['cp_idx'],
+                'radius': cp['radius'],
+                'start_link': cp['start_link'],
+                'end_link': cp['end_link'],
+                'distance': min_dists[i],
+                'closest_obstacle_point': closest_obs_points[i],
+                'closest_pixel': closest_obs_pixels[i]
             })
 
         return results
@@ -283,15 +294,16 @@ class RealTimeDistance(Node):
             return
 
         H, W = self.last_depth.shape
-        step = 8
-        margin = 10
+        step = int(self.distance_cfg['pixel_step'])
+        margin = int(self.distance_cfg['image_margin_px'])
         
         # Get all link transforms
         transforms = self.get_all_link_transforms()
         if transforms is None:
             return
         
-        control_points = self.define_control_points(transforms=transforms, n_total=16)
+        # Define control points on the robot based on the current transforms
+        control_points = self.define_control_points(transforms)
         if control_points is None:
             return
 
@@ -300,11 +312,18 @@ class RealTimeDistance(Node):
         if segments is None:
             return
 
-        robot_mask = self.build_robot_mask_from_transforms(transforms, dilate_px=8)
-        search_exclusion_mask = self.build_search_exclusion_mask(robot_mask, extra_px=10)
+        # Build robot mask and search exclusion mask
+        robot_mask = self.build_robot_mask_from_transforms(
+            transforms,
+            dilate_px=int(self.mask_cfg['robot_mask_dilate_px'])
+        )
+        search_exclusion_mask = self.build_search_exclusion_mask(
+            robot_mask,
+            extra_px=int(self.mask_cfg['search_exclusion_extra_px'])
+        )
 
         # Search only in a ROI around the robot, instead of the whole image
-        roi_pad = 80  # pixels around the robot area
+        roi_pad = int(self.distance_cfg['roi_pad_px'])  # pixels
 
         if search_exclusion_mask is not None:
             # Find bounding box of the robot in the image
@@ -325,12 +344,13 @@ class RealTimeDistance(Node):
             x0, x1 = margin, W - margin
             y0, y1 = margin, H - margin
 
+        x, y = np.array([x0, x1]), np.array([y0, y1])
+
+        # Compute closest distance from control points to obstacles in the depth image
         cp_results = self.compute_closest_distance(
-            control_points_base=control_points,
-            x0=x0,
-            x1=x1,
-            y0=y0,
-            y1=y1,
+            control_points=control_points,
+            x=x,
+            y=y,
             step=step,
             search_exclusion_mask=search_exclusion_mask
         )
@@ -344,17 +364,18 @@ class RealTimeDistance(Node):
         closest_robot_point = None
         closest_uv_obs = None
 
+        # Filter out invalid results where distance is still inf
         valid_results = [r for r in cp_results if r["distance"] < np.inf]
-
         if len(valid_results) == 0:
             return
 
+        # Find the control point with the minimum distance to an obstacle
         best_result = min(valid_results, key=lambda r: r["distance"])
 
         # Extract info from best result
         min_dist = best_result["distance"]
         closest_point = best_result["closest_obstacle_point"]
-        closest_robot_point = best_result["control_point"]
+        closest_robot_point = best_result["point"]
         closest_uv_obs = best_result["closest_pixel"]
         p_cam_closest = self.transform_base_to_camera(closest_point)
         closest_Z = p_cam_closest[2]
@@ -397,7 +418,7 @@ class RealTimeDistance(Node):
                 if r["distance"] == np.inf:
                     continue
 
-                uv_cp = self.project_point_to_image(r["control_point"])
+                uv_cp = self.project_point_to_image(r["point"])
                 uv_obs = r["closest_pixel"]
 
                 if uv_cp is not None and uv_obs is not None:
