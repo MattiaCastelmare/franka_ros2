@@ -178,8 +178,13 @@ def dls_solve(
     lam = damping + damping_boost
     try:
         cond = np.linalg.cond(J_pos)
-        if cond > 100.0:
-            lam = max(lam, 0.1)
+        # Smooth ramp: extra damping grows linearly as cond goes from 50→300.
+        # Avoids the discontinuous lambda jump that causes qdot spikes near
+        # singularities.  At cond=50 boost=0; at cond≥300 boost=0.1.
+        cond_lo, cond_hi = 50.0, 300.0
+        boost = 0.1 * float(np.clip(
+            (cond - cond_lo) / (cond_hi - cond_lo), 0.0, 1.0))
+        lam = max(lam, boost)
     except np.linalg.LinAlgError:
         lam = 0.1
 

@@ -47,7 +47,7 @@ _ALL_PARAMS = [
     'qdot_max', 'alpha', 'max_accel', 'timeout_threshold_s', 'timeout_ramp_s',
     'gazebo', 'enable_interpolation', 'alpha_topic', 'tracking_topic',
     'avoidance_topic',
-    'enable_camera',
+    'enable_camera', 'camera_extrinsics_yaml',
     'control_spawner_delay_s', 'start_rviz', 'rviz_delay_s',
     'camera_delay_s', 'start_human_pose', 'human_pose_delay_s',
 ]
@@ -179,12 +179,27 @@ def _launch_all(context):
             LogInfo(msg=['[wrapper] Camera pipeline     : DISABLED '
                          '(enable_camera:=false)']))
 
+    # ── world → fr3_link0 static TF (identity, always published) ────────
+    # Provides a global root frame so the TF tree is fully connected.
+    # RViz Fixed Frame: "world"
+    world_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='world_to_robot_base_tf',
+        output='screen',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
+            '--frame-id', 'world',
+            '--child-frame-id', 'fr3_link0',
+        ],
+    )
+    actions.append(TimerAction(period=1.0, actions=[world_tf_node]))
+    actions.append(LogInfo(msg='[wrapper] World root TF       : world -> fr3_link0 (identity)'))
+
     # ── Camera extrinsics static TF (from YAML) ──────────────────────
     if _as_bool(p['enable_camera']):
-        extrinsics_path = PathJoinSubstitution([
-            FindPackageShare('franka_experiments'),
-            'config', 'camera_extrinsics.yaml',
-        ]).perform(context)
+        extrinsics_path = p['camera_extrinsics_yaml']
         with open(extrinsics_path, 'r') as f:
             ext = yaml.safe_load(f)
         t = ext['translation']
@@ -206,7 +221,7 @@ def _launch_all(context):
                 '--child-frame-id', ext['child_frame'],
             ],
         )
-        actions.append(camera_tf_node)
+        actions.append(TimerAction(period=1.0, actions=[camera_tf_node]))
         actions.append(
             LogInfo(msg=['[wrapper] Camera extrinsics TF : ENABLED '
                          '(', ext['parent_frame'], ' -> ', ext['child_frame'], ')']))
@@ -223,6 +238,14 @@ def generate_launch_description():
                 'enable_camera',
                 default_value=str(_DEFAULTS.get('enable_camera', 'true')),
                 description='Enable RealSense driver + image republisher'),
+            DeclareLaunchArgument(
+                'camera_extrinsics_yaml',
+                default_value=PathJoinSubstitution([
+                    FindPackageShare('franka_experiments'),
+                    'config', 'camera_extrinsics.yaml',
+                ]),
+                description='Path to camera_extrinsics.yaml '
+                            '(parent_frame, child_frame, translation, rotation)'),
             DeclareLaunchArgument(
                 'control_spawner_delay_s',
                 default_value=str(_DEFAULTS.get('control_spawner_delay_s', '10.0')),
