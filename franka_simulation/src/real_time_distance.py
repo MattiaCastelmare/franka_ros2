@@ -1,15 +1,18 @@
 from rclpy.node import Node
 import rclpy
 from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import Point, Vector3
 import numpy as np
 from cv_bridge import CvBridge
 import cv2
 from tf2_ros import Buffer, TransformListener, TransformException
+from franka_msgs.msg import HumanRobotDistance
 import trimesh
 from utils import (
     load_extrinsics, load_robot_config, 
     get_robot_segments_from_transforms, 
-    get_rotation_from_quaternion
+    get_rotation_from_quaternion, find_pt_confidence,
+    compute_direction_vector
 )
 
 
@@ -31,6 +34,7 @@ class RealTimeDistance(Node):
         self.mask_cfg = self.config['mask']
         self.mesh_cfg = self.config['meshes']
         self.topics_cfg = self.config['topics']
+        self.zones = self.config['zones']
         
         # Load mesh files for each link and sample points on them
         self.link_mesh_files = self.mesh_cfg['files']
@@ -52,9 +56,25 @@ class RealTimeDistance(Node):
             self.topics_cfg['depth_camera_info'],
             self.camera_info_callback,
             10)
+        
+        self.distance_pub = self.create_publisher(
+            HumanRobotDistance,
+            self.topics_cfg['closest_distance'],
+            10
+        )
 
         self.create_timer(0.1, self.process_depth)
 
+
+    def classify_zone(self, distance):
+        """Map distance [m] to safety zone string."""
+        if distance <= self.zones['critical']:
+            return "critical"
+        if distance <= self.zones['danger']:
+            return "danger"
+        if distance <= self.zones['warning']:
+            return "warning"
+        return "safe"
 
     # === Camera Callbacks ===
     def depth_callback(self, msg):
@@ -262,6 +282,8 @@ class RealTimeDistance(Node):
         min_dists = np.full(n_cp, np.inf, dtype=float)
         closest_obs_points = [None] * n_cp
         closest_obs_pixels = [None] * n_cp
+        closest_directions = [None] * n_cp
+        valid_point_count = 0
 
         min_depth = float(self.distance_cfg['min_depth_m'])
         max_depth = float(self.distance_cfg['max_depth_m'])
@@ -271,26 +293,35 @@ class RealTimeDistance(Node):
 
                 if search_exclusion_mask is not None and search_exclusion_mask[v, u]:
                     continue
-
-                Z = float(self.last_depth[v, u]) / 1000.0
+                
+                # Get depth value and filter out invalid depths
+                Z = float(self.last_depth[v, u]) / 1000.0 # convert mm to m
                 if Z < min_depth or Z > max_depth:
                     continue
-
+                valid_point_count += 1
+                
+                # Back-project pixel to 3D point in camera frame
                 uv1 = np.array([u, v, 1.0], dtype=float)
                 p_cam = Z * (self.K_inv @ uv1)
                 p_obs = self.transform_camera_to_base(p_cam)
 
                 if p_obs is None:
                     continue
-
+                
+                # Compute distance from this obstacle point to all control points
                 raw_dists = np.linalg.norm(cp_positions - p_obs, axis=1)
                 dists = np.maximum(raw_dists - radii, 0.0)
 
+                # Update minimum distances and closest points for each control point
                 better = dists < min_dists
                 for i in np.where(better)[0]:
                     min_dists[i] = dists[i]
                     closest_obs_points[i] = p_obs
                     closest_obs_pixels[i] = (u, v)
+
+                    # Direction from human (obs) to robot (cp)
+                    direction = compute_direction_vector(p_obs, cp_positions, i)
+                    closest_directions[i] = direction
 
         results = []
         for i in range(n_cp):
@@ -303,11 +334,12 @@ class RealTimeDistance(Node):
                 'start_link': cp['start_link'],
                 'end_link': cp['end_link'],
                 'distance': min_dists[i],
+                'direction': closest_directions[i],
                 'closest_obstacle_point': closest_obs_points[i],
                 'closest_pixel': closest_obs_pixels[i]
             })
 
-        return results
+        return results, valid_point_count
 
 
     # === Main Loop ===
@@ -370,7 +402,7 @@ class RealTimeDistance(Node):
         x, y = np.array([x0, x1]), np.array([y0, y1])
 
         # Compute closest distance from control points to obstacles in the depth image
-        cp_results = self.compute_closest_distance(
+        cp_results, n_pts = self.compute_closest_distance(
             control_points=control_points,
             x=x,
             y=y,
@@ -403,9 +435,38 @@ class RealTimeDistance(Node):
         min_dist = best_result["distance"]
         closest_point = best_result["closest_obstacle_point"]
         closest_robot_point = best_result["point"]
+        closest_link = best_result["end_link"]
+        direction = best_result["direction"]
+        confidence = find_pt_confidence(min_dist, n_pts)
         closest_uv_obs = best_result["closest_pixel"]
         p_cam_closest = self.transform_base_to_camera(closest_point)
         closest_Z = p_cam_closest[2]
+
+        # === Publish distance data ===
+        msg = HumanRobotDistance()
+        msg.header.stamp = self.last_depth_msg.header.stamp
+        # Name of the closest robot link
+        msg.robot_link_name = str(closest_link)
+        # Distance in meters
+        msg.distance = float(min_dist)
+        # Closest point on robot in world frame
+        msg.closest_point_robot = Point()
+        msg.closest_point_robot.x = float(f"{closest_robot_point[0]:.4f}")
+        msg.closest_point_robot.y = float(f"{closest_robot_point[1]:.4f}")
+        msg.closest_point_robot.z = float(f"{closest_robot_point[2]:.4f}")
+        # Direction vector from human to robot
+        msg.direction = Vector3()
+        msg.direction.x = float(f"{direction[0]:.4f}")
+        msg.direction.y = float(f"{direction[1]:.4f}")
+        msg.direction.z = float(f"{direction[2]:.4f}")
+        # Valid flag
+        msg.valid = bool(min_dist < np.inf)
+        # Confidence score
+        msg.confidence = float(confidence)
+        # Zone classification
+        msg.zone = self.classify_zone(min_dist)
+
+        self.distance_pub.publish(msg)
 
         # Print results and visualize
         if min_dist < np.inf:
