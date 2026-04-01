@@ -50,6 +50,7 @@ _ALL_PARAMS = [
     'enable_camera', 'camera_extrinsics_yaml',
     'control_spawner_delay_s', 'start_rviz', 'rviz_delay_s',
     'camera_delay_s', 'start_human_pose', 'human_pose_delay_s',
+    'start_real_time_distance', 'real_time_distance_delay_s',
 ]
 
 
@@ -226,6 +227,33 @@ def _launch_all(context):
             LogInfo(msg=['[wrapper] Camera extrinsics TF : ENABLED '
                          '(', ext['parent_frame'], ' -> ', ext['child_frame'], ')']))
 
+    # ── Real-time distance node (optional) ───────────────────────────────
+    if _as_bool(p['start_real_time_distance']):
+        rtd_delay = float(p['real_time_distance_delay_s'])
+        rtd_config = PathJoinSubstitution([
+            FindPackageShare('franka_experiments'),
+            'config', 'real_time_distance_params.yaml',
+        ]).perform(context)
+        real_time_distance_node = Node(
+            package='franka_experiments',
+            executable='real_time_distance',
+            name='real_time_distance',
+            output='screen',
+            parameters=[{
+                'robot_config_path': rtd_config,
+                'camera_extrinsics_path': p['camera_extrinsics_yaml'],
+            }],
+        )
+        actions.append(TimerAction(period=rtd_delay,
+                                   actions=[real_time_distance_node]))
+        actions.append(
+            LogInfo(msg=['[wrapper] real_time_distance  : ENABLED '
+                         '(delay=', str(rtd_delay), 's)']))
+    else:
+        actions.append(
+            LogInfo(msg='[wrapper] real_time_distance  : DISABLED '
+                        '(start_real_time_distance:=false)'))
+
     return actions
 
 
@@ -271,6 +299,14 @@ def generate_launch_description():
                 default_value=str(_DEFAULTS.get('human_pose_delay_s', '0.0')),
                 description='Extra seconds before human_pose_node '
                             '(added to camera_delay_s + 4)'),
+            DeclareLaunchArgument(
+                'start_real_time_distance',
+                default_value=str(_DEFAULTS.get('start_real_time_distance', 'true')),
+                description='Launch real_time_distance node'),
+            DeclareLaunchArgument(
+                'real_time_distance_delay_s',
+                default_value=str(_DEFAULTS.get('real_time_distance_delay_s', '8.0')),
+                description='Seconds before launching real_time_distance node'),
             OpaqueFunction(function=_launch_all),
         ]
     )

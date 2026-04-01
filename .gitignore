@@ -11,5 +11,5 @@ log/
 libfranka
 franka_description
 # local datasets
-datasets/
+dataset/
 datasets.zip

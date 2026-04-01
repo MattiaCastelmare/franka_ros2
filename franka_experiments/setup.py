@@ -24,6 +24,7 @@ setup(
             'config/human_distance_estimator_params.yaml',
             'config/rgb_intrinsics.yaml',
             'config/depth_intrinsics.yaml',
+            'config/real_time_distance_params.yaml',
         ]),
     ],
     install_requires=['setuptools'],
@@ -42,6 +43,7 @@ setup(
             'avoidance_controller = franka_experiments.nodes.avoidance_controller:main',
             'distance_estimator = franka_experiments.nodes.distance_estimator:main',
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
+            'real_time_distance = franka_experiments.nodes.real_time_distance:main',
         ],
     },
 )
