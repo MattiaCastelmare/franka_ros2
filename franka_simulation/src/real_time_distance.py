@@ -4,10 +4,13 @@ from sensor_msgs.msg import Image, CameraInfo
 import numpy as np
 from cv_bridge import CvBridge
 import cv2
-import yaml
 from tf2_ros import Buffer, TransformListener, TransformException
 import trimesh
-from utils import load_extrinsics, load_robot_config, get_robot_segments_from_transforms, get_rotation_from_quaternion
+from utils import (
+    load_extrinsics, load_robot_config, 
+    get_robot_segments_from_transforms, 
+    get_rotation_from_quaternion
+)
 
 
 class RealTimeDistance(Node):
@@ -21,18 +24,6 @@ class RealTimeDistance(Node):
         self.R_base, self.t_base = load_extrinsics()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        
-        self.create_subscription(
-            Image,
-            '/camera/camera/depth/image_rect_raw',
-            self.depth_callback,
-            10)
-        
-        self.create_subscription(
-            CameraInfo,
-            '/camera/camera/depth/camera_info',
-            self.camera_info_callback,
-            10)
         
         self.config = load_robot_config()
         self.robot_cfg = self.config['robot']
@@ -49,6 +40,18 @@ class RealTimeDistance(Node):
             mesh = trimesh.load(mesh_path, force='mesh')
             self.link_meshes[link_name] = mesh
             self.link_mesh_samples[link_name] = mesh.sample(300)
+
+        self.create_subscription(
+            Image,
+            self.topics_cfg['depth_image'],
+            self.depth_callback,
+            10)
+        
+        self.create_subscription(
+            CameraInfo,
+            self.topics_cfg['depth_camera_info'],
+            self.camera_info_callback,
+            10)
 
         self.create_timer(0.1, self.process_depth)
 
@@ -145,7 +148,7 @@ class RealTimeDistance(Node):
 
 
     # === Robot Mask ===  
-    def build_robot_mask_from_transforms(self, transforms, dilate_px=10, ee_dilate_px=12):
+    def build_robot_mask_from_transforms(self, transforms, dilate_px, ee_dilate_px):
         if self.last_depth is None:
             return None
 
@@ -186,6 +189,8 @@ class RealTimeDistance(Node):
     # === Control Points ===
     def define_control_points(self, transforms):
         control_points = []
+        ee_tip_axis = self.distance_cfg['ee_tip_axis']
+        ee_tip_offset = self.distance_cfg['ee_tip_offset']
 
         for seg in self.robot_cfg['segments']:
             seg_idx = int(seg['seg_idx'])
@@ -199,13 +204,29 @@ class RealTimeDistance(Node):
 
             if start_link not in transforms or end_link not in transforms:
                 continue
-
+            
+            # Get start and end positions of the segment
             _, p0 = transforms[start_link]
             _, p1 = transforms[end_link]
 
-            for k in range(n_cp):
-                t = (k + 1) / (n_cp + 1)
+            # Default: interior control points
+            ts = [(k + 1) / (n_cp + 1) for k in range(n_cp)]
+
+            # Special case: last segment ending at EE -> force last point on the tip
+            if end_link == 'fr3_link8':
+                if n_cp == 1:
+                    ts = [1.0]
+                else:
+                    ts = [(k + 1) / n_cp for k in range(n_cp)]
+
+            for k, t in enumerate(ts):
                 p = p0 + t * (p1 - p0)
+
+                # If this is the tip point of the EE, offset it beyond link8
+                if end_link == 'fr3_link8' and np.isclose(t, 1.0):
+                    R_ee, p1 = transforms['fr3_link8']
+                    direction = R_ee[:, ee_tip_axis] # unit vector along the specified axis in the EE frame
+                    p = p1 + ee_tip_offset * direction # offset in specified direction
 
                 control_points.append({
                     'point': p,
@@ -316,7 +337,8 @@ class RealTimeDistance(Node):
         # Build robot mask and search exclusion mask
         robot_mask = self.build_robot_mask_from_transforms(
             transforms,
-            dilate_px=int(self.mask_cfg['robot_mask_dilate_px'])
+            dilate_px=int(self.mask_cfg['robot_mask_dilate_px']),
+            ee_dilate_px=int(self.mask_cfg['ee_mask_dilate_px'])
         )
         search_exclusion_mask = self.build_search_exclusion_mask(
             robot_mask,

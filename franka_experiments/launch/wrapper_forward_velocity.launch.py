@@ -232,7 +232,7 @@ def _launch_all(context):
         rtd_delay = float(p['real_time_distance_delay_s'])
         rtd_config = PathJoinSubstitution([
             FindPackageShare('franka_experiments'),
-            'config', 'real_time_distance_params.yaml',
+            'config', 'fr3_complete.yaml',
         ]).perform(context)
         real_time_distance_node = Node(
             package='franka_experiments',

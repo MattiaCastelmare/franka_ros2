@@ -24,7 +24,7 @@ setup(
             'config/human_distance_estimator_params.yaml',
             'config/rgb_intrinsics.yaml',
             'config/depth_intrinsics.yaml',
-            'config/real_time_distance_params.yaml',
+            'config/fr3_complete.yaml',
         ]),
     ],
     install_requires=['setuptools'],
