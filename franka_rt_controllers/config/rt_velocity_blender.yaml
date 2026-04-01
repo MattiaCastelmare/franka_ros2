@@ -74,7 +74,7 @@
       #   1) topic "blend_alpha"  (std_msgs/Float64, 0..1)
       #   2) ros2 param set rt_velocity_blender_controller alpha 0.7
       alpha_topic: blend_alpha
-      alpha: 1.0     # 1.0 = pure tracking, 0.0 = pure avoidance
+      alpha: 0.0     # 1.0 = pure tracking, 0.0 = pure avoidance
 
       # ── Velocity clamp [rad/s] ──────────────────────────────────────
       # Single final clamp applied AFTER blending and rate-limiting.

@@ -17,7 +17,6 @@ and ROS helpers (publishers, Pinocchio init, RViz markers) are reused from
 :mod:`franka_experiments.utils.simulation_imports`.
 """
 
-import time
 from typing import List, Optional
 
 import numpy as np
@@ -45,19 +44,13 @@ from franka_experiments.utils.constants import (
 from franka_experiments.utils.kinematics import (
     generate_urdf_from_xacro,
 )
-from franka_experiments.utils.ros import resolve_avoidance_topic
+
 from franka_experiments.utils.simulation_imports import (
     PublishersBundle,
     build_joint_to_joint_capsules,
     build_marker_array,
     build_reduced_pinocchio_model_from_urdf,
-    capsule_risk_weight,
-    compute_closest_constraint_jacobian,
-    format_closest_label,
     make_joint_state_callback,
-    publish_minimal_avoidance_outputs,
-    publish_not_ready_outputs,
-    solve_cbf_qp_1constraint_box,
 )
 
 # ---------------------------------------------------------------------------
@@ -113,10 +106,22 @@ class HumanAvoidanceController(Node):
             for i in range(self.model.nframes):
                 self._link_frame_ids[self.model.frames[i].name] = i
 
+        # Resolve end-effector frame ID once (used by the simple control law).
+        self._ee_frame_id: int = -1
+        if self.pin_ok:
+            for ee_name in ('fr3_link8', 'fr3_hand', 'fr3_link7'):
+                fid = self._link_frame_ids.get(ee_name, -1)
+                if fid >= 0:
+                    self._ee_frame_id = fid
+                    self.get_logger().info(f"EE frame resolved: '{ee_name}' (fid={fid})")
+                    break
+            if self._ee_frame_id < 0:
+                self.get_logger().warn("Could not find EE frame in Pinocchio model")
+
         # ── Subscriptions ─────────────────────────────────────────────
         self.create_subscription(
             JointState,
-            "/joint_states",
+            "/NS_1/joint_states",
             make_joint_state_callback(
                 controller=self, joint_names=self.joint_names,
             ),
@@ -193,7 +198,7 @@ class HumanAvoidanceController(Node):
     def _declare_params(self) -> None:
         self.declare_parameter("control_rate", 100.0)
         self.declare_parameter("human_distance_topic",
-                               "/human_robot/closest_distance")
+                               "human_robot/closest_distance")
         self.declare_parameter("avoidance_output_topic", AUTO_SENTINEL)
         self.declare_parameter("influence_distance", 0.30)
         self.declare_parameter("d_safe", 0.05)
@@ -229,15 +234,19 @@ class HumanAvoidanceController(Node):
     def _resolve_avoidance_output(self) -> str:
         """Resolve the avoidance output topic.
 
-        ``__auto__`` → namespace-aware ``avoidance_qdot`` (same topic the
-        RT blender subscribes to).  Any other value is used verbatim.
+        ``__auto__`` → ``avoidance_qdot`` (relative, inherits node namespace so
+        it resolves to ``/<namespace>/avoidance_qdot`` matching the RT blender).
+        Any other value is used verbatim.
         """
         raw = self._avoidance_output_topic_param
         if raw == AUTO_SENTINEL:
-            topic = resolve_avoidance_topic()
+            topic = '/NS_1/avoidance_qdot'
             self.get_logger().info(
-                f"avoidance_output_topic='__auto__' → resolved to '{topic}'")
+                f"avoidance_output_topic='__auto__' → '{topic}' (relative, inherits namespace)")
             return topic
+        if raw.startswith('/') and len(raw.split('/')) > 2:
+            self.get_logger().warn(
+                f"Using namespaced avoidance topic '{raw}' may break RT controller compatibility")
         return raw
 
     def _init_pinocchio_and_capsules(self) -> None:
@@ -283,6 +292,8 @@ class HumanAvoidanceController(Node):
 
     def _human_distance_cb(self, msg: HumanRobotDistance) -> None:
         """Store the latest human-robot distance measurement."""
+        self.get_logger().warn("CALLBACK TRIGGERED")
+        self.get_logger().warn(f"distance={msg.distance}, valid={msg.valid}")
         self.human_distance = msg
 
     # ================================================================
@@ -312,11 +323,20 @@ class HumanAvoidanceController(Node):
         # Resolve Pinocchio frame ID
         fid = self._link_frame_ids.get(link_name, -1)
         if fid < 0:
+            # fr3_link8 (EE mount) is not a Pinocchio frame in the FR3 model;
+            # fall back to fr3_link7 (wrist), the nearest upstream frame.
+            fallback = "fr3_link7"
+            fid = self._link_frame_ids.get(fallback, -1)
+            if fid < 0:
+                self.get_logger().warn(
+                    f"Unknown link '{link_name}' in HumanRobotDistance — skipping",
+                    throttle_duration_sec=2.0,
+                )
+                return None
             self.get_logger().warn(
-                f"Unknown link '{link_name}' in HumanRobotDistance — skipping",
+                f"[HUMAN-AVOIDANCE] Unknown link '{link_name}', falling back to '{fallback}' (fid={fid})",
                 throttle_duration_sec=2.0,
             )
-            return None
 
         d = float(msg.distance)
         if not np.isfinite(d) or d > 900.0:
@@ -338,6 +358,11 @@ class HumanAvoidanceController(Node):
         capsule_idx = _LINK_TO_CAPSULE_IDX.get(link_name, 4)
         link_idx = capsule_idx  # same mapping for FR3
 
+        self.get_logger().info(
+            f"[HUMAN-AVOIDANCE] Using capsule_idx={capsule_idx} for link '{link_name}' (d={msg.distance:.3f})",
+            throttle_duration_sec=1.0,
+        )
+
         return {
             "kind": "external",
             "hazard": f"human@{link_name}",
@@ -356,100 +381,109 @@ class HumanAvoidanceController(Node):
     # ================================================================
 
     def _control_loop(self) -> None:
-        now_wall = float(time.time())
-
-        if not (self.pin_ok and isinstance(self.q, np.ndarray)):
-            publish_not_ready_outputs(pubs=self._pubs)
+        # ── CHECK 1: Pinocchio ──────────────────────────────────────────
+        if not self.pin_ok:
+            self.get_logger().warn("[DBG] pin_ok=False", throttle_duration_sec=2.0)
+            msg_out = Float64MultiArray()
+            msg_out.data = [0.0] * self.n_dof
+            self.pub.publish(msg_out)
             return
+
+        # ── CHECK 2: EE frame ID ────────────────────────────────────────
+        self.get_logger().warn(
+            f"[DBG] ee_frame_id={self._ee_frame_id}  model.nq={self.model.nq}",
+            throttle_duration_sec=5.0,
+        )
+        if self._ee_frame_id < 0:
+            self.get_logger().warn(
+                f"[DBG] ABORT: ee_frame_id=-1. Available frames: "
+                f"{list(self._link_frame_ids.keys())}",
+                throttle_duration_sec=5.0,
+            )
+            msg_out = Float64MultiArray()
+            msg_out.data = [0.0] * self.n_dof
+            self.pub.publish(msg_out)
+            return
+
+        # ── CHECK 3: joint state ────────────────────────────────────────
+        if self.q is None:
+            self.get_logger().warn("[DBG] q is None → substituting zeros")
+            self.q = np.zeros(self.n_dof)
+
+        self.get_logger().warn(
+            f"[DBG] q={np.round(self.q, 3).tolist()}  ||q||={np.linalg.norm(self.q):.4f}",
+            throttle_duration_sec=2.0,
+        )
 
         pin.forwardKinematics(self.model, self.data, self.q)
         pin.updateFramePlacements(self.model, self.data)
 
-        # ── Convert human distance message to candidate ───────────────
+        # ── CHECK 4: human distance message ────────────────────────────
         msg = self.human_distance
-        candidate = self._build_candidate(msg) if msg is not None else None
-
-        if candidate is None:
-            publish_minimal_avoidance_outputs(
-                pubs=self._pubs,
-                qdot=np.zeros(self.n_dof),
-                d_min_raw=999.0,
-                closest_j_row=np.zeros(self.n_dof),
-                closest_label="none",
-            )
-            self._update_markers()
-            return
-
-        d_min_raw = float(candidate["d"])
-        closest_label = format_closest_label(candidate)
-
-        # Distance Jacobian for the closest constraint
-        closest_j_row = compute_closest_constraint_jacobian(
-            candidate, self.model, self.data, self.q, n_dof=self.n_dof,
-        )
-
-        # ── CBF-QP single-constraint velocity avoidance ───────────────
         qdot_cmd = np.zeros(self.n_dof, dtype=float)
-        cbf_active = False
-        feasible = True
 
-        if d_min_raw < self._influence_distance:
-            j_row = closest_j_row
-            j_norm = float(np.linalg.norm(j_row))
-
-            if j_norm > 1e-9:
-                cbf_active = True
-
-                # Per-capsule risk weight (same logic as original controller)
-                cap_idx = int(candidate.get("capsule_idx", 4))
-                w = capsule_risk_weight(
-                    cap_idx,
-                    7,  # last capsule index for FR3
-                    weight_last2=self._capsule_weight_last2,
-                    weight_last3=self._capsule_weight_last3,
-                    weight_default=self._capsule_weight_default,
-                )
-                d_safe_eff = self._d_safe * w
-
-                # CBF barrier function:  h = d - d_safe_eff
-                h = d_min_raw - d_safe_eff
-                b_scalar = -self._k_alpha * h
-
-                # Nominal repulsive velocity
-                s = float(np.clip(
-                    (self._influence_distance - d_min_raw)
-                    / self._influence_distance,
-                    0.0, 1.0,
-                ))
-                qdot_nom = self._k_rep * s * (j_row / j_norm)
-
-                # Solve single-constraint CBF-QP + box bounds
-                qdot_cmd, feasible = solve_cbf_qp_1constraint_box(
-                    qdot_nom, j_row, b_scalar, self._max_joint_vel,
-                )
-
-        # ── Throttled logging ─────────────────────────────────────────
-        if (now_wall - self._log_last_wall) >= 0.5:
-            self._log_last_wall = now_wall
-            qdot_norm = float(np.linalg.norm(qdot_cmd))
-            zone = str(getattr(msg, "zone", "")) if msg else ""
-            conf = float(getattr(msg, "confidence", 0.0)) if msg else 0.0
-            self.get_logger().info(
-                f"[HUMAN-AVOIDANCE] d={d_min_raw:.3f}m zone='{zone}' "
-                f"conf={conf:.2f} cbf={'ON' if cbf_active else 'off'} "
-                f"feasible={feasible} |qdot|={qdot_norm:.4f} "
-                f"link={closest_label}"
+        if msg is None:
+            self.get_logger().warn("[DBG] human_distance is None → zero output",
+                                   throttle_duration_sec=2.0)
+        elif not msg.valid:
+            self.get_logger().warn("[DBG] msg.valid=False → zero output",
+                                   throttle_duration_sec=2.0)
+        else:
+            # ── CHECK 5: direction ──────────────────────────────────────
+            direction = np.array(
+                [msg.direction.x, msg.direction.y, msg.direction.z], dtype=float)
+            norm = float(np.linalg.norm(direction))
+            self.get_logger().warn(
+                f"[DBG] direction={np.round(direction, 4).tolist()}  "
+                f"||dir||={norm:.6f}  d={msg.distance:.4f}",
+                throttle_duration_sec=1.0,
             )
 
-        # ── Publish outputs ───────────────────────────────────────────
-        publish_minimal_avoidance_outputs(
-            pubs=self._pubs,
-            qdot=qdot_cmd,
-            d_min_raw=d_min_raw,
-            closest_j_row=closest_j_row,
-            closest_label=closest_label,
-        )
+            if norm <= 1e-6:
+                self.get_logger().warn("[DBG] direction norm ≤ 1e-6 → zero output")
+            else:
+                direction = direction / norm
+                v_avoid = -self._k_rep * direction
+                self.get_logger().warn(
+                    f"[DBG] v_avoid={np.round(v_avoid, 4).tolist()}  k_rep={self._k_rep}",
+                    throttle_duration_sec=1.0,
+                )
 
+                # ── CHECK 6: Jacobian ───────────────────────────────────
+                J = pin.computeFrameJacobian(
+                    self.model, self.data, self.q,
+                    self._ee_frame_id,
+                    pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+                )[:3, :]  # (3, nq)
+                self.get_logger().warn(
+                    f"[DBG] J.shape={J.shape}  ||J||={np.linalg.norm(J):.6f}",
+                    throttle_duration_sec=1.0,
+                )
+
+                # ── CHECK 7: projection ─────────────────────────────────
+                qdot_raw = J.T @ v_avoid
+                self.get_logger().warn(
+                    f"[DBG] qdot_raw={np.round(qdot_raw, 5).tolist()}  "
+                    f"||qdot_raw||={np.linalg.norm(qdot_raw):.6f}",
+                    throttle_duration_sec=1.0,
+                )
+
+                # ── CHECK 8: clipping ───────────────────────────────────
+                qdot_cmd = np.clip(qdot_raw, -self._max_joint_vel, self._max_joint_vel)
+                self.get_logger().warn(
+                    f"[DBG] max_joint_vel={self._max_joint_vel}  "
+                    f"||qdot_clipped||={np.linalg.norm(qdot_cmd):.6f}",
+                    throttle_duration_sec=1.0,
+                )
+
+        # ── PUBLISH ─────────────────────────────────────────────────────
+        self.get_logger().warn(
+            f"[DBG] publishing ||qdot||={np.linalg.norm(qdot_cmd):.6f}",
+            throttle_duration_sec=0.5,
+        )
+        msg_out = Float64MultiArray()
+        msg_out.data = qdot_cmd.tolist()
+        self.pub.publish(msg_out)
         self._update_markers()
 
     # ================================================================

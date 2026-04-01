@@ -8,6 +8,8 @@ import trimesh
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from franka_msgs.msg import HumanRobotDistance
+from geometry_msgs.msg import Point, Vector3
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -75,6 +77,9 @@ class RealTimeDistance(Node):
             mesh = trimesh.load(full_path, force='mesh')
             self.link_meshes[link_name] = mesh
             self.link_mesh_samples[link_name] = mesh.sample(sample_pts)
+
+        self.dist_pub = self.create_publisher(
+            HumanRobotDistance, '/human_robot/closest_distance', 10)
 
         self.get_logger().info('RealTimeDistance node ready.')
         self.create_timer(0.1, self.process_depth)
@@ -417,6 +422,31 @@ class RealTimeDistance(Node):
         closest_uv_obs = best_result['closest_pixel']
         p_cam_closest = self.transform_base_to_camera(closest_point)
         closest_Z = p_cam_closest[2]
+
+        # Publish distance message
+        direction_vec = closest_point - closest_robot_point
+        direction_norm = np.linalg.norm(direction_vec)
+        if direction_norm > 1e-6:
+            direction_vec = direction_vec / direction_norm
+            dist_msg = HumanRobotDistance()
+            dist_msg.header.stamp = self.last_depth_msg.header.stamp
+            dist_msg.header.frame_id = self.robot_cfg['base_frame']
+            dist_msg.valid = True
+            dist_msg.distance = float(min_dist)
+            dist_msg.robot_link_name = best_result['end_link']
+            dist_msg.closest_point_robot = Point(
+                x=closest_robot_point[0],
+                y=closest_robot_point[1],
+                z=closest_robot_point[2],
+            )
+            dist_msg.direction = Vector3(
+                x=direction_vec[0],
+                y=direction_vec[1],
+                z=direction_vec[2],
+            )
+            dist_msg.confidence = 1.0
+            dist_msg.zone = 'camera'
+            self.dist_pub.publish(dist_msg)
 
         # Print results and visualize
         if min_dist < np.inf:
