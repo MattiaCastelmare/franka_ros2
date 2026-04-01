@@ -22,7 +22,7 @@ robot:
     - seg_idx: 1
       start_link: fr3_link1
       end_link: fr3_link2
-      control_points: 1
+      control_points: 0
       radius: 0.05
 
     - seg_idx: 2
@@ -77,7 +77,7 @@ meshes:
 topics:
   depth_image: /camera/camera/depth/image_rect_raw
   depth_camera_info: /camera/camera/depth/camera_info
-  distance_data: /fr3/distance_data
+  closest_distance: /human_robot/closest_distance
 
 distance: # in meters
   min_depth_m: 0.15
@@ -99,3 +99,8 @@ mask: # in pixels
   robot_mask_dilate_px: 12
   ee_mask_dilate_px: 20
   search_exclusion_extra_px: 10
+
+zones: # in meters
+  warning: 0.3
+  danger: 0.2
+  critical: 0.1

@@ -14,6 +14,8 @@ from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from franka_experiments.utils.distance_utils import (
+    compute_direction_vector,
+    find_pt_confidence,
     get_robot_segments_from_transforms,
     get_rotation_from_quaternion,
     load_extrinsics,
@@ -45,6 +47,7 @@ class RealTimeDistance(Node):
         self.mesh_cfg = self.config['meshes']
 
         self.R_base, self.t_base = load_extrinsics(camera_extrinsics_path)
+        self.zones = self.config.get('zones', {})
 
         # ── Internal state ───────────────────────────────────────────────
         self.bridge = CvBridge()
@@ -84,6 +87,18 @@ class RealTimeDistance(Node):
         self.get_logger().info('RealTimeDistance node ready.')
         self.create_timer(0.1, self.process_depth)
 
+
+    def classify_zone(self, distance: float) -> str:
+        """Map distance [m] to safety zone string."""
+        if not self.zones:
+            return 'unknown'
+        if distance <= self.zones.get('critical', 0.1):
+            return 'critical'
+        if distance <= self.zones.get('danger', 0.2):
+            return 'danger'
+        if distance <= self.zones.get('warning', 0.3):
+            return 'warning'
+        return 'safe'
 
     # === Camera Callbacks ===
     def depth_callback(self, msg):
@@ -267,7 +282,7 @@ class RealTimeDistance(Node):
 
     def compute_closest_distance(self, control_points, x, y, step, search_exclusion_mask):
         if self.last_depth is None or control_points is None:
-            return None
+            return None, 0
 
         n_cp = len(control_points)
         cp_positions = np.array([cp['point'] for cp in control_points], dtype=float)
@@ -276,6 +291,8 @@ class RealTimeDistance(Node):
         min_dists = np.full(n_cp, np.inf, dtype=float)
         closest_obs_points = [None] * n_cp
         closest_obs_pixels = [None] * n_cp
+        closest_directions = [None] * n_cp
+        valid_point_count = 0
 
         min_depth = float(self.distance_cfg['min_depth_m'])
         max_depth = float(self.distance_cfg['max_depth_m'])
@@ -289,6 +306,7 @@ class RealTimeDistance(Node):
                 Z = float(self.last_depth[v, u]) / 1000.0
                 if Z < min_depth or Z > max_depth:
                     continue
+                valid_point_count += 1
 
                 uv1 = np.array([u, v, 1.0], dtype=float)
                 p_cam = Z * (self.K_inv @ uv1)
@@ -305,6 +323,7 @@ class RealTimeDistance(Node):
                     min_dists[i] = dists[i]
                     closest_obs_points[i] = p_obs
                     closest_obs_pixels[i] = (u, v)
+                    closest_directions[i] = compute_direction_vector(p_obs, cp_positions, i)
 
         results = []
         for i in range(n_cp):
@@ -317,11 +336,12 @@ class RealTimeDistance(Node):
                 'start_link': cp['start_link'],
                 'end_link': cp['end_link'],
                 'distance': min_dists[i],
+                'direction': closest_directions[i],
                 'closest_obstacle_point': closest_obs_points[i],
                 'closest_pixel': closest_obs_pixels[i]
             })
 
-        return results
+        return results, valid_point_count
 
 
     # === Main Loop ===
@@ -385,7 +405,7 @@ class RealTimeDistance(Node):
         x, y = np.array([x0, x1]), np.array([y0, y1])
 
         # Compute closest distance from control points to obstacles in the depth image
-        cp_results = self.compute_closest_distance(
+        cp_results, n_pts = self.compute_closest_distance(
             control_points=control_points,
             x=x,
             y=y,
@@ -420,14 +440,13 @@ class RealTimeDistance(Node):
         closest_point = best_result['closest_obstacle_point']
         closest_robot_point = best_result['point']
         closest_uv_obs = best_result['closest_pixel']
+        direction = best_result['direction']
+        confidence = find_pt_confidence(min_dist, n_pts)
         p_cam_closest = self.transform_base_to_camera(closest_point)
         closest_Z = p_cam_closest[2]
 
         # Publish distance message
-        direction_vec = closest_point - closest_robot_point
-        direction_norm = np.linalg.norm(direction_vec)
-        if direction_norm > 1e-6:
-            direction_vec = direction_vec / direction_norm
+        if direction is not None:
             dist_msg = HumanRobotDistance()
             dist_msg.header.stamp = self.last_depth_msg.header.stamp
             dist_msg.header.frame_id = self.robot_cfg['base_frame']
@@ -440,12 +459,12 @@ class RealTimeDistance(Node):
                 z=closest_robot_point[2],
             )
             dist_msg.direction = Vector3(
-                x=direction_vec[0],
-                y=direction_vec[1],
-                z=direction_vec[2],
+                x=float(f'{direction[0]:.4f}'),
+                y=float(f'{direction[1]:.4f}'),
+                z=float(f'{direction[2]:.4f}'),
             )
-            dist_msg.confidence = 1.0
-            dist_msg.zone = 'camera'
+            dist_msg.confidence = float(confidence)
+            dist_msg.zone = self.classify_zone(min_dist)
             self.dist_pub.publish(dist_msg)
 
         # Print results and visualize

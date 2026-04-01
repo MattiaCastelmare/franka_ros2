@@ -73,3 +73,27 @@ def get_rotation_from_quaternion(q):
     ], dtype=float)
 
     return R
+
+def find_pt_confidence(best_result, n_pts):
+    # Confidence is based on number of valid points and distance value
+    lm_conf = float(np.clip(n_pts / 500.0, 0.2, 1.0))
+    dist_conf = (
+        1.0 if best_result < 2.0
+        else float(np.clip(1.0 - (best_result - 2.0) / 3.0, 0.3, 1.0))
+    )
+    confidence = float(np.clip(lm_conf * dist_conf, 0.0, 1.0))
+
+    return confidence
+
+def compute_direction_vector(p_obs, cp_positions, i):
+    # Direction from human (obs) to robot (cp)
+    vec = cp_positions[i] - p_obs
+    norm = np.linalg.norm(vec)
+
+    # Avoid division by zero
+    if norm > 1e-9:
+        direction = vec / norm
+    else:
+        direction = np.zeros(3)
+    
+    return direction

@@ -86,3 +86,22 @@ def get_rotation_from_quaternion(q) -> np.ndarray:
         [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
         [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
     ], dtype=float)
+
+
+def find_pt_confidence(best_result: float, n_pts: int) -> float:
+    """Compute confidence score based on valid point count and distance value."""
+    lm_conf = float(np.clip(n_pts / 500.0, 0.2, 1.0))
+    dist_conf = (
+        1.0 if best_result < 2.0
+        else float(np.clip(1.0 - (best_result - 2.0) / 3.0, 0.3, 1.0))
+    )
+    return float(np.clip(lm_conf * dist_conf, 0.0, 1.0))
+
+
+def compute_direction_vector(p_obs: np.ndarray, cp_positions: np.ndarray, i: int) -> np.ndarray:
+    """Compute normalised direction vector from obstacle point to robot control point i."""
+    vec = cp_positions[i] - p_obs
+    norm = np.linalg.norm(vec)
+    if norm > 1e-9:
+        return vec / norm
+    return np.zeros(3)

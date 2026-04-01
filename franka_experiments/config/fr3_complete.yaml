@@ -101,3 +101,8 @@ mask: # in pixels
   robot_mask_dilate_px: 12
   ee_mask_dilate_px: 20
   search_exclusion_extra_px: 10
+
+zones: # in meters
+  warning: 0.3
+  danger: 0.2
+  critical: 0.1
