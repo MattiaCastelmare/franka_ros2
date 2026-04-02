@@ -49,15 +49,13 @@ _RT_CONTROLLER_NAME: str = 'rt_velocity_blender_controller'
 
 
 def resolve_tracking_topic(robot_key: str = 'ROBOT1') -> str:
-    """Auto-detect namespace → build ``tracking_qdot`` topic under the RT controller namespace."""
-    return build_namespaced_topic(
-        f'{_RT_CONTROLLER_NAME}/{TRACKING_TOPIC_SUFFIX}', robot_key)
+    """Auto-detect namespace → build ``tracking_qdot`` topic."""
+    return build_namespaced_topic(TRACKING_TOPIC_SUFFIX, robot_key)
 
 
 def resolve_avoidance_topic(robot_key: str = 'ROBOT1') -> str:
-    """Auto-detect namespace → build ``avoidance_qdot`` topic under the RT controller namespace."""
-    return build_namespaced_topic(
-        f'{_RT_CONTROLLER_NAME}/{AVOIDANCE_TOPIC_SUFFIX}', robot_key)
+    """Auto-detect namespace → build ``avoidance_qdot`` topic."""
+    return build_namespaced_topic(AVOIDANCE_TOPIC_SUFFIX, robot_key)
 
 
 def resolve_topic_with_deprecated_alias(
