@@ -9,21 +9,29 @@ from tf2_ros import Buffer, TransformListener, TransformException
 from franka_msgs.msg import HumanRobotDistance
 import trimesh
 from utils import (
-    load_extrinsics, load_robot_config, 
-    get_robot_segments_from_transforms, 
+    load_extrinsics, load_robot_config,
     get_rotation_from_quaternion, find_pt_confidence,
-    compute_direction_vector
+    compute_direction_vector,
+    define_robot_segments, compute_closest_distance_from_segments
 )
 
 
 class RealTimeDistance(Node):
     def __init__(self):
         super().__init__('real_time_distance')
+
+        # === Runtime flags ===
+        self.enable_visualization = True
+        self.visual_robot_exclusion_mask = True
+        self.visualize_only_raw_video = False
+        self.use_segment_distance = True
+
         self.bridge = CvBridge()
         self.fx = self.fy = None
         self.cx = self.cy = None
         self.last_depth = None
         self.last_depth_msg = None
+        self.min_seg_idx_for_distance = 3
         self.R_base, self.t_base = load_extrinsics()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -358,25 +366,29 @@ class RealTimeDistance(Node):
         
         # Define control points on the robot based on the current transforms
         control_points = self.define_control_points(transforms)
-        if control_points is None:
+        robot_segments = define_robot_segments(transforms, self.robot_cfg, self.distance_cfg)
+        if robot_segments is None:
             return
 
-        # Get robot segments from link transforms
-        segments = get_robot_segments_from_transforms(transforms)
-        if segments is None:
+        # Keep only the segments that should be considered in distance computation
+        robot_segments = [
+            s for s in robot_segments
+            if s['seg_idx'] >= self.min_seg_idx_for_distance
+        ]
+
+        if len(robot_segments) == 0:
             return
 
-        # Build robot mask and search exclusion mask
         robot_mask = self.build_robot_mask_from_transforms(
             transforms,
             dilate_px=int(self.mask_cfg['robot_mask_dilate_px']),
             ee_dilate_px=int(self.mask_cfg['ee_mask_dilate_px'])
         )
+
         search_exclusion_mask = self.build_search_exclusion_mask(
             robot_mask,
             extra_px=int(self.mask_cfg['search_exclusion_extra_px'])
         )
-
         # Search only in a ROI around the robot, instead of the whole image
         roi_pad = int(self.distance_cfg['roi_pad_px'])  # pixels
 
@@ -402,16 +414,36 @@ class RealTimeDistance(Node):
         x, y = np.array([x0, x1]), np.array([y0, y1])
 
         # Compute closest distance from control points to obstacles in the depth image
-        cp_results, n_pts = self.compute_closest_distance(
-            control_points=control_points,
-            x=x,
-            y=y,
-            step=step,
-            search_exclusion_mask=search_exclusion_mask
-        )
+        cp_results = None
+        best_result = None
 
-        if cp_results is None:
-            return
+        if self.use_segment_distance:
+            best_result, n_pts = compute_closest_distance_from_segments(
+                last_depth=self.last_depth,
+                K_inv=self.K_inv,
+                transform_camera_to_base_fn=self.transform_camera_to_base,
+                robot_segments=robot_segments,
+                x=x,
+                y=y,
+                step=step,
+                search_exclusion_mask=search_exclusion_mask,
+                distance_cfg=self.distance_cfg
+            )
+
+            if best_result is None:
+                return
+
+        else:
+            cp_results, n_pts = self.compute_closest_distance(
+                control_points=control_points,
+                x=x,
+                y=y,
+                step=step,
+                search_exclusion_mask=search_exclusion_mask
+            )
+
+            if cp_results is None:
+                return
 
         min_dist = np.inf
         closest_Z = None
@@ -421,16 +453,24 @@ class RealTimeDistance(Node):
 
         # Filter out invalid results where distance is still inf
         self.thresholds = self.distance_cfg["thresholds"]
-        valid_results = [
-            r for r in cp_results
-            if r["distance"] < np.inf
-            and self.thresholds['min_thresh'] <= r["distance"] <= self.thresholds['max_thresh']
-        ]
 
-        if len(valid_results) == 0:
-            return
-        # Find the control point with the minimum distance to an obstacle
-        best_result = min(valid_results, key=lambda r: r["distance"])
+        if self.use_segment_distance:
+            if best_result["distance"] == np.inf:
+                return
+            if not (self.thresholds['min_thresh'] <= best_result["distance"] <= self.thresholds['max_thresh']):
+                return
+
+        else:
+            valid_results = [
+                r for r in cp_results
+                if r["distance"] < np.inf
+                and self.thresholds['min_thresh'] <= r["distance"] <= self.thresholds['max_thresh']
+            ]
+
+            if len(valid_results) == 0:
+                return
+
+            best_result = min(valid_results, key=lambda r: r["distance"])
 
         min_dist = best_result["distance"]
         closest_point = best_result["closest_obstacle_point"]
@@ -476,14 +516,22 @@ class RealTimeDistance(Node):
             print(f"Closest point on robot: {closest_robot_point}")
             print(f"Closest pixel: {closest_uv_obs}")
 
-            # Visualize distance on depth image
+        # === Visualization ===
+        if self.enable_visualization:
             depth_vis = cv2.normalize(self.last_depth, None, 0, 255, cv2.NORM_MINMAX)
             depth_vis = depth_vis.astype(np.uint8)
             depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
 
-            if robot_mask is not None:
+            # Show only raw video if requested
+            if self.visualize_only_raw_video:
+                cv2.imshow("Robot + closest distance", depth_vis)
+                cv2.waitKey(1)
+                return
+
+            # Otherwise draw overlays
+            if robot_mask is not None and self.visual_robot_exclusion_mask:
                 depth_vis[robot_mask] = (0, 0, 0)
-            if robot_mask is not None:
+
                 contours, _ = cv2.findContours(
                     (robot_mask.astype(np.uint8) * 255),
                     cv2.RETR_EXTERNAL,
@@ -492,7 +540,10 @@ class RealTimeDistance(Node):
                 cv2.drawContours(depth_vis, contours, -1, (0, 255, 0), 3)
 
             # Draw robot segments in green
-            for a, b in segments:
+            for seg in robot_segments:
+                a = seg['p0']
+                b = seg['p1']
+
                 uv_a = self.project_point_to_image(a)
                 uv_b = self.project_point_to_image(b)
 
@@ -500,17 +551,17 @@ class RealTimeDistance(Node):
                     cv2.line(depth_vis, uv_a, uv_b, (0, 255, 0), 1)
                     cv2.circle(depth_vis, uv_a, 2, (0, 255, 0), -1)
                     cv2.circle(depth_vis, uv_b, 2, (0, 255, 0), -1)
+            # Draw all control point distances
+            if not self.use_segment_distance and cp_results is not None:
+                for r in cp_results:
+                    if r["distance"] == np.inf:
+                        continue
 
-            # Draw ALL control point distances (thin white lines)
-            for r in cp_results:
-                if r["distance"] == np.inf:
-                    continue
+                    uv_cp = self.project_point_to_image(r["point"])
+                    uv_obs = r["closest_pixel"]
 
-                uv_cp = self.project_point_to_image(r["point"])
-                uv_obs = r["closest_pixel"]
-
-                if uv_cp is not None and uv_obs is not None:
-                    cv2.line(depth_vis, uv_cp, uv_obs, (255, 255, 255), 1)
+                    if uv_cp is not None and uv_obs is not None:
+                        cv2.line(depth_vis, uv_cp, uv_obs, (255, 255, 255), 1)
 
             # Closest obstacle pixel in red
             if closest_uv_obs is not None:
@@ -524,12 +575,12 @@ class RealTimeDistance(Node):
             uv_robot = self.project_point_to_image(closest_robot_point)
             if uv_robot is not None and closest_uv_obs is not None:
                 cv2.circle(depth_vis, uv_robot, 5, (255, 255, 0), -1)
-
-                # Distance segment in white
                 cv2.line(depth_vis, closest_uv_obs, uv_robot, (255, 255, 255), 2)
 
             # Draw control points in orange
-            self.draw_control_points(depth_vis, control_points, color=(0, 165, 255))
+            # Draw control points only in control-point mode
+            if not self.use_segment_distance:
+                self.draw_control_points(depth_vis, control_points, color=(0, 165, 255))
 
             # Distance text
             cv2.putText(
