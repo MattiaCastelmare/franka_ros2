@@ -197,4 +197,3 @@ def compute_direction_vector(p_obs, cp_positions, i):
         direction = np.zeros(3)
     
     return direction
-
