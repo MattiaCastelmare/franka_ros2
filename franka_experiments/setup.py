@@ -13,6 +13,7 @@ setup(
             'launch/wrapper_forward_velocity.launch.py',
             'launch/handeye_calibration_bringup.launch.py',
             'launch/human_avoidance.launch.py',
+            'launch/pentagon_tracking.launch.py',
         ]),
         ('share/' + package_name + '/config', [
             'config/fake_hw_controller_params.yaml',
