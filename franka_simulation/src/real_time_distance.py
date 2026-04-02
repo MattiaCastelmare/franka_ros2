@@ -40,6 +40,7 @@ class RealTimeDistance(Node):
         self.closest_robot_point = None
         self.closest_uv_obs = None
         self.min_dist = np.inf
+        self.roi_bounds = None
         
         # === Config params ===
         self.config = load_robot_config()
@@ -56,6 +57,7 @@ class RealTimeDistance(Node):
         self.visual_robot_exclusion_mask = self.booleans['exclusion_mask']
         self.visualize_only_raw_video = self.booleans['raw_video']
         self.use_segment_distance = self.booleans['use_segment_distance']
+        self.visual_ROI = self.booleans['visual_ROI']
 
         # Load mesh files for each link and sample points on them
         self.link_mesh_files = self.mesh_cfg['files']
@@ -425,6 +427,8 @@ class RealTimeDistance(Node):
             x0, x1 = margin, W - margin
             y0, y1 = margin, H - margin
 
+        self.roi_bounds = (x0, y0, x1, y1)
+
         x, y = np.array([x0, x1]), np.array([y0, y1])
 
         # Compute closest distance from control points to obstacles in the depth image
@@ -570,6 +574,10 @@ class RealTimeDistance(Node):
         depth_vis = cv2.normalize(self.last_depth, None, 0, 255, cv2.NORM_MINMAX)
         depth_vis = depth_vis.astype(np.uint8)
         depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
+
+        if self.visual_ROI and self.roi_bounds is not None:
+            x0, y0, x1, y1 = self.roi_bounds
+            cv2.rectangle(depth_vis, (x0, y0), (x1, y1), (255, 0, 255), 2)
 
         # Show only raw video if requested
         if self.visualize_only_raw_video:
