@@ -26,19 +26,26 @@ class AvoidanceController(Node):
 
         self.declare_parameter("control_rate", 100.0)
         self.declare_parameter("human_distance_topic", "/human_robot/closest_distance")
-        self.declare_parameter("k_rep", 0.8)
-        self.declare_parameter("max_joint_vel", 0.5)
-        self.declare_parameter("d_influence", 0.3)
+        self.declare_parameter("k_rep", 0.3)
+        self.declare_parameter("max_joint_vel", 0.25)
+        self.declare_parameter("d_influence", 0.5)
+        self.declare_parameter("lpf_alpha", 0.75)
+        self.declare_parameter("max_accel_local", 3.0)
 
         self._control_rate = float(self.get_parameter("control_rate").value)
         self._human_distance_topic = str(self.get_parameter("human_distance_topic").value)
         self._k_rep = float(self.get_parameter("k_rep").value)
         self._max_joint_vel = float(self.get_parameter("max_joint_vel").value)
         self._d_influence = float(self.get_parameter("d_influence").value)
+        self._lpf_alpha = float(self.get_parameter("lpf_alpha").value)
+        self._max_accel_local = float(self.get_parameter("max_accel_local").value)
+        self._dt = 1.0 / self._control_rate
 
         self.q = None
         self.human_distance = None
         self.pin_ok = False
+        self._qdot_prev = np.zeros(7)
+        self._qdot_cmd_prev = np.zeros(7)
 
         self._init_pinocchio()
 
@@ -96,6 +103,8 @@ class AvoidanceController(Node):
         msg = Float64MultiArray()
         msg.data = [0.0] * NUM_JOINTS
         self.pub.publish(msg)
+        self._qdot_prev = np.zeros(7)
+        self._qdot_cmd_prev = np.zeros(7)
 
     def _control_loop(self):
         if not self.pin_ok or not isinstance(self.q, np.ndarray):
@@ -131,11 +140,33 @@ class AvoidanceController(Node):
         J_t = J_full[:3, :]
 
         v_cart = self._k_rep * s * direction
-        qdot = J_t.T @ v_cart
-        qdot = np.clip(qdot, -self._max_joint_vel, self._max_joint_vel)
+        qdot_raw = J_t.T @ v_cart
+
+        # 1. Clamp velocità raw
+        qdot_clamped = np.clip(qdot_raw, -self._max_joint_vel, self._max_joint_vel)
+
+        # 2. Low-pass filter
+        qdot_lpf = self._lpf_alpha * qdot_clamped + (1.0 - self._lpf_alpha) * self._qdot_prev
+        self._qdot_prev = qdot_lpf.copy()
+
+        # 3. Rate limiter locale
+        max_delta = self._max_accel_local * self._dt
+        qdot_rate_limited = np.zeros(7)
+        for i in range(7):
+            delta = qdot_lpf[i] - self._qdot_cmd_prev[i]
+            if delta > max_delta:
+                qdot_rate_limited[i] = self._qdot_cmd_prev[i] + max_delta
+            elif delta < -max_delta:
+                qdot_rate_limited[i] = self._qdot_cmd_prev[i] - max_delta
+            else:
+                qdot_rate_limited[i] = qdot_lpf[i]
+        self._qdot_cmd_prev = qdot_rate_limited.copy()
+
+        # 4. Final clamp
+        qdot_final = np.clip(qdot_rate_limited, -self._max_joint_vel, self._max_joint_vel)
 
         out = Float64MultiArray()
-        out.data = qdot.tolist()
+        out.data = qdot_final.tolist()
         self.pub.publish(out)
 
 

@@ -74,14 +74,14 @@
       #   1) topic "blend_alpha"  (std_msgs/Float64, 0..1)
       #   2) ros2 param set rt_velocity_blender_controller alpha 0.7
       alpha_topic: blend_alpha
-      alpha: 0.5     # 1.0 = pure tracking, 0.0 = pure avoidance
+      alpha: 0.6     # 1.0 = pure tracking, 0.0 = pure avoidance
 
       # ── Velocity clamp [rad/s] ──────────────────────────────────────
       # Single final clamp applied AFTER blending and rate-limiting.
       # Set to 0.0 to DISABLE (NOT recommended on real hardware).
       #
       # >>> SET THIS TO YOUR APPLICATION'S SAFE LIMIT <<<
-      qdot_max: 0.0
+      qdot_max: 0.4         # [rad/s] - CONSERVATIVO
 
       # ── Rate limiter [rad/s²] ──────────────────────────────────────
       # Maximum allowed acceleration per joint per RT cycle.
@@ -89,7 +89,8 @@
       # Set to 0.0 to DISABLE.
       #
       # >>> SET THIS BASED ON YOUR ROBOT'S JERK TOLERANCE <<<
-      max_accel: 0.0
+      max_accel: 4.0        # [rad/s²] - MOLTO CONSERVATIVO (40% del limite libfranka)
+                            # Valori tipici: 3.0 (molto smooth) - 8.0 (reattivo)
 
       # ── Smooth timeout ramp ────────────────────────────────────────
       # If an input topic stops publishing for longer than
@@ -99,5 +100,5 @@
       # (last command held indefinitely).
       #
       # >>> SET BOTH TO ENABLE SAFE AUTOMATIC RAMP-TO-ZERO <<<
-      timeout_threshold_s: 0.0
-      timeout_ramp_s: 0.0
+      timeout_threshold_s: 0.3   # Inizia ramp dopo 0.3s senza dati
+      timeout_ramp_s: 0.8        # Rampa a zero in 0.8s (no snap improvviso)
