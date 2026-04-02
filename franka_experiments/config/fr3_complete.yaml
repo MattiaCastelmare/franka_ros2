@@ -91,7 +91,7 @@ distance: # in meters
   # consider distance within this range
   thresholds:
     min_thresh: 0.08
-    max_thresh: 0.5
+    max_thresh: 0.7
 
   # offset for control point on ee
   ee_tip_offset: 0.10

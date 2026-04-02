@@ -26,7 +26,7 @@ class AvoidanceController(Node):
 
         self.declare_parameter("control_rate", 100.0)
         self.declare_parameter("human_distance_topic", "/human_robot/closest_distance")
-        self.declare_parameter("k_rep", 0.5)
+        self.declare_parameter("k_rep", 0.8)
         self.declare_parameter("max_joint_vel", 0.5)
         self.declare_parameter("d_influence", 0.3)
 
