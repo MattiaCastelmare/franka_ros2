@@ -80,6 +80,7 @@ meshes:
 topics:
   depth_image: /camera/camera/depth/image_rect_raw
   depth_camera_info: /camera/camera/depth/camera_info
+  closest_distance: /human_robot/closest_distance
 
 distance: # in meters
   min_depth_m: 0.15
@@ -92,6 +93,9 @@ distance: # in meters
   thresholds:
     min_thresh: 0.08
     max_thresh: 0.7
+
+  # distance published when no obstacle is detected within max_thresh
+  fallback_distance: 2.0
 
   # offset for control point on ee
   ee_tip_offset: 0.10
@@ -106,3 +110,10 @@ zones: # in meters
   warning: 0.3
   danger: 0.2
   critical: 0.1
+
+booleans:
+  visualize: true            # set true to open OpenCV window (disable in headless deployments)
+  exclusion_mask: true        # mask robot pixels before searching for obstacles
+  raw_video: false            # show raw depth image only (no overlays)
+  use_segment_distance: false # true = capsule-segment mode, false = control-point mode
+  visual_ROI: true            # draw ROI bounding box on visualization
