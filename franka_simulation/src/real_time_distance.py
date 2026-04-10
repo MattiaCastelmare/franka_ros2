@@ -527,14 +527,14 @@ class RealTimeDistance(Node):
         closest_Z = p_cam_closest[2]
 
         # === Log results ===
-        if self.min_dist < np.inf:
-            self.get_logger().info(f"\n📍 DEPTH RESULTS"
-                f"\n Min distance: {self.min_dist:.4f} m"
-                f"\n Pixel {self.closest_uv_obs}"
-                f"\n Depth Z {closest_Z:.4f} m"
-                f"\n Point on Robot: {self.closest_robot_point}"
-                f"\n Point in Base: {closest_point}"
-            )
+        # if self.min_dist < np.inf:
+        #     self.get_logger().info(f"\n📍 DEPTH RESULTS"
+        #         f"\n Min distance: {self.min_dist:.4f} m"
+        #         f"\n Pixel {self.closest_uv_obs}"
+        #         f"\n Depth Z {closest_Z:.4f} m"
+        #         f"\n Point on Robot: {self.closest_robot_point}"
+        #         f"\n Point in Base: {closest_point}"
+        #     )
 
         # === Publish distance data ===
         msg = HumanRobotDistance()

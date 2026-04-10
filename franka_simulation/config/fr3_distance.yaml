@@ -88,14 +88,14 @@ topics:
   depth_camera_info: /camera/camera/depth/camera_info
   closest_distance: /human_robot/closest_distance
 
-distance: # in meters
+distance: # in meters from the camera
   min_depth_m: 0.15
   max_depth_m: 4.0
   pixel_step: 6
   image_margin_px: 10
   roi_pad_px: 90
 
-  # consider distance within this range
+  # consider distance from control points within this range
   thresholds:
     min_thresh: 0.05
     max_thresh: 0.5

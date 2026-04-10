@@ -1,5 +1,5 @@
 topics:
-  joint_states_topic: /joint_states
+  joint_states_topic: /NS_1/joint_states
   velocity_topic: /avoidance/velocity
 
 params:
