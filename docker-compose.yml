@@ -33,6 +33,7 @@ services:
       DISPLAY: $DISPLAY
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
+      FASTRTPS_DEFAULT_PROFILES_FILE: /ros2_ws/src/fastdds_no_shm.xml
 
     cap_add:
       - SYS_NICE
@@ -40,4 +41,4 @@ services:
     ulimits:
       rtprio: 99
       rttime: -1
-      memlock: 8428281856
+      memlock: -1

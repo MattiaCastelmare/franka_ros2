@@ -54,3 +54,10 @@ def clamp_joints(qdot: np.ndarray, qdot_max: float) -> np.ndarray:
 def lpf(prev: np.ndarray, current: np.ndarray, alpha: float) -> np.ndarray:
     """First-order low-pass filter: ``out = α·prev + (1−α)·current``."""
     return alpha * prev + (1.0 - alpha) * current
+
+
+def rate_limit(prev: "np.ndarray", current: "np.ndarray", max_delta: float) -> "np.ndarray":
+    """Clamp per-element change between consecutive commands."""
+    import numpy as np
+    delta = current - prev
+    return prev + np.clip(delta, -max_delta, max_delta)
