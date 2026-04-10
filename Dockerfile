@@ -103,6 +103,34 @@ RUN sudo apt-get update && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # ------------------------
+# Pinocchio (robotpkg, Python 3.10)
+# ------------------------
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends \
+        lsb-release \
+        gnupg2 && \
+    curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.asc \
+        | sudo gpg --dearmor -o /usr/share/keyrings/robotpkg.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/robotpkg.gpg] \
+http://robotpkg.openrobots.org/packages/debian/pub \
+$(lsb_release -cs) robotpkg" \
+        | sudo tee /etc/apt/sources.list.d/robotpkg.list > /dev/null && \
+    sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends \
+        robotpkg-py310-pinocchio && \
+    sudo apt-get clean && \
+    sudo rm -rf /var/lib/apt/lists/*
+
+# Pinocchio environment variables
+ENV PYTHONPATH=/opt/openrobots/lib/python3.10/site-packages:$PYTHONPATH
+ENV PATH=/opt/openrobots/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/openrobots/lib:${LD_LIBRARY_PATH}
+ENV PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:${PKG_CONFIG_PATH}
+
+# Test pinocchio installation (FIX: import corretto con alias)
+RUN python3 -c "import pinocchio as pin; print('pinocchio', pin.__version__)"
+
+# ------------------------
 # Python environment (MediaPipe FIX)
 # ------------------------
 ENV PATH=/home/${USERNAME}/.local/bin:$PATH

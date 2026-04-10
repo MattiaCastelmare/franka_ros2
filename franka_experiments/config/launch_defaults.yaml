@@ -37,3 +37,5 @@ rviz_delay_s: 5.0
 camera_delay_s: 0.0
 start_human_pose: true
 human_pose_delay_s: 0.0
+start_real_time_distance: true
+real_time_distance_delay_s: 8.0

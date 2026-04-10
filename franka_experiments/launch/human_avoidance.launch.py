@@ -70,6 +70,7 @@ def _launch_all(context):
         LaunchConfiguration("estimator_delay_s").perform(context))
     avoidance_delay = float(
         LaunchConfiguration("avoidance_delay_s").perform(context))
+    namespace = LaunchConfiguration("namespace").perform(context)
 
     # ── Include the full bringup wrapper ──────────────────────────────
     wrapper_launch = IncludeLaunchDescription(
@@ -105,6 +106,7 @@ def _launch_all(context):
         package="franka_experiments",
         executable="human_avoidance_controller",
         name="human_avoidance_controller",
+        namespace=namespace,
         output="screen",
         parameters=[avoidance_config],
     )

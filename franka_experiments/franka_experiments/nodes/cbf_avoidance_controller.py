@@ -8,8 +8,8 @@ from franka_msgs.msg import HumanRobotDistance
 import pinocchio as pin
 import numpy as np
 import qpsolvers as qp
-from zutils.ros_setup import init_pinocchio_only, make_joint_state_callback
-from utils.cbf_utils import load_robot_config, skew, select_gamma
+from franka_experiments.utils.ros_setup import init_pinocchio_only, make_joint_state_callback
+from franka_experiments.utils.cbf_utils import load_robot_config, skew, select_gamma
 
 
 class AvoidanceControl(Node):

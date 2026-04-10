@@ -239,7 +239,7 @@ CallbackReturn RtVelocityBlenderController::on_init() {
     auto_declare<std::string>("alpha_topic", "blend_alpha");
 
     // Blend weight: 1.0 = 100% tracking, 0.0 = 100% avoidance
-    auto_declare<double>("alpha", 1.0);
+    auto_declare<double>("alpha", 0.5);
 
     // Protection parameters – 0 or negative = DISABLED
     auto_declare<double>("qdot_max", 0.0);

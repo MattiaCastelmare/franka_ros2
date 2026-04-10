@@ -88,10 +88,11 @@ class EEPentagonVelocityCommander(Node):
         self.declare_parameter('plane', 'front')
         self.declare_parameter('plane_frame', 'fr3_link0')
         self.declare_parameter('cycle_time', 15.0)
-        self.declare_parameter('kp_cart', 2.0)
-        self.declare_parameter('damping', 0.02)
+        self.declare_parameter('kp_cart', 1.5)
+        self.declare_parameter('damping', 0.05)
         self.declare_parameter('qdot_max', 0.3)
-        self.declare_parameter('lpf_alpha', 0.8)
+        self.declare_parameter('lpf_alpha', 0.85)
+        self.declare_parameter('max_accel_local', 3.0)
 
         # ---- Read parameters (tracking_topic + deprecated alias) --------
         self.tracking_topic: str = resolve_topic_with_deprecated_alias(
@@ -110,6 +111,7 @@ class EEPentagonVelocityCommander(Node):
         self.damping: float = self.get_parameter('damping').value
         self.qdot_max: float = self.get_parameter('qdot_max').value
         self.lpf_alpha: float = self.get_parameter('lpf_alpha').value
+        self.max_accel_local: float = self.get_parameter('max_accel_local').value
 
         # ---- Validate ----------------------------------------------------
         if len(center_xyz) != 3:
@@ -182,6 +184,7 @@ class EEPentagonVelocityCommander(Node):
 
         # ---- Internal state for filter -----------------------------------
         self._qdot_prev = np.zeros(NUM_JOINTS)
+        self._qdot_cmd_prev = np.zeros(NUM_JOINTS)
         self._tlog = ThrottledLogger(self.get_logger())
 
         # ---- Prebuilt zero message ---------------------------------------
@@ -243,6 +246,8 @@ class EEPentagonVelocityCommander(Node):
         # ---- Warmup phase: zeros -----------------------------------------
         if t < self.warmup_s:
             self.pub.publish(self._zero_msg)
+            self._qdot_prev = np.zeros(NUM_JOINTS)
+            self._qdot_cmd_prev = np.zeros(NUM_JOINTS)
             if self._tlog.due(t):
                 self._tlog.info(
                     f'[t={t:.1f}s warmup env=0.000] '
@@ -256,6 +261,8 @@ class EEPentagonVelocityCommander(Node):
         # ---- Need joint state --------------------------------------------
         if self._js_mgr.q is None or self._js_mgr.q_full is None:
             self.pub.publish(self._zero_msg)
+            self._qdot_prev = np.zeros(NUM_JOINTS)
+            self._qdot_cmd_prev = np.zeros(NUM_JOINTS)
             if self._tlog.due(t):
                 self.get_logger().warn(
                     'No joint state received yet — publishing zeros')
@@ -266,6 +273,8 @@ class EEPentagonVelocityCommander(Node):
                   - self._js_mgr.stamp).nanoseconds * 1e-9
         if js_age > 0.1:
             self.pub.publish(self._zero_msg)
+            self._qdot_prev = np.zeros(NUM_JOINTS)
+            self._qdot_cmd_prev = np.zeros(NUM_JOINTS)
             if self._tlog.due(t):
                 self.get_logger().warn(
                     f'Joint-state stale ({js_age:.3f} s) — publishing zeros')
@@ -299,17 +308,33 @@ class EEPentagonVelocityCommander(Node):
         qdot_raw = dls_solve(J_pos, v_cmd, self.damping)
         if qdot_raw is None:
             self.pub.publish(self._zero_msg)
+            self._qdot_prev = np.zeros(NUM_JOINTS)
+            self._qdot_cmd_prev = np.zeros(NUM_JOINTS)
             return
 
         # ---- Apply envelope + clamp + LPF --------------------------------
         qdot_scaled = envelope * qdot_raw
         qdot_clamped = clamp_joints(qdot_scaled, self.qdot_max)
-        qdot_filt = lpf(self._qdot_prev, qdot_clamped, self.lpf_alpha)
-        self._qdot_prev = qdot_filt.copy()
+        qdot_lpf = lpf(self._qdot_prev, qdot_clamped, self.lpf_alpha)
+        self._qdot_prev = qdot_lpf.copy()
+
+        # ---- Rate limiter (previene discontinuità in accelerazione) -------
+        dt = 1.0 / self.rate_hz
+        max_delta = self.max_accel_local * dt
+        qdot_rate_limited = np.zeros(NUM_JOINTS)
+        for i in range(NUM_JOINTS):
+            delta = qdot_lpf[i] - self._qdot_cmd_prev[i]
+            if delta > max_delta:
+                qdot_rate_limited[i] = self._qdot_cmd_prev[i] + max_delta
+            elif delta < -max_delta:
+                qdot_rate_limited[i] = self._qdot_cmd_prev[i] - max_delta
+            else:
+                qdot_rate_limited[i] = qdot_lpf[i]
+        self._qdot_cmd_prev = qdot_rate_limited.copy()
 
         # ---- Publish -----------------------------------------------------
         msg = Float64MultiArray()
-        msg.data = qdot_filt.tolist()
+        msg.data = qdot_rate_limited.tolist()
         self.pub.publish(msg)
 
         # ---- Throttled log (~1 Hz) ---------------------------------------
@@ -319,7 +344,7 @@ class EEPentagonVelocityCommander(Node):
                 f'[t={t:.1f}s {phase} env={envelope:.3f}] '
                 f'p=[{vec_to_str(p_ee)}] p_d=[{vec_to_str(p_d)}] '
                 f'|e|={np.linalg.norm(e_pos):.4f} '
-                f'|qdot|={np.linalg.norm(qdot_filt):.4f}')
+                f'|qdot|={np.linalg.norm(qdot_rate_limited):.4f}')
 
 
 # ======================================================================

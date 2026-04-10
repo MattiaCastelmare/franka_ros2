@@ -55,14 +55,18 @@ def generate_launch_description() -> LaunchDescription:
 
     # ── 1) Include wrapper_forward_velocity.launch.py ─────────────────
     wrapper_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([
-                FindPackageShare('franka_experiments'),
-                'launch',
-                'wrapper_forward_velocity.launch.py',
-            ])
-        ),
-    )
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('franka_experiments'),
+                    'launch',
+                    'wrapper_forward_velocity.launch.py',
+                ])
+            ),
+            launch_arguments={
+                'start_real_time_distance': 'false',
+                'max_accel': '0.5',
+            }.items(),
+        )
 
     # ── 2) AprilTag detection node ────────────────────────────────────
     apriltag_node = Node(
@@ -76,6 +80,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'family': LaunchConfiguration('apriltag_family'),
             'size': LaunchConfiguration('apriltag_size'),
+            'image_transport': 'raw',
         }],
         output='screen',
     )
