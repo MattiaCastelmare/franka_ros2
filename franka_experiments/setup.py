@@ -38,6 +38,7 @@ setup(
             'velocity_commander = franka_experiments.nodes.velocity_commander:main',
             'smooth_velocity_commander = franka_experiments.nodes.smooth_velocity_commander:main',
             'ee_pentagon_velocity_commander = franka_experiments.nodes.ee_pentagon_velocity_commander:main',
+            'ee_circle_velocity_commander = franka_experiments.nodes.ee_circle_velocity_commander:main',
             'ee_random_waypoints_velocity_commander = franka_experiments.nodes.ee_random_waypoints_velocity_commander:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
             'avoidance_controller = franka_experiments.nodes.avoidance_controller:main',
