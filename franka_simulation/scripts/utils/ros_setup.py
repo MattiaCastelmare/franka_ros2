@@ -138,6 +138,22 @@ def init_pinocchio_and_capsules(
     except Exception as e:
         node.get_logger().error(f"Failed to initialize Pinocchio/capsules: {e}")
         return False, None, None, {}, {}
+    
+    
+def init_pinocchio_only(node: Any,) -> tuple[bool, Any, Any]:
+    """Initialize only the reduced Pinocchio model/data from robot_description."""
+    urdf_xml = fetch_robot_description(node)
+    if not urdf_xml:
+        node.get_logger().error("robot_description is empty or missing")
+        return False, None, None
+
+    try:
+        model, data = build_reduced_pinocchio_model_from_urdf(urdf_xml)
+        node.get_logger().info("✓ Pinocchio model initialized")
+        return True, model, data
+    except Exception as e:
+        node.get_logger().error(f"Failed to initialize Pinocchio model: {e}")
+        return False, None, None
 
 
 def make_joint_state_callback(
