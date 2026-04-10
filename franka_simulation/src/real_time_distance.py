@@ -43,7 +43,7 @@ class RealTimeDistance(Node):
         self.roi_bounds = None
         
         # === Config params ===
-        self.config = load_robot_config()
+        self.config = load_robot_config('distance')
         self.robot_cfg = self.config['robot']
         self.distance_cfg = self.config['distance']
         self.mask_cfg = self.config['mask']

@@ -26,8 +26,8 @@ def load_extrinsics():
 
     return R, t
 
-def load_robot_config():
-    filename = '/ros2_ws/src/franka_simulation/config/fr3_complete.yaml'
+def load_robot_config(file):
+    filename = f'/ros2_ws/src/franka_simulation/config/fr3_{file}.yaml'
     with open(filename, 'r') as f:
         data = yaml.safe_load(f)
     return data
