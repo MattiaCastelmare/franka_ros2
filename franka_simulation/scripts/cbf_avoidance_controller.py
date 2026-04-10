@@ -15,7 +15,7 @@ from utils.cbf_utils import load_robot_config, skew, select_gamma
 class AvoidanceControl(Node):
     def __init__(self):
         super().__init__('cbf_avoidance_controller')
-        self.get_logger().info("CBF Avoidance Controller node initialized")
+        self.get_logger().info("🚀 CBF Avoidance Controller node initialized")
 
         self.vision_config = load_robot_config('distance') # distance config also contains vision topics
         self.robot_cfg = self.vision_config['robot']
@@ -52,8 +52,9 @@ class AvoidanceControl(Node):
             JointState,
             self.topics_ctr['joint_states_topic'],
             make_joint_state_callback(
-                controller=self, 
-                joint_names=self.robot_cfg['joint_names']),
+                controller=self,
+                joint_names=self.robot_cfg['joint_names']
+            ),
             10
         )
 
@@ -137,6 +138,11 @@ class AvoidanceControl(Node):
         # Point Jacobian(r_world translation from the frame origin to the point)
         Jp = Jv - skew(r_world) @ Jw 
 
+        # Check for non-finite values in the Jacobian
+        if not np.all(np.isfinite(Jp)):
+            self.get_logger().error("Jacobian contains non-finite values")
+            return None
+
         return Jp
     
     def build_cbf_constraint(self, q):
@@ -172,6 +178,10 @@ class AvoidanceControl(Node):
         a = (n_world @ Jp).astype(np.float64) # CBF constraint coefficient for qdot
         b = float(-gamma * h) # CBF constraint constant term
 
+        # Check for non-finite values in a and b
+        if not np.all(np.isfinite(a)) or not np.isfinite(b):
+            return False, None, None
+
         return True, a, b
 
     def solve_cbf_qp(self, q, qdot_nom):
@@ -180,7 +190,7 @@ class AvoidanceControl(Node):
             min_{qdot, delta} 0.5 * ||qdot - qdot_nom||^2 + 0.5 * rho * delta^2
 
         subject to:
-            a @ qdot + delta >= b     (CBF)
+            a @ qdot + delta >= b   (CBF)
             qdot_min <= qdot <= qdot_max
             delta >= 0
         """
@@ -237,18 +247,24 @@ class AvoidanceControl(Node):
                 b=None,
                 lb=lb,
                 ub=ub,
-                solver=str(self.params.get('qp_solver', 'osqp')),
-                verbose=True
+                solver=str(self.params['qp_solver']),
+                verbose=False
             ) # solve the QP to get optimal qdot and slack variable
         except Exception as e:
             self.get_logger().error(f"QP solver exception: {e}")
             return np.zeros(n, dtype=np.float64)
 
+        # Check if the solver returned a solution
         if x is None:
             self.get_logger().warn("QP failed, returning zero velocity")
             return np.zeros(n, dtype=np.float64)
 
         x = np.asarray(x, dtype=np.float64).reshape(-1) # ensure x is a 1D array
+
+        # Check for non-finite values in the solution
+        if not np.all(np.isfinite(x)):
+            self.get_logger().error("QP solution contains non-finite values")
+            return np.zeros(n, dtype=np.float64)
 
         qdot_cmd = x[:n] # optimal joint velocity command from the QP
         self.last_qp_slack = float(x[-1])
@@ -273,15 +289,21 @@ class AvoidanceControl(Node):
             )
             qdot_cmd = qdot_nom
         else:
+            self.get_logger().info(
+                f"🎯 [CBF] d={self.closest_distance:.3f} m | "
+                f"link={self.link_name} | zone={self.zone}"
+            )
             qdot_cmd = self.solve_cbf_qp(q, qdot_nom) # solve CBF-QP to get the avoidance velocity
 
         # Publish command
-        self.get_logger().debug(
-            f"Publishing avoidance velocity: {qdot_cmd}, slack={self.last_qp_slack:.4f}"
+        self.get_logger().info(
+            f"⚙️ [CMD] qdot={np.array2string(qdot_cmd, precision=3, suppress_small=True)} | "
+            f"slack={self.last_qp_slack:.6f}"
         )
+
         msg = Float64MultiArray()
         msg.data = [float(v) for v in qdot_cmd]
-        self.cmd_pub.publish(msg)     
+        self.cmd_pub.publish(msg)
 
 
 def main(args=None):
