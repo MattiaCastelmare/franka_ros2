@@ -5,6 +5,6 @@ topics:
 params:
   d_safe: 0.3
   rho_slack: 1000.0
-  qp_solver: cvxopt
-  qdot_min: -0.6
-  qdot_max: 0.6
+  qp_solver: osqp
+  ema_alpha: 0.4
+  # qdot_min / qdot_max removed — FR3 per-joint limits are hardcoded in the node

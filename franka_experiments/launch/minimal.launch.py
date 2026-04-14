@@ -207,7 +207,14 @@ def _launch_all(context):
 
     # ── Real-time distance node (optional) ───────────────────────────────
     if _as_bool(p['start_real_time_distance']):
-        rtd_delay = float(p['real_time_distance_delay_s'])
+        # Dynamic delay: real_time_distance must start AFTER every other node.
+        # base = max(controller spawner, last camera node) + 2 s safety margin.
+        # real_time_distance_delay_s is intentionally ignored as an absolute
+        # value; it could be added here as an extra offset if needed.
+        _cam_last = (float(p['camera_delay_s']) + 3.0
+                     if _as_bool(p['enable_camera']) else 0.0)
+        rtd_delay = max(float(p['control_spawner_delay_s']), _cam_last) + 2.0
+
         rtd_config = PathJoinSubstitution([
             FindPackageShare('franka_experiments'),
             'config', 'fr3_complete.yaml',
@@ -226,7 +233,9 @@ def _launch_all(context):
                                    actions=[real_time_distance_node]))
         actions.append(
             LogInfo(msg=['[minimal] real_time_distance  : ENABLED '
-                         '(delay=', str(rtd_delay), 's)']))
+                         '(delay=', str(rtd_delay), 's'
+                         ' = max(control_spawner=', p['control_spawner_delay_s'],
+                         ', cam_last=', str(_cam_last), ') + 2.0)']))
     else:
         actions.append(
             LogInfo(msg='[minimal] real_time_distance  : DISABLED '

@@ -12,6 +12,25 @@ from franka_experiments.utils.ros_setup import init_pinocchio_only, make_joint_s
 from franka_experiments.utils.cbf_utils import load_robot_config, skew, select_gamma
 
 
+# ── FR3 Joint Limits ─────────────────────────────────────────────────────────
+# Source: franka_description/robots/fr3/joint_limits.yaml
+# Columns: (q_min [rad], q_max [rad], qdot_max [rad/s], qddot_max [rad/s²])
+# qddot_max = position_based_velocity_limits.deceleration_limit (no explicit
+# acceleration field exists in the URDF/YAML for FR3).
+_FR3_LIMITS = {
+    #           q_min     q_max    qdot_max  qddot_max
+    'joint1': (-2.9007,  2.9007,  2.62,     6.000),
+    'joint2': (-1.8361,  1.8361,  2.62,     2.585),
+    'joint3': (-2.9007,  2.9007,  2.62,     3.500),
+    'joint4': (-3.0770, -0.1169,  2.62,     4.000),
+    'joint5': (-2.8763,  2.8763,  5.26,    17.000),
+    'joint6': ( 0.4398,  4.6216,  4.18,     5.500),
+    'joint7': (-3.0508,  3.0508,  5.26,    17.000),
+}
+_FR3_JOINT_ORDER = [f'joint{i}' for i in range(1, 8)]
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 class AvoidanceControl(Node):
     def __init__(self):
         super().__init__('cbf_avoidance_controller')
@@ -59,9 +78,22 @@ class AvoidanceControl(Node):
                         f"  ✗ frame '{link}' not found and no fallback available!"
                     )
 
+        # FR3 joint limits (centralised — do not scatter these values elsewhere)
+        self.q_min       = np.array([_FR3_LIMITS[j][0] for j in _FR3_JOINT_ORDER], dtype=np.float64)
+        self.q_max       = np.array([_FR3_LIMITS[j][1] for j in _FR3_JOINT_ORDER], dtype=np.float64)
+        self.qdot_max    = np.array([_FR3_LIMITS[j][2] for j in _FR3_JOINT_ORDER], dtype=np.float64)
+        self.qdot_min    = -self.qdot_max
+        self.qddot_max   = np.array([_FR3_LIMITS[j][3] for j in _FR3_JOINT_ORDER], dtype=np.float64)
+
         # Robot state
         self.q = None
         self.qdot = None
+        self.qdot_prev      = np.zeros(self.model.nv, dtype=np.float64)
+        self.qdot_prev_prev = np.zeros(self.model.nv, dtype=np.float64)
+        self._last_solve_time: float | None = None
+        self._last_dt: float = 0.033
+        self.qdddot_max: float = 50.0  # jerk limit [rad/s³]
+        self.w_jerk: float = 0.1      # soft jerk penalty weight (relative to tracking)
 
         # Distance message state
         self.link_name = None # closest robot link involved
@@ -100,8 +132,12 @@ class AvoidanceControl(Node):
             10
         )
 
-        self.create_timer(0.1, self.control_loop)
-
+        import threading
+        self._new_distance = threading.Event()
+        self._solver_thread = threading.Thread(
+            target=self._solver_loop, daemon=True
+        )
+        self._solver_thread.start()
 
     # === Frame resolution ===
     def _try_resolve_frame(self, link_name: str):
@@ -162,6 +198,14 @@ class AvoidanceControl(Node):
         )
         self.distance_valid = bool(msg.valid)
 
+        self._new_distance.set()
+
+    def _solver_loop(self):
+        while rclpy.ok():
+            triggered = self._new_distance.wait(timeout=0.5)
+            self._new_distance.clear()
+            if triggered and self.q is not None:
+                self.control_loop()
 
     # === CBF Logic ===
     def compute_nominal_qdot(self, q):
@@ -257,45 +301,109 @@ class AvoidanceControl(Node):
             qdot_min <= qdot <= qdot_max
             delta >= 0
         """
-        n = self.model.nv # number of joints
+        n = self.model.nv
+        rho_slack = float(self.params['rho_slack'])
 
-        rho_slack = float(self.params['rho_slack']) # slack penalty param
+        # ── Timing (must precede cost construction) ───────────────────────────
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if self._last_solve_time is not None:
+            dt = float(np.clip(now - self._last_solve_time, 0.005, 0.2))
+        else:
+            dt = 0.033
+        self._last_solve_time = now
+        self._last_dt = dt
 
-        # Cost: 1/2 x^T P x + q^T x
-        # x = [qdot(7), delta]
-        P = np.eye(n + 1, dtype=np.float64) # quadratic cost matrix
-        P[-1, -1] = rho_slack 
+        # ── Kinematic extrapolation (first-order, constant-acceleration) ──────
+        # qdot_ref = 2·qdot_{k-1} − qdot_{k-2}: the velocity the robot "should
+        # have" if acceleration were held constant.  Both the soft penalty and
+        # the hard jerk constraint are centred on this point.
+        qdot_ref = 2.0 * self.qdot_prev - self.qdot_prev_prev  # shape (n,)
 
-        q_vec = np.zeros(n + 1, dtype=np.float64) # linear cost vector
-        q_vec[:n] = -np.asarray(qdot_nom, dtype=np.float64)
+        # ── Cost: ½ xᵀPx + qᵀx,  x = [qdot(n), δ(1)] ───────────────────────
+        #
+        # Tracking term:    ½ ||qdot − qdot_nom||²
+        # Soft jerk term:   ½ w · ||qdot − qdot_ref||²
+        #
+        # After expansion, the constant terms vanish and we get:
+        #   P_diag = 1 + w       (joints),  ρ (slack)
+        #   q[:n]  = −(qdot_nom + w · qdot_ref)
+        #
+        # The effective unconstrained minimiser is the weighted average
+        #   qdot* = (qdot_nom + w·qdot_ref) / (1+w)
+        # which blends the nominal command with the smooth kinematic target.
+        w = self.w_jerk
+        P = np.zeros((n + 1, n + 1), dtype=np.float64)
+        np.fill_diagonal(P[:n, :n], 1.0 + w)
+        P[n, n] = rho_slack
 
-        # Bounds
-        qdot_min = np.asarray(self.params['qdot_min'], dtype=np.float64)
-        qdot_max = np.asarray(self.params['qdot_max'], dtype=np.float64)
+        q_vec = np.zeros(n + 1, dtype=np.float64)
+        q_vec[:n] = -(np.asarray(qdot_nom, dtype=np.float64) + w * qdot_ref)
 
+        # ── Bounds ────────────────────────────────────────────────────────────
         lb = np.zeros(n + 1, dtype=np.float64)
         ub = np.zeros(n + 1, dtype=np.float64)
-
-        lb[:n] = qdot_min
-        ub[:n] = qdot_max
-
-        # Slack delta >= 0
-        lb[-1] = 0.0
+        lb[:n] = self.qdot_min
+        ub[:n] = self.qdot_max
+        lb[-1] = 0.0    # slack δ ≥ 0
         ub[-1] = np.inf
 
-        # Inequality constraints Gx <= h
+        # ── Inequality constraints Gx ≤ h ─────────────────────────────────────
         G_rows = []
         h_rows = []
 
+        # CBF: a @ qdot + δ ≥ b  →  −a @ qdot − δ ≤ −b
         ok, a, b = self.build_cbf_constraint(q)
         if ok:
-            row = np.zeros(n + 1, dtype=np.float64) # one row for the CBF constraint
-            # a @ qdot + delta >= b
-            #  -> -a @ qdot - delta <= -b
-            row[:n] = -a 
+            row = np.zeros(n + 1, dtype=np.float64)
+            row[:n] = -a
             row[-1] = -1.0
             G_rows.append(row)
             h_rows.append(-b)
+
+        # Acceleration constraint (per-joint): |qdot − qdot_prev| ≤ qddot_max·dt
+        # (qddot_max = deceleration_limit, franka_description/robots/fr3/joint_limits.yaml)
+        accel_limit = self.qddot_max * dt          # shape (n,)
+        row_acc_up = np.zeros((n, n + 1), dtype=np.float64)
+        row_acc_up[:, :n] = np.eye(n)
+        G_rows.extend(row_acc_up.tolist())
+        h_rows.extend((self.qdot_prev + accel_limit).tolist())
+        row_acc_lo = np.zeros((n, n + 1), dtype=np.float64)
+        row_acc_lo[:, :n] = -np.eye(n)
+        G_rows.extend(row_acc_lo.tolist())
+        h_rows.extend((-self.qdot_prev + accel_limit).tolist())
+
+        # Jerk constraint (hard): |qdot − qdot_ref| ≤ qdddot_max·dt²
+        # Equivalent to: |qddot_k − qddot_{k-1}| ≤ qdddot_max·dt
+        # At constant acceleration qdot_ref tracks qdot_prev exactly, so the
+        # robot can sustain any (within-accel-limit) acceleration freely —
+        # only *changes* in acceleration are bounded.
+        jerk_limit = self.qdddot_max * dt * dt     # scalar, broadcast over n
+        row_jrk_up = np.zeros((n, n + 1), dtype=np.float64)
+        row_jrk_up[:, :n] = np.eye(n)
+        G_rows.extend(row_jrk_up.tolist())
+        h_rows.extend((qdot_ref + jerk_limit).tolist())
+        row_jrk_lo = np.zeros((n, n + 1), dtype=np.float64)
+        row_jrk_lo[:, :n] = -np.eye(n)
+        G_rows.extend(row_jrk_lo.tolist())
+        h_rows.extend((-qdot_ref + jerk_limit).tolist())
+
+        # Position limit constraints: q_min <= q + qdot*dt <= q_max
+        # Rewritten as two sets of inequality rows (slack column = 0):
+        #   qdot <=  (q_max - q) / dt  →  [I | 0] x <=  (q_max - q) / dt
+        #   qdot >= -(q - q_min) / dt  →  [-I | 0] x <= -(q_min - q) / dt = (q - q_min) / dt
+        q_cur = np.asarray(self.q[:n], dtype=np.float64)
+        pos_upper = np.clip((self.q_max - q_cur) / dt, self.qdot_min, self.qdot_max)
+        pos_lower = np.clip((self.q_min - q_cur) / dt, self.qdot_min, self.qdot_max)
+
+        row_pos_up = np.zeros((n, n + 1), dtype=np.float64)
+        row_pos_up[:, :n] = np.eye(n)
+        G_rows.extend(row_pos_up.tolist())
+        h_rows.extend(pos_upper.tolist())
+
+        row_pos_lo = np.zeros((n, n + 1), dtype=np.float64)
+        row_pos_lo[:, :n] = -np.eye(n)
+        G_rows.extend(row_pos_lo.tolist())
+        h_rows.extend((-pos_lower).tolist())
 
         G = np.vstack(G_rows).astype(np.float64) if G_rows else None # G matrix for inequality constraints
         h = np.array(h_rows, dtype=np.float64) if h_rows else None # h vector for inequality constraints
@@ -329,8 +437,11 @@ class AvoidanceControl(Node):
             self.get_logger().error("QP solution contains non-finite values")
             return np.zeros(n, dtype=np.float64)
 
-        qdot_cmd = x[:n] # optimal joint velocity command from the QP
+        qdot_cmd = x[:n]
         self.last_qp_slack = float(x[-1])
+
+        self.qdot_prev_prev = self.qdot_prev.copy()
+        self.qdot_prev = qdot_cmd.copy()
 
         return qdot_cmd
     
@@ -342,21 +453,15 @@ class AvoidanceControl(Node):
 
         q = self.q.copy()
 
-        # Nominal task command
-        qdot_nom = self.compute_nominal_qdot(q) 
+        qdot_nom = self.compute_nominal_qdot(q)
 
-        # Control distance validity
-        if not self.distance_valid or self.closest_distance is None:
-            self.get_logger().warn(
-                "No valid distance → using nominal control"
-            )
-            qdot_cmd = qdot_nom
-        else:
-            self.get_logger().info(
-                f"🎯 [CBF] d={self.closest_distance:.3f} m | "
-                f"link={self.link_name} | zone={self.zone}"
-            )
-            qdot_cmd = self.solve_cbf_qp(q, qdot_nom) # solve CBF-QP to get the avoidance velocity
+        self.get_logger().info(
+            f"🎯 [CBF] d={self.closest_distance:.3f} m | "
+            f"link={self.link_name} | zone={self.zone}"
+            if self.distance_valid and self.closest_distance is not None
+            else "⚪ [CBF] no valid distance — running QP with nominal only"
+        )
+        qdot_cmd = self.solve_cbf_qp(q, qdot_nom)
 
         # Publish command
         self.get_logger().info(
