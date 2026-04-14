@@ -1,0 +1,123 @@
+robot:
+  base_frame: fr3_link0
+
+  joint_names:
+    - fr3_joint1
+    - fr3_joint2
+    - fr3_joint3
+    - fr3_joint4
+    - fr3_joint5
+    - fr3_joint6
+    - fr3_joint7
+
+  segment_links:
+    - fr3_link0
+    - fr3_link1
+    - fr3_link2
+    - fr3_link3
+    - fr3_link4
+    - fr3_link5
+    - fr3_link6
+    - fr3_link7
+    - fr3_link8
+
+  segments:
+    - seg_idx: 0
+      start_link: fr3_link0
+      end_link: fr3_link1
+      control_points: 0
+      radius: 0.05
+
+    - seg_idx: 1
+      start_link: fr3_link1
+      end_link: fr3_link2
+      control_points: 0
+      radius: 0.05
+
+    - seg_idx: 2
+      start_link: fr3_link2
+      end_link: fr3_link3
+      control_points: 0
+      radius: 0.05
+
+    - seg_idx: 3
+      start_link: fr3_link3
+      end_link: fr3_link4
+      control_points: 2
+      radius: 0.05
+
+    - seg_idx: 4
+      start_link: fr3_link4
+      end_link: fr3_link5
+      control_points: 2
+      radius: 0.05
+
+    - seg_idx: 5
+      start_link: fr3_link5
+      end_link: fr3_link6
+      control_points: 2
+      radius: 0.05
+
+    - seg_idx: 6
+      start_link: fr3_link6
+      end_link: fr3_link7
+      control_points: 2
+      radius: 0.05
+
+    - seg_idx: 7
+      start_link: fr3_link7
+      end_link: fr3_link8
+      control_points: 3
+      radius: 0.05
+
+meshes:
+  sample_points_per_link: 300
+  files:
+    fr3_link0: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link0.stl
+    fr3_link1: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link1.stl
+    fr3_link2: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link2.stl
+    fr3_link3: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link3.stl
+    fr3_link4: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link4.stl
+    fr3_link5: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link5.stl
+    fr3_link6: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link6.stl
+    fr3_link7: /ros2_ws/src/franka_description/meshes/robot_arms/fr3/collision/link7.stl
+    fr3_link8: /ros2_ws/src/franka_description/meshes/robot_ee/franka_hand_white/collision/hand.stl
+
+topics:
+  depth_image: /camera/camera/depth/image_rect_raw
+  depth_camera_info: /camera/camera/depth/camera_info
+  closest_distance: /human_robot/closest_distance
+
+distance: # in meters from the camera
+  min_depth_m: 0.15
+  max_depth_m: 4.0
+  pixel_step: 6
+  image_margin_px: 10
+  roi_pad_px: 90
+
+  # consider distance from control points within this range
+  thresholds:
+    min_thresh: 0.05
+    max_thresh: 0.5
+  fallback_distance: 2.0
+
+  # offset for control point on ee
+  ee_tip_offset: 0.10
+  ee_tip_axis: 2 # 0=x, 1=y, 2=z
+
+mask: # in pixels
+  robot_mask_dilate_px: 12
+  ee_mask_dilate_px: 20
+  search_exclusion_extra_px: 10
+
+zones: # in meters
+  warning: 0.3
+  danger: 0.2
+  critical: 0.1
+
+booleans:
+  visualize: true
+  exclusion_mask: true
+  raw_video: false
+  use_segment_distance: false
+  visual_ROI: true

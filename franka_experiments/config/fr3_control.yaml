@@ -1,0 +1,10 @@
+topics:
+  joint_states_topic: /NS_1/joint_states
+  velocity_topic: /NS_1/avoidance_qdot
+
+params:
+  d_safe: 0.3
+  rho_slack: 1000.0
+  qp_solver: cvxopt
+  qdot_min: -0.6
+  qdot_max: 0.6
