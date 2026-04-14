@@ -147,6 +147,7 @@ RUN pip3 install --user --upgrade "pip" "setuptools<80" "wheel" && \
         trimesh && \
     pip3 install --user mediapipe==0.10.20
 
+RUN pip install "qpsolvers[osqp]"
 
 # ------------------------
 # Workspace
