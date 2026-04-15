@@ -8,7 +8,7 @@ params:
   rho_slack: 1000.0
   qp_solver: cvxopt
   ema_alpha: 0.4
-  # qdot_min / qdot_max removed — FR3 per-joint limits are hardcoded in the node
+  distance_timeout: 0.4
 
 joint_limits:
   joint1: [-2.9007,  2.9007,  2.62,     6.000]

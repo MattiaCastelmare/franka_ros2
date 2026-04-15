@@ -76,11 +76,14 @@ class AvoidanceControl(Node):
         self.qdot_nom = np.zeros(self.model.nv, dtype=np.float64)
         self._last_solve_time = None
         self._last_dt = 0.01
+        # self.last_distance_time = None
+        # self.distance_timeout = float(self.params['distance_timeout'])
 
         # if this variable improve, it means the QP is using the slack variable to relax the CBF constraint
         self.last_qp_slack = 0.0
         self.qdot_cmd_prev = np.zeros(self.model.nv, dtype=np.float64)
         self._has_prev_cmd = False
+        self.qp_initvals = None
 
         # Subscribers
         self.create_subscription(
@@ -187,6 +190,7 @@ class AvoidanceControl(Node):
             distances.append(entry)
 
         self.multi_distances = distances
+        # self.last_distance_time = self.get_clock().now().nanoseconds * 1e-9
         self._new_distance.set()
 
     def _solver_loop(self):
@@ -353,21 +357,27 @@ class AvoidanceControl(Node):
                 lb=lb,
                 ub=ub,
                 solver=str(self.params['qp_solver']),
+                qp_initvals=self.qp_initvals,
                 verbose=False
             )
         except Exception as e:
             self.get_logger().error(f"QP solver exception: {e}")
+            self.qp_initvals = None # clear warm-start if solve failed
             return np.zeros(n, dtype=np.float64)
 
         if x is None:
             self.get_logger().warn("QP failed, returning zero acceleration")
+            self.qp_initvals = None
             return np.zeros(n, dtype=np.float64)
 
         x = np.asarray(x, dtype=np.float64).reshape(-1)
 
         if not np.all(np.isfinite(x)):
             self.get_logger().error("QP solution contains non-finite values")
+            self.qp_initvals = None
             return np.zeros(n, dtype=np.float64)
+        
+        self.qp_initvals = x.copy() # warm-start next solve with the current solution
 
         qddot_cmd = x[:n]
         self.last_qp_slack = float(x[-1])
@@ -382,6 +392,19 @@ class AvoidanceControl(Node):
             return
 
         now = self.get_clock().now().nanoseconds * 1e-9
+
+        # === WATCHDOG: timeout on distance data (if real time distance stalls) ===
+        # if self.last_distance_time is None or (now - self.last_distance_time) > self.distance_timeout:
+        #     age_str = "None" if self.last_distance_time is None else f"{now - self.last_distance_time:.2f}s"
+        #     self.get_logger().error(
+        #         f"⏰ Last distance data is too old: {age_str} (timeout={self.distance_timeout}s) "
+        #         f"— skipping control update to avoid unsafe behavior!"
+        #     )
+        #     msg = Float64MultiArray()
+        #     msg.data = [0.0] * self.model.nv
+        #     self.cmd_pub.publish(msg)
+        #     return
+
         if self._last_solve_time is None:
             dt = 0.01
         else:
