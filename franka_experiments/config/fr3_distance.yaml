@@ -87,6 +87,7 @@ topics:
   depth_image: /camera/camera/depth/image_rect_raw
   depth_camera_info: /camera/camera/depth/camera_info
   closest_distance: /human_robot/closest_distance
+  multi_distance: /human_robot/multi_distance
 
 distance: # in meters from the camera
   min_depth_m: 0.15

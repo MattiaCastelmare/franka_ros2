@@ -5,6 +5,15 @@ topics:
 params:
   d_safe: 0.3
   rho_slack: 1000.0
-  qp_solver: osqp
+  qp_solver: cvxopt
   ema_alpha: 0.4
   # qdot_min / qdot_max removed — FR3 per-joint limits are hardcoded in the node
+
+joint_limits:
+  joint1: [-2.9007,  2.9007,  2.62,     6.000]
+  joint2: [-1.8361,  1.8361,  2.62,     2.585]
+  joint3: [-2.9007,  2.9007,  2.62,     3.500]
+  joint4: [-3.0770, -0.1169,  2.62,     4.000]
+  joint5: [-2.8763,  2.8763,  5.26,    17.000]
+  joint6: [ 0.4398,  4.6216,  4.18,     5.500]
+  joint7: [-3.0508,  3.0508,  5.26,    17.000]

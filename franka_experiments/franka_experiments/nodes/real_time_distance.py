@@ -8,7 +8,7 @@ import trimesh
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from franka_msgs.msg import HumanRobotDistance
+from franka_msgs.msg import HumanRobotDistance, MultiDistance
 from geometry_msgs.msg import Point, Vector3
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -107,10 +107,10 @@ class RealTimeDistance(Node):
             self.link_mesh_samples[link_name] = mesh.sample(sample_pts)
 
         # ── Publisher ────────────────────────────────────────────────────
-        closest_distance_topic = topics_cfg.get(
-            'closest_distance', '/human_robot/closest_distance')
-        self.dist_pub = self.create_publisher(
-            HumanRobotDistance, closest_distance_topic, 10)
+        multi_distance_topic = topics_cfg.get(
+            'multi_distance', '/human_robot/multi_distance')
+        self.multi_dist_pub = self.create_publisher(
+            MultiDistance, multi_distance_topic, 10)
 
         self.get_logger().info(
             f'RealTimeDistance ready. '
@@ -479,8 +479,6 @@ class RealTimeDistance(Node):
         closest_point            = best_result['closest_obstacle_point']
         self.closest_robot_point = best_result['point']
         self.closest_uv_obs      = best_result['closest_pixel']
-        direction                = best_result['direction']
-        confidence               = find_pt_confidence(self.min_dist, n_pts)
         p_cam_closest            = self.transform_base_to_camera(closest_point)
         closest_Z                = p_cam_closest[2]
 
@@ -490,27 +488,58 @@ class RealTimeDistance(Node):
             f'Closest depth Z: {closest_Z:.3f} m  '
             f'Closest pixel: {self.closest_uv_obs}')
 
-        # === Publish ======================================================
-        if direction is not None:
-            dist_msg = HumanRobotDistance()
-            dist_msg.header.stamp    = self.last_depth_msg.header.stamp
-            dist_msg.header.frame_id = self.robot_cfg['base_frame']
-            dist_msg.valid           = True
-            dist_msg.distance        = float(self.min_dist)
-            dist_msg.robot_link_name = best_result['end_link']
-            dist_msg.closest_point_robot = Point(
-                x=float(f'{self.closest_robot_point[0]:.4f}'),
-                y=float(f'{self.closest_robot_point[1]:.4f}'),
-                z=float(f'{self.closest_robot_point[2]:.4f}'),
-            )
-            dist_msg.direction = Vector3(
-                x=float(f'{direction[0]:.4f}'),
-                y=float(f'{direction[1]:.4f}'),
-                z=float(f'{direction[2]:.4f}'),
-            )
-            dist_msg.confidence = float(confidence)
-            dist_msg.zone       = self.classify_zone(self.min_dist)
-            self.dist_pub.publish(dist_msg)
+        # === Publish MultiDistance (closest CP per active segment) ========
+        if self.cp_results is not None:
+            # For each active seg_idx keep only the CP with minimum distance.
+            seg_best: dict[int, dict] = {}
+            for r in self.cp_results:
+                idx = r['seg_idx']
+                if idx not in seg_best or r['distance'] < seg_best[idx]['distance']:
+                    seg_best[idx] = r
+
+            # Build one HumanRobotDistance per segment, ordered by seg_idx.
+            stamp     = self.last_depth_msg.header.stamp
+            frame_id  = self.robot_cfg['base_frame']
+            fallback  = float(self.distance_cfg.get('fallback_distance', 2.0))
+            thresholds = self.distance_cfg['thresholds']
+            entries: list[HumanRobotDistance] = []
+            for idx in sorted(seg_best):
+                r   = seg_best[idx]
+                msg = HumanRobotDistance()
+                msg.header.stamp    = stamp
+                msg.header.frame_id = frame_id
+                msg.robot_link_name = r['end_link']
+
+                valid_dist = (
+                    np.isfinite(r['distance'])
+                    and thresholds['min_thresh'] <= r['distance'] <= thresholds['max_thresh']
+                    and r['direction'] is not None
+                )
+                if valid_dist:
+                    msg.valid    = True
+                    msg.distance = float(r['distance'])
+                    msg.closest_point_robot = Point(
+                        x=round(float(r['point'][0]), 4),
+                        y=round(float(r['point'][1]), 4),
+                        z=round(float(r['point'][2]), 4),
+                    )
+                    msg.direction = Vector3(
+                        x=round(float(r['direction'][0]), 4),
+                        y=round(float(r['direction'][1]), 4),
+                        z=round(float(r['direction'][2]), 4),
+                    )
+                    msg.zone       = self.classify_zone(r['distance'])
+                    msg.confidence = float(find_pt_confidence(r['distance'], n_pts))
+                else:
+                    msg.valid    = False
+                    msg.distance = fallback
+                entries.append(msg)
+
+            multi_msg = MultiDistance()
+            multi_msg.header.stamp    = stamp
+            multi_msg.header.frame_id = frame_id
+            multi_msg.distances       = entries
+            self.multi_dist_pub.publish(multi_msg)
 
 
     # === Visualization ====================================================

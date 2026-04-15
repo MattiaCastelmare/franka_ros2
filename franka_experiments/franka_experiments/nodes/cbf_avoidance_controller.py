@@ -5,30 +5,12 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from franka_msgs.msg import HumanRobotDistance
+import threading
 import pinocchio as pin
 import numpy as np
 import qpsolvers as qp
 from franka_experiments.utils.ros_setup import init_pinocchio_only, make_joint_state_callback
 from franka_experiments.utils.cbf_utils import load_robot_config, skew, select_gamma
-
-
-# ── FR3 Joint Limits ─────────────────────────────────────────────────────────
-# Source: franka_description/robots/fr3/joint_limits.yaml
-# Columns: (q_min [rad], q_max [rad], qdot_max [rad/s], qddot_max [rad/s²])
-# qddot_max = position_based_velocity_limits.deceleration_limit (no explicit
-# acceleration field exists in the URDF/YAML for FR3).
-_FR3_LIMITS = {
-    #           q_min     q_max    qdot_max  qddot_max
-    'joint1': (-2.9007,  2.9007,  2.62,     6.000),
-    'joint2': (-1.8361,  1.8361,  2.62,     2.585),
-    'joint3': (-2.9007,  2.9007,  2.62,     3.500),
-    'joint4': (-3.0770, -0.1169,  2.62,     4.000),
-    'joint5': (-2.8763,  2.8763,  5.26,    17.000),
-    'joint6': ( 0.4398,  4.6216,  4.18,     5.500),
-    'joint7': (-3.0508,  3.0508,  5.26,    17.000),
-}
-_FR3_JOINT_ORDER = [f'joint{i}' for i in range(1, 8)]
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class AvoidanceControl(Node):
@@ -43,6 +25,7 @@ class AvoidanceControl(Node):
         self.control_config = load_robot_config('control') # control config contains control parameters and topics
         self.topics_ctr = self.control_config['topics']
         self.params = self.control_config['params']
+        self.limits = self.control_config['joint_limits']
 
         # robot model, kinematics, and actual configuration(data)
         self.pin_ok, self.model, self.data = init_pinocchio_only(self) 
@@ -78,12 +61,13 @@ class AvoidanceControl(Node):
                         f"  ✗ frame '{link}' not found and no fallback available!"
                     )
 
-        # FR3 joint limits (centralised — do not scatter these values elsewhere)
-        self.q_min       = np.array([_FR3_LIMITS[j][0] for j in _FR3_JOINT_ORDER], dtype=np.float64)
-        self.q_max       = np.array([_FR3_LIMITS[j][1] for j in _FR3_JOINT_ORDER], dtype=np.float64)
-        self.qdot_max    = np.array([_FR3_LIMITS[j][2] for j in _FR3_JOINT_ORDER], dtype=np.float64)
-        self.qdot_min    = -self.qdot_max
-        self.qddot_max   = np.array([_FR3_LIMITS[j][3] for j in _FR3_JOINT_ORDER], dtype=np.float64)
+        # Joint limits (position, velocity, acceleration)
+        _joint_order = [f'joint{i}' for i in range(1, 8)]
+        self.q_min     = np.array([self.limits[j][0] for j in _joint_order], dtype=np.float64)
+        self.q_max     = np.array([self.limits[j][1] for j in _joint_order], dtype=np.float64)
+        self.qdot_max  = np.array([self.limits[j][2] for j in _joint_order], dtype=np.float64)
+        self.qdot_min  = -self.qdot_max
+        self.qddot_max = np.array([self.limits[j][3] for j in _joint_order], dtype=np.float64)
 
         # Robot state
         self.q = None
@@ -132,7 +116,6 @@ class AvoidanceControl(Node):
             10
         )
 
-        import threading
         self._new_distance = threading.Event()
         self._solver_thread = threading.Thread(
             target=self._solver_loop, daemon=True
