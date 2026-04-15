@@ -74,6 +74,8 @@ class AvoidanceControl(Node):
         self.q = None
         self.qdot = None
         self.qdot_nom = np.zeros(self.model.nv, dtype=np.float64)
+        self._last_solve_time = None
+        self._last_dt = 0.01
 
         # if this variable improve, it means the QP is using the slack variable to relax the CBF constraint
         self.last_qp_slack = 0.0 
@@ -223,7 +225,7 @@ class AvoidanceControl(Node):
 
         return Jp
     
-    def build_cbf_constraints(self, q, multi_distances):
+    def build_cbf_constraints(self, q, qdot, dt, multi_distances):
         constraints = []
 
         if not multi_distances:
@@ -259,16 +261,23 @@ class AvoidanceControl(Node):
                 continue
 
             a = (n_world @ Jp).astype(np.float64)
-            b = float(-gamma * h)
 
-            if not np.all(np.isfinite(a)) or not np.isfinite(b):
+            hdot = float(a @ qdot)
+
+            # CBF discretized on acceleration:
+            # a (qdot + qddot*dt) >= -gamma h
+            # (a*dt) qddot >= -gamma h - a qdot
+            a_acc = (a * dt).astype(np.float64)
+            b_acc = float(-gamma * h - hdot)
+
+            if not np.all(np.isfinite(a_acc)) or not np.isfinite(b_acc):
                 continue
 
-            constraints.append((a, b, link_name, d))
+            constraints.append((a_acc, b_acc, link_name, d))
 
         return constraints
 
-    def solve_cbf_qp(self, qdot_nom, constraints):
+    def solve_cbf_qp(self, qddot_nom, constraints, qdot, dt):
         n = self.model.nv
         rho_slack = float(self.params['rho_slack'])
 
@@ -276,19 +285,33 @@ class AvoidanceControl(Node):
         P[-1, -1] = rho_slack
 
         q_vec = np.zeros(n + 1, dtype=np.float64)
-        q_vec[:n] = -np.asarray(qdot_nom, dtype=np.float64)
+        q_vec[:n] = -np.asarray(qddot_nom, dtype=np.float64)
 
         lb = np.zeros(n + 1, dtype=np.float64)
         ub = np.zeros(n + 1, dtype=np.float64)
 
-        lb[:n] = self.qdot_min
-        ub[:n] = self.qdot_max
+        lb[:n] = -self.qddot_max
+        ub[:n] =  self.qddot_max
         lb[-1] = 0.0
         ub[-1] = np.inf
 
         G_rows = []
         h_rows = []
 
+        # velocity-next constraints:
+        # qdot_min <= qdot + qddot*dt <= qdot_max
+        for i in range(n):
+            row_up = np.zeros(n + 1, dtype=np.float64)
+            row_up[i] = dt
+            G_rows.append(row_up)
+            h_rows.append(self.qdot_max[i] - qdot[i])
+
+            row_lo = np.zeros(n + 1, dtype=np.float64)
+            row_lo[i] = -dt
+            G_rows.append(row_lo)
+            h_rows.append(qdot[i] - self.qdot_min[i])
+
+        # CBF constraints
         for a, b, _, _ in constraints:
             row = np.zeros(n + 1, dtype=np.float64)
             row[:n] = -a
@@ -317,7 +340,7 @@ class AvoidanceControl(Node):
             return np.zeros(n, dtype=np.float64)
 
         if x is None:
-            self.get_logger().warn("QP failed, returning zero velocity")
+            self.get_logger().warn("QP failed, returning zero acceleration")
             return np.zeros(n, dtype=np.float64)
 
         x = np.asarray(x, dtype=np.float64).reshape(-1)
@@ -326,35 +349,49 @@ class AvoidanceControl(Node):
             self.get_logger().error("QP solution contains non-finite values")
             return np.zeros(n, dtype=np.float64)
 
-        qdot_cmd = x[:n]
+        qddot_cmd = x[:n]
         self.last_qp_slack = float(x[-1])
-        return qdot_cmd
+        return qddot_cmd
 
     # === Main Loop ===
     def control_loop(self):
-        if self.q is None:
+        if self.q is None or self.qdot is None:
             return
 
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if self._last_solve_time is None:
+            dt = 0.01
+        else:
+            dt = float(np.clip(now - self._last_solve_time, 0.001, 0.05))
+        self._last_solve_time = now
+        self._last_dt = dt
+
         q = self.q.copy()
-        qdot_nom = self.qdot_nom.copy()
+        qdot = self.qdot.copy()
+
+        qddot_nom = (self.qdot_nom - qdot) / dt
+        qddot_nom = np.clip(qddot_nom, -self.qddot_max, self.qddot_max)
 
         multi_distances = list(self.multi_distances)
-        constraints = self.build_cbf_constraints(q, multi_distances)
+        constraints = self.build_cbf_constraints(q, qdot, dt, multi_distances)
 
         if constraints:
             min_d = min(d for _, _, _, d in constraints)
             active_links = sorted(set(link for _, _, link, _ in constraints))
             self.get_logger().info(
-                f"🎯 [CBF] active_constraints={len(constraints)} | "
-                f"min_d={min_d:.3f} m | links={active_links}"
+                f"🎯 [CBF-ACC] active_constraints={len(constraints)} | "
+                f"min_d={min_d:.3f} m | dt={dt:.4f} | links={active_links}"
             )
         else:
-            self.get_logger().info("⚪ [CBF] no valid distances — running QP with nominal only")
+            self.get_logger().info("⚪ [CBF-ACC] no valid distances — running QP with nominal only")
 
-        qdot_cmd = self.solve_cbf_qp(qdot_nom, constraints)
+        qddot_cmd = self.solve_cbf_qp(qddot_nom, constraints, qdot, dt)
+        qdot_cmd = qdot + qddot_cmd * dt
+        qdot_cmd = np.clip(qdot_cmd, self.qdot_min, self.qdot_max)
 
         self.get_logger().info(
-            f"⚙️ [CMD] qdot={np.array2string(qdot_cmd, precision=3, suppress_small=True)} | "
+            f"⚙️ [CMD] qddot={np.array2string(qddot_cmd, precision=3, suppress_small=True)} | "
+            f"qdot={np.array2string(qdot_cmd, precision=3, suppress_small=True)} | "
             f"slack={self.last_qp_slack:.6f}"
         )
 
