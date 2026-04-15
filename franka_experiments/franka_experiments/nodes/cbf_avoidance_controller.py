@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 
 import rclpy
@@ -13,6 +11,7 @@ import numpy as np
 import qpsolvers as qp
 from franka_experiments.utils.ros_setup import init_pinocchio_only, make_joint_state_callback
 from franka_experiments.utils.cbf_utils import load_robot_config, skew, select_gamma
+
 
 class AvoidanceControl(Node):
     def __init__(self):
@@ -74,6 +73,7 @@ class AvoidanceControl(Node):
         # Robot state
         self.q = None
         self.qdot = None
+        self.qdot_nom = np.zeros(self.model.nv, dtype=np.float64)
 
         # if this variable improve, it means the QP is using the slack variable to relax the CBF constraint
         self.last_qp_slack = 0.0 
@@ -93,6 +93,13 @@ class AvoidanceControl(Node):
             MultiDistance,
             self.topics_vis['multi_distance'],
             self.multi_distance_callback,
+            10
+        )
+
+        self.create_subscription(
+            Float64MultiArray,
+            self.topics_ctr['qdot_nom'],
+            self.compute_nominal_qdot,
             10
         )
 
@@ -183,11 +190,10 @@ class AvoidanceControl(Node):
                 self.control_loop()
 
     # === CBF Logic ===
-    def compute_nominal_qdot(self, q):
-        """
-        Placeholder nominal controller, (task-space control or joint-space control can be implemented here).
-        """
-        return np.zeros(self.model.nv, dtype=np.float64)
+    def compute_nominal_qdot(self, msg):
+        if self.qdot_nom is None:
+            self.qdot_nom = np.zeros(self.model.nv, dtype=np.float64)
+        self.qdot_nom = np.array(msg.data, dtype=np.float64)
     
     def compute_point_jacobian_from_updated_data(self, q, link_name, p_world):
         frame_id = self._resolve_frame_id(link_name)
@@ -330,8 +336,8 @@ class AvoidanceControl(Node):
             return
 
         q = self.q.copy()
+        qdot_nom = self.qdot_nom.copy()
 
-        qdot_nom = self.compute_nominal_qdot(q)
         multi_distances = list(self.multi_distances)
         constraints = self.build_cbf_constraints(q, multi_distances)
 

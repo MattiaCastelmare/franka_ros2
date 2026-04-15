@@ -1,6 +1,7 @@
 topics:
   joint_states_topic: /NS_1/joint_states
   velocity_topic: /NS_1/avoidance_qdot
+  qdot_nom: /NS_1/tracking_qdot
 
 params:
   d_safe: 0.3
