@@ -118,6 +118,7 @@ class AvoidanceControl(Node):
         )
         self._solver_thread.start()
 
+
     # === Frame resolution ===
     def _try_resolve_frame(self, link_name: str):
         """Try common name variations to find a matching Pinocchio frame."""
@@ -157,8 +158,10 @@ class AvoidanceControl(Node):
             return resolved
         return None
 
+
     # === Callback ===
     def multi_distance_callback(self, msg):
+        self.get_logger().info(f"Received MultiDistance with {len(msg.distances)} items")
         distances = []
 
         for item in msg.distances:   
@@ -188,8 +191,23 @@ class AvoidanceControl(Node):
         while rclpy.ok():
             triggered = self._new_distance.wait(timeout=0.5)
             self._new_distance.clear()
-            if triggered and self.q is not None:
-                self.control_loop()
+            if not triggered:
+                self.get_logger().warn(
+                    "⏳ [solver] no MultiDistance msg in 0.5s — is the distance estimator running?",
+                    throttle_duration_sec=5.0
+                )
+                continue
+            if self.q is None or self.qdot is None:
+                self.get_logger().warn(
+                    f"⚠ [solver] distance received but joint state not ready "
+                    f"(q={'None' if self.q is None else 'ok'}, "
+                    f"qdot={'None' if self.qdot is None else 'ok'}) "
+                    f"— is the robot/joint_states topic publishing?",
+                    throttle_duration_sec=5.0
+                )
+                continue
+            self.control_loop()
+
 
     # === CBF Logic ===
     def compute_nominal_qdot(self, msg):
@@ -353,8 +371,11 @@ class AvoidanceControl(Node):
         self.last_qp_slack = float(x[-1])
         return qddot_cmd
 
+
     # === Main Loop ===
     def control_loop(self):
+        self.get_logger().info(f"DEBUG q is None? {self.q is None} | qdot is None? {self.qdot is None}")
+
         if self.q is None or self.qdot is None:
             return
 

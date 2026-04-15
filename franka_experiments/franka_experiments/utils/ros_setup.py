@@ -161,7 +161,7 @@ def make_joint_state_callback(
     controller: Any,
     joint_names: Sequence[str],
 ) -> Callable[[JointState], None]:
-    """Create a JointState callback that updates `controller.q`."""
+    """Create a JointState callback that updates `controller.q` and `controller.qdot`."""
 
     joint_names = list(joint_names)
 
@@ -170,6 +170,17 @@ def make_joint_state_callback(
         if q is None:
             return
         controller.q = q
+
+        # Extract velocities if the field is populated
+        if msg.velocity and len(msg.velocity) == len(msg.name):
+            try:
+                name_to_idx = {str(n): int(i) for i, n in enumerate(msg.name)}
+                vel = msg.velocity
+                qdot = [vel[name_to_idx[str(n)]] for n in joint_names]
+                import numpy as np
+                controller.qdot = np.array(qdot, dtype=float)
+            except Exception:
+                pass
 
     return _cb
 
