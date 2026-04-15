@@ -1,17 +1,18 @@
+
+
 #!/usr/bin/env python3
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from franka_msgs.msg import HumanRobotDistance
+from franka_msgs.msg import MultiDistance
 import threading
 import pinocchio as pin
 import numpy as np
 import qpsolvers as qp
 from franka_experiments.utils.ros_setup import init_pinocchio_only, make_joint_state_callback
 from franka_experiments.utils.cbf_utils import load_robot_config, skew, select_gamma
-
 
 class AvoidanceControl(Node):
     def __init__(self):
@@ -41,6 +42,7 @@ class AvoidanceControl(Node):
         )
 
         # Pre-resolve every link name used by the distance estimator
+        self.multi_distances = []
         for link in self.robot_cfg.get('segment_links', []):
             fid = self.model.getFrameId(link)
             if fid < len(self.model.frames):
@@ -72,21 +74,6 @@ class AvoidanceControl(Node):
         # Robot state
         self.q = None
         self.qdot = None
-        self.qdot_prev      = np.zeros(self.model.nv, dtype=np.float64)
-        self.qdot_prev_prev = np.zeros(self.model.nv, dtype=np.float64)
-        self._last_solve_time: float | None = None
-        self._last_dt: float = 0.033
-        self.qdddot_max: float = 50.0  # jerk limit [rad/s³]
-        self.w_jerk: float = 0.1      # soft jerk penalty weight (relative to tracking)
-
-        # Distance message state
-        self.link_name = None # closest robot link involved
-        self.closest_distance = None
-        self.closest_point_robot = None 
-        self.zone = None
-        self.confidence = 0.0 
-        self.direction = None
-        self.distance_valid = False
 
         # if this variable improve, it means the QP is using the slack variable to relax the CBF constraint
         self.last_qp_slack = 0.0 
@@ -103,9 +90,9 @@ class AvoidanceControl(Node):
         )
 
         self.create_subscription(
-            HumanRobotDistance,
-            self.topics_vis['closest_distance'],
-            self.distance_callback,
+            MultiDistance,
+            self.topics_vis['multi_distance'],
+            self.multi_distance_callback,
             10
         )
 
@@ -162,25 +149,30 @@ class AvoidanceControl(Node):
         return None
 
     # === Callback ===
-    def distance_callback(self, msg: HumanRobotDistance):
-        self.link_name = msg.robot_link_name # closest robot link name
-        self.closest_distance = float(msg.distance) # closest distance from the cp to the obstacle
-        self.closest_point_robot = np.array(
-            [
-                msg.closest_point_robot.x,
-                msg.closest_point_robot.y,
-                msg.closest_point_robot.z
-            ],
-            dtype=np.float64
-        ) # closest cp position
-        self.zone = msg.zone 
-        self.confidence = float(msg.confidence)
-        self.direction = np.array(
-            [msg.direction.x, msg.direction.y, msg.direction.z],
-            dtype=np.float64
-        )
-        self.distance_valid = bool(msg.valid)
+    def multi_distance_callback(self, msg):
+        distances = []
 
+        for item in msg.distances:   
+            entry = {
+                'link_name': item.robot_link_name,
+                'distance': float(item.distance),
+                'closest_point_robot': np.array([
+                    item.closest_point_robot.x,
+                    item.closest_point_robot.y,
+                    item.closest_point_robot.z
+                ], dtype=np.float64),
+                'direction': np.array([
+                    item.direction.x,
+                    item.direction.y,
+                    item.direction.z
+                ], dtype=np.float64),
+                'zone': item.zone,
+                'confidence': float(item.confidence),
+                'valid': bool(item.valid),
+            }
+            distances.append(entry)
+
+        self.multi_distances = distances
         self._new_distance.set()
 
     def _solver_loop(self):
@@ -197,199 +189,109 @@ class AvoidanceControl(Node):
         """
         return np.zeros(self.model.nv, dtype=np.float64)
     
-    def compute_point_jacobian(self, q, link_name, p_world):
+    def compute_point_jacobian_from_updated_data(self, q, link_name, p_world):
         frame_id = self._resolve_frame_id(link_name)
         if frame_id is None:
             self.get_logger().warn(f"Cannot resolve frame: {link_name}")
             return None
 
-        # Kinematics
-        pin.forwardKinematics(self.model, self.data, q) # compute forward kinematics to update data
-        pin.updateFramePlacements(self.model, self.data) # update frame placements to get the latest oMf for frames
-
-        oMf = self.data.oMf[frame_id] # transformation of the closest link frame in world coordinates
-        R = oMf.rotation
+        oMf = self.data.oMf[frame_id]
         t = oMf.translation
+        r_world = p_world - t
 
-        # r_world is the vector from the closest link frame origin to the closest point, expressed in world coordinates
-        r_world = p_world - t # used to compute the point Jacobian from the frame Jacobian
-
-        # Frame Jacobian 
         J6 = pin.computeFrameJacobian(
             self.model,
             self.data,
             q,
             frame_id,
             pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
-        ) 
-        Jv = J6[:3, :] # linear velocity part of the frame Jacobian
-        Jw = J6[3:, :] # angular velocity part of the frame Jacobian
+        )
+        Jv = J6[:3, :]
+        Jw = J6[3:, :]
 
-        # Point Jacobian(r_world translation from the frame origin to the point)
-        Jp = Jv - skew(r_world) @ Jw 
+        Jp = Jv - skew(r_world) @ Jw
 
-        # Check for non-finite values in the Jacobian
         if not np.all(np.isfinite(Jp)):
             self.get_logger().error("Jacobian contains non-finite values")
             return None
 
         return Jp
     
-    def build_cbf_constraint(self, q):
-        """
-        Build one linear CBF constraint of the form:
-            a @ qdot >= b
-        """
-        if not self.distance_valid:
-            return False, None, None
+    def build_cbf_constraints(self, q, multi_distances):
+        constraints = []
 
-        if self.link_name is None or self.direction is None or self.closest_point_robot is None:
-            return False, None, None
+        if not multi_distances:
+            return constraints
 
-        if self.closest_distance is None or self.closest_distance <= 0.0:
-            return False, None, None
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
 
-        link_name = self.link_name # closest link name
-        n_world = self.direction.copy() # vector from the obstacle to the robot in world coordinates
-        p_world = self.closest_point_robot.copy() # closest point position in world coordinates
+        for item in multi_distances:
+            if not item['valid']:
+                continue
 
-        norm_n = np.linalg.norm(n_world)
-        if norm_n < 1e-8:
-            return False, None, None
-        n_world /= norm_n # versor from the obstacle to the robot in world coordinates
+            link_name = item['link_name']
+            d = item['distance']
+            p_world = item['closest_point_robot']
+            n_world = item['direction'].copy()
 
-        h = float(self.closest_distance) - float(self.params['d_safe']) # barrier function
-        gamma = float(select_gamma(self.zone, self.confidence)) # gamma based on the zone
+            if not np.isfinite(d):
+                continue
+            if p_world is None or n_world is None:
+                continue
 
-        Jp = self.compute_point_jacobian(q, link_name, p_world) # point jacobian
-        if Jp is None:
-            return False, None, None
+            norm_n = np.linalg.norm(n_world)
+            if norm_n < 1e-8:
+                continue
+            n_world /= norm_n
 
-        a = (n_world @ Jp).astype(np.float64) # CBF constraint coefficient for qdot
-        b = float(-gamma * h) # CBF constraint constant term
+            h = float(d) - float(self.params['d_safe'])
+            gamma = float(select_gamma(item['zone'], item['confidence']))
 
-        # Check for non-finite values in a and b
-        if not np.all(np.isfinite(a)) or not np.isfinite(b):
-            return False, None, None
+            Jp = self.compute_point_jacobian_from_updated_data(q, link_name, p_world)
+            if Jp is None:
+                continue
 
-        return True, a, b
+            a = (n_world @ Jp).astype(np.float64)
+            b = float(-gamma * h)
 
-    def solve_cbf_qp(self, q, qdot_nom):
-        """
-        Solve:
-            min_{qdot, delta} 0.5 * ||qdot - qdot_nom||^2 + 0.5 * rho * delta^2
+            if not np.all(np.isfinite(a)) or not np.isfinite(b):
+                continue
 
-        subject to:
-            a @ qdot + delta >= b   (CBF)
-            qdot_min <= qdot <= qdot_max
-            delta >= 0
-        """
+            constraints.append((a, b, link_name, d))
+
+        return constraints
+
+    def solve_cbf_qp(self, qdot_nom, constraints):
         n = self.model.nv
         rho_slack = float(self.params['rho_slack'])
 
-        # ── Timing (must precede cost construction) ───────────────────────────
-        now = self.get_clock().now().nanoseconds * 1e-9
-        if self._last_solve_time is not None:
-            dt = float(np.clip(now - self._last_solve_time, 0.005, 0.2))
-        else:
-            dt = 0.033
-        self._last_solve_time = now
-        self._last_dt = dt
-
-        # ── Kinematic extrapolation (first-order, constant-acceleration) ──────
-        # qdot_ref = 2·qdot_{k-1} − qdot_{k-2}: the velocity the robot "should
-        # have" if acceleration were held constant.  Both the soft penalty and
-        # the hard jerk constraint are centred on this point.
-        qdot_ref = 2.0 * self.qdot_prev - self.qdot_prev_prev  # shape (n,)
-
-        # ── Cost: ½ xᵀPx + qᵀx,  x = [qdot(n), δ(1)] ───────────────────────
-        #
-        # Tracking term:    ½ ||qdot − qdot_nom||²
-        # Soft jerk term:   ½ w · ||qdot − qdot_ref||²
-        #
-        # After expansion, the constant terms vanish and we get:
-        #   P_diag = 1 + w       (joints),  ρ (slack)
-        #   q[:n]  = −(qdot_nom + w · qdot_ref)
-        #
-        # The effective unconstrained minimiser is the weighted average
-        #   qdot* = (qdot_nom + w·qdot_ref) / (1+w)
-        # which blends the nominal command with the smooth kinematic target.
-        w = self.w_jerk
-        P = np.zeros((n + 1, n + 1), dtype=np.float64)
-        np.fill_diagonal(P[:n, :n], 1.0 + w)
-        P[n, n] = rho_slack
+        P = np.eye(n + 1, dtype=np.float64)
+        P[-1, -1] = rho_slack
 
         q_vec = np.zeros(n + 1, dtype=np.float64)
-        q_vec[:n] = -(np.asarray(qdot_nom, dtype=np.float64) + w * qdot_ref)
+        q_vec[:n] = -np.asarray(qdot_nom, dtype=np.float64)
 
-        # ── Bounds ────────────────────────────────────────────────────────────
         lb = np.zeros(n + 1, dtype=np.float64)
         ub = np.zeros(n + 1, dtype=np.float64)
+
         lb[:n] = self.qdot_min
         ub[:n] = self.qdot_max
-        lb[-1] = 0.0    # slack δ ≥ 0
+        lb[-1] = 0.0
         ub[-1] = np.inf
 
-        # ── Inequality constraints Gx ≤ h ─────────────────────────────────────
         G_rows = []
         h_rows = []
 
-        # CBF: a @ qdot + δ ≥ b  →  −a @ qdot − δ ≤ −b
-        ok, a, b = self.build_cbf_constraint(q)
-        if ok:
+        for a, b, _, _ in constraints:
             row = np.zeros(n + 1, dtype=np.float64)
             row[:n] = -a
             row[-1] = -1.0
             G_rows.append(row)
             h_rows.append(-b)
 
-        # Acceleration constraint (per-joint): |qdot − qdot_prev| ≤ qddot_max·dt
-        # (qddot_max = deceleration_limit, franka_description/robots/fr3/joint_limits.yaml)
-        accel_limit = self.qddot_max * dt          # shape (n,)
-        row_acc_up = np.zeros((n, n + 1), dtype=np.float64)
-        row_acc_up[:, :n] = np.eye(n)
-        G_rows.extend(row_acc_up.tolist())
-        h_rows.extend((self.qdot_prev + accel_limit).tolist())
-        row_acc_lo = np.zeros((n, n + 1), dtype=np.float64)
-        row_acc_lo[:, :n] = -np.eye(n)
-        G_rows.extend(row_acc_lo.tolist())
-        h_rows.extend((-self.qdot_prev + accel_limit).tolist())
-
-        # Jerk constraint (hard): |qdot − qdot_ref| ≤ qdddot_max·dt²
-        # Equivalent to: |qddot_k − qddot_{k-1}| ≤ qdddot_max·dt
-        # At constant acceleration qdot_ref tracks qdot_prev exactly, so the
-        # robot can sustain any (within-accel-limit) acceleration freely —
-        # only *changes* in acceleration are bounded.
-        jerk_limit = self.qdddot_max * dt * dt     # scalar, broadcast over n
-        row_jrk_up = np.zeros((n, n + 1), dtype=np.float64)
-        row_jrk_up[:, :n] = np.eye(n)
-        G_rows.extend(row_jrk_up.tolist())
-        h_rows.extend((qdot_ref + jerk_limit).tolist())
-        row_jrk_lo = np.zeros((n, n + 1), dtype=np.float64)
-        row_jrk_lo[:, :n] = -np.eye(n)
-        G_rows.extend(row_jrk_lo.tolist())
-        h_rows.extend((-qdot_ref + jerk_limit).tolist())
-
-        # Position limit constraints: q_min <= q + qdot*dt <= q_max
-        # Rewritten as two sets of inequality rows (slack column = 0):
-        #   qdot <=  (q_max - q) / dt  →  [I | 0] x <=  (q_max - q) / dt
-        #   qdot >= -(q - q_min) / dt  →  [-I | 0] x <= -(q_min - q) / dt = (q - q_min) / dt
-        q_cur = np.asarray(self.q[:n], dtype=np.float64)
-        pos_upper = np.clip((self.q_max - q_cur) / dt, self.qdot_min, self.qdot_max)
-        pos_lower = np.clip((self.q_min - q_cur) / dt, self.qdot_min, self.qdot_max)
-
-        row_pos_up = np.zeros((n, n + 1), dtype=np.float64)
-        row_pos_up[:, :n] = np.eye(n)
-        G_rows.extend(row_pos_up.tolist())
-        h_rows.extend(pos_upper.tolist())
-
-        row_pos_lo = np.zeros((n, n + 1), dtype=np.float64)
-        row_pos_lo[:, :n] = -np.eye(n)
-        G_rows.extend(row_pos_lo.tolist())
-        h_rows.extend((-pos_lower).tolist())
-
-        G = np.vstack(G_rows).astype(np.float64) if G_rows else None # G matrix for inequality constraints
-        h = np.array(h_rows, dtype=np.float64) if h_rows else None # h vector for inequality constraints
+        G = np.vstack(G_rows).astype(np.float64) if G_rows else None
+        h = np.array(h_rows, dtype=np.float64) if h_rows else None
 
         try:
             x = qp.solve_qp(
@@ -403,31 +305,24 @@ class AvoidanceControl(Node):
                 ub=ub,
                 solver=str(self.params['qp_solver']),
                 verbose=False
-            ) # solve the QP to get optimal qdot and slack variable
+            )
         except Exception as e:
             self.get_logger().error(f"QP solver exception: {e}")
             return np.zeros(n, dtype=np.float64)
 
-        # Check if the solver returned a solution
         if x is None:
             self.get_logger().warn("QP failed, returning zero velocity")
             return np.zeros(n, dtype=np.float64)
 
-        x = np.asarray(x, dtype=np.float64).reshape(-1) # ensure x is a 1D array
+        x = np.asarray(x, dtype=np.float64).reshape(-1)
 
-        # Check for non-finite values in the solution
         if not np.all(np.isfinite(x)):
             self.get_logger().error("QP solution contains non-finite values")
             return np.zeros(n, dtype=np.float64)
 
         qdot_cmd = x[:n]
         self.last_qp_slack = float(x[-1])
-
-        self.qdot_prev_prev = self.qdot_prev.copy()
-        self.qdot_prev = qdot_cmd.copy()
-
         return qdot_cmd
-    
 
     # === Main Loop ===
     def control_loop(self):
@@ -437,16 +332,21 @@ class AvoidanceControl(Node):
         q = self.q.copy()
 
         qdot_nom = self.compute_nominal_qdot(q)
+        multi_distances = list(self.multi_distances)
+        constraints = self.build_cbf_constraints(q, multi_distances)
 
-        self.get_logger().info(
-            f"🎯 [CBF] d={self.closest_distance:.3f} m | "
-            f"link={self.link_name} | zone={self.zone}"
-            if self.distance_valid and self.closest_distance is not None
-            else "⚪ [CBF] no valid distance — running QP with nominal only"
-        )
-        qdot_cmd = self.solve_cbf_qp(q, qdot_nom)
+        if constraints:
+            min_d = min(d for _, _, _, d in constraints)
+            active_links = sorted(set(link for _, _, link, _ in constraints))
+            self.get_logger().info(
+                f"🎯 [CBF] active_constraints={len(constraints)} | "
+                f"min_d={min_d:.3f} m | links={active_links}"
+            )
+        else:
+            self.get_logger().info("⚪ [CBF] no valid distances — running QP with nominal only")
 
-        # Publish command
+        qdot_cmd = self.solve_cbf_qp(qdot_nom, constraints)
+
         self.get_logger().info(
             f"⚙️ [CMD] qdot={np.array2string(qdot_cmd, precision=3, suppress_small=True)} | "
             f"slack={self.last_qp_slack:.6f}"
