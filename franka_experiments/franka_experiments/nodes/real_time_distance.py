@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import os
 
+import os
 import cv2
 import numpy as np
 import rclpy
@@ -18,7 +18,6 @@ from franka_experiments.utils.distance_utils import (
     compute_direction_vector,
     define_robot_segments,
     find_pt_confidence,
-    get_robot_segments_from_transforms,
     get_rotation_from_quaternion,
     load_extrinsics,
     load_robot_config,
@@ -628,7 +627,6 @@ def main(args=None):
     distance_calculator.destroy_node()
     cv2.destroyAllWindows()
     rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

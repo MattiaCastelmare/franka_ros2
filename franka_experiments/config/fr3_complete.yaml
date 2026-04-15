@@ -116,4 +116,4 @@ booleans:
   exclusion_mask: true        # mask robot pixels before searching for obstacles
   raw_video: false            # show raw depth image only (no overlays)
   use_segment_distance: false # true = capsule-segment mode, false = control-point mode
-  visual_ROI: true            # draw ROI bounding box on visualization
+  visual_ROI: false            # draw ROI bounding box on visualization

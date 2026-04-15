@@ -121,4 +121,4 @@ booleans:
   exclusion_mask: true
   raw_video: false
   use_segment_distance: false
-  visual_ROI: true
+  visual_ROI: false

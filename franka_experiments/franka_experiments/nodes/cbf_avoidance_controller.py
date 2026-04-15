@@ -78,7 +78,9 @@ class AvoidanceControl(Node):
         self._last_dt = 0.01
 
         # if this variable improve, it means the QP is using the slack variable to relax the CBF constraint
-        self.last_qp_slack = 0.0 
+        self.last_qp_slack = 0.0
+        self.qdot_cmd_prev = np.zeros(self.model.nv, dtype=np.float64)
+        self._has_prev_cmd = False
 
         # Subscribers
         self.create_subscription(
@@ -408,7 +410,16 @@ class AvoidanceControl(Node):
 
         qddot_cmd = self.solve_cbf_qp(qddot_nom, constraints, qdot, dt)
         qdot_cmd = qdot + qddot_cmd * dt
-        qdot_cmd = np.clip(qdot_cmd, self.qdot_min, self.qdot_max)
+        qdot_cmd_raw = np.clip(qdot_cmd, self.qdot_min, self.qdot_max)
+
+        if not self._has_prev_cmd:
+            qdot_cmd = qdot_cmd_raw.copy()
+            self._has_prev_cmd = True
+        else:
+            alpha = float(self.params['ema_alpha'])
+            qdot_cmd = alpha * qdot_cmd_raw + (1.0 - alpha) * self.qdot_cmd_prev
+
+        self.qdot_cmd_prev = qdot_cmd.copy()
 
         self.get_logger().info(
             f"⚙️ [CMD] qddot={np.array2string(qddot_cmd, precision=3, suppress_small=True)} | "
@@ -429,7 +440,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
