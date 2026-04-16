@@ -1,10 +1,10 @@
 topics:
   joint_states_topic: /NS_1/joint_states
-  velocity_topic: /NS_1/avoidance_qdot
+  velocity_topic: /NS_1/qdot_cmd
   qdot_nom: /NS_1/tracking_qdot
 
 params:
-  d_safe: 0.3
+  d_safe: 0.15
   rho_slack: 1000.0
   qp_solver: cvxopt
   ema_alpha: 0.4

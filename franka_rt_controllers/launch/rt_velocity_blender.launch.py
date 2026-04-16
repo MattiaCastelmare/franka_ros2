@@ -1,9 +1,9 @@
-"""Launch: franka bringup + RT velocity blender controller.
+"""Launch: franka bringup + RT velocity executor controller.
 
 This launch file:
   1. Includes franka_bringup/franka.launch.py (loads URDF, spawns hw interface,
      starts joint_state_broadcaster + franka_robot_state_broadcaster).
-  2. Spawns ONLY the rt_velocity_blender_controller (NO forward_command_controller).
+  2. Spawns ONLY the rt_velocity_executor_controller (NO forward_command_controller).
   3. The RT controller claims fr3_joint{1..7}/velocity — no other velocity
      controller can be active at the same time.
 
@@ -117,12 +117,12 @@ def _launch_all(context):
         }.items(),
     )
 
-    # ── Spawn the RT velocity blender controller ────────────────────
+    # ── Spawn the RT velocity executor controller ───────────────────
     rt_blender_spawner = Node(
         package="controller_manager",
         executable="spawner",
         arguments=[
-            "rt_velocity_blender_controller",
+            "rt_velocity_executor_controller",
             "--controller-manager",
             cm_name,
             "--controller-manager-timeout",

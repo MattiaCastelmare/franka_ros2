@@ -1,10 +1,10 @@
-"""Minimal bringup: robot driver + RT velocity blender controller.
+"""Minimal bringup: robot driver + RT velocity executor controller.
 
 Lightweight launch for debugging — no RViz, no human_pose.
 Optional camera pipeline and real_time_distance node are off by default.
 
 * ``franka_bringup/franka.launch.py`` (robot driver + joint_state_broadcaster)
-* ``rt_velocity_blender_controller`` spawner (delayed)
+* ``rt_velocity_executor_controller`` spawner (delayed)
 * Static TF  ``world → fr3_link0``  (identity)
 * Camera pipeline (enable_camera:=true)
 * real_time_distance node (start_real_time_distance:=true)
@@ -58,9 +58,8 @@ _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
 _ALL_PARAMS = [
     'namespace', 'use_fake_hardware', 'robot_ip', 'arm_id',
     'fake_sensor_commands', 'load_gripper', 'controllers_yaml',
-    'qdot_max', 'alpha', 'max_accel', 'timeout_threshold_s', 'timeout_ramp_s',
-    'gazebo', 'enable_interpolation', 'alpha_topic', 'tracking_topic',
-    'avoidance_topic',
+    'qdot_max', 'max_accel', 'timeout_threshold_s', 'timeout_ramp_s',
+    'gazebo', 'enable_interpolation', 'command_topic',
     'control_spawner_delay_s',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance', 'real_time_distance_delay_s',
@@ -78,13 +77,11 @@ def _launch_all(context):
     use_fake = _as_bool(p['use_fake_hardware'])
 
     # ── Build RT param dict for YAML generation ───────────────────────────
-    trk_raw, avd_raw = p['tracking_topic'], p['avoidance_topic']
     rt_params = dict(
         is_real=not use_fake, arm_id=p['arm_id'],
-        qdot_max=p['qdot_max'], alpha=p['alpha'],
-        trk_topic='tracking_qdot' if trk_raw == '__auto__' else trk_raw,
-        avd_topic='avoidance_qdot' if avd_raw == '__auto__' else avd_raw,
-        alpha_topic=p['alpha_topic'], max_accel=p['max_accel'],
+        qdot_max=p['qdot_max'],
+        command_topic=p['command_topic'],
+        max_accel=p['max_accel'],
         timeout_threshold_s=p['timeout_threshold_s'],
         timeout_ramp_s=p['timeout_ramp_s'],
         gazebo=p['gazebo'],
@@ -93,7 +90,7 @@ def _launch_all(context):
 
     controllers_yaml = pick_controllers_yaml(
         p['controllers_yaml'], use_fake, rt_params)
-    controller_name = 'rt_velocity_blender_controller'
+    controller_name = 'rt_velocity_executor_controller'
     cm_name = resolve_controller_manager_name(p['namespace'])
 
     # ── Include franka bringup ────────────────────────────────────────────

@@ -45,7 +45,7 @@ def build_namespaced_topic(suffix: str, robot_key: str = 'ROBOT1') -> str:
     return f'/{suffix}'
 
 
-_RT_CONTROLLER_NAME: str = 'rt_velocity_blender_controller'
+_RT_CONTROLLER_NAME: str = 'rt_velocity_executor_controller'
 
 
 def resolve_tracking_topic(robot_key: str = 'ROBOT1') -> str:
@@ -228,19 +228,19 @@ def resolve_controller_manager_name(namespace: str) -> str:
 # ---------------------------------------------------------------------------
 
 def generate_rt_controllers_yaml(
-    is_real, arm_id, qdot_max, alpha,
-    trk_topic, avd_topic, alpha_topic,
+    is_real, arm_id, qdot_max,
+    command_topic,
     max_accel, timeout_threshold_s, timeout_ramp_s,
     gazebo, enable_interpolation,
 ):
-    """Build a complete, self-contained controllers YAML for RT blender mode.
+    """Build a complete, self-contained controllers YAML for RT executor mode.
 
     Returns the YAML content as a string.  All parameters are fully resolved
     — no ``REPLACE_ME`` placeholders.
     """
     lines = [
-        '# Auto-generated at launch time by wrapper_forward_velocity.launch.py',
-        '# Controller: rt_velocity_blender_controller  —  DO NOT EDIT (regenerated every launch)',
+        '# Auto-generated at launch time by the launch system',
+        '# Controller: rt_velocity_executor_controller  —  DO NOT EDIT (regenerated every launch)',
         '',
         '/**:',
         '  controller_manager:',
@@ -262,8 +262,8 @@ def generate_rt_controllers_yaml(
         ]
     lines += [
         '',
-        '      rt_velocity_blender_controller:',
-        '        type: franka_rt_controllers/RtVelocityBlenderController',
+        '      rt_velocity_executor_controller:',
+        '        type: franka_rt_controllers/RtVelocityExecutorController',
     ]
     if is_real:
         lines += [
@@ -284,7 +284,7 @@ def generate_rt_controllers_yaml(
         f'      arm_id: "{arm_id}"',
         '',
         '/**:',
-        '  rt_velocity_blender_controller:',
+        '  rt_velocity_executor_controller:',
         '    ros__parameters:',
         f'      arm_id: {arm_id}',
         '      joints:',
@@ -292,10 +292,7 @@ def generate_rt_controllers_yaml(
     for i in range(1, 8):
         lines.append(f'        - {arm_id}_joint{i}')
     lines += [
-        f'      tracking_topic: {trk_topic}',
-        f'      avoidance_topic: {avd_topic}',
-        f'      alpha_topic: {alpha_topic}',
-        f'      alpha: {alpha}',
+        f'      command_topic: {command_topic}',
         f'      qdot_max: {qdot_max}',
         f'      max_accel: {max_accel}',
         f'      timeout_threshold_s: {timeout_threshold_s}',
@@ -392,8 +389,8 @@ def declare_rt_blender_args(defaults=None):
             'qdot_max', default_value=d.get('qdot_max', '0.2'),
             description='[RT] Per-joint velocity clamp [rad/s]. 0.0 = disabled.'),
         DeclareLaunchArgument(
-            'alpha', default_value=d.get('alpha', '1.0'),
-            description='[RT] Blend weight: qdot = alpha*tracking + (1-alpha)*avoidance.'),
+            'command_topic', default_value=d.get('command_topic', 'qdot_cmd'),
+            description='[RT] Topic for velocity commands (Float64MultiArray, size=7).'),
         DeclareLaunchArgument(
             'max_accel', default_value=d.get('max_accel', '0.0'),
             description='[RT] Max joint acceleration [rad/s²]. 0.0 = disabled.'),
@@ -409,15 +406,6 @@ def declare_rt_blender_args(defaults=None):
         DeclareLaunchArgument(
             'enable_interpolation', default_value=d.get('enable_interpolation', 'true'),
             description='[RT] Linear interpolation between low-rate samples.'),
-        DeclareLaunchArgument(
-            'alpha_topic', default_value=d.get('alpha_topic', 'blend_alpha'),
-            description='[RT] Topic for runtime alpha updates (std_msgs/Float64).'),
-        DeclareLaunchArgument(
-            'tracking_topic', default_value=d.get('tracking_topic', '__auto__'),
-            description='Tracking qdot topic (__auto__ = tracking_qdot).'),
-        DeclareLaunchArgument(
-            'avoidance_topic', default_value=d.get('avoidance_topic', '__auto__'),
-            description='Avoidance qdot topic (__auto__ = avoidance_qdot).'),
     ]
 
 
@@ -447,14 +435,10 @@ def build_wrapper_log_actions(
 
     ns_display = params['namespace'] or '<none>'
     p = params
-    trk_raw = p['tracking_topic']
-    avd_raw = p['avoidance_topic']
-    trk = 'tracking_qdot' if trk_raw == '__auto__' else trk_raw
-    avd = 'avoidance_qdot' if avd_raw == '__auto__' else avd_raw
 
     actions = [
         LogInfo(msg=['╔══ wrapper_forward_velocity ══════════════════════════╗']),
-        LogInfo(msg=['[wrapper] mode               : RT (rt_velocity_blender_controller)']),
+        LogInfo(msg=['[wrapper] mode               : RT (rt_velocity_executor_controller)']),
         LogInfo(msg=['[wrapper] franka.config.yaml : ', config_path]),
         LogInfo(msg=['[wrapper] arm_id             : ', params['arm_id']]),
         LogInfo(msg=['[wrapper] robot_ip           : ', params['robot_ip']]),
@@ -465,13 +449,7 @@ def build_wrapper_log_actions(
         LogInfo(msg=['[wrapper] controller_to_spawn: ', controller_name]),
         LogInfo(msg=['[wrapper] controller-manager : ', cm_name]),
         LogInfo(msg=['[wrapper] ── RT controller parameters ──']),
-        LogInfo(msg=['[wrapper]   tracking_topic   : ', trk,
-                     '  (relative to controller NS)']),
-        LogInfo(msg=['[wrapper]   avoidance_topic  : ', avd,
-                     '  (relative to controller NS)']),
-        LogInfo(msg=['[wrapper]   alpha_topic      : ',
-                     p['alpha_topic']]),
-        LogInfo(msg=['[wrapper]   alpha            : ', p['alpha']]),
+        LogInfo(msg=['[wrapper]   command_topic    : ', p['command_topic']]),
         LogInfo(msg=['[wrapper]   qdot_max         : ', p['qdot_max'],
                      ' rad/s (scalar, same for all 7 joints)']),
         LogInfo(msg=['[wrapper]   max_accel        : ', p['max_accel'],

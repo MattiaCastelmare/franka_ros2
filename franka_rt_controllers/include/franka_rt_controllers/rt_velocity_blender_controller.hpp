@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Mattia – RT Velocity Blender Controller
+// Copyright (c) 2026 Mattia – RT Velocity Executor Controller
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <realtime_tools/realtime_buffer.hpp>
-#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <franka_msgs/srv/set_full_collision_behavior.hpp>
@@ -34,20 +33,19 @@ using CallbackReturn =
 
 namespace franka_rt_controllers {
 
-/// @brief Real-time velocity blending controller for Franka FR3.
+/// @brief RT pure executor for Franka FR3.
 ///
-/// Subscribes to two non-RT velocity topics (tracking + avoidance) and one
-/// alpha weight (topic or parameter), then performs blending, optional rate
-/// limiting, optional smooth timeout ramp, and a single final clamp — all
+/// Reads Float64MultiArray (7 joint velocities) from a single non-RT topic,
+/// applies optional interpolation, rate limiting, and a final clamp — all
 /// inside the 1 kHz update() loop.  No allocations, no locks, no logging
 /// in the RT path.
 ///
 /// Architecture:
-///   Python nodes  ──topic──▶  RealtimeBuffer  ──readFromRT──▶  update()
-///                                                               │
-///     blend → rate-limit → clamp → command_interfaces_[i].set_value()
+///   Python node  ──topic──▶  RealtimeBuffer  ──readFromRT──▶  update()
+///                                                              │
+///                 (interp) → rate-limit → clamp → command_interfaces_[i].set_value()
 ///
-class RtVelocityBlenderController
+class RtVelocityExecutorController
     : public controller_interface::ControllerInterface {
  public:
   static constexpr size_t kNumJoints = 7;
@@ -70,7 +68,7 @@ class RtVelocityBlenderController
       const rclcpp_lifecycle::State& previous_state) override;
 
  private:
-  // ─── Aggregate written into RealtimeBuffer by subscriber callbacks ──
+  // ─── Aggregate written into RealtimeBuffer by the subscriber callback ─
   struct VelocityInput {
     std::array<double, kNumJoints> qdot{};
     int64_t stamp_ns{0};   ///< std::chrono::steady_clock nanoseconds
@@ -81,43 +79,30 @@ class RtVelocityBlenderController
   std::string arm_id_;
   std::vector<std::string> joint_names_;  // pre-allocated, size == kNumJoints
 
-  // Topic names
-  std::string tracking_topic_;
-  std::string avoidance_topic_;
-  std::string alpha_topic_;
+  // Topic name
+  std::string command_topic_;
 
   // Protection parameters  (0 / negative ⇒ feature disabled)
   double qdot_max_{0.0};             ///< rad/s – final clamp
   double max_accel_{0.0};            ///< rad/s² – rate limiter
-  double timeout_threshold_s_{0.0};  ///< seconds before ramp starts
-  double timeout_ramp_s_{0.0};       ///< seconds to ramp from 1→0
-  double default_alpha_{1.0};        ///< initial / fallback blend weight
+  double timeout_threshold_s_{0.0};  ///< reserved – not used in RT path
+  double timeout_ramp_s_{0.0};       ///< reserved – not used in RT path
 
-  // ─── Realtime buffers (non-RT writes, RT lock-free reads) ──────────
-  realtime_tools::RealtimeBuffer<VelocityInput> tracking_buf_;
-  realtime_tools::RealtimeBuffer<VelocityInput> avoidance_buf_;
-  realtime_tools::RealtimeBuffer<double> alpha_buf_;
+  // ─── Realtime buffer (non-RT writes, RT lock-free reads) ────────────
+  realtime_tools::RealtimeBuffer<VelocityInput> command_buf_;
 
-  // ─── Subscribers (owned, created in on_configure) ──────────────────
+  // ─── Subscriber (owned, created in on_configure) ──────────────────
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
-      tracking_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
-      avoidance_sub_;
-  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr alpha_sub_;
-
-  // ─── Parameter-event callback for dynamic alpha update ─────────────
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
-      param_cb_handle_;
+      command_sub_;
 
   // ─── RT-only state (touched exclusively in update()) ───────────────
   std::array<double, kNumJoints> prev_cmd_{};
-  bool first_update_{true};
 
   // ─── Configuration: collision behavior & interpolation ─────────────
   bool is_gazebo_{false};
   bool enable_interpolation_{false};
 
-  // ─── Interpolation state (RT-only, per input channel) ──────────────
+  // ─── Interpolation state (RT-only) ─────────────────────────────────
   //     When enable_interpolation is true, linearly ramps between
   //     consecutive samples across 1 kHz cycles (eliminates step changes).
   struct InterpState {
@@ -127,17 +112,14 @@ class RtVelocityBlenderController
     int64_t duration_ns{5'000'000};            ///< inter-sample estimate (ns)
     int64_t last_sample_stamp_ns{0};           ///< stamp of last processed sample
   };
-  InterpState tracking_interp_{};
-  InterpState avoidance_interp_{};
+  InterpState command_interp_{};
 
   /// @brief Linear interpolation between consecutive samples (RT-safe).
   std::array<double, kNumJoints> interpolateInput(
       const VelocityInput& latest, InterpState& state, int64_t now_ns) const;
 
-  // ─── Non-RT subscriber callbacks ───────────────────────────────────
-  void trackingCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  void avoidanceCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  void alphaCb(const std_msgs::msg::Float64::SharedPtr msg);
+  // ─── Non-RT subscriber callback ────────────────────────────────────
+  void commandCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
   /// Monotonic nanosecond timestamp (RT-safe on Linux / vDSO).
   static int64_t steadyNowNs();

@@ -1,9 +1,9 @@
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  Controller-manager configuration for RT Velocity Blender              ║
+# ║  Controller-manager configuration for RT Velocity Executor             ║
 # ║                                                                        ║
 # ║  This file replaces the fr3_forward_velocity_controller with a single  ║
-# ║  C++ plugin that does blending + rate-limiting + clamping in the RT    ║
-# ║  loop, eliminating sample-and-hold jitter from non-RT publishers.      ║
+# ║  C++ plugin that does rate-limiting + clamping in the RT loop,         ║
+# ║  eliminating sample-and-hold jitter from non-RT publishers.            ║
 # ║                                                                        ║
 # ║  update_rate MUST be 1000 Hz for real libfranka hardware.              ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -21,9 +21,9 @@
       franka_robot_state_broadcaster:
         type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
 
-      # ── RT velocity blender (replaces forward_command_controller) ────
-      rt_velocity_blender_controller:
-        type: franka_rt_controllers/RtVelocityBlenderController
+      # ── RT velocity executor (replaces forward_command_controller) ────
+      rt_velocity_executor_controller:
+        type: franka_rt_controllers/RtVelocityExecutorController
 
 # ── Broadcaster parameters ─────────────────────────────────────────────
 
@@ -41,7 +41,7 @@
       arm_id: "fr3"
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  RT Velocity Blender Controller parameters                             ║
+# ║  RT Velocity Executor Controller parameters                            ║
 # ║                                                                        ║
 # ║  IMPORTANT: every protection parameter below (qdot_max, max_accel,     ║
 # ║  timeout_*) defaults to DISABLED (0.0).  You MUST set values that are  ║
@@ -50,7 +50,7 @@
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 /**:
-  rt_velocity_blender_controller:
+  rt_velocity_executor_controller:
     ros__parameters:
       arm_id: fr3
       joints:
@@ -62,22 +62,13 @@
         - fr3_joint6
         - fr3_joint7
 
-      # ── Input topics ─────────────────────────────────────────────────
-      # Names are relative to the controller's namespace.
-      # Your Python nodes should publish Float64MultiArray (size=7) here.
-      tracking_topic:  tracking_qdot
-      avoidance_topic: avoidance_qdot
-
-      # ── Alpha blending weight ────────────────────────────────────────
-      # qdot_cmd = alpha * tracking + (1-alpha) * avoidance
-      # Can be changed at runtime via:
-      #   1) topic "blend_alpha"  (std_msgs/Float64, 0..1)
-      #   2) ros2 param set rt_velocity_blender_controller alpha 0.7
-      alpha_topic: blend_alpha
-      alpha: 0.6     # 1.0 = pure tracking, 0.0 = pure avoidance
+      # ── Input topic ──────────────────────────────────────────────────
+      # Name is relative to the controller's namespace.
+      # Your Python node should publish Float64MultiArray (size=7) here.
+      command_topic: qdot_cmd
 
       # ── Velocity clamp [rad/s] ──────────────────────────────────────
-      # Single final clamp applied AFTER blending and rate-limiting.
+      # Single final clamp applied AFTER rate-limiting.
       # Set to 0.0 to DISABLE (NOT recommended on real hardware).
       #
       # >>> SET THIS TO YOUR APPLICATION'S SAFE LIMIT <<<
@@ -92,13 +83,7 @@
       max_accel: 4.0        # [rad/s²] - MOLTO CONSERVATIVO (40% del limite libfranka)
                             # Valori tipici: 3.0 (molto smooth) - 8.0 (reattivo)
 
-      # ── Smooth timeout ramp ────────────────────────────────────────
-      # If an input topic stops publishing for longer than
-      # timeout_threshold_s, that input's contribution is linearly
-      # ramped to zero over timeout_ramp_s seconds (NO zero-snap).
-      # Set either to 0.0 to DISABLE timeout handling entirely
-      # (last command held indefinitely).
-      #
-      # >>> SET BOTH TO ENABLE SAFE AUTOMATIC RAMP-TO-ZERO <<<
-      timeout_threshold_s: 0.3   # Inizia ramp dopo 0.3s senza dati
-      timeout_ramp_s: 0.8        # Rampa a zero in 0.8s (no snap improvviso)
+      # ── Smooth timeout ramp (reserved – not used in RT path) ──────
+      # Reserved for future use. Values are read but not applied.
+      timeout_threshold_s: 0.3
+      timeout_ramp_s: 0.8

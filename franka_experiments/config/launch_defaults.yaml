@@ -18,17 +18,14 @@ controllers_yaml: "__auto__"
 # ── Camera & calibration ─────────────────────────────────────────────────
 enable_camera: true
 
-# ── RT velocity blender controller ────────────────────────────────────────
+# ── RT velocity executor controller ───────────────────────────────────────
 qdot_max: 1.5
-alpha: 0.5
+command_topic: "qdot_cmd"
 max_accel: 2.0
 timeout_threshold_s: 0.5
 timeout_ramp_s: 1.0
 gazebo: false
 enable_interpolation: true
-alpha_topic: "blend_alpha"
-tracking_topic: "__auto__"
-avoidance_topic: "__auto__"
 
 # ── Scheduling / jitter reduction ─────────────────────────────────────
 control_spawner_delay_s: 10.0
