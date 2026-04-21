@@ -69,6 +69,18 @@ def load_pinocchio_model(urdf_xml: str):
     return model, data
 
 
+def load_pinocchio_model_from_urdf_path(urdf_path: str):
+    """Build a Pinocchio model + data directly from a URDF file path.
+
+    Returns ``(model, data)`` tuple.
+    """
+    if not os.path.isfile(urdf_path):
+        raise FileNotFoundError(f'URDF not found: {urdf_path}')
+    model = pin.buildModelFromUrdf(urdf_path)
+    data = model.createData()
+    return model, data
+
+
 # ---------------------------------------------------------------------------
 # Frame / joint resolution
 # ---------------------------------------------------------------------------

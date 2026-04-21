@@ -60,6 +60,7 @@ _ALL_PARAMS = [
     'fake_sensor_commands', 'load_gripper', 'controllers_yaml',
     'qdot_max', 'max_accel', 'timeout_threshold_s', 'timeout_ramp_s',
     'gazebo', 'enable_interpolation', 'command_topic',
+    'use_torque_controller', 'torque_command_topic', 'lpf_alpha', 'tau_max_scale',
     'control_spawner_delay_s',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance', 'real_time_distance_delay_s',
@@ -77,20 +78,39 @@ def _launch_all(context):
     use_fake = _as_bool(p['use_fake_hardware'])
 
     # ── Build RT param dict for YAML generation ───────────────────────────
-    rt_params = dict(
-        is_real=not use_fake, arm_id=p['arm_id'],
-        qdot_max=p['qdot_max'],
-        command_topic=p['command_topic'],
-        max_accel=p['max_accel'],
-        timeout_threshold_s=p['timeout_threshold_s'],
-        timeout_ramp_s=p['timeout_ramp_s'],
-        gazebo=p['gazebo'],
-        enable_interpolation=p['enable_interpolation'],
-    )
+    use_torque = _as_bool(p['use_torque_controller'])
+
+    if use_torque:
+        controller_name = 'rt_torque_controller'
+        rt_params = dict(
+            is_real=not use_fake, arm_id=p['arm_id'],
+            qdot_max=p['qdot_max'],
+            command_topic=p['command_topic'],
+            max_accel=p['max_accel'],
+            timeout_threshold_s=p['timeout_threshold_s'],
+            timeout_ramp_s=p['timeout_ramp_s'],
+            gazebo=p['gazebo'],
+            enable_interpolation=p['enable_interpolation'],
+            controller_type='torque',
+            torque_command_topic=p['torque_command_topic'],
+            lpf_alpha=p['lpf_alpha'],
+            tau_max_scale=p['tau_max_scale'],
+        )
+    else:
+        controller_name = 'rt_velocity_executor_controller'
+        rt_params = dict(
+            is_real=not use_fake, arm_id=p['arm_id'],
+            qdot_max=p['qdot_max'],
+            command_topic=p['command_topic'],
+            max_accel=p['max_accel'],
+            timeout_threshold_s=p['timeout_threshold_s'],
+            timeout_ramp_s=p['timeout_ramp_s'],
+            gazebo=p['gazebo'],
+            enable_interpolation=p['enable_interpolation'],
+        )
 
     controllers_yaml = pick_controllers_yaml(
         p['controllers_yaml'], use_fake, rt_params)
-    controller_name = 'rt_velocity_executor_controller'
     cm_name = resolve_controller_manager_name(p['namespace'])
 
     # ── Include franka bringup ────────────────────────────────────────────
@@ -246,6 +266,22 @@ def generate_launch_description():
         declare_robot_args(_DEFAULTS)
         + declare_rt_blender_args(_DEFAULTS)
         + [
+            DeclareLaunchArgument(
+                'use_torque_controller',
+                default_value=str(_DEFAULTS.get('use_torque_controller', 'true')),
+                description='Use rt_torque_controller instead of rt_velocity_executor_controller'),
+            DeclareLaunchArgument(
+                'torque_command_topic',
+                default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd')),
+                description='[torque] Topic for torque commands (Float64MultiArray, size=7)'),
+            DeclareLaunchArgument(
+                'lpf_alpha',
+                default_value=str(_DEFAULTS.get('lpf_alpha', '1.0')),
+                description='[torque] Low-pass filter alpha for tau_cmd. 1.0 = off'),
+            DeclareLaunchArgument(
+                'tau_max_scale',
+                default_value=str(_DEFAULTS.get('tau_max_scale', '1.0')),
+                description='[torque] Scale factor applied to per-joint torque limits'),
             DeclareLaunchArgument(
                 'control_spawner_delay_s',
                 default_value=str(_DEFAULTS.get('control_spawner_delay_s', '10.0')),

@@ -47,6 +47,7 @@ setup(
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
             'real_time_distance = franka_experiments.nodes.real_time_distance:main',
             'cbf_avoidance_controller = franka_experiments.nodes.cbf_avoidance_controller:main',
+            'pentagon_torque_commander = franka_experiments.nodes.pentagon_torque_commander:main',
         ],
     },
 )

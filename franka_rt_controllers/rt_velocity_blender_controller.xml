@@ -10,4 +10,15 @@
             allocations, no locks, no logging in the RT path.
         </description>
     </class>
+    <class name="franka_rt_controllers/RtTorqueController"
+           type="franka_rt_controllers::RtTorqueController"
+           base_class_type="controller_interface::ControllerInterface">
+        <description>
+            RT torque (effort) controller for Franka FR3.
+            Reads Float64MultiArray (7 user torques, before gravity) from a
+            non-RT topic, adds Pinocchio gravity compensation, clips to
+            per-joint limits, and writes to hardware effort interfaces at 1 kHz.
+            No heap allocations, no locks, no logging in the RT path.
+        </description>
+    </class>
 </library>

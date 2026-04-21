@@ -21,10 +21,13 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(franka_msgs REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(pinocchio REQUIRED)
 
 # ── Shared library ──────────────────────────────────────────────────
 add_library(${PROJECT_NAME} SHARED
   src/rt_velocity_blender_controller.cpp
+  src/rt_torque_controller.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -41,7 +44,9 @@ ament_target_dependencies(${PROJECT_NAME}
   realtime_tools
   std_msgs
   franka_msgs
+  ament_index_cpp
 )
+target_link_libraries(${PROJECT_NAME} pinocchio::pinocchio)
 
 # ── Plugin export (tells controller_manager where to find the plugin) ─
 pluginlib_export_plugin_description_file(
@@ -79,6 +84,8 @@ ament_export_dependencies(
   realtime_tools
   std_msgs
   franka_msgs
+  ament_index_cpp
+  pinocchio
 )
 
 ament_package()

@@ -232,12 +232,31 @@ def generate_rt_controllers_yaml(
     command_topic,
     max_accel, timeout_threshold_s, timeout_ramp_s,
     gazebo, enable_interpolation,
+    *,
+    controller_type='velocity',
+    torque_command_topic='torque_cmd',
+    lpf_alpha=1.0,
+    tau_max_scale=1.0,
 ):
-    """Build a complete, self-contained controllers YAML for RT executor mode.
+    """Build a complete, self-contained controllers YAML.
+
+    ``controller_type='velocity'`` (default) generates YAML for
+    ``rt_velocity_executor_controller``.  ``controller_type='torque'``
+    generates YAML for ``rt_torque_controller``.
 
     Returns the YAML content as a string.  All parameters are fully resolved
     — no ``REPLACE_ME`` placeholders.
     """
+    if controller_type == 'torque':
+        return _generate_torque_yaml(
+            is_real=is_real,
+            arm_id=arm_id,
+            command_topic=torque_command_topic,
+            gazebo=gazebo,
+            lpf_alpha=lpf_alpha,
+            tau_max_scale=tau_max_scale,
+        )
+
     lines = [
         '# Auto-generated at launch time by the launch system',
         '# Controller: rt_velocity_executor_controller  —  DO NOT EDIT (regenerated every launch)',
@@ -299,6 +318,71 @@ def generate_rt_controllers_yaml(
         f'      timeout_ramp_s: {timeout_ramp_s}',
         f'      gazebo: {gazebo}',
         f'      enable_interpolation: {enable_interpolation}',
+        '',
+    ]
+    return '\n'.join(lines)
+
+
+def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha, tau_max_scale):
+    """Build controllers YAML for rt_torque_controller."""
+    lines = [
+        '# Auto-generated at launch time by the launch system',
+        '# Controller: rt_torque_controller  —  DO NOT EDIT (regenerated every launch)',
+        '',
+        '/**:',
+        '  controller_manager:',
+        '    ros__parameters:',
+        f'      update_rate: {1000 if is_real else 100}',
+    ]
+    if is_real:
+        lines.append('      thread_priority: 98')
+    lines += [
+        '',
+        '      joint_state_broadcaster:',
+        '        type: joint_state_broadcaster/JointStateBroadcaster',
+    ]
+    if is_real:
+        lines += [
+            '',
+            '      franka_robot_state_broadcaster:',
+            '        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster',
+        ]
+    lines += [
+        '',
+        '      rt_torque_controller:',
+        '        type: franka_rt_controllers/RtTorqueController',
+    ]
+    if is_real:
+        lines += [
+            '',
+            '/**:',
+            '  franka_robot_state_broadcaster:',
+            '    ros__parameters:',
+            '      lock_try_count: 200',
+            '      lock_sleep_interval: 50',
+            '      lock_log_error: false',
+            '      lock_update_success: true',
+        ]
+    lines += [
+        '',
+        '/**:',
+        '  joint_state_broadcaster:',
+        '    ros__parameters:',
+        f'      arm_id: "{arm_id}"',
+        '',
+        '/**:',
+        '  rt_torque_controller:',
+        '    ros__parameters:',
+        f'      arm_id: {arm_id}',
+        '      joints:',
+    ]
+    for i in range(1, 8):
+        lines.append(f'        - {arm_id}_joint{i}')
+    lines += [
+        f'      command_topic: {command_topic}',
+        f'      lpf_alpha: {lpf_alpha}',
+        f'      tau_max_scale: {tau_max_scale}',
+        f'      gazebo: {gazebo}',
         '',
     ]
     return '\n'.join(lines)
