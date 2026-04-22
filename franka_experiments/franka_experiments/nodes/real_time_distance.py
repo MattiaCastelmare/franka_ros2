@@ -15,7 +15,6 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from franka_experiments.utils.distance_utils import (
     compute_closest_distance_from_segments,
-    compute_direction_vector,
     define_robot_segments,
     find_pt_confidence,
     get_rotation_from_quaternion,
@@ -110,6 +109,10 @@ class RealTimeDistance(Node):
             'multi_distance', '/human_robot/multi_distance')
         self.multi_dist_pub = self.create_publisher(
             MultiDistance, multi_distance_topic, 10)
+
+        distance_topic = topics_cfg.get('distance', '/human_robot/distance')
+        self.dist_pub = self.create_publisher(
+            HumanRobotDistance, distance_topic, 10)
 
         self.get_logger().info(
             f'RealTimeDistance ready. '
@@ -207,20 +210,47 @@ class RealTimeDistance(Node):
             return None
 
         H, W = self.last_depth.shape
-        mask = np.zeros((H, W), dtype=np.uint8)
+        # Separate accumulation masks: one for normal links, one for the EE link.
+        # This avoids any per-link dilation accumulation.
+        mask_normal = np.zeros((H, W), dtype=np.uint8)
+        mask_ee     = np.zeros((H, W), dtype=np.uint8)
 
         for link_name in self.link_mesh_samples.keys():
             points_base = self.get_link_mesh_points_in_base_from_transforms(
                 link_name, transforms)
             if points_base is None:
                 continue
-            r = ee_dilate_px if link_name == 'fr3_link8' else dilate_px
-            for p in points_base:
-                uv = self.project_point_to_image(p)
-                if uv is not None:
-                    cv2.circle(mask, uv, r, 255, -1)
 
-        return mask > 0
+            # Batch project: base -> camera -> image
+            p_cam = (self.R_base.T @ (points_base - self.t_base).T).T  # (N, 3)
+            in_front = p_cam[:, 2] > 0
+            p_cam = p_cam[in_front]
+            if p_cam.shape[0] == 0:
+                continue
+
+            uv = (self.K @ p_cam.T).T                                   # (N, 3)
+            us = (uv[:, 0] / uv[:, 2]).astype(int)
+            vs = (uv[:, 1] / uv[:, 2]).astype(int)
+
+            in_bounds = (us >= 0) & (us < W) & (vs >= 0) & (vs < H)
+            us, vs = us[in_bounds], vs[in_bounds]
+
+            if link_name == 'fr3_link8':
+                mask_ee[vs, us] = 255
+            else:
+                mask_normal[vs, us] = 255
+
+        # Single dilation per mask, then combine
+        def _dilate(m, r):
+            if r <= 0 or not np.any(m):
+                return m
+            k = 2 * r + 1
+            return cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
+        mask_normal = _dilate(mask_normal, dilate_px)
+        mask_ee     = _dilate(mask_ee,     ee_dilate_px)
+
+        return (mask_normal | mask_ee) > 0
 
     def build_search_exclusion_mask(self, robot_mask, extra_px=12):
         if robot_mask is None:
@@ -289,68 +319,154 @@ class RealTimeDistance(Node):
                 cv2.circle(image, uv, 3, color, -1)
 
     def compute_closest_distance(self, control_points, x, y, step,
-                                 search_exclusion_mask):
+                                 search_exclusion_mask, transforms=None):
         if self.last_depth is None or control_points is None:
             return None, 0
 
-        n_cp        = len(control_points)
+        n_cp         = len(control_points)
         cp_positions = np.array([cp['point']  for cp in control_points], dtype=float)
         radii        = np.array([cp['radius'] for cp in control_points], dtype=float)
-
-        min_dists         = np.full(n_cp, np.inf, dtype=float)
-        closest_obs_points  = [None] * n_cp
-        closest_obs_pixels  = [None] * n_cp
-        closest_directions  = [None] * n_cp
-        valid_point_count = 0
 
         min_depth = float(self.distance_cfg['min_depth_m'])
         max_depth = float(self.distance_cfg['max_depth_m'])
 
-        for v in range(y[0], y[1], step):
-            for u in range(x[0], x[1], step):
-                if search_exclusion_mask is not None and search_exclusion_mask[v, u]:
-                    continue
+        # Build strided pixel grids over the ROI
+        us = np.arange(x[0], x[1], step)
+        vs = np.arange(y[0], y[1], step)
+        ug, vg = np.meshgrid(us, vs)          # (Nv, Nu)
+        ug = ug.ravel()
+        vg = vg.ravel()
 
-                Z = float(self.last_depth[v, u]) / 1000.0
-                if Z < min_depth or Z > max_depth:
-                    continue
-                valid_point_count += 1
+        # Apply search exclusion mask
+        if search_exclusion_mask is not None:
+            keep = ~search_exclusion_mask[vg, ug]
+            ug, vg = ug[keep], vg[keep]
 
-                uv1   = np.array([u, v, 1.0], dtype=float)
-                p_cam = Z * (self.K_inv @ uv1)
-                p_obs = self.transform_camera_to_base(p_cam)
-                if p_obs is None:
-                    continue
+        # Depth filter
+        Z = self.last_depth[vg, ug].astype(float) / 1000.0
+        valid = (Z >= min_depth) & (Z <= max_depth)
+        ug, vg, Z = ug[valid], vg[valid], Z[valid]
 
-                raw_dists = np.linalg.norm(cp_positions - p_obs, axis=1)
-                dists     = np.maximum(raw_dists - radii, 0.0)
+        valid_point_count = int(ug.size)
 
-                better = dists < min_dists
-                for i in np.where(better)[0]:
-                    min_dists[i]          = dists[i]
-                    closest_obs_points[i]  = p_obs
-                    closest_obs_pixels[i]  = (u, v)
-                    closest_directions[i]  = compute_direction_vector(
-                        p_obs, cp_positions, i)
+        if valid_point_count == 0:
+            results = [{
+                'point':                  cp['point'],
+                'seg_idx':                cp['seg_idx'],
+                'cp_idx':                 cp['cp_idx'],
+                'radius':                 cp['radius'],
+                'start_link':             cp['start_link'],
+                'end_link':               cp['end_link'],
+                'distance':               np.inf,
+                'direction':              None,
+                'closest_obstacle_point': None,
+                'closest_pixel':          None,
+            } for cp in control_points]
+            return results, 0
+
+        # Unproject all valid pixels at once: p_cam = Z * K_inv @ [u, v, 1]^T
+        ones     = np.ones(valid_point_count, dtype=float)
+        uv_hom   = np.stack([ug.astype(float), vg.astype(float), ones], axis=1)  # (N, 3)
+        p_cam    = Z[:, None] * (self.K_inv @ uv_hom.T).T                        # (N, 3)
+
+        # Transform all points to base frame in batch: p_obs = R_base @ p_cam.T + t_base
+        p_obs = (self.R_base @ p_cam.T).T + self.t_base                          # (N, 3)
+
+        # 3D self-filter: remove obstacle candidates that are geometrically on the robot.
+        # Guard set = CP surfaces + link origins (covers links with no CPs assigned).
+        eps         = float(self.distance_cfg.get('self_collision_eps', 0.05))
+        body_radius = float(self.distance_cfg.get('robot_body_radius', 0.10))
+
+        all_guard_pts    = list(cp_positions)
+        all_guard_radii  = list(radii)
+        if transforms is not None:
+            for _, (_, t_link) in transforms.items():
+                all_guard_pts.append(t_link)
+                all_guard_radii.append(body_radius)
+        all_guard_pts   = np.array(all_guard_pts,   dtype=float)
+        all_guard_radii = np.array(all_guard_radii, dtype=float)
+
+        robot_self = np.full(p_obs.shape[0], np.inf, dtype=float)
+        for i in range(len(all_guard_pts)):
+            d = np.maximum(
+                np.linalg.norm(p_obs - all_guard_pts[i], axis=1) - all_guard_radii[i],
+                0.0)
+            np.minimum(robot_self, d, out=robot_self)
+
+        is_robot   = robot_self < eps
+        n_filtered = int(is_robot.sum())
+        if n_filtered > 0:
+            self.get_logger().debug(
+                f'3D self-filter: removed {n_filtered}/{p_obs.shape[0]} robot-self pixels '
+                f'(eps={eps:.3f} m)')
+
+        not_robot = ~is_robot
+        p_obs = p_obs[not_robot]
+        ug    = ug[not_robot]
+        vg    = vg[not_robot]
+
+        valid_point_count = int(p_obs.shape[0])
+        if valid_point_count == 0:
+            self.get_logger().debug('3D self-filter: all points removed — no obstacle detected')
+            results = [{
+                'point':                  cp['point'],
+                'seg_idx':                cp['seg_idx'],
+                'cp_idx':                 cp['cp_idx'],
+                'radius':                 cp['radius'],
+                'start_link':             cp['start_link'],
+                'end_link':               cp['end_link'],
+                'distance':               np.inf,
+                'direction':              None,
+                'closest_obstacle_point': None,
+                'closest_pixel':          None,
+            } for cp in control_points]
+            return results, 0
+
+        # Per-CP distances: loop over n_cp (~10-20) to avoid N x n_cp x 3 allocation
+        best_idx  = np.empty(n_cp, dtype=int)
+        min_dists = np.full(n_cp, np.inf, dtype=float)
+        for i in range(n_cp):
+            diff        = p_obs - cp_positions[i]               # (N, 3)
+            raw_dists_i = np.linalg.norm(diff, axis=1)          # (N,)
+            dists_i     = np.maximum(raw_dists_i - radii[i], 0.0)
+            bi          = int(np.argmin(dists_i))
+            best_idx[i] = bi
+            min_dists[i] = dists_i[bi]
 
         results = []
-        for i in range(n_cp):
-            cp = control_points[i]
+        for i, cp in enumerate(control_points):
+            bi = best_idx[i]
+            if np.isfinite(min_dists[i]):
+                obs_pt  = p_obs[bi]
+                obs_pix = (int(ug[bi]), int(vg[bi]))
+                vec     = cp_positions[i] - obs_pt
+                norm    = np.linalg.norm(vec)
+                direction = vec / norm if norm > 1e-9 else np.zeros(3)
+            else:
+                obs_pt    = None
+                obs_pix   = None
+                direction = None
             results.append({
-                'point':                 cp['point'],
-                'seg_idx':               cp['seg_idx'],
-                'cp_idx':                cp['cp_idx'],
-                'radius':                cp['radius'],
-                'start_link':            cp['start_link'],
-                'end_link':              cp['end_link'],
-                'distance':              min_dists[i],
-                'direction':             closest_directions[i],
-                'closest_obstacle_point': closest_obs_points[i],
-                'closest_pixel':         closest_obs_pixels[i],
+                'point':                  cp['point'],
+                'seg_idx':                cp['seg_idx'],
+                'cp_idx':                 cp['cp_idx'],
+                'radius':                 cp['radius'],
+                'start_link':             cp['start_link'],
+                'end_link':               cp['end_link'],
+                'distance':               min_dists[i],
+                'direction':              direction,
+                'closest_obstacle_point': obs_pt,
+                'closest_pixel':          obs_pix,
             })
 
         return results, valid_point_count
 
+
+    def publish_fallback_distance(self, distance, stamp):
+        msg = HumanRobotDistance()
+        msg.header.stamp = stamp
+        msg.distance = float(distance)
+        self.dist_pub.publish(msg)
 
     # === Main Loop ===
     def process_depth(self):
@@ -440,10 +556,8 @@ class RealTimeDistance(Node):
                 self.get_logger().info(
                     f'No near obstacle (segment mode). '
                     f'Fallback to {fallback_distance} m')
-                msg = HumanRobotDistance()
-                msg.header.stamp = self.last_depth_msg.header.stamp
-                msg.distance = fallback_distance
-                self.dist_pub.publish(msg)
+                self.publish_fallback_distance(
+                    fallback_distance, self.last_depth_msg.header.stamp)
                 return
 
         else:
@@ -451,6 +565,7 @@ class RealTimeDistance(Node):
                 control_points=self.control_points,
                 x=x, y=y, step=step,
                 search_exclusion_mask=self.search_exclusion_mask,
+                transforms=transforms,
             )
             if self.cp_results is None:
                 return
@@ -465,10 +580,8 @@ class RealTimeDistance(Node):
                 self.get_logger().info(
                     f'No near obstacle (control-point mode). '
                     f'Fallback to {fallback_distance} m')
-                msg = HumanRobotDistance()
-                msg.header.stamp = self.last_depth_msg.header.stamp
-                msg.distance = fallback_distance
-                self.dist_pub.publish(msg)
+                self.publish_fallback_distance(
+                    fallback_distance, self.last_depth_msg.header.stamp)
                 return
 
             best_result = min(valid_results, key=lambda r: r['distance'])
