@@ -31,11 +31,14 @@ import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
     TimerAction,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -78,9 +81,20 @@ def _launch_all(context):
     use_fake = _as_bool(p['use_fake_hardware'])
 
     # ── Build RT param dict for YAML generation ───────────────────────────
-    use_torque = _as_bool(p['use_torque_controller'])
+    use_torque_val = p['use_torque_controller'].strip().lower()
+    use_torque   = use_torque_val in ('1', 'true', 'yes', 'y', 'on')
+    cbf_pipeline = (use_torque_val == 'cbf')
 
-    if use_torque:
+    if cbf_pipeline:
+        controller_name = 'cbf_torque_controller'
+        rt_params = dict(
+            is_real=not use_fake, arm_id=p['arm_id'],
+            qdot_max='0.0', command_topic='none',
+            max_accel='0.0', timeout_threshold_s='0.0', timeout_ramp_s='0.0',
+            gazebo=p['gazebo'], enable_interpolation='false',
+            controller_type='cbf',
+        )
+    elif use_torque:
         controller_name = 'rt_torque_controller'
         rt_params = dict(
             is_real=not use_fake, arm_id=p['arm_id'],
@@ -129,14 +143,6 @@ def _launch_all(context):
         }.items(),
     )
 
-    # ── Controller spawner ────────────────────────────────────────────────
-    controller_spawner = Node(
-        package='controller_manager', executable='spawner',
-        arguments=[controller_name, '--controller-manager', cm_name,
-                   '--controller-manager-timeout', '30'],
-        output='screen',
-    )
-
     # ── world → fr3_link0 static TF (identity) ───────────────────────────
     world_tf_node = Node(
         package='tf2_ros',
@@ -165,9 +171,16 @@ def _launch_all(context):
         startup_log,
         franka_launch,
         TimerAction(period=1.0, actions=[world_tf_node]),
-        TimerAction(period=float(p['control_spawner_delay_s']),
-                    actions=[controller_spawner]),
     ]
+    if controller_name is not None:
+        controller_spawner = Node(
+            package='controller_manager', executable='spawner',
+            arguments=[controller_name, '--controller-manager', cm_name,
+                       '--controller-manager-timeout', '30'],
+            output='screen',
+        )
+        actions.append(TimerAction(period=float(p['control_spawner_delay_s']),
+                                   actions=[controller_spawner]))
 
     # ── Camera pipeline (optional) ────────────────────────────────────────
     if _as_bool(p['enable_camera']):
@@ -224,14 +237,6 @@ def _launch_all(context):
 
     # ── Real-time distance node (optional) ───────────────────────────────
     if _as_bool(p['start_real_time_distance']):
-        # Dynamic delay: real_time_distance must start AFTER every other node.
-        # base = max(controller spawner, last camera node) + 2 s safety margin.
-        # real_time_distance_delay_s is intentionally ignored as an absolute
-        # value; it could be added here as an extra offset if needed.
-        _cam_last = (float(p['camera_delay_s']) + 3.0
-                     if _as_bool(p['enable_camera']) else 0.0)
-        rtd_delay = max(float(p['control_spawner_delay_s']), _cam_last) + 2.0
-
         rtd_config = PathJoinSubstitution([
             FindPackageShare('franka_experiments'),
             'config', 'fr3_complete.yaml',
@@ -246,13 +251,37 @@ def _launch_all(context):
                 'camera_extrinsics_path': p['camera_extrinsics_yaml'],
             }],
         )
-        actions.append(TimerAction(period=rtd_delay,
-                                   actions=[real_time_distance_node]))
-        actions.append(
-            LogInfo(msg=['[minimal] real_time_distance  : ENABLED '
-                         '(delay=', str(rtd_delay), 's'
-                         ' = max(control_spawner=', p['control_spawner_delay_s'],
-                         ', cam_last=', str(_cam_last), ') + 2.0)']))
+
+        if controller_name is not None:
+            # Wait until the controller reports 'active' before starting rtd.
+            poll_proc = ExecuteProcess(
+                name='wait_controller_active',
+                cmd=[
+                    'bash', '-c',
+                    f'until ros2 control list_controllers'
+                    f' --controller-manager {cm_name} 2>/dev/null'
+                    f' | grep -q "{controller_name}.*active";'
+                    f' do sleep 0.5; done',
+                ],
+                output='log',
+            )
+            actions.append(poll_proc)
+            actions.append(RegisterEventHandler(
+                OnProcessExit(target_action=poll_proc,
+                              on_exit=[real_time_distance_node])))
+            actions.append(
+                LogInfo(msg=['[minimal] real_time_distance  : ENABLED '
+                             '(waits for ', controller_name, ' active)']))
+        else:
+            # No controller to wait for — fall back to fixed delay.
+            _cam_last = (float(p['camera_delay_s']) + 3.0
+                         if _as_bool(p['enable_camera']) else 0.0)
+            rtd_delay = max(float(p['control_spawner_delay_s']), _cam_last) + 2.0
+            actions.append(TimerAction(period=rtd_delay,
+                                       actions=[real_time_distance_node]))
+            actions.append(
+                LogInfo(msg=['[minimal] real_time_distance  : ENABLED '
+                             '(delay=', str(rtd_delay), 's — no controller)']))
     else:
         actions.append(
             LogInfo(msg='[minimal] real_time_distance  : DISABLED '

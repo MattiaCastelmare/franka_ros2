@@ -18,6 +18,9 @@ controllers_yaml: "__auto__"
 # ── Camera & calibration ─────────────────────────────────────────────────
 enable_camera: true
 
+# ── Controller mode ───────────────────────────────────────────────────────
+use_torque_controller: "cbf"
+
 # ── RT velocity executor controller ───────────────────────────────────────
 qdot_max: 1.5
 command_topic: "qdot_cmd"

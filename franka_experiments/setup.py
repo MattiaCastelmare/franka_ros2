@@ -1,3 +1,5 @@
+import glob
+import os
 from setuptools import setup
 
 package_name = 'franka_experiments'
@@ -9,24 +11,9 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', [
-            'launch/wrapper_forward_velocity.launch.py',
-            'launch/handeye_calibration_bringup.launch.py',
-            'launch/human_avoidance.launch.py',
-            'launch/minimal.launch.py',
-        ]),
-        ('share/' + package_name + '/config', [
-            'config/fake_hw_controller_params.yaml',
-            'config/controllers_rt_velocity_blender.yaml',
-            'config/controllers_rt_velocity_blender_real.yaml',
-            'config/camera_extrinsics.yaml',
-            'config/launch_defaults.yaml',
-            'config/human_avoidance_params.yaml',
-            'config/human_distance_estimator_params.yaml',
-            'config/rgb_intrinsics.yaml',
-            'config/depth_intrinsics.yaml',
-            'config/fr3_complete.yaml',
-        ]),
+        (os.path.join('share', package_name, 'launch'),
+         glob.glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'), glob.glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -46,8 +33,9 @@ setup(
             'distance_estimator = franka_experiments.nodes.distance_estimator:main',
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
             'real_time_distance = franka_experiments.nodes.real_time_distance:main',
-            'cbf_avoidance_controller = franka_experiments.nodes.cbf_avoidance_controller:main',
+            'cbf_safety_filter = franka_experiments.nodes.cbf_safety_filter:main',
             'pentagon_torque_commander = franka_experiments.nodes.pentagon_torque_commander:main',
+            'pentagon_qddot_commander = franka_experiments.nodes.pentagon_qddot_commander:main',
         ],
     },
 )

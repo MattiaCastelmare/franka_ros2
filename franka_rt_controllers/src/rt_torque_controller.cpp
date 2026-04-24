@@ -155,11 +155,15 @@ CallbackReturn RtTorqueController::on_configure(
     req->lower_force_thresholds_acceleration  = {30, 30, 30, 25, 25, 25};
     req->upper_force_thresholds_acceleration  = {40, 40, 40, 35, 35, 35};
     auto future = client->async_send_request(req);
-    future.wait_for(std::chrono::milliseconds(1000));
-    auto resp = future.get();
-    if (!resp || !resp->success) {
-      RCLCPP_FATAL(logger, "Failed to set collision behavior.");
-      return CallbackReturn::ERROR;
+    if (future.wait_for(std::chrono::milliseconds(1000)) != std::future_status::ready) {
+      RCLCPP_WARN(logger,
+          "SetFullCollisionBehavior timed out — no Franka hardware service? "
+          "Continuing with default thresholds. (Pass gazebo:=true to suppress.)");
+    } else {
+      auto resp = future.get();
+      if (!resp || !resp->success) {
+        RCLCPP_WARN(logger, "SetFullCollisionBehavior failed — using default thresholds.");
+      }
     }
   }
 
@@ -177,12 +181,19 @@ CallbackReturn RtTorqueController::on_configure(
     }
     const std::string xacro_file = desc_share + "/robots/fr3/fr3.urdf.xacro";
     urdf_path = "/tmp/franka_rt_torque_" + arm_id_ + ".urdf";
-    const std::string cmd =
-        "xacro " + xacro_file + " hand:=true ee_id:=franka_hand"
-        " > " + urdf_path + " 2>/dev/null";
-    if (std::system(cmd.c_str()) != 0) {  // NOLINT(cert-env33-c)
-      RCLCPP_ERROR(logger, "xacro failed — check that franka_description is installed.");
-      return CallbackReturn::ERROR;
+    // Only invoke xacro when the cached file is absent (generated at launch time normally)
+    std::ifstream cache_check(urdf_path);
+    if (!cache_check.good()) {
+      RCLCPP_INFO(logger, "Generating URDF via xacro (cached at %s) …", urdf_path.c_str());
+      const std::string cmd =
+          "xacro " + xacro_file + " hand:=true ee_id:=franka_hand"
+          " > " + urdf_path + " 2>/dev/null";
+      if (std::system(cmd.c_str()) != 0) {  // NOLINT(cert-env33-c)
+        RCLCPP_ERROR(logger, "xacro failed — check that franka_description is installed.");
+        return CallbackReturn::ERROR;
+      }
+    } else {
+      RCLCPP_INFO(logger, "Using cached URDF at %s", urdf_path.c_str());
     }
   }
 
@@ -190,10 +201,8 @@ CallbackReturn RtTorqueController::on_configure(
     pinocchio::urdf::buildModel(urdf_path, model_);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(logger, "Pinocchio model build failed: %s", e.what());
-    if (auto_urdf) { std::remove(urdf_path.c_str()); }
     return CallbackReturn::ERROR;
   }
-  if (auto_urdf) { std::remove(urdf_path.c_str()); }
 
   data_  = pinocchio::Data(model_);
   q_pin_ = pinocchio::neutral(model_);

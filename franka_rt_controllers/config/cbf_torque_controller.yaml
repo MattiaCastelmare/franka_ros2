@@ -1,0 +1,6 @@
+cbf_torque_controller:
+  ros__parameters:
+    arm_id: fr3
+    qddot_safe_topic: /NS_1/qddot_safe
+    qddot_timeout_s: 0.1
+    kd: [20.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0]

@@ -1,0 +1,8 @@
+string robot_link_name
+geometry_msgs/Point closest_point_robot
+geometry_msgs/Point closest_point_human
+geometry_msgs/Vector3 direction
+float64 distance
+bool valid
+float32 confidence
+string zone

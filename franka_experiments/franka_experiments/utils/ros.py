@@ -227,6 +227,68 @@ def resolve_controller_manager_name(namespace: str) -> str:
 # Controllers YAML generation & selection
 # ---------------------------------------------------------------------------
 
+def _generate_cbf_base_yaml(is_real: bool, arm_id: str) -> str:
+    """Minimal YAML for CBF pipeline: only JSB + CBFTorqueController type registration."""
+    lines = [
+        '# Auto-generated for CBF pipeline — DO NOT EDIT',
+        '',
+        '/**:',
+        '  controller_manager:',
+        '    ros__parameters:',
+        f'      update_rate: {1000 if is_real else 100}',
+    ]
+    if is_real:
+        lines.append('      thread_priority: 98')
+    lines += [
+        '',
+        '      joint_state_broadcaster:',
+        '        type: joint_state_broadcaster/JointStateBroadcaster',
+    ]
+    if is_real:
+        lines += [
+            '',
+            '      franka_robot_state_broadcaster:',
+            '        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster',
+        ]
+    lines += [
+        '',
+        '      cbf_torque_controller:',
+        '        type: franka_rt_controllers/CBFTorqueController',
+    ]
+    if is_real:
+        lines += [
+            '',
+            '/**:',
+            '  franka_robot_state_broadcaster:',
+            '    ros__parameters:',
+            '      lock_try_count: 200',
+            '      lock_sleep_interval: 50',
+            '      lock_log_error: false',
+            '      lock_update_success: true',
+        ]
+    lines += [
+        '',
+        '/**:',
+        '  joint_state_broadcaster:',
+        '    ros__parameters:',
+        f'      arm_id: "{arm_id}"',
+        '',
+        '/**:',
+        '  cbf_torque_controller:',
+        '    ros__parameters:',
+        f'      arm_id: {arm_id}',
+        '      qddot_safe_topic: /NS_1/qddot_safe',
+        '      qddot_timeout_s: 0.1',
+        '      kd: [20.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0]',
+        '',
+    ]
+    return '\n'.join(lines)
+
+
+# Public alias so launch files can call it directly
+generate_cbf_base_yaml = _generate_cbf_base_yaml
+
+
 def generate_rt_controllers_yaml(
     is_real, arm_id, qdot_max,
     command_topic,
@@ -247,6 +309,9 @@ def generate_rt_controllers_yaml(
     Returns the YAML content as a string.  All parameters are fully resolved
     — no ``REPLACE_ME`` placeholders.
     """
+    if controller_type == 'cbf':
+        return _generate_cbf_base_yaml(is_real=is_real, arm_id=arm_id)
+
     if controller_type == 'torque':
         return _generate_torque_yaml(
             is_real=is_real,
@@ -323,6 +388,23 @@ def generate_rt_controllers_yaml(
     return '\n'.join(lines)
 
 
+def _ensure_urdf_cached(arm_id: str) -> str:
+    """Return path to a cached FR3 URDF (with hand), generating it if absent."""
+    import subprocess
+    cache_path = f'/tmp/franka_rt_torque_{arm_id}.urdf'
+    if not os.path.exists(cache_path):
+        from ament_index_python.packages import get_package_share_directory
+        desc_share = get_package_share_directory('franka_description')
+        xacro_file = os.path.join(desc_share, 'robots', 'fr3', 'fr3.urdf.xacro')
+        result = subprocess.run(
+            ['xacro', xacro_file, 'hand:=true', 'ee_id:=franka_hand', '-o', cache_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f'xacro failed for {arm_id}: {result.stderr}')
+    return cache_path
+
+
 def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha, tau_max_scale):
     """Build controllers YAML for rt_torque_controller."""
     lines = [
@@ -378,11 +460,13 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha, tau
     ]
     for i in range(1, 8):
         lines.append(f'        - {arm_id}_joint{i}')
+    urdf_path = _ensure_urdf_cached(arm_id)
     lines += [
         f'      command_topic: {command_topic}',
         f'      lpf_alpha: {lpf_alpha}',
         f'      tau_max_scale: {tau_max_scale}',
         f'      gazebo: {gazebo}',
+        f'      urdf_path: {urdf_path}',
         '',
     ]
     return '\n'.join(lines)

@@ -63,6 +63,8 @@ class PentagonTorqueCommander(Node):
         self._stop_end_time = 0.0
 
         # ── Parameters ──────────────────────────────────────────────────
+        self.declare_parameter('cbf_mode', False)
+        self.declare_parameter('qddot_nom_topic', '/NS_1/qddot_nom')
         self.declare_parameter('torque_topic', '/NS_1/torque_cmd')
         self.declare_parameter('joint_state_topic', AUTO_SENTINEL)
         self.declare_parameter('ee_frame', 'fr3_hand_tcp')
@@ -80,8 +82,10 @@ class PentagonTorqueCommander(Node):
         self.declare_parameter('kd_rot', 5.0)
         self.declare_parameter('smoothness', 0.15)
 
-        torque_topic   = self.get_parameter('torque_topic').value
-        js_topic_param = self.get_parameter('joint_state_topic').value
+        self.cbf_mode    = self.get_parameter('cbf_mode').value
+        qddot_nom_topic  = self.get_parameter('qddot_nom_topic').value
+        torque_topic     = self.get_parameter('torque_topic').value
+        js_topic_param   = self.get_parameter('joint_state_topic').value
         ee_frame_name  = self.get_parameter('ee_frame').value
         self.rate_hz   = self.get_parameter('rate_hz').value
         self.warmup_s  = self.get_parameter('warmup_s').value
@@ -212,7 +216,11 @@ class PentagonTorqueCommander(Node):
         )
 
         # ── Publisher + timer ────────────────────────────────────────────
-        self.pub = self.create_publisher(Float64MultiArray, torque_topic, 10)
+        if self.cbf_mode:
+            pub_topic = qddot_nom_topic
+        else:
+            pub_topic = torque_topic
+        self.pub = self.create_publisher(Float64MultiArray, pub_topic, 10)
         self.timer = self.create_timer(1.0 / self.rate_hz, self._timer_cb)
         self.t0 = self.get_clock().now()
 
@@ -220,9 +228,10 @@ class PentagonTorqueCommander(Node):
         self._zero_msg.data = [0.0] * NUM_JOINTS
         self._tlog = ThrottledLogger(self.get_logger())
 
+        mode_str = f'CBF (qddot_nom → {qddot_nom_topic})' if self.cbf_mode else f'torque → {torque_topic}'
         self.get_logger().info(
             f'pentagon_torque_commander started\n'
-            f'  torque_topic : {torque_topic}\n'
+            f'  mode         : {mode_str}\n'
             f'  ee_frame     : {ee_frame_name}\n'
             f'  rate         : {self.rate_hz} Hz\n'
             f'  warmup/ramp  : {self.warmup_s} / {self.ramp_s} s\n'
@@ -430,28 +439,46 @@ class PentagonTorqueCommander(Node):
         np.subtract(self._xddot6_buf, self._scratch6_buf, out=self._xddot6_buf)
         np.dot(self._J_pinv_buf, self._xddot6_buf, out=self._q_ddot_buf)
 
-        # ── tau = envelope · (M_arm @ q_ddot + C_qdot) ───────────────────
-        np.dot(self._M_arm_buf, self._q_ddot_buf, out=self._tau_buf)
-        np.add(self._tau_buf, self._C_qdot_buf, out=self._tau_buf)
-        self._tau_buf *= envelope
+        if self.cbf_mode:
+            # CBF mode: publish q_ddot scaled by envelope as qddot_nom
+            for i in range(NUM_JOINTS):
+                self._tau_msg.data[i] = float(self._q_ddot_buf[i] * envelope)
+            self.pub.publish(self._tau_msg)
 
-        # ── Publish — in-place update of pre-allocated message ────────────
-        for i in range(NUM_JOINTS):
-            self._tau_msg.data[i] = float(self._tau_buf[i])
-        self.pub.publish(self._tau_msg)
+            if self._tlog.due(t):
+                phase  = 'ramp' if envelope < 1.0 else 'active'
+                p_ee_s = vec_to_str(p_ee)
+                p_d_s  = vec_to_str(p_d)
+                epos_n = float(np.linalg.norm(self._e6_buf[:3]))
+                erot_n = float(np.linalg.norm(self._e6_buf[3:]))
+                qdd_n  = float(np.linalg.norm(self._q_ddot_buf))
+                self._tlog.info(
+                    f'[CBF t={t:.1f}s {phase} env={envelope:.3f}] '
+                    f'p=[{p_ee_s}] p_d=[{p_d_s}] '
+                    f'|e_pos|={epos_n:.4f} |e_rot|={erot_n:.4f} '
+                    f'|qddot_nom|={qdd_n:.4f} rad/s²')
+        else:
+            # Standard mode: tau = M @ q_ddot + C_qdot
+            np.dot(self._M_arm_buf, self._q_ddot_buf, out=self._tau_buf)
+            np.add(self._tau_buf, self._C_qdot_buf, out=self._tau_buf)
+            self._tau_buf *= envelope
 
-        if self._tlog.due(t):
-            phase    = 'ramp' if envelope < 1.0 else 'active'
-            p_ee_s   = vec_to_str(p_ee)
-            p_d_s    = vec_to_str(p_d)
-            epos_n   = float(np.linalg.norm(self._e6_buf[:3]))
-            erot_n   = float(np.linalg.norm(self._e6_buf[3:]))
-            tau_norm = float(np.linalg.norm(self._tau_buf))
-            self._tlog.info(
-                f'[t={t:.1f}s {phase} env={envelope:.3f}] '
-                f'p=[{p_ee_s}] p_d=[{p_d_s}] '
-                f'|e_pos|={epos_n:.4f} |e_rot|={erot_n:.4f} '
-                f'|tau|={tau_norm:.2f} N·m')
+            for i in range(NUM_JOINTS):
+                self._tau_msg.data[i] = float(self._tau_buf[i])
+            self.pub.publish(self._tau_msg)
+
+            if self._tlog.due(t):
+                phase    = 'ramp' if envelope < 1.0 else 'active'
+                p_ee_s   = vec_to_str(p_ee)
+                p_d_s    = vec_to_str(p_d)
+                epos_n   = float(np.linalg.norm(self._e6_buf[:3]))
+                erot_n   = float(np.linalg.norm(self._e6_buf[3:]))
+                tau_norm = float(np.linalg.norm(self._tau_buf))
+                self._tlog.info(
+                    f'[t={t:.1f}s {phase} env={envelope:.3f}] '
+                    f'p=[{p_ee_s}] p_d=[{p_d_s}] '
+                    f'|e_pos|={epos_n:.4f} |e_rot|={erot_n:.4f} '
+                    f'|tau|={tau_norm:.2f} N·m')
 
 
 def main(args=None):

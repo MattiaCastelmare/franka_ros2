@@ -194,6 +194,7 @@ class PentagonTrajectory:
         # Pre-allocated output buffers — evaluate() writes here, returns views
         self._p_out        = np.zeros(3)
         self._v_out        = np.zeros(3)
+        self._a_out        = np.zeros(3)
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -285,6 +286,21 @@ class PentagonTrajectory:
             self._v_out[2] = sc * tz
 
         return self._p_out, self._v_out
+
+    def evaluate_with_accel(self, t: float, eps: float = 0.01):
+        """Return ``(p_d, v_d, a_d)`` with acceleration via forward difference.
+
+        ``a_d`` is computed as ``(v_d(t+eps) − v_d(t)) / eps``.
+        All returned arrays are safe to read until the next call.
+        """
+        p_d, v_d = self.evaluate(t)
+        p_copy   = p_d.copy()
+        v_copy   = v_d.copy()
+        _, v_fwd = self.evaluate(t + eps)
+        np.subtract(v_fwd, v_copy, out=self._a_out)
+        self._a_out /= eps
+        self.evaluate(t)                 # restore _p_out/_v_out to time t
+        return self._p_out, self._v_out, self._a_out
 
 
 # ---------------------------------------------------------------------------

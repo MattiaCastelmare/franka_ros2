@@ -20,9 +20,13 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(realtime_tools REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(franka_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(pinocchio REQUIRED)
+find_package(franka_semantic_components REQUIRED)
+find_package(eigen3_cmake_module REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 # ── Shared library ──────────────────────────────────────────────────
 add_library(${PROJECT_NAME} SHARED
@@ -71,6 +75,24 @@ install(DIRECTORY config/
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
+
+# ── CBFTorqueController ──────────────────────────────────────────────
+add_library(cbf_torque_controller SHARED
+  src/cbf_torque_controller.cpp)
+target_include_directories(cbf_torque_controller PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(cbf_torque_controller
+  rclcpp controller_interface hardware_interface
+  pluginlib realtime_tools ament_index_cpp
+  std_msgs sensor_msgs Eigen3)
+target_link_libraries(cbf_torque_controller pinocchio::pinocchio)
+pluginlib_export_plugin_description_file(
+  controller_interface franka_rt_controllers.xml)
+install(TARGETS cbf_torque_controller
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
 
 # ── Ament exports ───────────────────────────────────────────────────
 ament_export_include_directories(include)

@@ -297,15 +297,20 @@ CallbackReturn RtVelocityExecutorController::on_configure(
         {40.0, 40.0, 40.0, 35.0, 35.0, 35.0};
 
     auto future_result = client->async_send_request(request);
-    future_result.wait_for(std::chrono::milliseconds(1000));
-    auto response = future_result.get();
-    if (!response || !response->success) {
-      RCLCPP_FATAL(logger, "Failed to set default collision behavior.");
-      return CallbackReturn::ERROR;
+    if (future_result.wait_for(std::chrono::milliseconds(1000)) != std::future_status::ready) {
+      RCLCPP_WARN(logger,
+          "SetFullCollisionBehavior timed out — no Franka hardware service? "
+          "Continuing with default thresholds. (Pass gazebo:=true to suppress.)");
+    } else {
+      auto response = future_result.get();
+      if (!response || !response->success) {
+        RCLCPP_WARN(logger, "SetFullCollisionBehavior failed — using default thresholds.");
+      } else {
+        RCLCPP_INFO(logger,
+                    "Default collision behavior set "
+                    "(same thresholds as official Franka controllers).");
+      }
     }
-    RCLCPP_INFO(logger,
-                "Default collision behavior set "
-                "(same thresholds as official Franka controllers).");
   } else {
     RCLCPP_INFO(logger,
                 "Gazebo mode \u2014 skipping SetFullCollisionBehavior.");

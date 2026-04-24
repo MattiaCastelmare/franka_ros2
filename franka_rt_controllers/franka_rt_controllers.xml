@@ -1,0 +1,10 @@
+<library path="cbf_torque_controller">
+  <class
+    name="franka_rt_controllers/CBFTorqueController"
+    type="franka_rt_controllers::CBFTorqueController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+      CBF torque controller: inverse dynamics from qddot_safe.
+    </description>
+  </class>
+</library>

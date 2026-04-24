@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import time
 import cv2
 import numpy as np
 import rclpy
@@ -8,8 +9,10 @@ import trimesh
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from franka_msgs.msg import HumanRobotDistance, MultiDistance
+from rclpy.time import Time as RclpyTime
+from franka_msgs.msg import HumanRobotDistance, LinkDistance, MultiDistance, MultiLinkDistance
 from geometry_msgs.msg import Point, Vector3
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -83,6 +86,14 @@ class RealTimeDistance(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        # ── Robustness counters / throttle timestamps ─────────────────────
+        self._process_skip_count = 0
+        self._vis_skip_count     = 0
+        self._last_tf_warn_t     = 0.0   # wall clock [s]
+        self._last_no_obs_warn_t = 0.0
+        self._last_dist_log_t    = 0.0
+        self._THROTTLE_S         = 2.0   # min seconds between repeated log lines
+
         # ── Subscriptions ────────────────────────────────────────────────
         topics_cfg = self.config.get('topics', {})
         depth_topic = topics_cfg.get('depth_image', '/camera/camera/depth/image_rect_raw')
@@ -114,6 +125,10 @@ class RealTimeDistance(Node):
         self.dist_pub = self.create_publisher(
             HumanRobotDistance, distance_topic, 10)
 
+        _be_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.per_link_dist_pub = self.create_publisher(
+            MultiLinkDistance, '/cbf/per_link_distances', _be_qos)
+
         self.get_logger().info(
             f'RealTimeDistance ready. '
             f'mode={"segment" if self.use_segment_distance else "control_point"}  '
@@ -138,34 +153,45 @@ class RealTimeDistance(Node):
 
     # === Camera Callbacks ===
     def depth_callback(self, msg):
-        self.last_depth_msg = msg
-        self.last_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+        try:
+            self.last_depth_msg = msg
+            self.last_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+        except Exception as exc:
+            self.get_logger().warn(f'depth_callback error (skipping frame): {exc}')
 
     def camera_info_callback(self, msg):
         if self.fx is not None:
             return
-        self.fx = msg.k[0]
-        self.fy = msg.k[4]
-        self.cx = msg.k[2]
-        self.cy = msg.k[5]
-        self.K     = np.array(msg.k, dtype=float).reshape(3, 3)
-        self.K_inv = np.linalg.inv(self.K)
+        try:
+            self.fx = msg.k[0]
+            self.fy = msg.k[4]
+            self.cx = msg.k[2]
+            self.cy = msg.k[5]
+            self.K     = np.array(msg.k, dtype=float).reshape(3, 3)
+            self.K_inv = np.linalg.inv(self.K)
+        except Exception as exc:
+            self.get_logger().warn(f'camera_info_callback error: {exc}')
 
 
     # === Transform functions ===
     def get_link_rotation_translation(self, link_name):
         try:
+            # Use RclpyTime() (latest available) — non-blocking, no timestamp sync needed.
             tf = self.tf_buffer.lookup_transform(
                 self.robot_cfg['base_frame'],
                 link_name,
-                self.last_depth_msg.header.stamp,
+                RclpyTime(),
             )
-            t = tf.transform.translation
-            q = tf.transform.rotation
+            t     = tf.transform.translation
+            q     = tf.transform.rotation
             R     = get_rotation_from_quaternion(q)
             t_vec = np.array([t.x, t.y, t.z], dtype=float)
             return R, t_vec
-        except TransformException:
+        except Exception as exc:
+            now = time.monotonic()
+            if now - self._last_tf_warn_t >= self._THROTTLE_S:
+                self._last_tf_warn_t = now
+                self.get_logger().warn(f'TF lookup failed for {link_name}: {exc}')
             return None, None
 
     def get_all_link_transforms(self):
@@ -470,6 +496,15 @@ class RealTimeDistance(Node):
 
     # === Main Loop ===
     def process_depth(self):
+        try:
+            self._process_depth_impl()
+        except Exception as exc:
+            self._process_skip_count += 1
+            self.get_logger().error(
+                f'process_depth unhandled error '
+                f'(skip #{self._process_skip_count}): {exc}')
+
+    def _process_depth_impl(self):
         if self.last_depth is None or self.last_depth_msg is None or self.fx is None:
             return
 
@@ -553,9 +588,11 @@ class RealTimeDistance(Node):
             if best_result is None or not (
                 thresholds['min_thresh'] <= best_result['distance'] <= thresholds['max_thresh']
             ):
-                self.get_logger().info(
-                    f'No near obstacle (segment mode). '
-                    f'Fallback to {fallback_distance} m')
+                now = time.monotonic()
+                if now - self._last_no_obs_warn_t >= self._THROTTLE_S:
+                    self._last_no_obs_warn_t = now
+                    self.get_logger().debug(
+                        f'No near obstacle (segment mode). Fallback={fallback_distance} m')
                 self.publish_fallback_distance(
                     fallback_distance, self.last_depth_msg.header.stamp)
                 return
@@ -577,9 +614,11 @@ class RealTimeDistance(Node):
             ]
 
             if not valid_results:
-                self.get_logger().info(
-                    f'No near obstacle (control-point mode). '
-                    f'Fallback to {fallback_distance} m')
+                now = time.monotonic()
+                if now - self._last_no_obs_warn_t >= self._THROTTLE_S:
+                    self._last_no_obs_warn_t = now
+                    self.get_logger().debug(
+                        f'No near obstacle (CP mode). Fallback={fallback_distance} m')
                 self.publish_fallback_distance(
                     fallback_distance, self.last_depth_msg.header.stamp)
                 return
@@ -594,11 +633,14 @@ class RealTimeDistance(Node):
         p_cam_closest            = self.transform_base_to_camera(closest_point)
         closest_Z                = p_cam_closest[2]
 
-        # === Log ==========================================================
-        self.get_logger().info(
-            f'Min distance: {self.min_dist:.3f} m  '
-            f'Closest depth Z: {closest_Z:.3f} m  '
-            f'Closest pixel: {self.closest_uv_obs}')
+        # === Log (throttled — avoids 10 Hz spam) ==========================
+        now = time.monotonic()
+        if now - self._last_dist_log_t >= self._THROTTLE_S:
+            self._last_dist_log_t = now
+            self.get_logger().info(
+                f'Min distance: {self.min_dist:.3f} m  '
+                f'Closest depth Z: {closest_Z:.3f} m  '
+                f'Closest pixel: {self.closest_uv_obs}')
 
         # === Publish MultiDistance (closest CP per active segment) ========
         if self.cp_results is not None:
@@ -653,15 +695,65 @@ class RealTimeDistance(Node):
             multi_msg.distances       = entries
             self.multi_dist_pub.publish(multi_msg)
 
+            # Publish per-link distances (one LinkDistance per segment_link with CPs)
+            link_best: dict[str, dict] = {}
+            for r in self.cp_results:
+                lk = r['end_link']
+                if lk not in link_best or r['distance'] < link_best[lk]['distance']:
+                    link_best[lk] = r
+
+            link_entries: list[LinkDistance] = []
+            for lk in self.robot_cfg.get('segment_links', []):
+                if lk not in link_best:
+                    continue
+                r = link_best[lk]
+                ld = LinkDistance()
+                ld.robot_link_name = lk
+                if r['point'] is not None:
+                    ld.closest_point_robot = Point(
+                        x=float(r['point'][0]),
+                        y=float(r['point'][1]),
+                        z=float(r['point'][2]),
+                    )
+                obs = r['closest_obstacle_point']
+                if obs is not None:
+                    ld.closest_point_human = Point(
+                        x=float(obs[0]),
+                        y=float(obs[1]),
+                        z=float(obs[2]),
+                    )
+                if r['direction'] is not None:
+                    d = r['direction']
+                    ld.direction = Vector3(
+                        x=float(d[0]), y=float(d[1]), z=float(d[2]))
+                ld.distance   = float(r['distance'])
+                ld.valid      = (
+                    np.isfinite(r['distance'])
+                    and r['distance'] > 0.0
+                    and r['direction'] is not None
+                )
+                ld.confidence = 1.0
+                ld.zone       = self.classify_zone(r['distance'])
+                link_entries.append(ld)
+
+            mld_msg = MultiLinkDistance()
+            mld_msg.header.stamp    = stamp
+            mld_msg.header.frame_id = frame_id
+            mld_msg.links           = link_entries
+            self.per_link_dist_pub.publish(mld_msg)
+
 
     # === Visualization ====================================================
     def visualize(self):
-        """Draw depth image with robot overlay and distance annotation.
+        """Draw depth image with robot overlay and distance annotation."""
+        try:
+            self._visualize_impl()
+        except Exception as exc:
+            self._vis_skip_count += 1
+            self.get_logger().warn(
+                f'visualize error (skip #{self._vis_skip_count}): {exc}')
 
-        Called by a dedicated 10 Hz timer (created only when
-        booleans.visualize is true).  Reads shared state written by
-        process_depth — no distance computation here.
-        """
+    def _visualize_impl(self):
         if self.last_depth is None or self.last_depth_msg is None or self.fx is None:
             return
 
