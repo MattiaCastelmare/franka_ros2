@@ -36,6 +36,7 @@ setup(
             'cbf_safety_filter = franka_experiments.nodes.cbf_safety_filter:main',
             'pentagon_torque_commander = franka_experiments.nodes.pentagon_torque_commander:main',
             'pentagon_qddot_commander = franka_experiments.nodes.pentagon_qddot_commander:main',
+            'experiment_logger = franka_experiments.nodes.experiment_logger_bag_safe:main',
         ],
     },
 )

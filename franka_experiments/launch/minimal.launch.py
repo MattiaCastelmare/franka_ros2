@@ -67,6 +67,8 @@ _ALL_PARAMS = [
     'control_spawner_delay_s',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance', 'real_time_distance_delay_s',
+    'start_experiment_logger',
+    'experiment_logger_delay_s',
 ]
 
 
@@ -286,6 +288,23 @@ def _launch_all(context):
         actions.append(
             LogInfo(msg='[minimal] real_time_distance  : DISABLED '
                         '(start_real_time_distance:=false)'))
+    # ── Experiment logger ───────────────────────────────────────────────
+    if _as_bool(p['start_experiment_logger']):
+        experiment_logger_node = Node(
+            package='franka_experiments',
+            executable='experiment_logger',
+            name='experiment_logger',
+            output='screen',
+        )
+
+        actions.append(TimerAction(
+            period=float(p['experiment_logger_delay_s']),
+            actions=[experiment_logger_node]
+        ))
+
+        actions.append(LogInfo(msg='[minimal] experiment_logger : ENABLED'))
+    else:
+        actions.append(LogInfo(msg='[minimal] experiment_logger : DISABLED'))
 
     return actions
 
@@ -339,6 +358,16 @@ def generate_launch_description():
                 'real_time_distance_delay_s',
                 default_value=str(_DEFAULTS.get('real_time_distance_delay_s', '8.0')),
                 description='Seconds before launching real_time_distance node'),
+            DeclareLaunchArgument(
+                'start_experiment_logger',
+                default_value='true',
+                description='Start experiment logger automatically'
+            ),
+            DeclareLaunchArgument(
+                'experiment_logger_delay_s',
+                default_value='2.0',
+                description='Seconds before launching experiment_logger'
+            ),
             OpaqueFunction(function=_launch_all),
         ]
     )
