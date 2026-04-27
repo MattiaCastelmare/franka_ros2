@@ -27,12 +27,38 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from franka_msgs.msg import MultiDistance
 
+try:
+    from scipy.signal import savgol_filter as _savgol
+    _SCIPY_OK = True
+except ImportError:
+    _SCIPY_OK = False
+
 
 NUM_JOINTS = 7
+
+# Plot only joints influenced by segments with control points
+PLOT_JOINT_START = 3   # J3..J7
+PLOT_JOINT_INDICES = range(PLOT_JOINT_START, NUM_JOINTS + 1)
+
 DEFAULT_JOINT_NAMES = [f"fr3_joint{i}" for i in range(1, NUM_JOINTS + 1)]
 
 # Default paths/topics for direct execution without terminal parameters
-DEFAULT_OUTPUT_DIR = str(Path(__file__).resolve().parent / "experiment_logs")
+from pathlib import Path
+
+
+def resolve_source_nodes_dir() -> Path:
+    p = Path(__file__).resolve()
+
+    for parent in p.parents:
+        candidate = parent / "src" / "franka_experiments" / "franka_experiments" / "nodes"
+        if candidate.exists():
+            return candidate
+
+    # fallback se lanci direttamente dal source
+    return Path(__file__).resolve().parent
+
+
+DEFAULT_OUTPUT_DIR = str(resolve_source_nodes_dir() / "experiment_logs")
 
 DEFAULT_EXPERIMENT_NAME = "bag_02_dynamic_test"
 
@@ -87,6 +113,7 @@ class ExperimentLogger(Node):
             pass
 
         self.declare_parameter("output_dir", DEFAULT_OUTPUT_DIR)
+        self.declare_parameter("run_dir_override", "")
         self.declare_parameter("experiment_name", DEFAULT_EXPERIMENT_NAME)
         self.declare_parameter("sample_rate_hz", 100.0)
         self.declare_parameter("d_safe", 0.20 if cfg_dsafe is None else cfg_dsafe)
@@ -103,7 +130,11 @@ class ExperimentLogger(Node):
         self.output_root = Path(str(self.get_parameter("output_dir").value)).expanduser()
         exp_name = str(self.get_parameter("experiment_name").value)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = self.output_root / f"{stamp}_{exp_name}"
+        _override = str(self.get_parameter("run_dir_override").value).strip()
+        if _override:
+            self.run_dir = Path(_override).expanduser()
+        else:
+            self.run_dir = self.output_root / f"{stamp}_{exp_name}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.csv_path = self.run_dir / "experiment_log.csv"
 
@@ -393,6 +424,42 @@ class ExperimentLogger(Node):
     @staticmethod
     def _has_data(y: np.ndarray) -> bool:
         return np.any(np.isfinite(y))
+    
+    def _smooth(self, y: np.ndarray, alpha: float = 0.18) -> np.ndarray:
+        """
+        Savitzky-Golay smoothing (falls back to EMA if scipy missing).
+        Preserves peak positions, removes high-freq noise.
+        window_length scales with data length, min 11 samples.
+        """
+        out = y.copy()
+        idx = np.where(np.isfinite(y))[0]
+        if len(idx) < 5:
+            return out
+
+        # ── Savitzky-Golay path ──────────────────────────────────────────
+        if _SCIPY_OK:
+            # window ~ 1 s of data; data rate ≈ 100 Hz → 101 samples,
+            # clipped to data length and forced odd.
+            n = len(idx)
+            wl = min(51, n if n % 2 == 1 else n - 1)
+            wl = max(wl, 11)   # at least 11 samples
+            if wl % 2 == 0:
+                wl -= 1
+            segment = y[idx]
+            smoothed = _savgol(segment, window_length=wl, polyorder=3)
+            out[idx] = smoothed
+            return out
+
+        # ── EMA fallback ─────────────────────────────────────────────────
+        first = idx[0]
+        out[first] = y[first]
+        for i in range(first + 1, len(y)):
+            if np.isfinite(y[i]):
+                prev = out[i - 1] if np.isfinite(out[i - 1]) else y[i]
+                out[i] = alpha * y[i] + (1.0 - alpha) * prev
+            else:
+                out[i] = out[i - 1]
+        return out
 
     def _savefig(self, name: str):
         plt.tight_layout()
@@ -401,18 +468,24 @@ class ExperimentLogger(Node):
 
     def _plot_joint_family(self, prefix: str, title: str, ylabel: str, filename: str):
         t = self._time()
-        ys = [self._col(f"{prefix}_{i}") for i in range(1, NUM_JOINTS + 1)]
+
+        ys = [self._col(f"{prefix}_{i}") for i in PLOT_JOINT_INDICES]
+
         if not any(self._has_data(y) for y in ys):
             return
+
         plt.figure(figsize=(12, 6))
-        for i, y in enumerate(ys, start=1):
+
+        for j_idx, y in zip(PLOT_JOINT_INDICES, ys):
             if self._has_data(y):
-                plt.plot(t, y, label=f"J{i}", linewidth=1.2)
+                y_plot = self._smooth(y)
+                plt.plot(t, y_plot, label=f"J{j_idx}", linewidth=1.5)
+
         plt.title(title)
         plt.xlabel("time [s]")
         plt.ylabel(ylabel)
         plt.grid(True, alpha=0.3)
-        plt.legend(ncol=4)
+        plt.legend(ncol=3)
         self._savefig(filename)
 
     def _plot_cbf_min_h(self):
@@ -503,15 +576,15 @@ class ExperimentLogger(Node):
         qddot_norm = []
         tau_norm = []
         for r in self.rows:
-            qdot = np.array([_safe_float(r.get(f"qdot_{i}")) for i in range(1, NUM_JOINTS + 1)])
-            qddot = np.array([_safe_float(r.get(f"qddot_{i}")) for i in range(1, NUM_JOINTS + 1)])
-            tau = np.array([_safe_float(r.get(f"tau_effort_{i}")) for i in range(1, NUM_JOINTS + 1)])
+            qdot = np.array([_safe_float(r.get(f"qdot_{i}")) for i in PLOT_JOINT_INDICES])
+            qddot = np.array([_safe_float(r.get(f"qddot_{i}")) for i in PLOT_JOINT_INDICES])
+            tau = np.array([_safe_float(r.get(f"tau_effort_{i}")) for i in PLOT_JOINT_INDICES])
             qdot_norm.append(self._norm(qdot))
             qddot_norm.append(self._norm(qddot))
             tau_norm.append(self._norm(tau))
-        qdot_norm = np.asarray(qdot_norm)
-        qddot_norm = np.asarray(qddot_norm)
-        tau_norm = np.asarray(tau_norm)
+        qdot_norm = self._smooth(np.asarray(qdot_norm))
+        qddot_norm = self._smooth(np.asarray(qddot_norm))
+        tau_norm = self._smooth(np.asarray(tau_norm))
         if not (self._has_data(qdot_norm) or self._has_data(qddot_norm) or self._has_data(tau_norm)):
             return
         plt.figure(figsize=(12, 5))

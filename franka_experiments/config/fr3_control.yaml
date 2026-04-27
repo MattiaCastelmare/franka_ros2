@@ -1,6 +1,8 @@
 topics:
   joint_states_topic: /NS_1/joint_states
   qddot_nom:          /NS_1/qddot_nom
+  velocity_topic:     /NS_1/qdot_cmd
+  qdot_nom:           /NS_1/tracking_qdot
   qddot_safe:         /NS_1/qddot_safe
   multi_distance:     /human_robot/multi_distance
 
@@ -8,9 +10,11 @@ params:
   k0: 25.0
   k1: 10.0
   d_safe_default: 0.15
+  d_safe: 0.20
   rho_slack: 1000.0
-  qp_solver: osqp
+  qp_solver: cvxopt
   control_rate_hz: 200.0
+  ema_alpha: 0.4
   distance_timeout: 0.5
   human_vel_max: 1.4
   human_acc_max: 5.0

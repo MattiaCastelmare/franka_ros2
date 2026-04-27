@@ -13,3 +13,4 @@ franka_description
 # local datasets
 datasets/
 datasets.zip
+franka_experiments/franka_experiments/nodes/experiment_logs/

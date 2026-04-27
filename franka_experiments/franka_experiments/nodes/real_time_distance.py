@@ -33,6 +33,7 @@ class RealTimeDistance(Node):
         # ── Parameters ──────────────────────────────────────────────────
         self.declare_parameter('robot_config_path', '')
         self.declare_parameter('camera_extrinsics_path', '')
+        self.declare_parameter('publish_overlay_image', False)
 
         robot_config_path = self.get_parameter('robot_config_path').value
         camera_extrinsics_path = self.get_parameter('camera_extrinsics_path').value
@@ -59,6 +60,11 @@ class RealTimeDistance(Node):
         self.visualize_only_raw_video   = booleans.get('raw_video', False)
         self.use_segment_distance       = booleans.get('use_segment_distance', False)
         self.visual_ROI                 = booleans.get('visual_ROI', False)
+
+        _yaml_pub_overlay = booleans.get('publish_overlay_image', False)
+        self.publish_overlay_image = (
+            self.get_parameter('publish_overlay_image').value or _yaml_pub_overlay
+        )
 
         # Exclude base segments (0-2) from distance computation —
         # they are nearly always occluded by the robot itself.
@@ -135,7 +141,10 @@ class RealTimeDistance(Node):
             f'viz={self.enable_visualization}')
 
         self.create_timer(0.1, self.process_depth)
-        if self.enable_visualization:
+        if self.enable_visualization or self.publish_overlay_image:
+            topics_cfg_viz = self.config.get('topics', {})
+            overlay_topic = topics_cfg_viz.get('overlay_image', '/real_time_distance/overlay_image')
+            self.overlay_pub = self.create_publisher(Image, overlay_topic, 10)
             self.create_timer(0.1, self.visualize)
 
 
@@ -744,6 +753,17 @@ class RealTimeDistance(Node):
 
 
     # === Visualization ====================================================
+    def _publish_overlay(self, depth_vis):
+        if not self.publish_overlay_image:
+            return
+        try:
+            msg = self.bridge.cv2_to_imgmsg(depth_vis, encoding='bgr8')
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'camera_depth_optical_frame'
+            self.overlay_pub.publish(msg)
+        except Exception as exc:
+            self.get_logger().warn(f'overlay publish error: {exc}')
+
     def visualize(self):
         """Draw depth image with robot overlay and distance annotation."""
         try:
@@ -766,8 +786,10 @@ class RealTimeDistance(Node):
             cv2.rectangle(depth_vis, (x0, y0), (x1, y1), (255, 0, 255), 2)
 
         if self.visualize_only_raw_video:
-            cv2.imshow('Robot + closest distance', depth_vis)
-            cv2.waitKey(1)
+            self._publish_overlay(depth_vis)
+            if self.enable_visualization:
+                cv2.imshow('Robot + closest distance', depth_vis)
+                cv2.waitKey(1)
             return
 
         # Robot mask overlay
@@ -821,8 +843,10 @@ class RealTimeDistance(Node):
                 depth_vis, f'{self.min_dist:.3f} m',
                 (u + 10, v), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-        cv2.imshow('Robot + closest distance', depth_vis)
-        cv2.waitKey(1)
+        self._publish_overlay(depth_vis)
+        if self.enable_visualization:
+            cv2.imshow('Robot + closest distance', depth_vis)
+            cv2.waitKey(1)
 
 
 def main(args=None):

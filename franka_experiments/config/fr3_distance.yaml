@@ -92,7 +92,7 @@ topics:
 distance: # in meters from the camera
   min_depth_m: 0.15
   max_depth_m: 4.0
-  pixel_step: 6
+  pixel_step: 10
   image_margin_px: 10
   roi_pad_px: 90
 
@@ -107,9 +107,9 @@ distance: # in meters from the camera
   ee_tip_axis: 2 # 0=x, 1=y, 2=z
 
 mask: # in pixels
-  robot_mask_dilate_px: 12
-  ee_mask_dilate_px: 20
-  search_exclusion_extra_px: 10
+  robot_mask_dilate_px: 15
+  ee_mask_dilate_px: 24
+  search_exclusion_extra_px: 12
 
 zones: # in meters
   warning: 0.3
@@ -121,4 +121,4 @@ booleans:
   exclusion_mask: true
   raw_video: false
   use_segment_distance: false
-  visual_ROI: false
+  visual_ROI: True

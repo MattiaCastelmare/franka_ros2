@@ -39,3 +39,8 @@ start_human_pose: true
 human_pose_delay_s: 0.0
 start_real_time_distance: true
 real_time_distance_delay_s: 8.0
+
+# ── Rosbag recording ──────────────────────────────────────────────────
+start_rosbag: false
+rosbag_output_dir: ""          # empty = ~/ros2_bags/rosbag_YYYYMMDD_HHMMSS
+rosbag_delay_s: 3.0            # extra seconds after real_time_distance starts
