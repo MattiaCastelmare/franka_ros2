@@ -123,11 +123,43 @@ foreach(script ${PYTHON_SCRIPTS})
     RENAME ${script_name})
 endforeach()
 
+# Install trajectory scripts (ros2 run franka_simulation velocity_circle_trajectory …)
+file(GLOB TRAJECTORY_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/trajectories/*.py")
+
+foreach(script ${TRAJECTORY_SCRIPTS})
+  get_filename_component(script_name ${script} NAME_WE)
+  install(PROGRAMS ${script}
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME ${script_name})
+endforeach()
+
 # Install shared Python helpers used by multiple scripts.
 # They live in scripts/utils (with __init__.py) and must be available at runtime
 # next to the installed executables, otherwise `import utils...` will fail.
 install(DIRECTORY scripts/utils
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install test publisher scripts as executables (ros2 run franka_simulation test_*)
+file(GLOB TEST_SCRIPTS "${CMAKE_CURRENT_SOURCE_DIR}/test/scripts/*.py")
+
+foreach(script ${TEST_SCRIPTS})
+  get_filename_component(script_name ${script} NAME_WE)
+  install(PROGRAMS ${script}
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME ${script_name})
+endforeach()
+
+# Install test launch files (ros2 launch franka_simulation test_*.launch.py)
+install(DIRECTORY test/launch/
+  DESTINATION share/${PROJECT_NAME}/test/launch
+  FILES_MATCHING PATTERN "*.launch.py"
+)
+
+# Install test config files
+install(DIRECTORY test/config/
+  DESTINATION share/${PROJECT_NAME}/test/config
+  FILES_MATCHING PATTERN "*.yaml"
 )
 
 

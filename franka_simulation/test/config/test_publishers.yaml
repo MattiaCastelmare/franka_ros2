@@ -1,0 +1,27 @@
+# Test publisher parameters for franka_simulation pipeline validation.
+# These values are intentionally conservative for safety.
+
+velocity_test_publisher:
+  ros__parameters:
+    rate_hz: 50.0
+    duration_s: 30.0
+    amplitude: 0.15         # rad/s — well within FR3 velocity limits (max ~2.6 rad/s)
+    frequency: 0.1          # Hz — one full oscillation per 10 s
+    active_joint: 0         # joint 1 (0-indexed)
+
+acceleration_test_publisher:
+  ros__parameters:
+    rate_hz: 50.0
+    duration_s: 30.0
+    amplitude: 0.3          # rad/s² — integrates to ~0.15 rad/s peak over 0.5 s
+    frequency: 0.1          # Hz
+    active_joint: 0
+
+torque_test_publisher:
+  ros__parameters:
+    rate_hz: 100.0
+    zeros_duration_s: 10.0   # equilibrium phase (Gazebo physics holds the robot)
+    active_duration_s: 20.0
+    amplitude: 2.0           # Nm — <<< FR3 joint1 max 87 Nm; safe for test
+    frequency: 0.1           # Hz
+    active_joint: 0

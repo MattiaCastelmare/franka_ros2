@@ -577,13 +577,6 @@ def generate_launch_description():
         parameters=[avoidance_params_file]
     )
 
-    velocity_control_blender = Node(
-        package='franka_simulation',
-        executable='velocity_control_blender',
-        name='velocity_control_blender',
-        output='screen'
-    )
-
     # Sequenza temporizzata: spawn -> JSB -> ARM -> RViz (dopo move_group)
     delayed_spawn = TimerAction(period=3.0, actions=[spawn])
     delayed_jsb = TimerAction(period=5.0, actions=[jsb_spawner])
@@ -595,7 +588,6 @@ def generate_launch_description():
     # Motion server is required to publish trajectories for the blender.
     # A very long delay makes the system look "stalled" when launching demos.
     delayed_motion_server = TimerAction(period=14.0, actions=[motion_server])
-    motion_server_action = OpaqueFunction(function=lambda context: [motion_server])
 
     # File dei parametri del velocity blender
     velocity_blender_params_file = os.path.join(
@@ -672,7 +664,6 @@ def generate_launch_description():
             clock_bridge,
             delayed_obstacle_sync,
             delayed_motion_server,
-            #motion_server_action,
             delayed_avoidance,
             delayed_blender,
             delayed_safe_test,
