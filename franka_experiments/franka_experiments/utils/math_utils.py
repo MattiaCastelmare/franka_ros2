@@ -1,4 +1,4 @@
-"""Pure math helpers: minimum-jerk, cosine ramp, clamp, low-pass filter."""
+"""Pure math helpers: minimum-jerk, cosine ramp, clamp, low-pass filter, skew matrix."""
 
 from __future__ import annotations
 
@@ -61,3 +61,14 @@ def rate_limit(prev: "np.ndarray", current: "np.ndarray", max_delta: float) -> "
     import numpy as np
     delta = current - prev
     return prev + np.clip(delta, -max_delta, max_delta)
+
+
+def skew(v: np.ndarray) -> np.ndarray:
+    """Skew-symmetric matrix such that skew(v) @ w == v × w."""
+    v = np.asarray(v, dtype=float).reshape(3)
+    return np.array(
+        [[0.0, -v[2], v[1]],
+         [v[2],  0.0, -v[0]],
+         [-v[1],  v[0],  0.0]],
+        dtype=float,
+    )

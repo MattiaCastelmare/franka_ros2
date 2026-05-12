@@ -42,23 +42,7 @@ PLOT_JOINT_INDICES = range(PLOT_JOINT_START, NUM_JOINTS + 1)
 
 DEFAULT_JOINT_NAMES = [f"fr3_joint{i}" for i in range(1, NUM_JOINTS + 1)]
 
-# Default paths/topics for direct execution without terminal parameters
-from pathlib import Path
-
-
-def resolve_source_nodes_dir() -> Path:
-    p = Path(__file__).resolve()
-
-    for parent in p.parents:
-        candidate = parent / "src" / "franka_experiments" / "franka_experiments" / "nodes"
-        if candidate.exists():
-            return candidate
-
-    # fallback se lanci direttamente dal source
-    return Path(__file__).resolve().parent
-
-
-DEFAULT_OUTPUT_DIR = str(resolve_source_nodes_dir() / "experiment_logs")
+DEFAULT_OUTPUT_DIR = str(Path.home() / "ros2_experiments")
 
 DEFAULT_EXPERIMENT_NAME = "bag_02_dynamic_test"
 

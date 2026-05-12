@@ -7,6 +7,7 @@
   <maintainer email="mattia@todo.todo">mattia</maintainer>
   <license>Apache-2.0</license>
 
+  <!-- ROS2 runtime dependencies -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
@@ -15,11 +16,21 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
   <exec_depend>franka_msgs</exec_depend>
   <exec_depend>franka_description</exec_depend>
   <exec_depend>franka_simulation</exec_depend>
+  <exec_depend>franka_bringup</exec_depend>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
+  <!-- Optional: camera driver and calibration (needed for Phase 3 obstacle CBF) -->
+  <!-- exec_depend>realsense2_camera</exec_depend -->
+  <!-- exec_depend>apriltag_ros</exec_depend -->
+
+  <!-- Python dependencies (install via pip if not available via rosdep):
+       pinocchio, qpsolvers, osqp, numpy, scipy, matplotlib, opencv-python, pyyaml -->
+
+  <buildtool_depend>ament_python</buildtool_depend>
 
   <export>
     <build_type>ament_python</build_type>

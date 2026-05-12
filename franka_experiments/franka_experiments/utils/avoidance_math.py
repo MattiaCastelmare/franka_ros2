@@ -22,6 +22,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from franka_experiments.utils.math_utils import skew  # noqa: F401 — canonical definition
+
 
 def clip_aabb(p: np.ndarray, half: np.ndarray) -> np.ndarray:
     """Clip a 3D point to an axis-aligned box [-half, +half] in the same frame."""
@@ -618,19 +620,6 @@ def pocs_project_halfspaces_with_box(
                 q = np.clip(q, -maxv, +maxv)
 
     return q
-
-
-def skew(v: np.ndarray) -> np.ndarray:
-    """Skew-symmetric matrix such that skew(v) @ w == v x w."""
-    v = np.array(v, dtype=float).reshape(3)
-    return np.array(
-        [
-            [0.0, -v[2], v[1]],
-            [v[2], 0.0, -v[0]],
-            [-v[1], v[0], 0.0],
-        ],
-        dtype=float,
-    )
 
 
 def point_jacobian_world(

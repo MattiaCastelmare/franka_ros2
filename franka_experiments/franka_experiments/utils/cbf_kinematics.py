@@ -1,11 +1,7 @@
 import numpy as np
 import pinocchio as pin
 
-
-def _skew(v: np.ndarray) -> np.ndarray:
-    return np.array([[ 0.0, -v[2],  v[1]],
-                     [ v[2],  0.0, -v[0]],
-                     [-v[1],  v[0],  0.0]])
+from franka_experiments.utils.math_utils import skew as _skew
 
 
 class CBFKinematics:

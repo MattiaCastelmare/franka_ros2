@@ -1,19 +1,18 @@
-import numpy as np
+import os
+
 import yaml
+from ament_index_python.packages import get_package_share_directory
+
+from franka_experiments.utils.math_utils import skew  # noqa: F401 — re-exported
 
 
 def load_robot_config(file):
-    filename = f'/ros2_ws/src/franka_experiments/config/fr3_{file}.yaml'
+    pkg_share = get_package_share_directory('franka_experiments')
+    filename = os.path.join(pkg_share, 'config', f'fr3_{file}.yaml')
     with open(filename, 'r') as f:
         data = yaml.safe_load(f)
     return data
 
-def skew(v):
-    return np.array([
-        [0.0, -v[2], v[1]],
-        [v[2], 0.0, -v[0]],
-        [-v[1], v[0], 0.0]
-    ])
 
 def select_gamma(zone, confidence):
     base = 3.0
@@ -25,6 +24,5 @@ def select_gamma(zone, confidence):
     elif zone == "critical":
         base = 15.0
 
-    # Optional: reduce aggressiveness if confidence is low
     conf_scale = max(0.3, min(1.0, confidence))
     return base * conf_scale

@@ -33,6 +33,7 @@ from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS, AUTO_SENTINEL
 from franka_experiments.utils.ros import get_namespace_from_config, run_node_main
+from franka_experiments.utils.cbf_utils import load_robot_config
 from franka_experiments.utils.kinematics import (
     generate_urdf_from_xacro,
     load_pinocchio_model,
@@ -59,8 +60,18 @@ class PentagonQddotCommander(Node):
         self._stop_end  = 0.0
         self._phase     = _WARMUP
 
+        # ── Load robot config (topics + per-joint limits) ────────────────
+        _cfg    = load_robot_config('control')
+        _topics = _cfg['topics']
+        _limits = _cfg['joint_limits']
+        _jnames = [f'joint{i}' for i in range(1, 8)]
+
         # ── Parameters ───────────────────────────────────────────────────
-        self.declare_parameter('qddot_safe_topic',  '/NS_1/qddot_safe')
+        # qddot_safe_topic: default reads qddot_nom from fr3_control.yaml so
+        # the node connects directly to qddot_to_torque without a launch override.
+        # When cbf_safety_filter is inserted, point this to topics['qddot_nom']
+        # and let the CBF filter publish from qddot_nom to qddot_safe.
+        self.declare_parameter('qddot_safe_topic',  _topics.get('qddot_nom', '/NS_1/qddot_nom'))
         self.declare_parameter('q_des_topic',       '/NS_1/q_des_state')
         self.declare_parameter('reset_thr_m',       0.10)
         self.declare_parameter('joint_state_topic', AUTO_SENTINEL)
@@ -71,16 +82,18 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('approach_timeout_s',  5.0)   # safety fallback to TRACK [s]
         self.declare_parameter('pos_thr',             0.04)  # APPROACH→TRACK threshold [m]
         self.declare_parameter('center_xyz',          [0.4, 0.0, 0.4])
-        self.declare_parameter('radius',              0.12)
+        self.declare_parameter('radius',              0.30)
         self.declare_parameter('plane',               'front')
         self.declare_parameter('plane_frame',         'fr3_link0')
-        self.declare_parameter('cycle_time',          15.0)
+        self.declare_parameter('cycle_time',          7.0)
         self.declare_parameter('smoothness',          0.20)
-        self.declare_parameter('kp_cart',             50.0)  # raised for fast tracking
-        self.declare_parameter('kd_cart',             14.0)  # ≈ 2√kp (critical damping)
-        self.declare_parameter('kp_rot',              20.0)
-        self.declare_parameter('kd_rot',              8.0)
-        self.declare_parameter('qddot_max',           10.0)  # per-joint clamp [rad/s²]
+        # kp/kd: task-space Cartesian gains [N/m, N·s/m].
+        # Conservative for torque control — overshoot propagates via M·q̈.
+        # kd ≈ 2√kp for near-critical damping.
+        self.declare_parameter('kp_cart',             20.0)
+        self.declare_parameter('kd_cart',              9.0)
+        self.declare_parameter('kp_rot',              10.0)
+        self.declare_parameter('kd_rot',               6.0)
 
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
@@ -102,8 +115,11 @@ class PentagonQddotCommander(Node):
         self.kd        = float(self.get_parameter('kd_cart').value)
         self.kp_rot    = float(self.get_parameter('kp_rot').value)
         self.kd_rot    = float(self.get_parameter('kd_rot').value)
-        self.qddot_max = float(self.get_parameter('qddot_max').value)
         self._dt       = 1.0 / self.rate_hz
+
+        # Per-joint q̈ clamps from fr3_control.yaml joint_limits column [3].
+        # Matches franka_description deceleration_limit: [6.0, 2.585, 3.5, 4.0, 17.0, 5.5, 17.0]
+        self.qddot_max = np.array([_limits[j][3] for j in _jnames], dtype=np.float64)
 
         # ── Pinocchio ────────────────────────────────────────────────────
         self.get_logger().info('Generating URDF …')
@@ -235,7 +251,7 @@ class PentagonQddotCommander(Node):
             f'  start_xyz: {self._start_xyz.tolist()}\n'
             f'  cycle_t  : {cycle_time} s  Kp={self.kp} Kd={self.kd}\n'
             f'  approach_tau={self.approach_tau} s  pos_thr={self.pos_thr} m\n'
-            f'  qddot_max: {self.qddot_max} rad/s²')
+            f'  qddot_max: {self.qddot_max.tolist()} rad/s²  (per-joint)')
 
     # ── Joint state callback ──────────────────────────────────────────────
 

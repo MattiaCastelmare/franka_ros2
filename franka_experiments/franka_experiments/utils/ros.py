@@ -290,10 +290,14 @@ generate_cbf_base_yaml = _generate_cbf_base_yaml
 
 
 def generate_rt_controllers_yaml(
-    is_real, arm_id, qdot_max,
-    command_topic,
-    max_accel, timeout_threshold_s, timeout_ramp_s,
-    gazebo, enable_interpolation,
+    is_real, arm_id,
+    qdot_max=0.0,
+    command_topic='qdot_cmd',
+    max_accel=0.0,
+    timeout_threshold_s=0.0,
+    timeout_ramp_s=0.0,
+    gazebo='false',
+    enable_interpolation='true',
     *,
     controller_type='velocity',
     torque_command_topic='torque_cmd',
@@ -574,6 +578,34 @@ def declare_rt_blender_args(defaults=None):
         DeclareLaunchArgument(
             'enable_interpolation', default_value=d.get('enable_interpolation', 'true'),
             description='[RT] Linear interpolation between low-rate samples.'),
+    ]
+
+
+def declare_rt_torque_args(defaults=None):
+    """Return torque-controller ``DeclareLaunchArgument`` list.
+
+    Counterpart of :func:`declare_rt_blender_args` for the
+    ``rt_torque_controller`` pipeline.  Declares only the parameters that
+    are specific to torque control; hardware/robot args come from
+    :func:`declare_robot_args`.
+
+    Parameters
+    ----------
+    defaults : dict or None
+        Override default values (from :func:`load_launch_defaults`).
+    """
+    from launch.actions import DeclareLaunchArgument
+    d = defaults or {}
+    return [
+        DeclareLaunchArgument(
+            'gazebo', default_value=d.get('gazebo', 'false'),
+            description='[RT] Set true when running in Gazebo.'),
+        DeclareLaunchArgument(
+            'lpf_alpha', default_value=str(d.get('lpf_alpha', '1.0')),
+            description='[torque] Low-pass filter alpha for tau_cmd. 1.0 = disabled.'),
+        DeclareLaunchArgument(
+            'tau_max_scale', default_value=str(d.get('tau_max_scale', '1.0')),
+            description='[torque] Scale factor applied to per-joint torque limits.'),
     ]
 
 

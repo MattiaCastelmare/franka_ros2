@@ -1,0 +1,38 @@
+# Test configuration for franka_experiments pipelines.
+# These override the defaults from config/launch_defaults.yaml and
+# config/fr3_complete.yaml when running tests with fake hardware.
+
+# Override: enable fake hardware for all test launches.
+# The 'use_fake_hardware' flag is already declared in franka_bringup;
+# these params are read by the test launch files directly.
+
+test_velocity:
+  use_fake_hardware: true
+  fake_sensor_commands: true
+  namespace: NS_1
+  commander:
+    rate_hz: 200.0
+    warmup_s: 2.0
+    ramp_s: 2.0
+    qdot_max: 0.3
+    radius: 0.15
+    cycle_time: 15.0
+
+test_torque:
+  use_fake_hardware: true
+  fake_sensor_commands: true
+  namespace: NS_1
+  commander:
+    rate_hz: 100.0
+    warmup_s: 3.0
+    ramp_s: 3.0
+    radius: 0.3
+    kp_cart: 80.0
+    kd_cart: 15.0
+
+test_oscbf:
+  use_fake_hardware: true
+  fake_sensor_commands: true
+  namespace: NS_1
+  bypass_filter: true        # Phase 1 by default — safe pass-through
+  enable_obstacle_cbf: false

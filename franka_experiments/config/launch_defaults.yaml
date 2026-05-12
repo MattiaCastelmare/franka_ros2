@@ -1,9 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# Launch defaults for wrapper_forward_velocity.launch.py
+# Launch defaults for franka_experiments launch files
 # ═══════════════════════════════════════════════════════════════════════════
 # Edit this file to change launch argument defaults WITHOUT touching Python.
-# Every key maps 1-to-1 to a ros2 launch argument:
-#   ros2 launch franka_experiments wrapper_forward_velocity.launch.py <key>:=<value>
+# Every key maps 1-to-1 to a ros2 launch argument.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Robot / hardware ──────────────────────────────────────────────────────
@@ -18,8 +17,11 @@ controllers_yaml: "__auto__"
 # ── Camera & calibration ─────────────────────────────────────────────────
 enable_camera: true
 
-# ── Controller mode ───────────────────────────────────────────────────────
-use_torque_controller: "cbf"
+# ── Controller mode (used by minimal.launch.py) ───────────────────────────
+# false → rt_velocity_executor_controller (default, safest)
+# true  → rt_torque_controller
+# cbf   → cbf_torque_controller (C++ RT, rarely used)
+use_torque_controller: "false"
 
 # ── RT velocity executor controller ───────────────────────────────────────
 qdot_max: 1.5
@@ -29,6 +31,14 @@ timeout_threshold_s: 0.5
 timeout_ramp_s: 1.0
 gazebo: false
 enable_interpolation: true
+
+# ── RT torque controller ───────────────────────────────────────────────────
+# lpf_alpha: 1.0 = no filtering (raw passthrough), 0.0 = never updates.
+# At 1 kHz controller rate with 100 Hz Python commander, alpha=0.3 smooths
+# the inter-sample torque steps with a ~2.8 ms rise time, tracking within
+# each 10 ms Python period without introducing significant lag.
+lpf_alpha: 0.3
+tau_max_scale: 1.0
 
 # ── Scheduling / jitter reduction ─────────────────────────────────────
 control_spawner_delay_s: 10.0

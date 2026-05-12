@@ -1,13 +1,20 @@
-"""Minimal bringup: robot driver + RT velocity executor controller.
+"""Production velocity-pipeline bringup: robot driver + RT velocity executor + logging.
 
-Lightweight launch for debugging — no RViz, no human_pose.
-Optional camera pipeline and real_time_distance node are off by default.
+This is the primary launch file for velocity-control experiments.
+Unlike ``minimal.launch.py`` it always uses ``rt_velocity_executor_controller``
+(no torque controller path) and adds rosbag recording.
 
+Components started:
 * ``franka_bringup/franka.launch.py`` (robot driver + joint_state_broadcaster)
 * ``rt_velocity_executor_controller`` spawner (delayed)
 * Static TF  ``world → fr3_link0``  (identity)
-* Camera pipeline (enable_camera:=true)
-* real_time_distance node (start_real_time_distance:=true)
+* ``experiment_logger`` (enabled by default via ``start_experiment_logger:=true``)
+* Camera pipeline (``enable_camera:=true``)
+* ``real_time_distance`` node (``start_real_time_distance:=true``)
+* rosbag recording (``start_rosbag:=true``, output in shared run directory)
+
+The logger and rosbag share a timestamped run directory so all data from a
+single session is co-located under ``~/ros2_experiments/<timestamp>_<name>/``.
 
 Defaults are loaded from ``franka_experiments/config/launch_defaults.yaml``
 and robot-specific overrides from ``franka_bringup/config/franka.config.yaml``.
@@ -17,13 +24,13 @@ Examples
 .. code-block:: bash
 
     # Fake hardware (no physical robot required):
-    ros2 launch franka_experiments minimal.launch.py use_fake_hardware:=true
+    ros2 launch franka_experiments thales.launch.py use_fake_hardware:=true
 
-    # Real robot (IP and arm_id taken from franka.config.yaml):
-    ros2 launch franka_experiments minimal.launch.py
+    # Real robot with rosbag:
+    ros2 launch franka_experiments thales.launch.py start_rosbag:=true
 
     # With camera and real-time distance:
-    ros2 launch franka_experiments minimal.launch.py enable_camera:=true start_real_time_distance:=true
+    ros2 launch franka_experiments thales.launch.py enable_camera:=true start_real_time_distance:=true
 """
 import datetime
 import os
@@ -75,9 +82,10 @@ _ALL_PARAMS = [
 ]
 ROSBAG_TOPICS = [
     '/real_time_distance/overlay_image',
-    '/human_robot/distance',
     '/cbf/per_link_distances',
     '/franka_robot_state_broadcaster/robot_state',
+    '/NS_1/joint_states',
+    '/NS_1/tracking_qdot',
 ]
 
 

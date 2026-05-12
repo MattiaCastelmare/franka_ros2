@@ -1,0 +1,62 @@
+# OSCBF Safety Filter — parameter file
+# Morton & Pavone 2025, Eq. 36–38 (Dynamic-OSCBF, torque control)
+#
+# Pipeline:
+#   pentagon_torque_commander  --[tau_nom]--> oscbf_filter --[tau_safe]--> rt_torque_controller
+
+oscbf_filter:
+  ros__parameters:
+
+    # ── I/O topics ──────────────────────────────────────────────────────────
+    tau_nom_topic:   /NS_1/torque_cmd    # nominal torque from upstream commander
+    tau_safe_topic:  /NS_1/torque_safe   # OSCBF-filtered safe torque output
+
+    # ── Runtime ─────────────────────────────────────────────────────────────
+    control_rate_hz: 100.0
+    bypass_filter:   false               # true → pass tau_nom through (no QP)
+
+    # ── QP solver ───────────────────────────────────────────────────────────
+    # osqp is preferred (pip install osqp). Falls back to cvxopt if unavailable.
+    qp_solver: osqp
+    rho_slack: 1000.0                    # penalty on slack variable
+
+    # ── OSCBF cost weights (paper Eq. 37) ───────────────────────────────────
+    # w_j: weight on null-space joint-acceleration deviation  ‖Wⱼ M⁻¹ Nᵀ δτ‖²
+    # w_o: weight on operational-space acceleration deviation ‖Wₒ J M⁻¹ δτ‖²
+    # Starting point: w_j = w_o = 1.0 (identity matrices for both).
+    # Increase w_o to give priority to EE task tracking.
+    # Increase w_j to suppress null-space drift under constraint activation.
+    w_j: 1.0
+    w_o: 1.0
+
+    # ── CBF class-K gains (paper Section V.F: α = α₂ = 10 worked well) ─────
+    alpha1: 10.0   # α₁: first HOCBF decay rate  (h₂ = ḣ + α₁·h)
+    alpha2: 10.0   # α₂: second HOCBF decay rate (constraint: ḣ₂ + α₂·h₂ ≥ 0)
+
+    # ── Torque limits [N·m] (FR3 hardware limits) ───────────────────────────
+    tau_max: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+
+    # ── Joint position CBF (always active, RD2 HOCBF) ───────────────────────
+    # Margin applied inward from URDF limits (prevents constraint chatter at edge)
+    joint_limit_margin: 0.05   # [rad]
+
+    # ── Joint velocity CBF (RD1 CBF, optional) ──────────────────────────────
+    enable_vel_cbf: false
+    alpha_vel: 5.0             # α for velocity CBF  (ḣ + α·h ≥ 0)
+
+    # ── EE workspace box CBF (RD2 HOCBF, optional) ──────────────────────────
+    # Keep EE position inside an axis-aligned box in world frame [m].
+    # Matches paper Eq. 46.
+    enable_ws_cbf: false
+    workspace_min: [-0.8, -0.8,  0.05]
+    workspace_max: [ 0.8,  0.8,  1.20]
+
+    # ── EE frame ─────────────────────────────────────────────────────────────
+    ee_frame: fr3_hand_tcp
+
+    # ── Obstacle avoidance CBF (RD2 HOCBF via MultiLinkDistance, optional) ──
+    enable_obstacle_cbf: false
+    dist_timeout_s: 0.5        # drop obstacle constraints if data older than this
+
+    # ── Staleness timeouts ───────────────────────────────────────────────────
+    nom_timeout_s: 0.5         # treat tau_nom as zero if older than this [s]
