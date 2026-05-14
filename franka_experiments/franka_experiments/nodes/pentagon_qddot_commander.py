@@ -85,7 +85,7 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('radius',              0.30)
         self.declare_parameter('plane',               'front')
         self.declare_parameter('plane_frame',         'fr3_link0')
-        self.declare_parameter('cycle_time',          7.0)
+        self.declare_parameter('cycle_time',          15.0)
         self.declare_parameter('smoothness',          0.20)
         # kp/kd: task-space Cartesian gains [N/m, N·s/m].
         # Conservative for torque control — overshoot propagates via M·q̈.

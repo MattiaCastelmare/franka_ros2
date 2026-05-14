@@ -5,19 +5,46 @@ topics:
   qdot_nom:           /NS_1/tracking_qdot
   qddot_safe:         /NS_1/qddot_safe
   multi_distance:     /human_robot/multi_distance
+  per_link_distances: /cbf/per_link_distances
 
 params:
-  k0: 25.0
-  k1: 10.0
-  d_safe_default: 0.15
-  d_safe: 0.20
+  # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
+  d_safe: 0.15          # minimum safe distance from obstacles [m]
+  d_safe_default: 0.15  # alias kept for backward compatibility
+
+  # QP solver
   rho_slack: 1000.0
-  qp_solver: cvxopt
-  control_rate_hz: 200.0
+  qp_solver: osqp
+  control_rate_hz: 100.0
+  distance_timeout: 0.5   # [s] stale distance data → passthrough
+
+  # DEPRECATED: ema_alpha was used to smooth the QP output in cbf_velocity_filter.
+  # Post-QP smoothing invalidates CBF safety guarantees — do not re-introduce.
   ema_alpha: 0.4
-  distance_timeout: 0.5
-  human_vel_max: 1.4
-  human_acc_max: 5.0
+
+  # ── HOCBF acceleration-space safety filter (cbf_safety_filter) ─────────────
+  # Barrier:    h = d - d_safe
+  # HOCBF:      n^T J qddot >= -c_i - k1*hdot - k0*h
+  gamma: 1.0               # kept for backward compat (unused by HOCBF path)
+  k0_cbf: 25.0             # HOCBF position gain  (class-K alpha_0)
+  k1_cbf: 10.0             # HOCBF velocity gain  (class-K alpha_1)
+  cbf_activation_margin: 0.10  # [m] QP activates at d < d_safe + margin
+  cbf_hysteresis: 0.05     # [m] QP deactivates at d > d_safe + margin + hysteresis
+
+  # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
+  qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
+
+  # Slew-rate: encoded as QP box constraint — NOT post-QP clip [rad/s²/tick]
+  max_qddot_delta: 5.0
+
+  # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
+  max_tau_delta: 15.0
+
+  # Braking gain for QP-fail fallback: qddot = -k_brake * qdot
+  k_brake: 3.0
+
+  # EMA weight on SCALAR distance only — positions kept raw [0=frozen, 1=raw]
+  distance_ema_alpha: 0.5
 
 joint_limits:
   joint1: [-2.9007,  2.9007, 2.62,  6.0,   500.0]

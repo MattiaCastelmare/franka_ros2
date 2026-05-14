@@ -1,23 +1,14 @@
 """Torque control stack — FR3 robot (acceleration-space pipeline).
 
-Complete launch for the joint-torque control pipeline.  The motion generator
-produces joint acceleration commands (q̈_nom), which are converted to joint
-torques by the dynamics node and forwarded to the torque controller.
+Complete launch for the joint-torque control pipeline.
 
 Pipeline:
   [Perception]     RealSense camera driver
-  [Distance est.]  real_time_distance  →  /cbf/per_link_distances
-  [Motion gen.]    pentagon_qddot_commander  →  /NS_1/qddot_nom   (q̈_nom)
-  [Dynamics conv.] qddot_to_torque           →  /NS_1/torque_cmd  (τ = M·q̈ + C·q̇)
-  [Execution]      rt_torque_controller       ←  /NS_1/torque_cmd  →  hardware  (adds g(q))
-
-The ``qddot_to_torque`` node is a placeholder for ``cbf_safety_filter`` (the
-acceleration-space CBF that is still under development).  When the CBF is ready
-it can be inserted between the commander and ``qddot_to_torque``:
-
-  pentagon_qddot_commander  →  /NS_1/qddot_nom
-  cbf_safety_filter          →  /NS_1/qddot_safe   (safe q̈)
-  qddot_to_torque            ←  /NS_1/qddot_safe  →  /NS_1/torque_cmd
+  [Distance est.]  real_time_distance       →  /cbf/per_link_distances
+  [Motion gen.]    pentagon_qddot_commander →  /NS_1/qddot_nom   (q̈_nom)
+  [CBF filter]     cbf_safety_filter        →  /NS_1/qddot_safe  (safe q̈)
+  [Dynamics conv.] qddot_to_torque          →  /NS_1/torque_cmd  (τ = M·q̈ + C·q̇)
+  [Execution]      rt_torque_controller      ←  /NS_1/torque_cmd  →  hardware  (adds g(q))
 
 Startup sequence (delays relative to launch time)
 --------------------------------------------------
@@ -27,7 +18,7 @@ Startup sequence (delays relative to launch time)
   t = 1 s                    camera extrinsics static TF  (if enable_camera)
   t = camera_delay_s + 3 s   image republisher  (if enable_camera)
   t = control_delay          rt_torque_controller spawner
-  t = control_delay + 4 s    qddot_to_torque  (dynamics converter / CBF placeholder)
+  t = control_delay + 4 s    cbf_safety_filter + qddot_to_torque
   t = control_delay + 6 s    real_time_distance  (if start_real_time_distance)
   t = control_delay + 8 s    pentagon_qddot_commander  (motion generator)
 
@@ -231,23 +222,30 @@ def _launch_all(context):
     else:
         actions.append(LogInfo(msg='[torque_stack] [Distance est.]   real_time_distance DISABLED'))
 
-    # ── [Dynamics converter] qddot_to_torque ─────────────────────────────────
-    # Placeholder for cbf_safety_filter. Converts q̈_nom → τ = M·q̈ + C·q̇.
-    # Swap executable for 'cbf_safety_filter' once the CBF is ready.
-    dynamics_node = Node(
+    # ── [CBF safety filter] cbf_safety_filter ────────────────────────────────
+    # Reads /NS_1/qddot_nom, applies acceleration-space CBF QP, publishes
+    # /NS_1/qddot_safe.  qddot_to_torque converts qddot_safe → torque_cmd.
+    cbf_node = Node(
+        package='franka_experiments',
+        executable='cbf_safety_filter',
+        name='cbf_safety_filter',
+        output='screen',
+    )
+    # qddot_to_torque subscribes to qddot_nom by default; remap to qddot_safe
+    # so it converts the CBF-filtered acceleration to torque.
+    qddot_to_torque_node = Node(
         package='franka_experiments',
         executable='qddot_to_torque',
         name='qddot_to_torque',
         output='screen',
+        remappings=[('/NS_1/qddot_nom', '/NS_1/qddot_safe')],
     )
-    actions.append(TimerAction(period=dynamics_delay, actions=[dynamics_node]))
-    actions.append(LogInfo(msg=['[torque_stack] [Dynamics conv.]  qddot_to_torque '
-                                '(delay=', str(dynamics_delay), 's)']))
+    actions.append(TimerAction(period=dynamics_delay,
+                               actions=[cbf_node, qddot_to_torque_node]))
+    actions.append(LogInfo(msg=['[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque'
+                                ' (delay=', str(dynamics_delay), 's)']))
 
     # ── [Motion generation] pentagon_qddot_commander ──────────────────────────
-    # Publishes q̈_nom to topics['qddot_nom'] (default from fr3_control.yaml).
-    # When cbf_safety_filter is inserted, it reads qddot_nom and publishes
-    # qddot_safe; qddot_to_torque then switches to subscribing to qddot_safe.
     commander_node = Node(
         package='franka_experiments',
         executable='pentagon_qddot_commander',

@@ -14,6 +14,7 @@ class CBFQP:
         self.P[-1, -1] = self.rho
 
         self._warm = None
+        self._prev_n_rows = -1   # detect problem-structure changes → reset warm start
 
     def solve(
         self,
@@ -29,6 +30,8 @@ class CBFQP:
         qdot_max:   np.ndarray,
         q_min:      np.ndarray,
         q_max:      np.ndarray,
+        G_extra:    np.ndarray | None = None,  # (n_e, n_dec) — hard G x <= h (no slack)
+        h_extra:    np.ndarray | None = None,  # (n_e,)
     ) -> tuple[np.ndarray | None, float | None]:
         """Return (qddot_safe, slack) or (None, None) if QP fails."""
         nv = self.nv
@@ -61,16 +64,36 @@ class CBFQP:
         G_rows.append(G_v); h_rows.append(h_v)
 
         # 3) Position: q + qdot*dt + 0.5*qddot*dt^2 in [q_min, q_max]
+        # h_p clipped to ≥ 0: if q is already outside the YAML limits (physically
+        # valid but tighter than hardware), a negative h_p forces qddot >> ub, making
+        # the QP infeasible and permanently locking the robot. Clipping to 0 relaxes
+        # the constraint to "don't worsen the violation" — recovery happens naturally.
         Ip = 0.5 * dt**2 * np.eye(nv)
         G_p = np.zeros((2 * nv, self.n_dec))
         G_p[:nv,  :nv] =  Ip
         G_p[nv:,  :nv] = -Ip
-        h_p = np.concatenate([q_max - q - qdot * dt,
-                               q + qdot * dt - q_min])
+        h_p = np.maximum(
+            np.concatenate([q_max - q - qdot * dt,
+                            q + qdot * dt - q_min]),
+            0.0,
+        )
         G_rows.append(G_p); h_rows.append(h_p)
+
+        # 4) Extra hard constraints (e.g. torque-rate): G_extra already (n_e, n_dec)
+        if G_extra is not None and G_extra.shape[0] > 0:
+            G_rows.append(G_extra)
+            h_rows.append(h_extra)
 
         G     = np.vstack(G_rows)
         h_vec = np.concatenate(h_rows)
+
+        # Reset warm start when problem structure changes (different G row count).
+        # Passing a stale warm start to OSQP with a different constraint count
+        # causes a shape mismatch that silently fails or returns None.
+        n_rows = G.shape[0]
+        if n_rows != self._prev_n_rows:
+            self._warm = None
+            self._prev_n_rows = n_rows
 
         x = qpsolvers.solve_qp(
             P=self.P, q=q_vec,

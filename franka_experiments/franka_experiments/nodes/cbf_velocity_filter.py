@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Velocity-space CBF safety filter.
+"""Velocity-space CBF safety filter — Zeroing CBF (ZCBF), relative degree 1.
 
-Subscribes to a nominal joint velocity command (tracking_qdot), applies a
-Control Barrier Function QP to enforce obstacle-avoidance constraints derived
-from real-time distance estimates, and publishes the safe velocity command
-(qdot_cmd) to the robot velocity controller.
+Implements a kinematic-level Control Barrier Function filter (Ferraguti et al.,
+RAM 2022, eq. 12).  The barrier h = d - d_safe has relative degree 1 w.r.t. the
+velocity input q̇: ḣ = n^T·J_p·q̇.  The QP solves directly for q̇_safe:
+
+    min  ½‖q̇ - q̇_nom‖²  +  ½ρ·s²
+    s.t. (n_i^T·J_p,i)·q̇ + s  ≥  -γ_i·h_i    ∀ active link i   (s ≥ 0)
+         q̇_min ≤ q̇ ≤ q̇_max
+
+The QP output is published directly — no post-processing is applied.
+Any smoothing after the QP would invalidate the formal CBF safety guarantee.
 
 Pipeline position:
   ee_pentagon_velocity_commander  →  /NS_1/tracking_qdot  (qdot_nom)
@@ -26,7 +32,6 @@ Parameters:
 """
 
 import time
-import threading
 
 import numpy as np
 import qpsolvers as qp
@@ -36,7 +41,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from franka_msgs.msg import MultiDistance
+from franka_msgs.msg import MultiLinkDistance
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from franka_experiments.utils.ros_setup import init_pinocchio_only, make_joint_state_callback
 from franka_experiments.utils.cbf_utils import load_robot_config, skew, select_gamma
@@ -89,18 +95,17 @@ class CbfVelocityFilter(Node):
         self.q_max     = np.array([self.limits[j][1] for j in _joint_order], dtype=np.float64)
         self.qdot_max  = np.array([self.limits[j][2] for j in _joint_order], dtype=np.float64)
         self.qdot_min  = -self.qdot_max
-        self.qddot_max = np.array([self.limits[j][3] for j in _joint_order], dtype=np.float64)
+
+
+        self._dist_timeout = float(self.params.get('distance_timeout', 0.2))
+        _rate_hz           = float(self.params.get('control_rate_hz', 200.0))
 
         # ── State ─────────────────────────────────────────────────────────
-        self.q              = None
-        self.qdot           = None
-        self.qdot_nom       = np.zeros(self.model.nv, dtype=np.float64)
-        self.multi_distances = []
-        self._last_solve_time = None
-        self.last_qp_slack   = 0.0
-        self.qdot_cmd_prev   = np.zeros(self.model.nv, dtype=np.float64)
-        self._has_prev_cmd   = False
-        self.qp_initvals     = None
+        self.q                       = None
+        self.qdot                    = None
+        self.qdot_nom                = np.zeros(self.model.nv, dtype=np.float64)
+        self.multi_distances         = []
+        self._last_distance_stamp    : float = 0.0   # time.monotonic()
 
         # ── Publisher ─────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(
@@ -120,11 +125,12 @@ class CbfVelocityFilter(Node):
             10,
         )
 
+        _be_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(
-            MultiDistance,
-            self.topics_vis['multi_distance'],
+            MultiLinkDistance,
+            self.topics_ctr['per_link_distances'],
             self._multi_distance_callback,
-            10,
+            _be_qos,
         )
 
         self.create_subscription(
@@ -134,18 +140,15 @@ class CbfVelocityFilter(Node):
             10,
         )
 
-        # ── Solver thread (skips main work in bypass mode) ────────────────
-        self._new_distance = threading.Event()
-        self._solver_thread = threading.Thread(
-            target=self._solver_loop, daemon=True)
-        self._solver_thread.start()
+        # ── Control timer ─────────────────────────────────────────────────
+        self.create_timer(1.0 / _rate_hz, self._control_loop)
 
         mode_str = 'BYPASS (passthrough)' if self._bypass_cbf else 'CBF QP active'
         self.get_logger().info(
             f'CBF velocity filter ready — mode: {mode_str}\n'
             f'  qdot_nom topic  : {self.topics_ctr["qdot_nom"]}\n'
             f'  qdot_cmd topic  : {self.topics_ctr["velocity_topic"]}\n'
-            f'  distance topic  : {self.topics_vis["multi_distance"]}'
+            f'  distance topic  : {self.topics_ctr["per_link_distances"]}'
         )
 
     # ── Frame resolution ──────────────────────────────────────────────────────
@@ -176,60 +179,33 @@ class CbfVelocityFilter(Node):
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
-    def _multi_distance_callback(self, msg):
-        distances = []
-        for item in msg.distances:
-            distances.append({
-                'link_name':            item.robot_link_name,
-                'distance':             float(item.distance),
-                'closest_point_robot':  np.array([
-                    item.closest_point_robot.x,
-                    item.closest_point_robot.y,
-                    item.closest_point_robot.z,
+    def _multi_distance_callback(self, msg: MultiLinkDistance) -> None:
+        """Store per-link distances. One entry per link, closest CP per link."""
+        self.multi_distances = [
+            {
+                'link_name':           ld.robot_link_name,
+                'distance':            float(ld.distance),
+                'closest_point_robot': np.array([
+                    ld.closest_point_robot.x,
+                    ld.closest_point_robot.y,
+                    ld.closest_point_robot.z,
                 ], dtype=np.float64),
                 'direction': np.array([
-                    item.direction.x,
-                    item.direction.y,
-                    item.direction.z,
+                    ld.direction.x,
+                    ld.direction.y,
+                    ld.direction.z,
                 ], dtype=np.float64),
-                'zone':       item.zone,
-                'confidence': float(item.confidence),
-                'valid':      bool(item.valid),
-            })
-        self.multi_distances = distances
-        self._new_distance.set()
+                'zone':       ld.zone,
+                'confidence': float(ld.confidence),
+                'valid':      bool(ld.valid),
+            }
+            for ld in msg.links
+            if ld.valid
+        ]
+        self._last_distance_stamp = time.monotonic()
 
     def _nominal_velocity_callback(self, msg):
         self.qdot_nom = np.array(msg.data, dtype=np.float64)
-        if self._bypass_cbf:
-            # Passthrough: publish nominal directly as safe command.
-            self.cmd_pub.publish(msg)
-
-    # ── Solver loop ───────────────────────────────────────────────────────────
-
-    def _solver_loop(self):
-        while rclpy.ok():
-            if self._bypass_cbf:
-                # Nothing to do — _nominal_velocity_callback handles publishing.
-                time.sleep(1.0)
-                continue
-
-            triggered = self._new_distance.wait(timeout=0.5)
-            self._new_distance.clear()
-            if not triggered:
-                self.get_logger().warn(
-                    'No MultiDistance message in 0.5 s — is real_time_distance running?',
-                    throttle_duration_sec=5.0,
-                )
-                continue
-            if self.q is None or self.qdot is None:
-                self.get_logger().warn(
-                    'Distance received but joint state not ready — '
-                    'is the robot/joint_states topic publishing?',
-                    throttle_duration_sec=5.0,
-                )
-                continue
-            self._control_loop()
 
     # ── CBF QP ────────────────────────────────────────────────────────────────
 
@@ -255,17 +231,33 @@ class CbfVelocityFilter(Node):
             return None
         return Jp
 
-    def _build_cbf_constraints(self, q, qdot, dt, multi_distances):
+    def _build_cbf_constraints(self, q, qdot, multi_distances):
+        """Build ZCBF constraints in velocity space (Ferraguti RAM 2022, eq. 12).
+
+        For each active link i:
+            h_i   = d_i - d_safe
+            a_vel = n_i^T · J_p,i      (nv,)  — Lie derivative of h w.r.t. q̇
+            b_vel = -gamma_i · h_i     scalar — pure ZCBF bound
+
+        Constraint form: a_vel · q̇_cmd + s >= b_vel  (enforced via QP with slack s).
+
+        NOTE: b_vel = -gamma*h (no hdot term).  Including hdot = a·q̇_meas in
+        b_vel creates a velocity-feedback loop that at 200 Hz generates chattering
+        at the boundary.  The pure -γh term is sufficient: it enforces
+        h(t+dt) >= h(t)*(1 - gamma*dt) = h(t)*0.96 at each 5 ms tick, which is
+        the standard discrete ZCBF safety condition.
+        qdot is accepted as argument for future use but is not read here.
+        """
         constraints = []
         if not multi_distances:
             return constraints
+
+        act_margin = float(self.params.get('cbf_activation_margin', 0.10))
 
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
 
         for item in multi_distances:
-            if not item['valid']:
-                continue
             link_name = item['link_name']
             d         = item['distance']
             p_world   = item['closest_point_robot']
@@ -278,110 +270,145 @@ class CbfVelocityFilter(Node):
                 continue
             n_world /= norm_n
 
-            h     = float(d) - float(self.params['d_safe'])
-            gamma = float(select_gamma(item['zone'], item['confidence']))
+            h = float(d) - float(self.params['d_safe'])
+
+            # ── Activation gate — skip links outside the activation zone ────
+            if h > act_margin:
+                continue
+
+            if h < 0.0:
+                self.get_logger().warn(
+                    f'[CBF-VEL] h < 0 on {link_name}: h={h:.4f} m — '
+                    'robot inside safe set, CBF cannot guarantee recovery',
+                    throttle_duration_sec=1.0,
+                )
+
+            gamma = float(select_gamma(
+                item['zone'], item['confidence'],
+                d=float(d), d_safe=float(self.params['d_safe'])))
 
             Jp = self._compute_point_jacobian(q, link_name, p_world)
             if Jp is None:
                 continue
 
-            a    = (n_world @ Jp).astype(np.float64)
-            hdot = float(a @ qdot)
+            # ZCBF: a·q̇_cmd ≥ -γ·h  (standard discrete ZCBF, no velocity feedback)
+            a_vel = (n_world @ Jp).astype(np.float64)   # (nv,)
+            b_vel = float(-gamma * h)                    # scalar
 
-            # CBF constraint at acceleration level:
-            #   a·(qdot + qddot·dt) ≥ -γ·h  →  (a·dt)·qddot ≥ -γ·h - a·qdot
-            a_acc = (a * dt).astype(np.float64)
-            b_acc = float(-gamma * h - hdot)
-
-            if not np.all(np.isfinite(a_acc)) or not np.isfinite(b_acc):
+            if not np.all(np.isfinite(a_vel)) or not np.isfinite(b_vel):
                 continue
-            constraints.append((a_acc, b_acc, link_name, d))
+            constraints.append((a_vel, b_vel, link_name, d))
 
         return constraints
 
-    def _solve_cbf_qp(self, qddot_nom, constraints, qdot, dt):
-        n       = self.model.nv
-        rho     = float(self.params['rho_slack'])
+    def _solve_cbf_qp(self, qdot_nom, constraints):
+        """Solve the ZCBF velocity QP.
 
-        P = np.eye(n + 1, dtype=np.float64)
+        Decision variable: x = [q̇_1, ..., q̇_nv, s]  (nv + 1)
+
+        min  ½‖q̇ - q̇_nom‖²  +  ½ρ·s²
+        s.t. -a_vel·q̇ - s  ≤  -b_vel    ∀ constraint (CBF)
+             q̇_min ≤ q̇ ≤ q̇_max          (box via lb/ub)
+             s ≥ 0                        (box via lb)
+
+        Returns q̇_safe (nv,).  On solver failure returns a soft fallback:
+        half the clipped nominal velocity.  No warm-starting — OSQP handles
+        that internally and external initvals can cause inconsistencies.
+        """
+        nv  = self.model.nv
+        rho = float(self.params['rho_slack'])
+
+        P = np.eye(nv + 1, dtype=np.float64)
         P[-1, -1] = rho
 
-        q_vec = np.zeros(n + 1, dtype=np.float64)
-        q_vec[:n] = -np.asarray(qddot_nom, dtype=np.float64)
+        q_vec = np.zeros(nv + 1, dtype=np.float64)
+        q_vec[:nv] = -np.asarray(qdot_nom, dtype=np.float64)
 
-        lb = np.concatenate([-self.qddot_max, [0.0]])
-        ub = np.concatenate([ self.qddot_max, [np.inf]])
+        lb = np.concatenate([self.qdot_min, [0.0]])
+        ub = np.concatenate([self.qdot_max, [1e6]])
 
         G_rows, h_rows = [], []
-
-        # Velocity-next box constraints: qdot_min ≤ qdot + qddot·dt ≤ qdot_max
-        for i in range(n):
-            row = np.zeros(n + 1, dtype=np.float64)
-            row[i] = dt
-            G_rows.append(row);  h_rows.append(self.qdot_max[i] - qdot[i])
-
-            row2 = np.zeros(n + 1, dtype=np.float64)
-            row2[i] = -dt
-            G_rows.append(row2); h_rows.append(qdot[i] - self.qdot_min[i])
-
-        # CBF constraints
-        for a, b, _, _ in constraints:
-            row = np.zeros(n + 1, dtype=np.float64)
-            row[:n] = -a
-            row[-1] = -1.0
-            G_rows.append(row); h_rows.append(-b)
+        for a_vel, b_vel, _, _ in constraints:
+            # a_vel·q̇ + s >= b_vel  →  -a_vel·q̇ - s <= -b_vel
+            row = np.zeros(nv + 1, dtype=np.float64)
+            row[:nv] = -a_vel
+            row[-1]  = -1.0
+            G_rows.append(row)
+            h_rows.append(-b_vel)
 
         G = np.vstack(G_rows).astype(np.float64) if G_rows else None
-        h = np.array(h_rows, dtype=np.float64) if h_rows else None
+        h = np.array(h_rows, dtype=np.float64)   if h_rows else None
+
+        def _soft_fallback(reason: str) -> np.ndarray:
+            min_d = min((d for _, _, _, d in constraints), default=float('nan'))
+            self.get_logger().error(
+                f'[CBF-VEL] QP {reason}  n_c={len(constraints)}'
+                f'  min_d={min_d:.3f} m — soft fallback (0.5 × qdot_nom)',
+                throttle_duration_sec=0.5,
+            )
+            return np.clip(qdot_nom, self.qdot_min, self.qdot_max) * 0.5
 
         try:
             x = qp.solve_qp(
                 P=P, q=q_vec, G=G, h=h, A=None, b=None,
                 lb=lb, ub=ub,
                 solver=str(self.params['qp_solver']),
-                qp_initvals=self.qp_initvals,
                 verbose=False,
             )
         except Exception as e:
             self.get_logger().error(f'QP solver exception: {e}')
-            self.qp_initvals = None
-            return np.zeros(n, dtype=np.float64)
+            return _soft_fallback('exception')
 
         if x is None or not np.all(np.isfinite(x)):
-            self.get_logger().warn('QP failed, returning zero acceleration')
-            self.qp_initvals = None
-            return np.zeros(n, dtype=np.float64)
+            return _soft_fallback('infeasible/non-finite')
 
-        x = np.asarray(x, dtype=np.float64).reshape(-1)
-        self.qp_initvals  = x.copy()
-        self.last_qp_slack = float(x[-1])
-        return x[:n]
+        x      = np.asarray(x, dtype=np.float64).reshape(-1)
+        slack  = float(x[-1])
+        if slack > 0.1:
+            min_d = min((d for _, _, _, d in constraints), default=float('nan'))
+            self.get_logger().error(
+                f'[CBF-VEL] large slack s={slack:.4f} m/s  n_c={len(constraints)}'
+                f'  min_d={min_d:.3f} m — CBF constraint violated',
+                throttle_duration_sec=0.5,
+            )
+        return x[:nv]
 
-    # ── Main control step ─────────────────────────────────────────────────────
+    # ── Main control step (called at 200 Hz by ROS2 timer) ───────────────────
 
     def _control_loop(self):
         if self.q is None or self.qdot is None:
             return
 
-        now = self.get_clock().now().nanoseconds * 1e-9
-        if self._last_solve_time is None:
-            dt = 0.01
-        else:
-            dt = float(np.clip(now - self._last_solve_time, 0.001, 0.05))
-        self._last_solve_time = now
+        if self._bypass_cbf:
+            msg = Float64MultiArray()
+            msg.data = self.qdot_nom.tolist()
+            self.cmd_pub.publish(msg)
+            return
+
+        # Distance staleness guard — passthrough if data is too old
+        age = time.monotonic() - self._last_distance_stamp
+        if age > self._dist_timeout:
+            self.get_logger().warn(
+                f'[CBF-VEL] distance stale ({age:.3f} s > {self._dist_timeout:.3f} s)'
+                ' — passthrough',
+                throttle_duration_sec=2.0,
+            )
+            msg = Float64MultiArray()
+            msg.data = np.clip(self.qdot_nom, self.qdot_min, self.qdot_max).tolist()
+            self.cmd_pub.publish(msg)
+            return
 
         q    = self.q.copy()
         qdot = self.qdot.copy()
 
-        qddot_nom = (self.qdot_nom - qdot) / dt
-        qddot_nom = np.clip(qddot_nom, -self.qddot_max, self.qddot_max)
-
-        constraints = self._build_cbf_constraints(q, qdot, dt, list(self.multi_distances))
+        constraints = self._build_cbf_constraints(q, qdot, list(self.multi_distances))
 
         if constraints:
+            links_active = [lname for _, _, lname, _ in constraints]
             min_d = min(d for _, _, _, d in constraints)
             self.get_logger().info(
-                f'[CBF-VEL] constraints={len(constraints)}  min_d={min_d:.3f} m  dt={dt:.4f}',
+                f'[CBF-VEL] active_links={links_active}  '
+                f'n_constraints={len(constraints)}  min_d={min_d:.3f} m',
                 throttle_duration_sec=1.0,
             )
         else:
@@ -390,15 +417,17 @@ class CbfVelocityFilter(Node):
                 throttle_duration_sec=2.0,
             )
 
-        qddot_cmd  = self._solve_cbf_qp(qddot_nom, constraints, qdot, dt)
-        qdot_cmd   = np.clip(qdot + qddot_cmd * dt, self.qdot_min, self.qdot_max)
+        qdot_cmd = self._solve_cbf_qp(self.qdot_nom.copy(), constraints)
+        qdot_cmd = np.clip(qdot_cmd, self.qdot_min, self.qdot_max)
 
-        alpha = float(self.params['ema_alpha'])
-        if not self._has_prev_cmd:
-            self._has_prev_cmd = True
-        else:
-            qdot_cmd = alpha * qdot_cmd + (1.0 - alpha) * self.qdot_cmd_prev
-        self.qdot_cmd_prev = qdot_cmd.copy()
+        if constraints:
+            min_margin = min(float(a_vel @ qdot_cmd) - b_vel
+                            for a_vel, b_vel, _, _ in constraints)
+            self.get_logger().info(
+                f'[CBF-VEL] min_constraint_margin={min_margin:.4f} m/s'
+                f'  (≥0 → all constraints satisfied)',
+                throttle_duration_sec=1.0,
+            )
 
         msg = Float64MultiArray()
         msg.data = [float(v) for v in qdot_cmd]
