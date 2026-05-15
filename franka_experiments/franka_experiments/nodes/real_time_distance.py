@@ -160,6 +160,16 @@ class RealTimeDistance(Node):
             return 'warning'
         return 'safe'
 
+    def _zone_color(self, distance: float) -> tuple:
+        """Return BGR color for a distance value based on safety zone."""
+        zone = self.classify_zone(distance)
+        return {
+            'critical': (0,   0,   255),   # red
+            'danger':   (0,   165, 255),   # orange
+            'warning':  (0,   255, 255),   # yellow
+            'safe':     (0,   255, 0),     # green
+        }.get(zone, (255, 255, 255))
+
     # === Camera Callbacks ===
     def depth_callback(self, msg):
         try:
@@ -810,7 +820,7 @@ class RealTimeDistance(Node):
                     cv2.circle(depth_vis, uv_a, 2, (0, 255, 0), -1)
                     cv2.circle(depth_vis, uv_b, 2, (0, 255, 0), -1)
 
-        # Per-control-point distance lines (thin white) — CP mode only
+        # Per-control-point distance lines — colored by safety zone, CP mode only
         if not self.use_segment_distance and self.cp_results is not None:
             for r in self.cp_results:
                 if r['distance'] == np.inf:
@@ -818,7 +828,8 @@ class RealTimeDistance(Node):
                 uv_cp  = self.project_point_to_image(r['point'])
                 uv_obs = r['closest_pixel']
                 if uv_cp is not None and uv_obs is not None:
-                    cv2.line(depth_vis, uv_cp, uv_obs, (255, 255, 255), 1)
+                    color = self._zone_color(r['distance'])
+                    cv2.line(depth_vis, uv_cp, uv_obs, color, 2)
 
         # Closest obstacle pixel (red dot)
         u, v = 20, 20
@@ -826,12 +837,13 @@ class RealTimeDistance(Node):
             u, v = self.closest_uv_obs
             cv2.circle(depth_vis, (u, v), 5, (0, 0, 255), -1)
 
-        # Closest point on robot (cyan) + distance segment (white)
+        # Closest point on robot (cyan) + distance segment colored by zone
         if self.closest_robot_point is not None and self.closest_uv_obs is not None:
             uv_robot = self.project_point_to_image(self.closest_robot_point)
             if uv_robot is not None:
+                seg_color = self._zone_color(self.min_dist) if np.isfinite(self.min_dist) else (255, 255, 255)
                 cv2.circle(depth_vis, uv_robot, 5, (255, 255, 0), -1)
-                cv2.line(depth_vis, self.closest_uv_obs, uv_robot, (255, 255, 255), 2)
+                cv2.line(depth_vis, self.closest_uv_obs, uv_robot, seg_color, 3)
 
         # Control-point markers (orange) — CP mode only
         if not self.use_segment_distance and self.control_points is not None:
