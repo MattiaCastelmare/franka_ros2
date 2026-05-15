@@ -78,7 +78,7 @@ controller_interface::return_type RtTorqueController::update(
 
   // 5. tau_hw = clip(tau_filtered + g(q), -tau_max, tau_max)
   for (size_t i = 0; i < kNumJoints; ++i) {
-    const double tau_raw = tau_filtered_[i];
+    const double tau_raw = tau_filtered_[i] + data_.g[arm_v_idx_[i]];
     command_interfaces_[i].set_value(
         std::clamp(tau_raw, -tau_max_[i], tau_max_[i]));
   }

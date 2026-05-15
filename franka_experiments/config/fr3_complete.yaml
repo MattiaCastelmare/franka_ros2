@@ -101,10 +101,19 @@ distance: # in meters
   ee_tip_offset: 0.10
   ee_tip_axis: 2 # 0=x, 1=y, 2=z
 
+  # Low-pass filter: EMA alpha for distance/direction smoothing across frames.
+  # Closer obstacles are always taken immediately (conservative).
+  # Only the recovery (obstacle moving away) is smoothed.
+  # 0.0 = no filter (raw), 0.9 = heavy smoothing (slow recovery)
+  lpf_alpha: 0.5
+
 mask: # in pixels
   robot_mask_dilate_px: 12
-  ee_mask_dilate_px: 20
+  ee_mask_dilate_px: 24
   search_exclusion_extra_px: 10
+  # Downsample factor for dilation (runs on H/ds × W/ds image, then upsampled).
+  # 4 reduces mask rebuild from ~70 ms to < 2 ms with negligible quality loss.
+  mask_downsample: 4
 
 zones: # in meters
   warning: 0.3

@@ -17,10 +17,10 @@ Startup sequence (delays relative to launch time)
   t = camera_delay_s         RealSense camera driver  (if enable_camera)
   t = 1 s                    camera extrinsics static TF  (if enable_camera)
   t = camera_delay_s + 3 s   image republisher  (if enable_camera)
-  t = control_delay          rt_torque_controller spawner
-  t = control_delay + 4 s    cbf_safety_filter + qddot_to_torque
-  t = control_delay + 6 s    real_time_distance  (if start_real_time_distance)
-  t = control_delay + 8 s    pentagon_qddot_commander  (motion generator)
+  t = 2 s                    cbf_safety_filter + qddot_to_torque  (pre-init before RT loop)
+  t = 2 s                    real_time_distance  (pre-init: trimesh loading before RT loop)
+  t = control_delay          rt_torque_controller spawner  (RT 1 kHz loop starts here)
+  t = control_delay + 2 s    pentagon_qddot_commander  (motion generator)
 
 Examples
 --------
@@ -89,9 +89,9 @@ def _launch_all(context):
     start_rtd    = _as_bool(p['start_real_time_distance'])
 
     control_delay   = float(p['control_spawner_delay_s'])
-    dynamics_delay  = control_delay + 4.0   # qddot_to_torque starts after controller
-    rtd_delay       = control_delay + 6.0   # real_time_distance starts after dynamics node
-    commander_delay = control_delay + 8.0   # commander starts last
+    dynamics_delay  = 2.0                   # cbf + qddot_to_torque pre-init (before RT loop)
+    rtd_delay       = 2.0                   # real_time_distance pre-init (trimesh before RT loop)
+    commander_delay = control_delay + 2.0   # commander starts after controller is active
 
     # ── Build controller YAML for rt_torque_controller ────────────────────────
     # The controller listens on torque_cmd — the direct output of qddot_to_torque.

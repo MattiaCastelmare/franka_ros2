@@ -77,6 +77,7 @@ def define_robot_segments(transforms: dict, robot_cfg: dict, distance_cfg: dict)
     -------
     list of dicts, or None if no segments could be built.
     """
+    ee_link = robot_cfg.get('ee_link', 'fr3_link8')
     robot_segments = []
     for seg in robot_cfg['segments']:
         seg_idx = int(seg['seg_idx'])
@@ -90,11 +91,11 @@ def define_robot_segments(transforms: dict, robot_cfg: dict, distance_cfg: dict)
         _, p0 = transforms[start_link]
         _, p1 = transforms[end_link]
 
-        # Special case: extend last segment to physical EE tip
-        if end_link == 'fr3_link8':
+        # Extend last segment to the physical EE tip
+        if end_link == ee_link:
             ee_tip_axis = distance_cfg['ee_tip_axis']
             ee_tip_offset = distance_cfg['ee_tip_offset']
-            R_ee, p_ee = transforms['fr3_link8']
+            R_ee, p_ee = transforms[ee_link]
             direction = R_ee[:, ee_tip_axis]
             p1 = p_ee + ee_tip_offset * direction
 
