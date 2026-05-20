@@ -73,7 +73,7 @@ def draw_overlay(
     if frame.robot_mask is not None and frame.visual_exclusion_mask:
         depth_vis[frame.robot_mask] = (0, 0, 0)
         if frame.contours:
-            cv2.drawContours(depth_vis, frame.contours, -1, (0, 255, 0), 3)
+            cv2.drawContours(depth_vis, frame.contours, -1, (255, 255, 255), 3)
 
     # Skeleton: one line per capsule segment
     if frame.robot_segments:

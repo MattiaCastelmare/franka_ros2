@@ -236,3 +236,106 @@ def compute_direction_vector(p_obs: np.ndarray, cp_positions: np.ndarray, i: int
     if norm > 1e-9:
         return vec / norm
     return np.zeros(3)
+
+
+# ── Geometric helpers (used by RealTimeDistanceNode) ─────────────────────────
+
+def cam_to_base(
+    p_cam: np.ndarray,
+    R_base: np.ndarray,
+    t_base: np.ndarray,
+) -> np.ndarray:
+    """Transform a point from camera frame to robot base frame."""
+    return R_base @ np.asarray(p_cam) + t_base
+
+
+def base_to_cam_z(
+    p_base,
+    R_base: np.ndarray,
+    t_base: np.ndarray,
+) -> float:
+    """Return the Z-depth (metres, camera frame) of a point in base frame."""
+    if p_base is None:
+        return 0.0
+    p_cam = R_base.T @ (np.asarray(p_base) - t_base)
+    return float(p_cam[2])
+
+
+def compute_roi(
+    exclusion_mask,
+    H: int,
+    W: int,
+    margin: int,
+    roi_pad_px: int,
+) -> tuple:
+    """Compute the search-ROI bounding box around the robot exclusion mask.
+
+    Returns (x0, y0, x1, y1) clamped to the image interior (minus *margin*).
+    Falls back to the full interior rectangle when the mask is empty or None.
+    """
+    if exclusion_mask is None:
+        return (margin, margin, W - margin, H - margin)
+    ys, xs = np.where(exclusion_mask)
+    if xs.size == 0 or ys.size == 0:
+        return (margin, margin, W - margin, H - margin)
+    return (
+        max(margin,     int(xs.min()) - roi_pad_px),
+        max(margin,     int(ys.min()) - roi_pad_px),
+        min(W - margin, int(xs.max()) + roi_pad_px),
+        min(H - margin, int(ys.max()) + roi_pad_px),
+    )
+
+
+def define_control_points(
+    transforms: dict,
+    robot_cfg: dict,
+    distance_cfg: dict,
+) -> list:
+    """Build the ordered list of control points along the robot kinematic chain.
+
+    Each entry is a dict with keys:
+      point, seg_idx, cp_idx, radius, start_link, end_link.
+
+    The last control point of the end-effector segment is placed at the
+    physical fingertip (ee_tip_offset along ee_tip_axis of the EE frame).
+    """
+    ee_link       = robot_cfg.get('ee_link', 'fr3_link8')
+    ee_tip_axis   = distance_cfg['ee_tip_axis']
+    ee_tip_offset = distance_cfg['ee_tip_offset']
+    control_points: list = []
+
+    for seg in robot_cfg['segments']:
+        seg_idx    = int(seg['seg_idx'])
+        start_link = seg['start_link']
+        end_link   = seg['end_link']
+        n_cp       = int(seg.get('control_points', 0))
+        radius     = float(seg.get('radius', 0.0))
+
+        if n_cp <= 0:
+            continue
+        if start_link not in transforms or end_link not in transforms:
+            continue
+
+        _, p0 = transforms[start_link]
+        _, p1 = transforms[end_link]
+
+        ts = [(k + 1) / (n_cp + 1) for k in range(n_cp)]
+        if end_link == ee_link:
+            ts = [1.0] if n_cp == 1 else [(k + 1) / n_cp for k in range(n_cp)]
+
+        for k, t in enumerate(ts):
+            p = p0 + t * (p1 - p0)
+            if end_link == ee_link and np.isclose(t, 1.0):
+                R_ee, p_ee = transforms[ee_link]
+                p = p_ee + ee_tip_offset * R_ee[:, ee_tip_axis]
+
+            control_points.append({
+                'point':      p,
+                'seg_idx':    seg_idx,
+                'cp_idx':     k,
+                'radius':     radius,
+                'start_link': start_link,
+                'end_link':   end_link,
+            })
+
+    return control_points

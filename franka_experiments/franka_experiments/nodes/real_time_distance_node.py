@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""RealTimeDistance — real-time human-robot distance estimation (ROS2 Humble).
+"""RealTimeDistanceNode — pure compute node for human-robot distance estimation.
 
-Architecture
-------------
-  TFManager      — 3-level TF fallback + critical-link validation
-  MaskBuilder    — always-rebuilt robot mask + exclusion mask + contours
-  DistanceEngine — depth-space per-CP distances (Flacco) with conservative LPF
-  VisFrame       — immutable snapshot for lock-free compute/visualize handoff
-  draw_overlay() — pure rendering function (no shared state)
+All safety-critical logic lives here: TF lookup, robot mask construction, and
+distance calculation.  No rendering, no OpenCV windows, no overlay images.
 
-Thread safety
--------------
-depth_callback puts frames into a Queue(maxsize=1); old frames are dropped when
-the compute thread is busy.  _compute_loop blocks on queue.get() and always
-processes the freshest frame.  _vis_frame is swapped via GIL-atomic reference
-assignment; visualize() reads the reference under _vis_lock then operates
-exclusively on its local snapshot.
+Published topics
+----------------
+  /human_robot/multi_distance   MultiDistance       — per-segment CP distances
+  /human_robot/distance         HumanRobotDistance  — fallback / aggregate
+  /cbf/per_link_distances       MultiLinkDistance   — per-link for CBF + viz
+
+The standalone distance_visualization_node subscribes to
+/cbf/per_link_distances and the depth/camera-info topics to draw the overlay
+in a completely separate process — no shared locks, no shared queues.
 """
 from __future__ import annotations
 
@@ -25,7 +22,6 @@ import threading
 import time
 from typing import Optional
 
-import cv2
 import numpy as np
 import rclpy
 import trimesh
@@ -52,7 +48,6 @@ from franka_experiments.utils.node_utils import (
     no_obs_warn,
 )
 from franka_experiments.utils.tf_manager import TFManager
-from franka_experiments.utils.visualization import VisFrame, draw_overlay
 
 
 class RealTimeDistance(Node):
@@ -63,9 +58,8 @@ class RealTimeDistance(Node):
         # ── Parameters ──────────────────────────────────────────────────
         self.declare_parameter('robot_config_path', '')
         self.declare_parameter('camera_extrinsics_path', '')
-        self.declare_parameter('publish_overlay_image', False)
-        self.declare_parameter('process_rate_hz', 30.0)
-        self.declare_parameter('compute_rate_hz', 30.0)
+        self.declare_parameter('process_rate_hz', 20.0)
+        self.declare_parameter('compute_rate_hz', 20.0)
 
         robot_config_path      = self.get_parameter('robot_config_path').value
         camera_extrinsics_path = self.get_parameter('camera_extrinsics_path').value
@@ -89,17 +83,6 @@ class RealTimeDistance(Node):
         self.R_base_f32 = self.R_base.astype(np.float32)
         self.t_base_f32 = self.t_base.astype(np.float32)
 
-        # ── Flags ────────────────────────────────────────────────────────
-        booleans = self.config.get('booleans', {})
-        self.enable_visualization        = booleans.get('visualize', False)
-        self.visual_robot_exclusion_mask = booleans.get('exclusion_mask', True)
-        self.visualize_only_raw_video    = booleans.get('raw_video', False)
-        self.visual_ROI                  = booleans.get('visual_ROI', False)
-        self.publish_overlay_image       = (
-            self.get_parameter('publish_overlay_image').value
-            or booleans.get('publish_overlay_image', False)
-        )
-
         # ── Camera intrinsics (populated by camera_info_callback) ────────
         self.bridge    = CvBridge()
         self.K         = None
@@ -109,11 +92,10 @@ class RealTimeDistance(Node):
         self.cx_f32 = self.cy_f32 = None
         self.fx_inv_f32 = self.fy_inv_f32 = None
 
-        # ── Frame queue + visualisation snapshot ─────────────────────────
+        # ── Frame queue ───────────────────────────────────────────────────
         self._frame_queue      = queue.Queue(maxsize=1)
         self._last_depth_shape: Optional[tuple] = None
-        self._vis_frame: Optional[VisFrame] = None
-        self._vis_lock  = threading.Lock()
+        self._last_transforms: Optional[dict]   = None
 
         # ── TF ───────────────────────────────────────────────────────────
         self.tf_buffer   = Buffer()
@@ -125,6 +107,7 @@ class RealTimeDistance(Node):
             base_frame=self.robot_cfg['base_frame'],
             critical_links=critical_links,
             throttle_s=2.0,
+            cache_max_age_s=float(self.distance_cfg.get('tf_cache_max_age_s', 0.5)),
             logger=self.get_logger(),
         )
 
@@ -153,14 +136,11 @@ class RealTimeDistance(Node):
             logger=self.get_logger(),
         )
 
-        self.roi_bounds: Optional[tuple] = None
-
         # ── Throttle / profiling ─────────────────────────────────────────
         self._THROTTLE_S         = 2.0
         self._last_no_obs_warn_t = 0.0
         self._last_dist_log_t    = 0.0
         self._process_skip_count = 0
-        self._vis_skip_count     = 0
         self._perf               = PerfTimer()
 
         # ── Subscriptions ────────────────────────────────────────────────
@@ -184,19 +164,13 @@ class RealTimeDistance(Node):
             MultiLinkDistance, '/cbf/per_link_distances', _be_qos)
 
         self.get_logger().info(
-            f'RealTimeDistance ready — '
+            f'RealTimeDistance (compute) ready — '
             f'mode=control_point  '
-            f'viz={self.enable_visualization}  ee_link={self.ee_link}')
+            f'ee_link={self.ee_link}')
 
         self._compute_thread = threading.Thread(
             target=self._compute_loop, name='rtd_compute', daemon=True)
         self._compute_thread.start()
-
-        if self.enable_visualization or self.publish_overlay_image:
-            overlay_topic = topics_cfg.get(
-                'overlay_image', '/real_time_distance/overlay_image')
-            self.overlay_pub = self.create_publisher(Image, overlay_topic, 10)
-            self.create_timer(0.033, self.visualize)
 
     # ── Camera callbacks ──────────────────────────────────────────────────────
 
@@ -271,41 +245,48 @@ class RealTimeDistance(Node):
             self.mask_builder.invalidate()
             self.distance_engine.invalidate_grid_cache()
             self.distance_engine.reset_lpf()
-            self.roi_bounds = None
 
         H, W   = depth.shape
         step   = int(self.distance_cfg['pixel_step'])
         margin = int(self.distance_cfg['image_margin_px'])
 
-        # ── TF ────────────────────────────────────────────────────────────
+        # ── TF (best-effort for mask, strict for distance) ────────────────
         with self._perf('tf'):
+            mask_transforms = self.tf_mgr.lookup_best_effort(
+                self.robot_cfg['segment_links'], stamp)
             transforms = self.tf_mgr.lookup_all(
                 self.robot_cfg['segment_links'], stamp)
-        # if transforms is None:
-        #     return
 
-        # ── Control points ────────────────────────────────────────────────
+        # ── Mask — always rebuilt ─────────────────────────────────────────
+        mask_tf = transforms or mask_transforms or self._last_transforms
+        if mask_tf:
+            with self._perf('mask'):
+                self.mask_builder.rebuild(mask_tf, depth.shape)
+
+        if transforms is not None:
+            self._last_transforms = transforms
+
+        # ── Distance pipeline (strict TF required) ────────────────────────
+        if transforms is None:
+            if self._last_transforms is not None:
+                self._publish_fallback(
+                    float(self.distance_cfg.get('fallback_distance', 2.0)), stamp)
+            return
+
         control_points = define_control_points(
             transforms, self.robot_cfg, self.distance_cfg)
         if not control_points:
             return
 
-        # ── Mask + ROI ────────────────────────────────────────────────────
-        with self._perf('mask'):
-            self.mask_builder.rebuild(transforms, depth.shape)
-            self.roi_bounds = compute_roi(
-                self.mask_builder.search_exclusion_mask, H, W, margin,
-                int(self.distance_cfg['roi_pad_px']))
-
-        if self.roi_bounds is None:
-            self.roi_bounds = (margin, margin, W - margin, H - margin)
-        x0, y0, x1, y1 = self.roi_bounds
+        roi_bounds = compute_roi(
+            self.mask_builder.search_exclusion_mask, H, W, margin,
+            int(self.distance_cfg['roi_pad_px']))
+        x0, y0, x1, y1 = roi_bounds
         x, y = np.array([x0, x1]), np.array([y0, y1])
 
         thresholds        = self.distance_cfg['thresholds']
         fallback_distance = float(self.distance_cfg.get('fallback_distance', 2.0))
 
-        # ── Distance — Control Points pipeline ───────────────────────────
         with self._perf('dist'):
             cp_results, n_pts = self.distance_engine.compute(
                 depth=depth,
@@ -335,13 +316,12 @@ class RealTimeDistance(Node):
             self._publish_fallback(fallback_distance, stamp)
             return
 
-        best_cp          = min(valid, key=lambda r: r.distance)
-        min_dist         = best_cp.distance
-        closest_obs_pt   = best_cp.closest_obstacle_point
-        closest_robot_pt = best_cp.point
-        closest_uv_obs   = best_cp.closest_pixel
+        best_cp        = min(valid, key=lambda r: r.distance)
+        min_dist       = best_cp.distance
+        closest_uv_obs = best_cp.closest_pixel
 
-        closest_Z = base_to_cam_z(closest_obs_pt, self.R_base, self.t_base)
+        closest_Z = base_to_cam_z(
+            best_cp.closest_obstacle_point, self.R_base, self.t_base)
 
         # ── Throttled log ─────────────────────────────────────────────────
         now = time.monotonic()
@@ -365,68 +345,6 @@ class RealTimeDistance(Node):
         self.multi_dist_pub.publish(multi_msg)
         self.per_link_dist_pub.publish(mld_msg)
 
-        # ── Visualisation snapshot ────────────────────────────────────────
-        with self._vis_lock:
-            self._vis_frame = VisFrame(
-                depth=depth,
-                robot_mask=self.mask_builder.robot_mask,
-                contours=self.mask_builder.contours,
-                robot_segments=[],
-                cp_results=cp_results,
-                closest_robot_pt=closest_robot_pt,
-                closest_uv_obs=closest_uv_obs,
-                min_dist=min_dist,
-                roi_bounds=self.roi_bounds,
-                use_segment_mode=False,
-                stamp=stamp,
-                visual_ROI=self.visual_ROI,
-                visual_exclusion_mask=self.visual_robot_exclusion_mask,
-                visualize_only_raw_video=self.visualize_only_raw_video,
-            )
-
-    # ── Visualisation ─────────────────────────────────────────────────────────
-
-    def visualize(self):
-        try:
-            self._visualize_impl()
-        except Exception as exc:
-            self._vis_skip_count += 1
-            self.get_logger().warn(
-                f'visualize error (skip #{self._vis_skip_count}): {exc}',
-                throttle_duration_sec=2.0)
-
-    def _visualize_impl(self):
-        with self._vis_lock:
-            frame = self._vis_frame
-        if frame is None or self.K is None:
-            return
-
-        with self._perf('vis'):
-            depth_vis = draw_overlay(
-                frame=frame,
-                zones=self.zones,
-                K=self.K,
-                R_base=self.R_base,
-                t_base=self.t_base,
-                depth_shape=frame.depth.shape,
-            )
-
-        self._publish_overlay(depth_vis, frame.stamp)
-        if self.enable_visualization:
-            cv2.imshow('Robot + closest distance', depth_vis)
-            cv2.waitKey(1)
-
-    def _publish_overlay(self, img: np.ndarray, stamp):
-        if not self.publish_overlay_image:
-            return
-        try:
-            msg = self.bridge.cv2_to_imgmsg(img, encoding='bgr8')
-            msg.header.stamp    = stamp
-            msg.header.frame_id = 'camera_depth_optical_frame'
-            self.overlay_pub.publish(msg)
-        except Exception as exc:
-            self.get_logger().warn(f'overlay publish error: {exc}')
-
     # ── Fallback publisher ────────────────────────────────────────────────────
 
     def _publish_fallback(self, distance: float, stamp):
@@ -441,7 +359,6 @@ def main(args=None):
     node = RealTimeDistance()
     rclpy.spin(node)
     node.destroy_node()
-    cv2.destroyAllWindows()
     rclpy.shutdown()
 
 
