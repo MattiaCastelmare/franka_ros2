@@ -196,7 +196,7 @@ class RealTimeDistance(Node):
             overlay_topic = topics_cfg.get(
                 'overlay_image', '/real_time_distance/overlay_image')
             self.overlay_pub = self.create_publisher(Image, overlay_topic, 10)
-            self.create_timer(0.033, self.visualize)
+            self.create_timer(0.1, self.visualize)
 
     # ── Camera callbacks ──────────────────────────────────────────────────────
 
