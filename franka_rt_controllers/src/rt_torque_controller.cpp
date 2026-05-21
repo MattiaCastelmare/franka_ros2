@@ -3,16 +3,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <fstream>
 #include <string>
 #include <vector>
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <pluginlib/class_list_macros.hpp>
-
-#include <pinocchio/algorithm/joint-configuration.hpp>
-#include <pinocchio/algorithm/rnea.hpp>
-#include <pinocchio/parsers/urdf.hpp>
 
 namespace franka_rt_controllers {
 
@@ -34,15 +28,11 @@ RtTorqueController::command_interface_configuration() const {
 
 controller_interface::InterfaceConfiguration
 RtTorqueController::state_interface_configuration() const {
+  // Pure torque-command controller: no state feedback needed in the RT path.
+  // Add joint position/velocity interfaces here when implementing damping or
+  // other state-dependent terms.
   controller_interface::InterfaceConfiguration config;
-  config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
-  // Positions at [0..6], velocities at [7..13] — order matches update() indexing
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    config.names.push_back(joint_names_[i] + "/position");
-  }
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    config.names.push_back(joint_names_[i] + "/velocity");
-  }
+  config.type = controller_interface::interface_configuration_type::NONE;
   return config;
 }
 
@@ -68,19 +58,13 @@ controller_interface::return_type RtTorqueController::update(
                      + (1.0 - lpf_alpha_) * tau_filtered_[i];
   }
 
-  // 3. Update q_pin_ from position state_interfaces_[0..6]
+  // 3. tau_hw = clip(tau_filtered, -tau_max, tau_max)
+  //    NOTE: gravity compensation is handled by the Franka firmware — do NOT
+  //    add g(q) here, or gravity will be compensated twice and the robot will
+  //    accelerate upward at activation.
   for (size_t i = 0; i < kNumJoints; ++i) {
-    q_pin_[arm_q_idx_[i]] = state_interfaces_[i].get_value();
-  }
-
-  // 4. Gravity torques → data_.g (Eigen::VectorXd, pre-allocated)
-  pinocchio::computeGeneralizedGravity(model_, data_, q_pin_);
-
-  // 5. tau_hw = clip(tau_filtered + g(q), -tau_max, tau_max)
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    const double tau_raw = tau_filtered_[i] + data_.g[arm_v_idx_[i]];
     command_interfaces_[i].set_value(
-        std::clamp(tau_raw, -tau_max_[i], tau_max_[i]));
+        std::clamp(tau_filtered_[i], -tau_max_[i], tau_max_[i]));
   }
 
   return controller_interface::return_type::OK;
@@ -98,8 +82,6 @@ CallbackReturn RtTorqueController::on_init() {
     auto_declare<double>("lpf_alpha", 1.0);
     auto_declare<double>("tau_max_scale", 1.0);
     auto_declare<bool>("gazebo", false);
-    // Optional: pre-generated URDF path; empty → auto-generate via xacro
-    auto_declare<std::string>("urdf_path", "");
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception in RtTorqueController::on_init: %s\n", e.what());
     return CallbackReturn::ERROR;
@@ -166,64 +148,6 @@ CallbackReturn RtTorqueController::on_configure(
       }
     }
   }
-
-  // ── Pinocchio model ─────────────────────────────────────────────────────
-  std::string urdf_path = get_node()->get_parameter("urdf_path").as_string();
-  const bool auto_urdf  = urdf_path.empty();
-
-  if (auto_urdf) {
-    std::string desc_share;
-    try {
-      desc_share = ament_index_cpp::get_package_share_directory("franka_description");
-    } catch (const std::exception& e) {
-      RCLCPP_ERROR(logger, "franka_description not found: %s", e.what());
-      return CallbackReturn::ERROR;
-    }
-    const std::string xacro_file = desc_share + "/robots/fr3/fr3.urdf.xacro";
-    urdf_path = "/tmp/franka_rt_torque_" + arm_id_ + ".urdf";
-    // Only invoke xacro when the cached file is absent (generated at launch time normally)
-    std::ifstream cache_check(urdf_path);
-    if (!cache_check.good()) {
-      RCLCPP_INFO(logger, "Generating URDF via xacro (cached at %s) …", urdf_path.c_str());
-      const std::string cmd =
-          "xacro " + xacro_file + " hand:=true ee_id:=franka_hand"
-          " > " + urdf_path + " 2>/dev/null";
-      if (std::system(cmd.c_str()) != 0) {  // NOLINT(cert-env33-c)
-        RCLCPP_ERROR(logger, "xacro failed — check that franka_description is installed.");
-        return CallbackReturn::ERROR;
-      }
-    } else {
-      RCLCPP_INFO(logger, "Using cached URDF at %s", urdf_path.c_str());
-    }
-  }
-
-  try {
-    pinocchio::urdf::buildModel(urdf_path, model_);
-  } catch (const std::exception& e) {
-    RCLCPP_ERROR(logger, "Pinocchio model build failed: %s", e.what());
-    return CallbackReturn::ERROR;
-  }
-
-  data_  = pinocchio::Data(model_);
-  q_pin_ = pinocchio::neutral(model_);
-
-  // Map joint names → pinocchio velocity/position indices
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    const std::string& jname = joint_names_[i];
-    if (!model_.existJointName(jname)) {
-      RCLCPP_ERROR(logger,
-          "Joint '%s' not found in Pinocchio model. "
-          "If arm_id != 'fr3', provide a matching URDF via urdf_path parameter.",
-          jname.c_str());
-      return CallbackReturn::ERROR;
-    }
-    const pinocchio::JointIndex jid = model_.getJointId(jname);
-    arm_v_idx_[i] = static_cast<int>(model_.joints[jid].idx_v());
-    arm_q_idx_[i] = static_cast<int>(model_.joints[jid].idx_q());
-  }
-
-  // Warm up: ensures pinocchio's first-call overhead happens outside update()
-  pinocchio::computeGeneralizedGravity(model_, data_, q_pin_);
 
   // ── RealtimeBuffer + subscriber ─────────────────────────────────────────
   TorqueInput zero{};

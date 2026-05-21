@@ -4,10 +4,6 @@
 #include <string>
 #include <vector>
 
-#include <Eigen/Dense>
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/multibody/data.hpp>
-
 #include <controller_interface/controller_interface.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -58,13 +54,6 @@ class RtTorqueController : public controller_interface::ControllerInterface {
 
   // RT-only state: filtered command (LPF state, touched only in update())
   std::array<double, kNumJoints> tau_filtered_{};
-
-  // Pinocchio model/data — pre-allocated in on_configure(), read/modified in update()
-  pinocchio::Model model_;
-  pinocchio::Data data_;
-  Eigen::VectorXd q_pin_;                       // neutral-size q, no alloc in update()
-  std::array<int, kNumJoints> arm_v_idx_{};     // data_.g index per arm joint
-  std::array<int, kNumJoints> arm_q_idx_{};     // q_pin_ index per arm joint
 
   void commandCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
 };

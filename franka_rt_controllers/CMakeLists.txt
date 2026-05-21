@@ -48,9 +48,7 @@ ament_target_dependencies(${PROJECT_NAME}
   realtime_tools
   std_msgs
   franka_msgs
-  ament_index_cpp
 )
-target_link_libraries(${PROJECT_NAME} pinocchio::pinocchio)
 
 # ── Plugin export (tells controller_manager where to find the plugin) ─
 pluginlib_export_plugin_description_file(
