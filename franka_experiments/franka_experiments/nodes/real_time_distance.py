@@ -16,6 +16,10 @@ the compute thread is busy.  _compute_loop blocks on queue.get() and always
 processes the freshest frame.  _vis_frame is swapped via GIL-atomic reference
 assignment; visualize() reads the reference under _vis_lock then operates
 exclusively on its local snapshot.
+
+All topic names, distance thresholds, mesh paths, and timing parameters are
+read from the YAML config file passed via the ``robot_config_path`` ROS
+parameter.  No value is hardcoded in this module.
 """
 from __future__ import annotations
 
@@ -45,11 +49,11 @@ from franka_experiments.utils.distance_utils import (
     load_extrinsics,
     load_robot_config,
 )
+from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
 from franka_experiments.utils.node_utils import (
     PerfTimer,
     build_cp_messages,
-    no_obs_warn,
 )
 from franka_experiments.utils.tf_manager import TFManager
 from franka_experiments.utils.visualization import VisFrame, draw_overlay
@@ -64,8 +68,6 @@ class RealTimeDistance(Node):
         self.declare_parameter('robot_config_path', '')
         self.declare_parameter('camera_extrinsics_path', '')
         self.declare_parameter('publish_overlay_image', False)
-        self.declare_parameter('process_rate_hz', 30.0)
-        self.declare_parameter('compute_rate_hz', 30.0)
 
         robot_config_path      = self.get_parameter('robot_config_path').value
         camera_extrinsics_path = self.get_parameter('camera_extrinsics_path').value
@@ -124,7 +126,7 @@ class RealTimeDistance(Node):
             tf_buffer=self.tf_buffer,
             base_frame=self.robot_cfg['base_frame'],
             critical_links=critical_links,
-            throttle_s=2.0,
+            cache_max_age_s=float(self.distance_cfg.get('tf_cache_max_age_s', 0.5)),
             logger=self.get_logger(),
         )
 
@@ -155,10 +157,11 @@ class RealTimeDistance(Node):
 
         self.roi_bounds: Optional[tuple] = None
 
-        # ── Throttle / profiling ─────────────────────────────────────────
-        self._THROTTLE_S         = 2.0
-        self._last_no_obs_warn_t = 0.0
-        self._last_dist_log_t    = 0.0
+        # ── Throttled logging (period from config) ────────────────────────
+        _throttle_s = float(self.distance_cfg.get('log_throttle_s', 2.0))
+        self._tlog_dist   = ThrottledLogger(self.get_logger(), period_s=_throttle_s)
+        self._tlog_no_obs = ThrottledLogger(self.get_logger(), period_s=_throttle_s)
+
         self._process_skip_count = 0
         self._vis_skip_count     = 0
         self._perf               = PerfTimer()
@@ -181,7 +184,12 @@ class RealTimeDistance(Node):
             HumanRobotDistance,
             topics_cfg.get('distance', '/human_robot/distance'), 10)
         self.per_link_dist_pub = self.create_publisher(
-            MultiLinkDistance, '/cbf/per_link_distances', _be_qos)
+            MultiLinkDistance,
+            topics_cfg.get('per_link_distances', '/cbf/per_link_distances'), _be_qos)
+
+        # ── Overlay frame id (for published overlay image header) ─────────
+        self._overlay_frame_id = topics_cfg.get(
+            'depth_optical_frame', 'camera_depth_optical_frame')
 
         self.get_logger().info(
             f'RealTimeDistance ready — '
@@ -196,7 +204,8 @@ class RealTimeDistance(Node):
             overlay_topic = topics_cfg.get(
                 'overlay_image', '/real_time_distance/overlay_image')
             self.overlay_pub = self.create_publisher(Image, overlay_topic, 10)
-            self.create_timer(0.1, self.visualize)
+            _vis_period = 1.0 / float(self.distance_cfg.get('vis_rate_hz', 10.0))
+            self.create_timer(_vis_period, self.visualize)
 
     # ── Camera callbacks ──────────────────────────────────────────────────────
 
@@ -281,8 +290,6 @@ class RealTimeDistance(Node):
         with self._perf('tf'):
             transforms = self.tf_mgr.lookup_all(
                 self.robot_cfg['segment_links'], stamp)
-        # if transforms is None:
-        #     return
 
         # ── Control points ────────────────────────────────────────────────
         control_points = define_control_points(
@@ -328,10 +335,11 @@ class RealTimeDistance(Node):
             if np.isfinite(r.distance)
             and thresholds['min_thresh'] <= r.distance <= thresholds['max_thresh']
         ]
+        now = time.monotonic()
         if not valid:
-            self._last_no_obs_warn_t = no_obs_warn(
-                self.get_logger(), self._last_no_obs_warn_t,
-                self._THROTTLE_S, fallback_distance, 'CP')
+            if self._tlog_no_obs.due(now):
+                self._tlog_no_obs.debug(
+                    f'No near obstacle (CP mode). Fallback={fallback_distance} m')
             self._publish_fallback(fallback_distance, stamp)
             return
 
@@ -344,10 +352,8 @@ class RealTimeDistance(Node):
         closest_Z = base_to_cam_z(closest_obs_pt, self.R_base, self.t_base)
 
         # ── Throttled log ─────────────────────────────────────────────────
-        now = time.monotonic()
-        if now - self._last_dist_log_t >= self._THROTTLE_S:
-            self._last_dist_log_t = now
-            self.get_logger().info(
+        if self._tlog_dist.due(now):
+            self._tlog_dist.info(
                 f'dist={min_dist:.3f} m  Z={closest_Z:.3f} m  '
                 f'pix={closest_uv_obs}  | {self._perf.summary()}')
 
@@ -422,7 +428,7 @@ class RealTimeDistance(Node):
         try:
             msg = self.bridge.cv2_to_imgmsg(img, encoding='bgr8')
             msg.header.stamp    = stamp
-            msg.header.frame_id = 'camera_depth_optical_frame'
+            msg.header.frame_id = self._overlay_frame_id
             self.overlay_pub.publish(msg)
         except Exception as exc:
             self.get_logger().warn(f'overlay publish error: {exc}')

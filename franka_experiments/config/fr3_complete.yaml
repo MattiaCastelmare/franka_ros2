@@ -81,6 +81,9 @@ topics:
   depth_image: /camera/camera/depth/image_rect_raw
   depth_camera_info: /camera/camera/depth/camera_info
   closest_distance: /human_robot/closest_distance
+  per_link_distances: /cbf/per_link_distances
+  overlay_image: /real_time_distance/overlay_image
+  depth_optical_frame: camera_depth_optical_frame
 
 distance: # in meters
   min_depth_m: 0.15
@@ -106,6 +109,16 @@ distance: # in meters
   # Only the recovery (obstacle moving away) is smoothed.
   # 0.0 = no filter (raw), 0.9 = heavy smoothing (slow recovery)
   lpf_alpha: 0.5
+
+  # Throttle interval [s] for repeated distance/obstacle log messages.
+  log_throttle_s: 2.0
+
+  # Maximum age [s] of a cached TF transform before it is discarded.
+  # Prevents the compute node from using arbitrarily stale robot poses.
+  tf_cache_max_age_s: 0.5
+
+  # Visualization timer rate [Hz] for the overlay rendering loop.
+  vis_rate_hz: 10.0
 
 mask: # in pixels
   robot_mask_dilate_px: 2

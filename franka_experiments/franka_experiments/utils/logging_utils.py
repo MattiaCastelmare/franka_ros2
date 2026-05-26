@@ -35,6 +35,10 @@ class ThrottledLogger:
         """Log at INFO level (unconditionally — gate with :meth:`due`)."""
         self._logger.info(msg)
 
+    def debug(self, msg: str) -> None:
+        """Log at DEBUG level (unconditionally — gate with :meth:`due`)."""
+        self._logger.debug(msg)
+
     def warn(self, msg: str) -> None:
         """Log at WARN level (unconditionally — gate with :meth:`due`)."""
         self._logger.warn(msg)

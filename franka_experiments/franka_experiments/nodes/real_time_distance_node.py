@@ -10,6 +10,10 @@ Published topics
   /human_robot/distance         HumanRobotDistance  — fallback / aggregate
   /cbf/per_link_distances       MultiLinkDistance   — per-link for CBF + viz
 
+All topic names, distance thresholds, mesh paths, and timing parameters are
+read from the YAML config file passed via the ``robot_config_path`` ROS
+parameter.  No value is hardcoded in this module.
+
 The standalone distance_visualization_node subscribes to
 /cbf/per_link_distances and the depth/camera-info topics to draw the overlay
 in a completely separate process — no shared locks, no shared queues.
@@ -41,11 +45,11 @@ from franka_experiments.utils.distance_utils import (
     load_extrinsics,
     load_robot_config,
 )
+from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
 from franka_experiments.utils.node_utils import (
     PerfTimer,
     build_cp_messages,
-    no_obs_warn,
 )
 from franka_experiments.utils.tf_manager import TFManager
 
@@ -58,8 +62,6 @@ class RealTimeDistance(Node):
         # ── Parameters ──────────────────────────────────────────────────
         self.declare_parameter('robot_config_path', '')
         self.declare_parameter('camera_extrinsics_path', '')
-        self.declare_parameter('process_rate_hz', 20.0)
-        self.declare_parameter('compute_rate_hz', 20.0)
 
         robot_config_path      = self.get_parameter('robot_config_path').value
         camera_extrinsics_path = self.get_parameter('camera_extrinsics_path').value
@@ -106,7 +108,6 @@ class RealTimeDistance(Node):
             tf_buffer=self.tf_buffer,
             base_frame=self.robot_cfg['base_frame'],
             critical_links=critical_links,
-            throttle_s=2.0,
             cache_max_age_s=float(self.distance_cfg.get('tf_cache_max_age_s', 0.5)),
             logger=self.get_logger(),
         )
@@ -136,10 +137,11 @@ class RealTimeDistance(Node):
             logger=self.get_logger(),
         )
 
-        # ── Throttle / profiling ─────────────────────────────────────────
-        self._THROTTLE_S         = 2.0
-        self._last_no_obs_warn_t = 0.0
-        self._last_dist_log_t    = 0.0
+        # ── Throttled logging (period from config) ────────────────────────
+        _throttle_s = float(self.distance_cfg.get('log_throttle_s', 2.0))
+        self._tlog_dist   = ThrottledLogger(self.get_logger(), period_s=_throttle_s)
+        self._tlog_no_obs = ThrottledLogger(self.get_logger(), period_s=_throttle_s)
+
         self._process_skip_count = 0
         self._perf               = PerfTimer()
 
@@ -161,7 +163,8 @@ class RealTimeDistance(Node):
             HumanRobotDistance,
             topics_cfg.get('distance', '/human_robot/distance'), 10)
         self.per_link_dist_pub = self.create_publisher(
-            MultiLinkDistance, '/cbf/per_link_distances', _be_qos)
+            MultiLinkDistance,
+            topics_cfg.get('per_link_distances', '/cbf/per_link_distances'), _be_qos)
 
         self.get_logger().info(
             f'RealTimeDistance (compute) ready — '
@@ -309,10 +312,11 @@ class RealTimeDistance(Node):
             if np.isfinite(r.distance)
             and thresholds['min_thresh'] <= r.distance <= thresholds['max_thresh']
         ]
+        now = time.monotonic()
         if not valid:
-            self._last_no_obs_warn_t = no_obs_warn(
-                self.get_logger(), self._last_no_obs_warn_t,
-                self._THROTTLE_S, fallback_distance, 'CP')
+            if self._tlog_no_obs.due(now):
+                self._tlog_no_obs.debug(
+                    f'No near obstacle (CP mode). Fallback={fallback_distance} m')
             self._publish_fallback(fallback_distance, stamp)
             return
 
@@ -324,10 +328,8 @@ class RealTimeDistance(Node):
             best_cp.closest_obstacle_point, self.R_base, self.t_base)
 
         # ── Throttled log ─────────────────────────────────────────────────
-        now = time.monotonic()
-        if now - self._last_dist_log_t >= self._THROTTLE_S:
-            self._last_dist_log_t = now
-            self.get_logger().info(
+        if self._tlog_dist.due(now):
+            self._tlog_dist.info(
                 f'dist={min_dist:.3f} m  Z={closest_Z:.3f} m  '
                 f'pix={closest_uv_obs}  | {self._perf.summary()}')
 
