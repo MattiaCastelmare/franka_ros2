@@ -9,21 +9,28 @@ velocity input q̇: ḣ = n^T·J_p·q̇.  The QP solves directly for q̇_safe:
     s.t. (n_i^T·J_p,i)·q̇ + s  ≥  -γ_i·h_i    ∀ active link i   (s ≥ 0)
          q̇_min ≤ q̇ ≤ q̇_max
 
-The QP output is published directly — no post-processing is applied.
-Any smoothing after the QP would invalidate the formal CBF safety guarantee.
+Hardware continuity
+-------------------
+The QP is solved at every timer tick (timer-driven, same pattern as
+cbf_safety_filter).  After the QP, a per-joint acceleration clamp limits how
+much the published velocity can change between consecutive 100 Hz ticks:
+
+    |q̇_cmd[k] - q̇_cmd[k-1]| / dt  ≤  q̈_max_j  (per joint)
+
+This keeps the velocity profile smooth enough that the Franka joint motion
+generator never sees an "acceleration discontinuity" reflex.
+
+Hysteresis on activation
+------------------------
+A per-link active/inactive flag with a hysteresis band prevents rapid
+constraint toggling when the measured distance oscillates near the threshold:
+  - Link activates   when  d < d_safe + margin
+  - Link deactivates when  d > d_safe + margin + hysteresis
 
 Pipeline position:
   ee_pentagon_velocity_commander  →  /NS_1/tracking_qdot  (qdot_nom)
   cbf_velocity_filter             →  /NS_1/qdot_cmd       (qdot_safe)
   rt_velocity_executor_controller →  hardware
-
-Topics (loaded from fr3_control.yaml and fr3_distance.yaml):
-  Subscribes:
-    - topics_ctr['joint_states_topic']   Joint states for kinematics
-    - topics_vis['multi_distance']       MultiDistance from real_time_distance
-    - topics_ctr['qdot_nom']             Nominal velocity from commander
-  Publishes:
-    - topics_ctr['velocity_topic']       Safe velocity command to controller
 
 Parameters:
   bypass_cbf (bool, default False)
@@ -91,21 +98,66 @@ class CbfVelocityFilter(Node):
 
         # ── Joint limits ──────────────────────────────────────────────────
         _joint_order = [f'joint{i}' for i in range(1, 8)]
-        self.q_min     = np.array([self.limits[j][0] for j in _joint_order], dtype=np.float64)
-        self.q_max     = np.array([self.limits[j][1] for j in _joint_order], dtype=np.float64)
-        self.qdot_max  = np.array([self.limits[j][2] for j in _joint_order], dtype=np.float64)
-        self.qdot_min  = -self.qdot_max
+        self.q_min    = np.array([self.limits[j][0] for j in _joint_order], dtype=np.float64)
+        self.q_max    = np.array([self.limits[j][1] for j in _joint_order], dtype=np.float64)
+        self.qdot_max = np.array([self.limits[j][2] for j in _joint_order], dtype=np.float64)
+        self.qdot_min = -self.qdot_max
 
+        # ── Per-joint acceleration clamp for velocity-command continuity ──
+        #
+        # The Franka joint motion generator checks JERK (= Δacceleration / dt_hw)
+        # in addition to acceleration.  With first-order C++ interpolation, when
+        # the commanded velocity changes direction (e.g. CBF activates then
+        # deactivates), the interpolation slope reverses and the instantaneous
+        # jerk seen by the motion generator is:
+        #
+        #   jerk_worst_case = 2 × qddot_cmd / dt_hw
+        #
+        # To keep this below the FR3 hardware jerk limit (from libfranka):
+        #
+        #   qddot_cmd ≤ jerk_limit_j × dt_hw / 2 × JERK_SAFETY
+        #
+        # FR3 jerk limits (rad/s³): [7500, 3750, 5000, 6250, 7500, 10000, 10000]
+        # (joint1 … joint7, from libfranka Robot::Limits)
+        _FR3_JERK_LIMITS = np.array(
+            [7500., 3750., 5000., 6250., 7500., 10000., 10000.], dtype=np.float64)
+        _DT_HW      = 0.001    # 1 kHz Franka real-time loop
+        _JERK_SAFETY = 0.80   # 80 % margin below the hardware jerk limit
 
-        self._dist_timeout = float(self.params.get('distance_timeout', 0.2))
-        _rate_hz           = float(self.params.get('control_rate_hz', 200.0))
+        # qddot_from_jerk = [3.0, 1.5, 2.0, 2.5, 3.0, 4.0, 4.0] rad/s²
+        _qddot_from_jerk = _FR3_JERK_LIMITS * _DT_HW * _JERK_SAFETY / 2.0
+        _qddot_from_cfg  = np.array(
+            [self.limits[j][3] for j in _joint_order], dtype=np.float64)
+
+        # Final limit: tightest of config value and jerk-derived bound
+        self.qddot_max = np.minimum(_qddot_from_cfg, _qddot_from_jerk)
+
+        self._dist_timeout = float(self.params.get('distance_timeout', 0.5))
+        _rate_hz           = float(self.params.get('control_rate_hz', 100.0))
+        self._dt           = 1.0 / _rate_hz
 
         # ── State ─────────────────────────────────────────────────────────
-        self.q                       = None
-        self.qdot                    = None
-        self.qdot_nom                = np.zeros(self.model.nv, dtype=np.float64)
-        self.multi_distances         = []
-        self._last_distance_stamp    : float = 0.0   # time.monotonic()
+        self.q                    = None
+        self.qdot                 = None
+        self.qdot_nom             = np.zeros(self.model.nv, dtype=np.float64)
+        # Last published velocity — used by the per-joint acceleration clamp.
+        self._qdot_prev           = np.zeros(self.model.nv, dtype=np.float64)
+        # Per-link hysteresis state: links currently in "constraint active" state.
+        self._active_links        : set[str] = set()
+        self.multi_distances      = []
+        self._last_distance_stamp : float    = 0.0   # time.monotonic()
+
+        # ── Diagnostic state ──────────────────────────────────────────────
+        # Used to compute per-tick acceleration and hardware-level jerk estimates.
+        self._qdot_initialized    : bool               = False  # one-time init flag
+        self._diag_last_tick_t    : float              = 0.0
+        self._diag_accel_prev     : np.ndarray         = np.zeros(self.model.nv)
+        self._diag_first_tick     : bool               = True   # skip jerk check tick 0
+        self._diag_prev_constrained : bool             = False
+        # FR3 jerk limits [rad/s³] — for warn-threshold logging only
+        self._FR3_JERK_LIMITS     = np.array(
+            [7500., 3750., 5000., 6250., 7500., 10000., 10000.], dtype=np.float64)
+        self._JERK_WARN_FRAC      = 0.75   # warn when jerk > 75 % of hw limit
 
         # ── Publisher ─────────────────────────────────────────────────────
         self.cmd_pub = self.create_publisher(
@@ -141,14 +193,16 @@ class CbfVelocityFilter(Node):
         )
 
         # ── Control timer ─────────────────────────────────────────────────
-        self.create_timer(1.0 / _rate_hz, self._control_loop)
+        self.create_timer(self._dt, self._control_loop)
 
         mode_str = 'BYPASS (passthrough)' if self._bypass_cbf else 'CBF QP active'
         self.get_logger().info(
             f'CBF velocity filter ready — mode: {mode_str}\n'
+            f'  rate            : {_rate_hz:.0f} Hz\n'
             f'  qdot_nom topic  : {self.topics_ctr["qdot_nom"]}\n'
             f'  qdot_cmd topic  : {self.topics_ctr["velocity_topic"]}\n'
-            f'  distance topic  : {self.topics_ctr["per_link_distances"]}'
+            f'  distance topic  : {self.topics_ctr["per_link_distances"]}\n'
+            f'  qddot_max (85%) : {np.round(self.qddot_max, 3).tolist()}'
         )
 
     # ── Frame resolution ──────────────────────────────────────────────────────
@@ -180,7 +234,7 @@ class CbfVelocityFilter(Node):
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _multi_distance_callback(self, msg: MultiLinkDistance) -> None:
-        """Store per-link distances. One entry per link, closest CP per link."""
+        """Store per-link distances (QP is solved in the timer callback)."""
         self.multi_distances = [
             {
                 'link_name':           ld.robot_link_name,
@@ -232,30 +286,38 @@ class CbfVelocityFilter(Node):
         return Jp
 
     def _build_cbf_constraints(self, q, qdot, multi_distances):
-        """Build ZCBF constraints in velocity space (Ferraguti RAM 2022, eq. 12).
+        """Build ZCBF constraints with hysteresis on the activation threshold.
+
+        Hysteresis prevents rapid constraint toggling when the measured distance
+        oscillates near the activation boundary (d_safe + margin), which would
+        otherwise cause the QP target to oscillate and produce jerky motion.
+
+        Activation   : d < d_safe + act_margin
+        Deactivation : d > d_safe + act_margin + hysteresis
 
         For each active link i:
             h_i   = d_i - d_safe
-            a_vel = n_i^T · J_p,i      (nv,)  — Lie derivative of h w.r.t. q̇
-            b_vel = -gamma_i · h_i     scalar — pure ZCBF bound
-
-        Constraint form: a_vel · q̇_cmd + s >= b_vel  (enforced via QP with slack s).
-
-        NOTE: b_vel = -gamma*h (no hdot term).  Including hdot = a·q̇_meas in
-        b_vel creates a velocity-feedback loop that at 200 Hz generates chattering
-        at the boundary.  The pure -γh term is sufficient: it enforces
-        h(t+dt) >= h(t)*(1 - gamma*dt) = h(t)*0.96 at each 5 ms tick, which is
-        the standard discrete ZCBF safety condition.
-        qdot is accepted as argument for future use but is not read here.
+            a_vel = n_i^T · J_p,i      (nv,)
+            b_vel = -gamma_i · h_i
         """
         constraints = []
         if not multi_distances:
             return constraints
 
         act_margin = float(self.params.get('cbf_activation_margin', 0.10))
+        hysteresis = float(self.params.get('cbf_hysteresis',         0.05))
+        d_safe     = float(self.params['d_safe'])
+
+        act_thresh   = d_safe + act_margin               # activate   below this
+        deact_thresh = d_safe + act_margin + hysteresis  # deactivate above this
 
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
+
+        # Build set of links present in this message to clean up stale active links
+        measured_links = {item['link_name'] for item in multi_distances}
+        # Links no longer measured are removed from active set (camera lost sight)
+        self._active_links &= measured_links
 
         for item in multi_distances:
             link_name = item['link_name']
@@ -270,11 +332,29 @@ class CbfVelocityFilter(Node):
                 continue
             n_world /= norm_n
 
-            h = float(d) - float(self.params['d_safe'])
+            # ── Hysteresis gate ───────────────────────────────────────────
+            if link_name in self._active_links:
+                # Already active: deactivate only when well past the threshold
+                if d > deact_thresh:
+                    self._active_links.discard(link_name)
+                    self.get_logger().warn(
+                        f'[CBF-VEL] DEACTIVATE {link_name}  '
+                        f'd={d:.4f} m > deact_thresh={deact_thresh:.4f} m  '
+                        f'h={d - d_safe:.4f} m'
+                    )
+                    continue
+            else:
+                # Not active: activate when inside the activation zone
+                if d >= act_thresh:
+                    continue
+                self._active_links.add(link_name)
+                self.get_logger().warn(
+                    f'[CBF-VEL] ACTIVATE {link_name}  '
+                    f'd={d:.4f} m < act_thresh={act_thresh:.4f} m  '
+                    f'h={d - d_safe:.4f} m'
+                )
 
-            # ── Activation gate — skip links outside the activation zone ────
-            if h > act_margin:
-                continue
+            h = d - d_safe
 
             if h < 0.0:
                 self.get_logger().warn(
@@ -285,15 +365,15 @@ class CbfVelocityFilter(Node):
 
             gamma = float(select_gamma(
                 item['zone'], item['confidence'],
-                d=float(d), d_safe=float(self.params['d_safe'])))
+                d=float(d), d_safe=float(d_safe)))
 
             Jp = self._compute_point_jacobian(q, link_name, p_world)
             if Jp is None:
                 continue
 
-            # ZCBF: a·q̇_cmd ≥ -γ·h  (standard discrete ZCBF, no velocity feedback)
-            a_vel = (n_world @ Jp).astype(np.float64)   # (nv,)
-            b_vel = float(-gamma * h)                    # scalar
+            # ZCBF: a·q̇_cmd ≥ -γ·h
+            a_vel = (n_world @ Jp).astype(np.float64)
+            b_vel = float(-gamma * h)
 
             if not np.all(np.isfinite(a_vel)) or not np.isfinite(b_vel):
                 continue
@@ -311,9 +391,7 @@ class CbfVelocityFilter(Node):
              q̇_min ≤ q̇ ≤ q̇_max          (box via lb/ub)
              s ≥ 0                        (box via lb)
 
-        Returns q̇_safe (nv,).  On solver failure returns a soft fallback:
-        half the clipped nominal velocity.  No warm-starting — OSQP handles
-        that internally and external initvals can cause inconsistencies.
+        Returns q̇_safe (nv,).  On solver failure returns a soft fallback.
         """
         nv  = self.model.nv
         rho = float(self.params['rho_slack'])
@@ -329,7 +407,6 @@ class CbfVelocityFilter(Node):
 
         G_rows, h_rows = [], []
         for a_vel, b_vel, _, _ in constraints:
-            # a_vel·q̇ + s >= b_vel  →  -a_vel·q̇ - s <= -b_vel
             row = np.zeros(nv + 1, dtype=np.float64)
             row[:nv] = -a_vel
             row[-1]  = -1.0
@@ -362,8 +439,8 @@ class CbfVelocityFilter(Node):
         if x is None or not np.all(np.isfinite(x)):
             return _soft_fallback('infeasible/non-finite')
 
-        x      = np.asarray(x, dtype=np.float64).reshape(-1)
-        slack  = float(x[-1])
+        x     = np.asarray(x, dtype=np.float64).reshape(-1)
+        slack = float(x[-1])
         if slack > 0.1:
             min_d = min((d for _, _, _, d in constraints), default=float('nan'))
             self.get_logger().error(
@@ -373,63 +450,159 @@ class CbfVelocityFilter(Node):
             )
         return x[:nv]
 
-    # ── Main control step (called at 200 Hz by ROS2 timer) ───────────────────
+    # ── Main control step (timer-driven at control_rate_hz) ───────────────────
 
     def _control_loop(self):
+        """Solve CBF QP and publish safe velocity at every timer tick."""
         if self.q is None or self.qdot is None:
             return
 
+        now = time.monotonic()
+
+        # ── Timer jitter diagnostic ────────────────────────────────────────
+        if self._diag_last_tick_t > 0.0:
+            dt_actual = now - self._diag_last_tick_t
+            dt_err    = dt_actual - self._dt
+            if abs(dt_err) > 0.003:   # warn if > 3 ms late/early
+                self.get_logger().warn(
+                    f'[CBF-DIAG] timer jitter: dt_actual={dt_actual*1e3:.1f} ms '
+                    f'(nominal={self._dt*1e3:.1f} ms  err={dt_err*1e3:+.1f} ms)',
+                    throttle_duration_sec=0.5,
+                )
+        self._diag_last_tick_t = now
+
+        # Seed _qdot_prev from actual joint velocity on the very first tick to
+        # avoid a step from zero on start-up or after a mode switch.
+        # NOTE: we use a dedicated flag, NOT `not np.any(self._qdot_prev)`,
+        # because the latter re-triggers every time qdot_cmd reaches exactly zero
+        # (e.g. at a motion endpoint), causing a sudden reset of the continuity
+        # reference and an artificial jerk spike.
+        if not self._qdot_initialized:
+            self._qdot_prev = self.qdot.copy()
+            self._qdot_initialized = True
+            self.get_logger().info(
+                f'[CBF-DIAG] _qdot_prev initialized from qdot: '
+                f'{np.round(self.qdot, 4).tolist()}'
+            )
+
+        # ── Compute target velocity ────────────────────────────────────────
+        is_constrained = False
+
         if self._bypass_cbf:
-            msg = Float64MultiArray()
-            msg.data = self.qdot_nom.tolist()
-            self.cmd_pub.publish(msg)
-            return
+            target = np.clip(self.qdot_nom, self.qdot_min, self.qdot_max)
 
-        # Distance staleness guard — passthrough if data is too old
-        age = time.monotonic() - self._last_distance_stamp
-        if age > self._dist_timeout:
-            self.get_logger().warn(
-                f'[CBF-VEL] distance stale ({age:.3f} s > {self._dist_timeout:.3f} s)'
-                ' — passthrough',
-                throttle_duration_sec=2.0,
-            )
-            msg = Float64MultiArray()
-            msg.data = np.clip(self.qdot_nom, self.qdot_min, self.qdot_max).tolist()
-            self.cmd_pub.publish(msg)
-            return
-
-        q    = self.q.copy()
-        qdot = self.qdot.copy()
-
-        constraints = self._build_cbf_constraints(q, qdot, list(self.multi_distances))
-
-        if constraints:
-            links_active = [lname for _, _, lname, _ in constraints]
-            min_d = min(d for _, _, _, d in constraints)
-            self.get_logger().info(
-                f'[CBF-VEL] active_links={links_active}  '
-                f'n_constraints={len(constraints)}  min_d={min_d:.3f} m',
-                throttle_duration_sec=1.0,
-            )
         else:
-            self.get_logger().info(
-                '[CBF-VEL] no valid distances — nominal passthrough',
-                throttle_duration_sec=2.0,
+            age = time.monotonic() - self._last_distance_stamp
+            if age > self._dist_timeout:
+                self.get_logger().warn(
+                    f'[CBF-VEL] distance stale ({age:.3f} s > {self._dist_timeout:.3f} s)'
+                    ' — passthrough',
+                    throttle_duration_sec=2.0,
+                )
+                target = np.clip(self.qdot_nom, self.qdot_min, self.qdot_max)
+            else:
+                q    = self.q.copy()
+                qdot = self.qdot.copy()
+
+                constraints = self._build_cbf_constraints(
+                    q, qdot, list(self.multi_distances))
+
+                is_constrained = len(constraints) > 0
+
+                # Log constraint ON/OFF transitions immediately (no throttle)
+                if is_constrained and not self._diag_prev_constrained:
+                    min_d = min(d for _, _, _, d in constraints)
+                    self.get_logger().warn(
+                        f'[CBF-DIAG] >>> CONSTRAINT ON  '
+                        f'links={[n for _,_,n,_ in constraints]}  '
+                        f'min_d={min_d:.4f} m  '
+                        f'qdot_nom={np.round(self.qdot_nom,3).tolist()}  '
+                        f'qdot_prev={np.round(self._qdot_prev,3).tolist()}'
+                    )
+                elif not is_constrained and self._diag_prev_constrained:
+                    self.get_logger().warn(
+                        f'[CBF-DIAG] <<< CONSTRAINT OFF  '
+                        f'qdot_prev={np.round(self._qdot_prev,3).tolist()}  '
+                        f'qdot_nom={np.round(self.qdot_nom,3).tolist()}'
+                    )
+                self._diag_prev_constrained = is_constrained
+
+                if is_constrained:
+                    min_d = min(d for _, _, _, d in constraints)
+                    self.get_logger().info(
+                        f'[CBF-VEL] active n={len(constraints)}  min_d={min_d:.3f} m',
+                        throttle_duration_sec=1.0,
+                    )
+                else:
+                    self.get_logger().info(
+                        '[CBF-VEL] no constraints — nominal',
+                        throttle_duration_sec=2.0,
+                    )
+
+                qdot_qp = self._solve_cbf_qp(self.qdot_nom.copy(), constraints)
+                target  = np.clip(qdot_qp, self.qdot_min, self.qdot_max)
+
+                if is_constrained:
+                    # Log how much the QP modified the nominal velocity
+                    delta_qp = qdot_qp - self.qdot_nom
+                    worst_j  = int(np.argmax(np.abs(delta_qp)))
+                    self.get_logger().info(
+                        f'[CBF-DIAG] QP  nom={np.round(self.qdot_nom,3).tolist()}  '
+                        f'safe={np.round(qdot_qp,3).tolist()}  '
+                        f'max_mod=j{worst_j+1}:{delta_qp[worst_j]:.3f} rad/s',
+                        throttle_duration_sec=0.5,
+                    )
+
+        # ── Per-joint acceleration clamp ───────────────────────────────────
+        delta_max = self.qddot_max * self._dt
+        raw_delta = target - self._qdot_prev
+        clipped   = np.clip(raw_delta, -delta_max, delta_max)
+        qdot_cmd  = self._qdot_prev + clipped
+
+        # Log when the clamp actually saturates (target unreachable in one tick)
+        clamp_active = np.any(np.abs(raw_delta) > delta_max + 1e-6)
+        if clamp_active:
+            saturated = np.where(np.abs(raw_delta) > delta_max + 1e-6)[0]
+            msgs = [
+                f'j{j+1}: want={raw_delta[j]:.4f} capped={clipped[j]:.4f} rad/s'
+                for j in saturated
+            ]
+            self.get_logger().warn(
+                f'[CBF-DIAG] CLAMP saturated — {", ".join(msgs)}',
+                throttle_duration_sec=0.2,
             )
 
-        qdot_cmd = self._solve_cbf_qp(self.qdot_nom.copy(), constraints)
-        qdot_cmd = np.clip(qdot_cmd, self.qdot_min, self.qdot_max)
+        # ── Hardware-level jerk estimate ───────────────────────────────────
+        # accel_cmd ≈ velocity ramp slope seen by C++ interpolation [rad/s²]
+        # jerk_hw   ≈ change in that slope at this sample boundary [rad/s³]
+        #             = Δaccel / dt_hw  (worst-case, at direction change)
+        # Compare against FR3 jerk limits to predict reflex triggers.
+        accel_cmd = clipped / self._dt                     # (nv,) [rad/s²]
+        if self._diag_first_tick:
+            # Skip jerk check on tick 0: _diag_accel_prev is 0, so jerk would
+            # be artificially high regardless of what the robot is actually doing.
+            self._diag_first_tick = False
+        else:
+            jerk_hw   = np.abs(accel_cmd - self._diag_accel_prev) / 0.001  # [rad/s³]
+            jerk_warn = self._FR3_JERK_LIMITS * self._JERK_WARN_FRAC
+            over_jerk = np.where(jerk_hw > jerk_warn)[0]
+            if over_jerk.size > 0:
+                msgs = [
+                    f'j{j+1}: jerk={jerk_hw[j]:.0f} > warn={jerk_warn[j]:.0f} '
+                    f'(limit={self._FR3_JERK_LIMITS[j]:.0f}) rad/s³'
+                    for j in over_jerk
+                ]
+                self.get_logger().error(
+                    f'[CBF-DIAG] HIGH JERK (hw estimate) — {", ".join(msgs)}  '
+                    f'accel_curr={np.round(accel_cmd,2).tolist()}  '
+                    f'accel_prev={np.round(self._diag_accel_prev,2).tolist()}',
+                    throttle_duration_sec=0.1,
+                )
+        self._diag_accel_prev = accel_cmd.copy()
 
-        if constraints:
-            min_margin = min(float(a_vel @ qdot_cmd) - b_vel
-                            for a_vel, b_vel, _, _ in constraints)
-            self.get_logger().info(
-                f'[CBF-VEL] min_constraint_margin={min_margin:.4f} m/s'
-                f'  (≥0 → all constraints satisfied)',
-                throttle_duration_sec=1.0,
-            )
+        self._qdot_prev = qdot_cmd.copy()
 
-        msg = Float64MultiArray()
+        msg      = Float64MultiArray()
         msg.data = [float(v) for v in qdot_cmd]
         self.cmd_pub.publish(msg)
 

@@ -26,7 +26,7 @@ use_torque_controller: "false"
 # ── RT velocity executor controller ───────────────────────────────────────
 qdot_max: 1.5
 command_topic: "qdot_cmd"
-max_accel: 2.0
+max_accel: 1.5  # jerk-constrained: 2×1.5/0.001=3000 rad/s³ < joint2 limit 3750
 timeout_threshold_s: 0.5
 timeout_ramp_s: 1.0
 gazebo: false
