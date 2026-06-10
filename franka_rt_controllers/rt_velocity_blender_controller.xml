@@ -15,10 +15,11 @@
            base_class_type="controller_interface::ControllerInterface">
         <description>
             RT torque (effort) controller for Franka FR3.
-            Reads Float64MultiArray (7 user torques, before gravity) from a
-            non-RT topic, adds Pinocchio gravity compensation, clips to
+            Reads Float64MultiArray (7 user torques, WITHOUT gravity) from a
+            non-RT topic, applies an optional low-pass filter, clips to
             per-joint limits, and writes to hardware effort interfaces at 1 kHz.
-            No heap allocations, no locks, no logging in the RT path.
+            Gravity compensation is handled by the Franka firmware and is NOT
+            added here. No heap allocations, no locks, no logging in the RT path.
         </description>
     </class>
 </library>

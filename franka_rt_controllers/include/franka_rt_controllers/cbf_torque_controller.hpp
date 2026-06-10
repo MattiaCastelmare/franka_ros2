@@ -1,12 +1,13 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <string>
 #include <Eigen/Dense>
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
 #include <controller_interface/controller_interface.hpp>
 #include <rclcpp/rclcpp.hpp>
-#include <realtime_tools/realtime_buffer.h>
+#include <realtime_tools/realtime_buffer.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
@@ -77,12 +78,14 @@ class CBFTorqueController : public controller_interface::ControllerInterface {
   // ── Legacy qddot_safe (Float64MultiArray) ───────────────────────────────
   using MsgT = std_msgs::msg::Float64MultiArray;
   realtime_tools::RealtimeBuffer<Vec7>  qddot_buf_;
-  double                                last_msg_stamp_s_{0.0};
+  // Written by the (non-RT) subscriber thread, read by the 1 kHz update():
+  // atomic to avoid a data race (lock-free for double on x86_64).
+  std::atomic<double>                   last_msg_stamp_s_{0.0};
   rclcpp::Subscription<MsgT>::SharedPtr sub_;
 
   // ── JointState setpoint with FOH interpolation ───────────────────────────
   realtime_tools::RealtimeBuffer<InterpState>                    interp_buf_;
-  double                                                         sp_stamp_s_{0.0};
+  std::atomic<double>                                            sp_stamp_s_{0.0};
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr  sp_sub_;
 };
 

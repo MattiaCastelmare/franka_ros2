@@ -8,15 +8,15 @@ Pipeline under test:
     pentagon_torque_commander
         → /NS_1/torque_cmd  (τ_nom without gravity)
         → rt_torque_controller
-            ├─ adds g(q) from Pinocchio
+            ├─ optional LPF + per-joint clipping
             └─ applies effort to fake Franka hardware
 
 IMPORTANT — gravity compensation:
     pentagon_torque_commander sends τ = M(q)·q̈ + C(q,q̇)·q̇ (NO gravity).
-    rt_torque_controller adds g(q) internally via Pinocchio.
-    On real hardware, the firmware handles gravity; on fake hardware the
-    controller still goes through this path (gravity is added but has no
-    effect on simulation state in fake mode).
+    rt_torque_controller does NOT add g(q): on real hardware the Franka
+    firmware compensates gravity internally (adding it again would double-
+    compensate). The same applies in fake mode, where the controller path
+    is identical.
 
 What to expect:
     - franka_bringup starts with use_fake_hardware:=true
