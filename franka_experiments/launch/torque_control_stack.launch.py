@@ -74,6 +74,7 @@ _ALL_PARAMS = [
     'enable_camera', 'camera_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance',
     'start_experiment_logger', 'experiment_logger_delay_s',
+    'start_move_group',
 ]
 
 
@@ -131,7 +132,11 @@ def _launch_all(context):
         output='screen',
     )
 
-    # world → fr3_link0 static TF
+    # world → base static TF (identity).  robot_state_publisher already
+    # publishes base → fr3_link0 (identity); publishing world → fr3_link0
+    # here would give fr3_link0 two parents, orphaning 'base' and splitting
+    # the TF tree — which breaks move_group's frame transforms (FK error -21).
+    # world → base → fr3_link0 keeps a single connected tree.
     world_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -141,7 +146,7 @@ def _launch_all(context):
             '--x', '0', '--y', '0', '--z', '0',
             '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
             '--frame-id', 'world',
-            '--child-frame-id', 'fr3_link0',
+            '--child-frame-id', 'base',
         ],
     )
 
@@ -156,6 +161,35 @@ def _launch_all(context):
         TimerAction(period=1.0, actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
+
+    # ── [MoveIt] move_group — planning services for the commander ────────────
+    # pentagon_qddot_commander generates its pentagon via MoveIt's compute_fk /
+    # compute_cartesian_path services, served by move_group.  It must run in
+    # the robot namespace: the bringup's robot_state_publisher publishes TF on
+    # /<ns>/tf and joint states on /<ns>/joint_states, and move_group needs
+    # both (FK answers in fr3_link0 require the base→fr3_link0 transform).
+    if _as_bool(p['start_move_group']):
+        move_group_launch = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(PathJoinSubstitution([
+                FindPackageShare('franka_fr3_moveit_config'), 'launch',
+                'move_group.launch.py',
+            ]).perform(context)),
+            launch_arguments={
+                'robot_ip':             p['robot_ip'],
+                'namespace':            p['namespace'] or '/',
+                'use_fake_hardware':    p['use_fake_hardware'],
+                'fake_sensor_commands': p['fake_sensor_commands'],
+                # hand:=true always: the commander's EE frame is fr3_hand_tcp,
+                # same convention as the qddot_to_torque dynamics model.
+                'load_gripper':         'true',
+            }.items(),
+        )
+        actions.append(move_group_launch)
+        actions.append(LogInfo(msg='[torque_stack] [MoveIt]          move_group ENABLED'))
+    else:
+        actions.append(LogInfo(msg='[torque_stack] [MoveIt]          move_group DISABLED — '
+                                   'pentagon_qddot_commander will publish zeros until '
+                                   'move_group is started manually'))
 
     # ── [Perception] RealSense camera ─────────────────────────────────────────
     if start_camera:
@@ -246,10 +280,14 @@ def _launch_all(context):
                                 ' (delay=', str(dynamics_delay), 's)']))
 
     # ── [Motion generation] pentagon_qddot_commander ──────────────────────────
+    # Runs in the robot namespace so its relative MoveIt service clients
+    # (compute_fk, compute_cartesian_path) resolve to move_group above.
+    # Its topics are absolute (/NS_1/…) and unaffected by the namespace.
     commander_node = Node(
         package='franka_experiments',
         executable='pentagon_qddot_commander',
         name='pentagon_qddot_commander',
+        namespace=p['namespace'],
         output='screen',
     )
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
@@ -311,6 +349,11 @@ def generate_launch_description():
                 'experiment_logger_delay_s',
                 default_value='2.0',
                 description='Seconds before launching experiment_logger'),
+            DeclareLaunchArgument(
+                'start_move_group',
+                default_value='true',
+                description='Start move_group (MoveIt planning services used by '
+                            'pentagon_qddot_commander)'),
             OpaqueFunction(function=_launch_all),
         ]
     )

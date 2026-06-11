@@ -9,11 +9,13 @@ class CBFKinematics:
         self.model = model
         self.data = model.createData()
 
-    def update(self, q: np.ndarray, qdot: np.ndarray) -> None:
-        """Single pass per tick: FK + Jacobians + Jdot."""
+    def update(self, q: np.ndarray, qdot: np.ndarray,
+               with_jdot: bool = True) -> None:
+        """Single pass per tick: FK + Jacobians (+ Jdot unless with_jdot=False)."""
         pin.forwardKinematics(self.model, self.data, q, qdot)
         pin.computeJointJacobians(self.model, self.data, q)
-        pin.computeJointJacobiansTimeVariation(self.model, self.data, q, qdot)
+        if with_jdot:
+            pin.computeJointJacobiansTimeVariation(self.model, self.data, q, qdot)
         pin.updateFramePlacements(self.model, self.data)
 
     def resolve_frame_id(self, link_name: str) -> int | None:
@@ -27,6 +29,16 @@ class CBFKinematics:
 
     def prepare_frame_cache(self, link_names: list) -> None:
         pass
+
+    def point_jacobian_pos(self, frame_id: int, p_world: np.ndarray) -> np.ndarray:
+        """Return J_p only, shape (3, nv) — valid after update(with_jdot=False)."""
+        oMf = self.data.oMf[frame_id]
+        r_cross = _skew(p_world - oMf.translation)
+        J6 = pin.getFrameJacobian(
+            self.model, self.data, frame_id,
+            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+        )
+        return J6[:3, :] - r_cross @ J6[3:, :]
 
     def point_jacobian(
         self, frame_id: int, p_world: np.ndarray

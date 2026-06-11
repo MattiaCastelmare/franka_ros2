@@ -69,7 +69,7 @@ franka_experiments/
 
 | Node executable | Source file | Pipeline | Subscribes | Publishes | Description |
 |---|---|---|---|---|---|
-| `pentagon_qddot_commander` | `nodes/pentagon_qddot_commander.py` | Torque (accel) | `/NS_1/joint_states` | `/NS_1/qddot_nom` (Float64MultiArray, 7) | Pentagon end-effector trajectory in acceleration space |
+| `pentagon_qddot_commander` | `nodes/pentagon_qddot_commander.py` | Torque (accel) | `/NS_1/joint_states`, move_group services (`compute_fk`, `compute_cartesian_path`) | `/NS_1/qddot_nom` (Float64MultiArray, 7), `/NS_1/q_des_state` (JointState), `~/planned_trajectory` (JointTrajectory, debug) | MoveIt-based pentagon reference generator: Cartesian path planned by move_group (group `fr3_arm`, `fr3_link0` → `fr3_hand_tcp`), sampled at `rate_hz`; q̈ output = feedforward + Cartesian-space tracking correction `J†(q)·(kp_cart·clip(x_d−x,±cart_err_clamp) + kd_cart·(ẋ_d−ẋ))` (applied before the CBF filter). Pinocchio (FR3 + Franka hand URDF) provides FK and the 3×7 linear Jacobian at `fr3_hand_tcp`; Cartesian references are pre-computed during _ingest (offline). Requires a running `move_group` (`ros2 launch franka_fr3_moveit_config move_group.launch.py`); publishes zeros until it is available |
 | `cbf_safety_filter` | `nodes/cbf_safety_filter.py` | Torque (accel) | `/NS_1/qddot_nom`, `/cbf/per_link_distances`, `/NS_1/joint_states` | `/NS_1/qddot_safe` (Float64MultiArray, 7) | HOCBF QP filter: min ‖q̈ − q̈_nom‖² s.t. CBF constraints |
 | `qddot_to_torque` | `nodes/qddot_to_torque.py` | Torque (accel) | `/NS_1/qddot_safe` (remapped from `qddot_nom`), `/NS_1/joint_states` | `/NS_1/torque_cmd` (Float64MultiArray, 7) | Dynamics converter: τ = M(q)·q̈ + C(q,q̇)·q̇ via Pinocchio |
 | `pentagon_torque_commander` | `nodes/pentagon_torque_commander.py` | Torque (OSCBF) | `/NS_1/joint_states` | `/NS_1/torque_cmd` (Float64MultiArray, 7) | 6D Cartesian PD + damped-LS Jacobian torque commander |
@@ -120,6 +120,12 @@ pentagon_qddot_commander          │
 | t = 2 s | `real_time_distance` (if `start_real_time_distance:=true`) |
 | t = `control_spawner_delay_s` | `rt_torque_controller` spawner (1 kHz RT loop starts) |
 | t = `control_spawner_delay_s` + 2 s | `pentagon_qddot_commander` |
+
+> **Note** — `pentagon_qddot_commander` now generates its trajectory via
+> MoveIt.  The stack starts `move_group` automatically (in the robot
+> namespace, so it sees `/NS_1/tf` and `/NS_1/joint_states`); disable with
+> `start_move_group:=false`.  Until move_group and a joint state are
+> available the commander publishes zero accelerations (the robot holds).
 
 **Invocations:**
 
