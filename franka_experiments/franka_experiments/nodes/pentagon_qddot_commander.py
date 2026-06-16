@@ -210,9 +210,9 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('group_name',        'fr3_arm')
         self.declare_parameter('rate_hz',           100.0)
         self.declare_parameter('center_xyz',        [0.4, 0.0, 0.4])
-        self.declare_parameter('radius',            0.40)
+        self.declare_parameter('radius',            0.20)
         self.declare_parameter('plane',             'front')
-        self.declare_parameter('cycle_time',        5.0)
+        self.declare_parameter('cycle_time',        8.0)
         # Closed-track geometry
         self.declare_parameter('curve_samples',     400)    # uniform arc-length stations
         self.declare_parameter('bspline_seg_samples', 80)   # B-spline samples / edge
@@ -220,7 +220,7 @@ class PentagonQddotCommander(Node):
         # MoveIt Cartesian path settings
         self.declare_parameter('max_step',          0.005)  # EE resolution [m]
         self.declare_parameter('jump_threshold',    5.0)    # config-flip guard
-        self.declare_parameter('min_fraction',      0.99)   # reject partial paths
+        self.declare_parameter('min_fraction',      0.80)   # reject partial paths
         self.declare_parameter('avoid_collisions',  True)
         self.declare_parameter('plan_retry_s',      1.0)    # back-off after failure
         # Cartesian-space tracking PD (acceleration space, applied before the CBF

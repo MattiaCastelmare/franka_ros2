@@ -89,10 +89,6 @@ class QddotToTorqueNode(Node):
         pin.computeAllTerms(self._model, self._data,
                             self._q_full, self._qdot_full)
 
-        # ── Joint-name → JointState index map ────────────────────────────
-        # Filled on first JointState message; used to reorder joint data.
-        self._js_idx: dict[str, int] | None = None
-
         # ── Shared state (written by JS callback, read by qddot callback) ─
         self._q    = np.zeros(NUM_JOINTS)
         self._qdot = np.zeros(NUM_JOINTS)
@@ -124,16 +120,21 @@ class QddotToTorqueNode(Node):
     # ── Joint state callback ──────────────────────────────────────────────────
 
     def _on_joint_state(self, msg: JointState) -> None:
-        # Build name→index map on first message
-        if self._js_idx is None:
-            self._js_idx = {name: i for i, name in enumerate(msg.name)}
+        # Rebuild the index map from each message: different publishers
+        # (joint_state_broadcaster, joint_state_publisher, finger_state_publisher)
+        # can interleave on the same topic with different joint subsets and
+        # orderings, so a cached map from the first message would cause
+        # IndexError when a later message has fewer positions.
+        name_to_idx = {name: i for i, name in enumerate(msg.name)}
+        n_pos = len(msg.position)
+        n_vel = len(msg.velocity)
 
         q    = np.zeros(NUM_JOINTS)
         qdot = np.zeros(NUM_JOINTS)
         for k, name in enumerate(FR3_JOINT_NAMES):
-            idx = self._js_idx.get(name)
-            if idx is None:
-                return
+            idx = name_to_idx.get(name)
+            if idx is None or idx >= n_pos or idx >= n_vel:
+                return  # message doesn't contain all 7 arm joints — skip
             q[k]    = msg.position[idx]
             qdot[k] = msg.velocity[idx]
 

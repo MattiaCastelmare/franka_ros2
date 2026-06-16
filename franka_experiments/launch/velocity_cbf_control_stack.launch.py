@@ -29,7 +29,7 @@ Phase 2  (bypass_cbf:=false)
 Startup sequence (delays relative to launch time)
 --------------------------------------------------
   t = 0                    franka bringup  (robot driver + joint_state_broadcaster)
-  t = 1 s                  world → fr3_link0 static TF (identity)
+  t = 1 s                  world → base static TF (identity)
   [Phase 2] t = 0 s        RealSense camera driver
   [Phase 2] t = 3 s        image republisher
   [Phase 2] t = 1 s        camera extrinsics static TF
@@ -157,7 +157,9 @@ def _launch_all(context):
         output='screen',
     )
 
-    # world → fr3_link0 static TF (always)
+    # world → base static TF (always).  robot_state_publisher already publishes
+    # base → fr3_link0 from the URDF fixed joint; publishing world → fr3_link0
+    # would give fr3_link0 two parents, orphaning 'base' and splitting the tree.
     world_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -167,7 +169,7 @@ def _launch_all(context):
             '--x', '0', '--y', '0', '--z', '0',
             '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
             '--frame-id', 'world',
-            '--child-frame-id', 'fr3_link0',
+            '--child-frame-id', 'base',
         ],
     )
 

@@ -42,6 +42,7 @@ import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
@@ -71,7 +72,7 @@ _ALL_PARAMS = [
     'fake_sensor_commands', 'load_gripper', 'controllers_yaml',
     'gazebo', 'lpf_alpha', 'tau_max_scale',
     'control_spawner_delay_s',
-    'enable_camera', 'camera_extrinsics_yaml', 'camera_delay_s',
+    'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
@@ -191,6 +192,28 @@ def _launch_all(context):
                                    'pentagon_qddot_commander will publish zeros until '
                                    'move_group is started manually'))
 
+    # ── [MoveIt] Finger joint state publisher ─────────────────────────────────
+    # move_group is launched with load_gripper:=true so its URDF includes
+    # fr3_finger_joint1/2, but joint_state_broadcaster only publishes the 7 arm
+    # joints. PlanningSceneMonitor warns "Missing fr3_finger_joint1" in a loop.
+    # MoveIt's CurrentStateMonitor merges per-joint updates from multiple
+    # messages on the same topic, so publishing the two finger joints separately
+    # at zero is sufficient — no need to merge into a single 9-joint message.
+    js_topic = f'/{p["namespace"]}/joint_states' if p['namespace'] else '/joint_states'
+    finger_state_publisher = ExecuteProcess(
+        cmd=[
+            'ros2', 'topic', 'pub', js_topic,
+            'sensor_msgs/msg/JointState',
+            '{name: [fr3_finger_joint1, fr3_finger_joint2],'
+            ' position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]}',
+            '--rate', '10',
+        ],
+        output='log',
+        name='finger_state_publisher',
+    )
+    actions.append(TimerAction(period=2.0, actions=[finger_state_publisher]))
+    actions.append(LogInfo(msg='[torque_stack] [MoveIt]          finger_state_publisher ENABLED'))
+
     # ── [Perception] RealSense camera ─────────────────────────────────────────
     if start_camera:
         cam_delay = float(p['camera_delay_s'])
@@ -210,22 +233,29 @@ def _launch_all(context):
         )
         actions.append(TimerAction(period=cam_delay + 3.0, actions=[image_republisher]))
 
-        extrinsics_path = p['camera_extrinsics_yaml']
-        with open(extrinsics_path, 'r') as f:
-            ext = yaml.safe_load(f)
-        t_ext = ext['translation']
-        r_ext = ext['rotation']
+        # TF publisher: base → camera_link (connects the RealSense TF sub-tree
+        # to the robot tree). Uses camera_link_extrinsics.yaml, NOT the same
+        # file as real_time_distance — those serve different purposes:
+        #   camera_extrinsics.yaml     → base→camera_color_optical_frame (calibration
+        #                                 used by real_time_distance for depth projection)
+        #   camera_link_extrinsics.yaml → base→camera_link (used here for TF tree
+        #                                 so MoveIt can transform from any camera frame)
+        link_ext_path = p['camera_link_extrinsics_yaml']
+        with open(link_ext_path, 'r') as f:
+            link_ext = yaml.safe_load(f)
+        t_link = link_ext['translation']
+        r_link = link_ext['rotation']
         camera_tf_node = Node(
             package='tf2_ros',
             executable='static_transform_publisher',
             name='camera_extrinsics_tf',
             output='log',
             arguments=[
-                '--x',  str(t_ext['x']), '--y',  str(t_ext['y']), '--z',  str(t_ext['z']),
-                '--qx', str(r_ext['x']), '--qy', str(r_ext['y']),
-                '--qz', str(r_ext['z']), '--qw', str(r_ext['w']),
-                '--frame-id', ext['parent_frame'],
-                '--child-frame-id', ext['child_frame'],
+                '--x',  str(t_link['x']), '--y',  str(t_link['y']), '--z',  str(t_link['z']),
+                '--qx', str(r_link['x']), '--qy', str(r_link['y']),
+                '--qz', str(r_link['z']), '--qw', str(r_link['w']),
+                '--frame-id', link_ext['parent_frame'],
+                '--child-frame-id', link_ext['child_frame'],
             ],
         )
         actions.append(TimerAction(period=1.0, actions=[camera_tf_node]))
@@ -289,6 +319,16 @@ def _launch_all(context):
         name='pentagon_qddot_commander',
         namespace=p['namespace'],
         output='screen',
+        parameters=[{
+            # Pentagon geometry: plane='front' is the YZ plane (X fixed at center[0]).
+            # r=0.15 m (declared in the node) keeps all vertices in z=[0.35, 0.65]
+            # and dist<0.72 m — within FR3 reach 0.855 m.
+            'center_xyz':       [0.4, 0.0, 0.5],
+            # Disable collision checking during Cartesian planning — CBF guarantees
+            # obstacle avoidance at runtime; the planner only needs a valid IK path.
+            'avoid_collisions': False,
+            'min_fraction':     0.95,
+        }],
     )
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
     actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     pentagon_qddot_commander '
@@ -332,7 +372,14 @@ def generate_launch_description():
                     FindPackageShare('franka_experiments'),
                     'config', 'camera_extrinsics.yaml',
                 ]),
-                description='Path to camera_extrinsics.yaml'),
+                description='Path to camera_extrinsics.yaml (base→camera_color_optical_frame, used by real_time_distance)'),
+            DeclareLaunchArgument(
+                'camera_link_extrinsics_yaml',
+                default_value=PathJoinSubstitution([
+                    FindPackageShare('franka_experiments'),
+                    'config', 'camera_link_extrinsics.yaml',
+                ]),
+                description='Path to camera_link_extrinsics.yaml (base→camera_link, used by static TF publisher)'),
             DeclareLaunchArgument(
                 'camera_delay_s',
                 default_value=str(_DEFAULTS.get('camera_delay_s', '0.0')),
