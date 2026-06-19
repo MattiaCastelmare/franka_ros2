@@ -304,6 +304,172 @@ class PentagonTrajectory:
 
 
 # ---------------------------------------------------------------------------
+# Geometric paths — parametrised by a dimensionless phase s (NOT time)
+#
+# A geometric path is pure geometry: it knows only the curve P(s) and its phase
+# derivatives P'(s), P''(s).  Timing (how s evolves with wall-clock time) is the
+# job of a TimingLaw (see utils.timing_law).  The reference is recovered by the
+# chain rule:
+#       p = P(s)
+#       v = P'(s) * s_dot
+#       a = P''(s) * s_dot**2 + P'(s) * s_ddot
+# ---------------------------------------------------------------------------
+
+class GeometricPath:
+    """Base class: position and phase derivatives as a function of phase ``s``.
+
+    Subclasses implement :meth:`_compute`, which fills the preallocated buffers
+    ``_P`` (position), ``_Pp`` (dP/ds) and ``_Ppp`` (d²P/ds²).  ``position`` /
+    ``velocity`` / ``acceleration`` apply the chain rule.  Results are *views*
+    into preallocated buffers (zero allocation per call) — copy them if you need
+    to retain values across calls.  The last evaluated ``s`` is cached so the
+    three accessors can be called in sequence for the same ``s`` without
+    recomputing the geometry.
+    """
+
+    def __init__(self) -> None:
+        self._P = np.zeros(3)            # P(s)
+        self._Pp = np.zeros(3)           # dP/ds
+        self._Ppp = np.zeros(3)          # d²P/ds²
+        self._v_out = np.zeros(3)
+        self._a_out = np.zeros(3)
+        self._tmp = np.zeros(3)
+        self._cache_s = math.nan
+
+    # subclasses fill _P, _Pp, _Ppp for the given phase
+    def _compute(self, s: float) -> None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def _ensure(self, s: float) -> None:
+        if s != self._cache_s:
+            self._compute(s)
+            self._cache_s = s
+
+    def derivatives(self, s: float):
+        """Return views ``(P, P', P'')`` at phase *s*."""
+        self._ensure(s)
+        return self._P, self._Pp, self._Ppp
+
+    def position(self, s: float):
+        self._ensure(s)
+        return self._P
+
+    def velocity(self, s: float, s_dot: float):
+        self._ensure(s)
+        np.multiply(self._Pp, s_dot, out=self._v_out)
+        return self._v_out
+
+    def acceleration(self, s: float, s_dot: float, s_ddot: float):
+        self._ensure(s)
+        # a = P''*s_dot² + P'*s_ddot
+        np.multiply(self._Ppp, s_dot * s_dot, out=self._a_out)
+        np.multiply(self._Pp, s_ddot, out=self._tmp)
+        self._a_out += self._tmp
+        return self._a_out
+
+
+class PentagonPath(GeometricPath):
+    """:class:`PentagonTrajectory` reparametrised as a function of phase ``s``.
+
+    One full loop spans ``Δs = 1`` (the phase is taken modulo 1, so the path is
+    cyclic and the corner blending / constant-speed geometry is byte-for-byte
+    the original TRACK behaviour).  Because the underlying trajectory is
+    arc-length / constant-speed parametrised, with ``t = (s mod 1) * cycle_time``::
+
+        P(s)   = traj.p(t)
+        P'(s)  = traj.v(t) * cycle_time
+        P''(s) = traj.a(t) * cycle_time**2
+
+    so a phase rate ``s_dot = 1/cycle_time`` reproduces the original
+    constant-speed pentagon exactly.
+    """
+
+    def __init__(self, traj: "PentagonTrajectory") -> None:
+        super().__init__()
+        self._traj = traj
+        self._T = float(traj.cycle_time)
+
+    @property
+    def vertices(self):
+        return self._traj.vertices
+
+    def _compute(self, s: float) -> None:
+        phi = s - math.floor(s)              # s mod 1 ∈ [0, 1)
+        p, v, a = self._traj.evaluate_with_accel(phi * self._T)
+        np.copyto(self._P, p)
+        np.multiply(v, self._T, out=self._Pp)
+        np.multiply(a, self._T * self._T, out=self._Ppp)
+
+
+class LinearSegmentPath(GeometricPath):
+    """Straight line from ``p0`` to ``p1`` over phase ``s ∈ [0, span]``.
+
+    Geometry only — ``dP/ds = (p1 − p0)/span`` is constant and ``d²P/ds² = 0``;
+    any ease-in/out is supplied by the timing law.  Used as the approach lead-in
+    so that ``P(0) = p0`` (the current EE position) — there is no position jump
+    at start-up and hence no separate APPROACH state.
+    """
+
+    def __init__(self, p0, p1, span: float = 1.0) -> None:
+        super().__init__()
+        self._p0 = np.asarray(p0, dtype=float).copy()
+        self._span = max(1e-9, float(span))
+        self._delta = np.asarray(p1, dtype=float).copy() - self._p0   # p1 − p0
+        np.divide(self._delta, self._span, out=self._Pp)              # constant dP/ds
+        self._Ppp[:] = 0.0                                            # constant
+
+    def _compute(self, s: float) -> None:
+        u = s / self._span
+        if u < 0.0:
+            u = 0.0
+        elif u > 1.0:
+            u = 1.0
+        np.multiply(self._delta, u, out=self._P)
+        self._P += self._p0
+        # _Pp and _Ppp are constant (set in __init__)
+
+
+class CompositePath(GeometricPath):
+    """Concatenate geometric segments along the phase axis.
+
+    ``segments`` is a list of ``(path, span)`` pairs.  Segment *i* owns the
+    global-phase interval ``[offset_i, offset_i + span_i)`` and is evaluated at
+    its *local* phase ``s − offset_i``.  The final segment is the open-ended tail
+    (its ``span`` is ignored) — typically the cyclic :class:`PentagonPath`.
+
+    This is what replaces the APPROACH→TRACK state machine: a single monotonic
+    phase ``s`` flows from the approach lead-in straight into cyclic tracking,
+    with no branching in the controller tick.
+    """
+
+    def __init__(self, segments) -> None:
+        super().__init__()
+        if not segments:
+            raise ValueError("CompositePath needs at least one segment")
+        self._paths = [p for (p, _) in segments]
+        offsets = [0.0]
+        for _, span in segments[:-1]:
+            offsets.append(offsets[-1] + float(span))
+        self._offsets = offsets
+
+    def _locate(self, s: float):
+        idx = 0
+        for i in range(len(self._paths) - 1):
+            if s >= self._offsets[i + 1]:
+                idx = i + 1
+            else:
+                break
+        return idx, s - self._offsets[idx]
+
+    def _compute(self, s: float) -> None:
+        idx, local = self._locate(s)
+        P, Pp, Ppp = self._paths[idx].derivatives(local)
+        np.copyto(self._P, P)
+        np.copyto(self._Pp, Pp)
+        np.copyto(self._Ppp, Ppp)
+
+
+# ---------------------------------------------------------------------------
 # Random waypoint sampling
 # ---------------------------------------------------------------------------
 

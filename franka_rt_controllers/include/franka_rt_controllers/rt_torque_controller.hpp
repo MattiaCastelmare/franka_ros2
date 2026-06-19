@@ -43,17 +43,10 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   std::string arm_id_;
   std::vector<std::string> joint_names_;
   std::string command_topic_;
-  double lpf_alpha_{1.0};
   bool is_gazebo_{false};
-
-  // Per-joint effort limits [N·m], scaled from {87,87,87,87,12,12,12}
-  std::array<double, kNumJoints> tau_max_{};
 
   realtime_tools::RealtimeBuffer<TorqueInput> command_buf_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr command_sub_;
-
-  // RT-only state: filtered command (LPF state, touched only in update())
-  std::array<double, kNumJoints> tau_filtered_{};
 
   void commandCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
 };

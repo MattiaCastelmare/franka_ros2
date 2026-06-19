@@ -4,13 +4,14 @@ topics:
   velocity_topic:     /NS_1/qdot_cmd
   qdot_nom:           /NS_1/tracking_qdot
   qddot_safe:         /NS_1/qddot_safe
+  cbf_status:         /NS_1/cbf_status
   multi_distance:     /human_robot/multi_distance
   per_link_distances: /cbf/per_link_distances
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
   d_safe: 0.15          # minimum safe distance from obstacles [m]
-  d_safe_default: 0.05  # alias kept for backward compatibility
+  d_safe_default: 0.1  # alias kept for backward compatibility
 
   # QP solver
   rho_slack: 1000.0

@@ -321,13 +321,10 @@ def _launch_all(context):
         output='screen',
         parameters=[{
             # Pentagon geometry: plane='front' is the YZ plane (X fixed at center[0]).
-            # r=0.15 m (declared in the node) keeps all vertices in z=[0.35, 0.65]
-            # and dist<0.72 m — within FR3 reach 0.855 m.
+            # The commander builds a cyclic joint-space trajectory offline (Pinocchio
+            # IK) and freezes its virtual time while the CBF filter reports active
+            # constraints (subscribes to /NS_1/cbf_status).
             'center_xyz':       [0.4, 0.0, 0.5],
-            # Disable collision checking during Cartesian planning — CBF guarantees
-            # obstacle avoidance at runtime; the planner only needs a valid IK path.
-            'avoid_collisions': False,
-            'min_fraction':     0.95,
         }],
     )
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))

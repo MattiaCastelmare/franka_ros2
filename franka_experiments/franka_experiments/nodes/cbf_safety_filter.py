@@ -194,6 +194,14 @@ class CBFSafetyFilter(Node):
         self._pub = self.create_publisher(
             Float64MultiArray, topics['qddot_safe'], 10)
 
+        # CBF activity status for downstream consumers (e.g. the motion
+        # generator freezes its virtual time while CBF is active).
+        # data = [n_active_constraints, slack].
+        self._status_pub = self.create_publisher(
+            Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
+        self._status_msg = Float64MultiArray()
+        self._status_msg.data = [0.0, 0.0]
+
         self.create_timer(1.0 / cbf_rate, self._update_constraints,
                           callback_group=grp_perc)
         self.create_timer(1.0 / qp_rate, self._qp_tick,
@@ -349,6 +357,7 @@ class CBFSafetyFilter(Node):
         )
         solve_ms = (time.perf_counter() - t0) * 1e3
 
+        slack = 0.0
         if x is None or not np.all(np.isfinite(x)):
             self.get_logger().error('QP failed → braking output',
                                     throttle_duration_sec=0.5)
@@ -358,12 +367,16 @@ class CBFSafetyFilter(Node):
             self._warm = x
             qddot_safe = x[:NV]
             if n_c > 0:
+                slack = float(x[-1])
                 self.get_logger().info(
-                    f'CBF ON  n_c={n_c}  slack={float(x[-1]):.2e}  '
+                    f'CBF ON  n_c={n_c}  slack={slack:.2e}  '
                     f'solve={solve_ms:.2f} ms',
                     throttle_duration_sec=0.5)
 
         self._publish(qddot_safe)
+        self._status_msg.data[0] = float(n_c)
+        self._status_msg.data[1] = slack
+        self._status_pub.publish(self._status_msg)
 
     def _publish(self, qddot_safe: np.ndarray) -> None:
         msg      = Float64MultiArray()

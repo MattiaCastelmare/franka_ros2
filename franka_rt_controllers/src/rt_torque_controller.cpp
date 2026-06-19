@@ -10,8 +10,6 @@
 
 namespace franka_rt_controllers {
 
-static constexpr std::array<double, 7> kDefaultTauMax{87, 87, 87, 87, 12, 12, 12};
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  Interface configuration
 // ═══════════════════════════════════════════════════════════════════════════
@@ -52,19 +50,15 @@ controller_interface::return_type RtTorqueController::update(
   // 1. Read latest user torques (lock-free)
   const auto input = *command_buf_.readFromRT();
 
-  // 2. LPF: alpha=1.0 → pass-through; alpha<1.0 → smoothing
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    tau_filtered_[i] = lpf_alpha_ * input.tau[i]
-                     + (1.0 - lpf_alpha_) * tau_filtered_[i];
-  }
-
-  // 3. tau_hw = clip(tau_filtered, -tau_max, tau_max)
+  // 2. Pure pass-through: tau_hw = tau_in.
+  //    NO low-pass filtering and NO software saturation here — safety limits,
+  //    torque saturation and collision behavior are delegated entirely to the
+  //    Franka low-level stack.
   //    NOTE: gravity compensation is handled by the Franka firmware — do NOT
   //    add g(q) here, or gravity will be compensated twice and the robot will
   //    accelerate upward at activation.
   for (size_t i = 0; i < kNumJoints; ++i) {
-    command_interfaces_[i].set_value(
-        std::clamp(tau_filtered_[i], -tau_max_[i], tau_max_[i]));
+    command_interfaces_[i].set_value(input.tau[i]);
   }
 
   return controller_interface::return_type::OK;
@@ -79,8 +73,6 @@ CallbackReturn RtTorqueController::on_init() {
     auto_declare<std::string>("arm_id", "fr3");
     auto_declare<std::vector<std::string>>("joints", std::vector<std::string>{});
     auto_declare<std::string>("command_topic", "torque_cmd");
-    auto_declare<double>("lpf_alpha", 1.0);
-    auto_declare<double>("tau_max_scale", 1.0);
     auto_declare<bool>("gazebo", false);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception in RtTorqueController::on_init: %s\n", e.what());
@@ -101,9 +93,7 @@ CallbackReturn RtTorqueController::on_configure(
   // ── Parameters ─────────────────────────────────────────────────────────
   arm_id_        = get_node()->get_parameter("arm_id").as_string();
   command_topic_ = get_node()->get_parameter("command_topic").as_string();
-  lpf_alpha_     = get_node()->get_parameter("lpf_alpha").as_double();
   is_gazebo_     = get_node()->get_parameter("gazebo").as_bool();
-  const double tau_max_scale = get_node()->get_parameter("tau_max_scale").as_double();
 
   const auto joints_param = get_node()->get_parameter("joints").as_string_array();
   if (joints_param.empty()) {
@@ -117,10 +107,6 @@ CallbackReturn RtTorqueController::on_configure(
     return CallbackReturn::ERROR;
   } else {
     joint_names_.assign(joints_param.begin(), joints_param.end());
-  }
-
-  for (size_t i = 0; i < kNumJoints; ++i) {
-    tau_max_[i] = kDefaultTauMax[i] * tau_max_scale;
   }
 
   // ── SetFullCollisionBehavior ────────────────────────────────────────────
@@ -160,10 +146,9 @@ CallbackReturn RtTorqueController::on_configure(
       });
 
   RCLCPP_INFO(logger,
-      "RtTorqueController configured  arm=%s  topic=%s  "
-      "lpf_alpha=%.2f  tau_max[0]=%.0f  tau_max[4]=%.0f  gazebo=%s",
-      arm_id_.c_str(), command_topic_.c_str(), lpf_alpha_,
-      tau_max_[0], tau_max_[4], is_gazebo_ ? "true" : "false");
+      "RtTorqueController configured (pure torque pass-through, no LPF/clamp)  "
+      "arm=%s  topic=%s  gazebo=%s",
+      arm_id_.c_str(), command_topic_.c_str(), is_gazebo_ ? "true" : "false");
 
   return CallbackReturn::SUCCESS;
 }
@@ -175,7 +160,6 @@ CallbackReturn RtTorqueController::on_configure(
 CallbackReturn RtTorqueController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
 
-  tau_filtered_.fill(0.0);
   TorqueInput zero{};
   command_buf_.writeFromNonRT(zero);
   for (size_t i = 0; i < kNumJoints; ++i) {

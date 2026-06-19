@@ -1,0 +1,16 @@
+parent_frame: base
+child_frame: camera_link
+translation:
+  x: 1.993009
+  y: 0.032024
+  z: 1.080394
+rotation:
+  x: -0.157767
+  y: -0.007306
+  z: 0.987320
+  w: 0.016008
+# base→camera_link: derived from calibrated base→camera_color_optical_frame
+# (in camera_extrinsics.yaml) by composing with inv(camera_link→camera_color_optical_frame).
+# D435i typical offset used: t=[0,0.015,0] q=[-0.5,0.5,-0.5,0.5] (xyzw).
+# Verify with `ros2 topic echo /tf_static | grep -A 10 camera_link` on the live robot
+# and rerun the derivation script in FIX_GUIDE_franka_experiments.md if the values differ.
