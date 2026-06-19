@@ -31,9 +31,12 @@ Safety: qddot output is clamped to ±qddot_max per joint at every tick.
 
 from __future__ import annotations
 
+import csv
 import math
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -111,6 +114,10 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('kd_cart',              9.0)
         self.declare_parameter('kp_rot',              10.0)
         self.declare_parameter('kd_rot',               6.0)
+        # High-rate CSV logging: output directory + measured-effort source topic.
+        self.declare_parameter('log_dir',
+                               '/ros2_ws/src/franka_experiments/franka_logs')
+        self.declare_parameter('joint_effort_topic', '/NS_1/joint_states')
 
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
@@ -131,6 +138,8 @@ class PentagonQddotCommander(Node):
         self.kd        = float(self.get_parameter('kd_cart').value)
         self.kp_rot    = float(self.get_parameter('kp_rot').value)
         self.kd_rot    = float(self.get_parameter('kd_rot').value)
+        self._log_dir  = str(self.get_parameter('log_dir').value)
+        effort_topic   = str(self.get_parameter('joint_effort_topic').value)
         self._dt       = 1.0 / self.rate_hz
 
         # Per-joint q̈ clamps from fr3_control.yaml joint_limits column [3].
@@ -222,6 +231,19 @@ class PentagonQddotCommander(Node):
         self._q_d            = np.zeros(NUM_JOINTS)
         self._dq_d           = np.zeros(NUM_JOINTS)
 
+        # ── Logging buffers (pre-allocated → no per-tick allocation) ──────
+        # tau_des = M(q)·q̈_des + nle(q, q̇).  computeAllTerms() already fills
+        # pin_data.M (upper triangle only) and pin_data.nle each tick, so we
+        # only need scratch space for the matrix-vector product.
+        self._qddot_full_des = np.zeros(nv)          # full-model q̈ (arm rows set)
+        self._tau_full       = np.zeros(nv)          # full-model torque scratch
+        self._tau_des        = np.zeros(NUM_JOINTS)  # desired torque (arm joints)
+        self._tau_meas       = np.zeros(NUM_JOINTS)  # measured torque (from effort)
+        # CRBA stores only the upper triangle of M; cache the lower-triangle
+        # indices once so we can mirror it to a full symmetric matrix in-place.
+        self._M_tril         = np.tril_indices(nv, -1)
+        self._eff_imap: Optional[List[int]] = None   # effort name→index map
+
         # Pre-built JointState setpoint message (avoids allocation per tick)
         self._sp_msg         = SensorJointState()
         self._sp_msg.name    = list(FR3_JOINT_NAMES)
@@ -253,12 +275,19 @@ class PentagonQddotCommander(Node):
 
         self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, 10)
 
+        # Measured-effort subscription (configurable; used only for logging)
+        self._eff_sub = self.create_subscription(
+            JointState, effort_topic, self._effort_cb, 10)
+
         # ── Publisher / timer ─────────────────────────────────────────────
         self.pub      = self.create_publisher(Float64MultiArray, qddot_topic, 10)
         self._sp_pub  = self.create_publisher(SensorJointState,  q_des_topic,  10)
         self.timer    = self.create_timer(self._dt, self._tick)
         self.t0    = self.get_clock().now()
         self._tlog = ThrottledLogger(self.get_logger())
+
+        # High-rate CSV logger (opened once; closed on node destruction)
+        self._init_logger(effort_topic)
 
         self.get_logger().info(
             f'pentagon_qddot_commander\n'
@@ -292,6 +321,20 @@ class PentagonQddotCommander(Node):
         with self._js_lock:
             self._js_write, self._js_read = self._js_read, self._js_write
         self._js_stamp = self.get_clock().now()
+
+    # ── Measured effort callback (logging only) ───────────────────────────
+
+    def _effort_cb(self, msg: JointState) -> None:
+        """Cache measured joint torques (msg.effort) for the next log row."""
+        if self._eff_imap is None:
+            try:
+                self._eff_imap = [msg.name.index(jn) for jn in FR3_JOINT_NAMES]
+            except ValueError:
+                return
+        if len(msg.effort) <= max(self._eff_imap):
+            return
+        for k, i in enumerate(self._eff_imap):
+            self._tau_meas[k] = msg.effort[i]
 
     # ── Stop ─────────────────────────────────────────────────────────────
 
@@ -471,6 +514,12 @@ class PentagonQddotCommander(Node):
             self._sp_msg.effort[i]   = float(self._q_ddot[i])
         self._sp_pub.publish(self._sp_msg)
 
+        # ── High-rate CSV log (one row per tick; no-op if logger disabled) ───
+        if self._csv_writer is not None:
+            self._compute_tau_des()                 # fills self._tau_des
+            self._log_data(t, js['q'], qdot, p_d, v_d, a_d,
+                           s, s_dot, s_ddot, w, ee_err)
+
         if self._tlog.due(t):
             en = float(np.linalg.norm(self._e6[:3]))
             qn = float(np.linalg.norm(self._q_ddot))
@@ -551,6 +600,123 @@ class PentagonQddotCommander(Node):
             f'Trajectory start: approach {vec_to_str(p0)} → '
             f'{vec_to_str(entry)}  (S_a={self._approach_span:.3f}, '
             f'timing={self.timing_law_name})')
+
+    # ── High-rate CSV logging ──────────────────────────────────────────────
+
+    def _init_logger(self, effort_topic: str) -> None:
+        """Open a timestamped CSV file once and write the header row.
+
+        On any failure the node keeps running with logging disabled
+        (``self._csv_writer is None``) after emitting a warning.
+        """
+        # Disabled by default until the file is successfully opened.
+        self._log_file = None
+        self._csv_writer = None
+
+        # Column layout — keep in sync with _log_data().
+        header = ['time']
+        header += [f'q{i}'          for i in range(1, 8)]   # real positions
+        header += [f'dq{i}'         for i in range(1, 8)]   # real velocities
+        header += [f'qddot_des_{i}' for i in range(1, 8)]   # commanded accel
+        header += [f'q_des_{i}'     for i in range(1, 8)]   # integrated q_d
+        header += [f'dq_des_{i}'    for i in range(1, 8)]   # integrated dq_d
+        header += ['ee_x', 'ee_y', 'ee_z']                  # real EE position
+        header += ['ee_x_des', 'ee_y_des', 'ee_z_des']      # desired EE position
+        header += ['vx_des', 'vy_des', 'vz_des']            # desired Cart. velocity
+        header += ['ax_des', 'ay_des', 'az_des']            # desired Cart. accel
+        header += ['ex', 'ey', 'ez']                        # Cartesian error
+        header += ['ee_error_norm']                         # ‖error‖
+        header += ['s', 's_dot', 's_ddot']                  # phase variable
+        header += ['manipulability', 'lambda_sq']           # conditioning
+        header += [f'tau_des_{i}'   for i in range(1, 8)]   # desired torque
+        header += [f'tau_meas_{i}'  for i in range(1, 8)]   # measured torque
+
+        # Pre-allocated row buffer (filled in place every tick → no allocation).
+        self._log_row = [0.0] * len(header)
+
+        try:
+            log_dir = Path(self._log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            path = log_dir / f'pentagon_run_{stamp}.csv'
+            # 1 MiB buffer keeps disk I/O off the control path; newline=''
+            # is required for the csv module on all platforms.
+            self._log_file = open(path, 'w', newline='', buffering=1 << 20)
+            self._csv_writer = csv.writer(self._log_file)
+            self._csv_writer.writerow(header)
+            self.get_logger().info(
+                f'Logging to {path}  (effort topic: {effort_topic})')
+        except Exception as exc:  # noqa: BLE001
+            self._log_file = None
+            self._csv_writer = None
+            self.get_logger().warn(
+                f'Could not open log file in {self._log_dir}: {exc} — '
+                f'continuing without logging.')
+
+    def _compute_tau_des(self) -> None:
+        """tau_des = M(q)·q̈_des + nle(q, q̇), written into self._tau_des.
+
+        Reuses M and nle already computed by computeAllTerms() this tick.
+        CRBA only fills M's upper triangle, so mirror it to the lower triangle
+        before the matrix-vector product.
+        """
+        M = self.pin_data.M
+        M[self._M_tril] = M.T[self._M_tril]            # symmetrise in place
+        self._qddot_full_des[:] = 0.0
+        for k, vid in enumerate(self._arm_v_ids):
+            self._qddot_full_des[vid] = self._q_ddot[k]
+        np.dot(M, self._qddot_full_des, out=self._tau_full)
+        self._tau_full += self.pin_data.nle
+        for k, vid in enumerate(self._arm_v_ids):
+            self._tau_des[k] = self._tau_full[vid]
+
+    def _log_data(self, t, q, dq, p_d, v_d, a_d,
+                  s, s_dot, s_ddot, w, ee_err) -> None:
+        """Fill the pre-allocated row buffer and write it to the CSV file."""
+        row = self._log_row
+        o = 0
+        row[o] = float(t);                                       o += 1
+        for i in range(NUM_JOINTS): row[o + i] = float(q[i]);            # real q
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(dq[i]);           # real dq
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._q_ddot[i])  # q̈_des
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._q_d[i])     # q_des
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._dq_d[i])    # dq_des
+        o += NUM_JOINTS
+        row[o] = float(self._p_ee[0]); row[o+1] = float(self._p_ee[1]); row[o+2] = float(self._p_ee[2]); o += 3
+        row[o] = float(p_d[0]);        row[o+1] = float(p_d[1]);        row[o+2] = float(p_d[2]);        o += 3
+        row[o] = float(v_d[0]);        row[o+1] = float(v_d[1]);        row[o+2] = float(v_d[2]);        o += 3
+        row[o] = float(a_d[0]);        row[o+1] = float(a_d[1]);        row[o+2] = float(a_d[2]);        o += 3
+        row[o] = float(self._e6[0]);   row[o+1] = float(self._e6[1]);   row[o+2] = float(self._e6[2]);   o += 3
+        row[o] = float(ee_err);                                  o += 1
+        row[o] = float(s); row[o+1] = float(s_dot); row[o+2] = float(s_ddot); o += 3
+        row[o] = float(w); row[o+1] = float(self._lambda_sq);    o += 2
+        for i in range(NUM_JOINTS): row[o + i] = float(self._tau_des[i])  # tau_des
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._tau_meas[i]) # tau_meas
+        o += NUM_JOINTS
+
+        self._csv_writer.writerow(row)
+
+    def _close_logger(self) -> None:
+        """Flush and close the CSV file (idempotent)."""
+        if self._log_file is not None:
+            try:
+                self._log_file.flush()
+                self._log_file.close()
+                self.get_logger().info('Log file closed.')
+            except Exception:  # noqa: BLE001
+                pass
+            self._log_file = None
+            self._csv_writer = None
+
+    def destroy_node(self):
+        """Ensure the log file is closed on node destruction."""
+        self._close_logger()
+        return super().destroy_node()
 
 
 def main(args=None):
