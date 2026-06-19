@@ -23,10 +23,18 @@ Initial smoothing lives in the timing law (a C² soft-start ramps ``s_dot`` from
 0), not in a separate state.  A constant phase rate ``1/cycle_time`` after the
 ramp reproduces the original constant-speed pentagon exactly.
 
-The feedback controller (task-space PD + adaptive damped-LS pseudo-inverse) and
-the ``qddot → dq_d → q_d`` integration are unchanged.
+The feedback controller is task-space PD + adaptive damped-LS pseudo-inverse
+with a continuous regularisation floor, augmented by a projected null-space
+posture task (``N = I − J⁺J``) that damps redundant internal motion.
 
-Safety: qddot output is clamped to ±qddot_max per joint at every tick.
+The ``qddot → dq_d → q_d`` reference is produced by a *bounded* integrator: the
+double integration is coupled to the measured joint state (``k_sync_pos`` /
+``k_sync_vel``) and hard-limited (``q_des_max_error`` / ``dq_des_max``) so the
+reference can never drift away from the robot, plus a two-level anti-windup
+(soft blend / hard snap) on the Cartesian error.
+
+Safety: qddot output is clamped to ±qddot_max per joint at every tick; per-joint
+saturation ratios are logged for offline actuator-limit analysis.
 """
 
 from __future__ import annotations
@@ -119,6 +127,26 @@ class PentagonQddotCommander(Node):
                                '/ros2_ws/src/franka_experiments/franka_logs')
         self.declare_parameter('joint_effort_topic', '/NS_1/joint_states')
 
+        # ── Robustness / stability parameters (control-theoretic review) ──
+        # Bounded reference integrator: couple q_d/dq_d to the measured state
+        # so the double integration cannot drift without bound.
+        self.declare_parameter('k_sync_pos',       2.0)
+        self.declare_parameter('k_sync_vel',       5.0)
+        # Two-level anti-windup on Cartesian error: soft → blend, hard → snap.
+        self.declare_parameter('soft_reset_thr',   0.02)
+        self.declare_parameter('hard_reset_thr',   0.05)
+        self.declare_parameter('soft_reset_alpha', 0.95)
+        # Null-space secondary task: posture regulation toward the start pose.
+        self.declare_parameter('k_null',           5.0)
+        self.declare_parameter('d_null',           2.0)
+        # Damped least-squares regularisation (continuous, with a real floor).
+        self.declare_parameter('lambda_sq_min',    1e-4)
+        self.declare_parameter('lambda_sq_max',    5e-2)
+        self.declare_parameter('manip_thr',        0.05)
+        # Reference sanity limits: keep integrated references physical.
+        self.declare_parameter('q_des_max_error',  0.5)   # rad, |q_d − q|
+        self.declare_parameter('dq_des_max',       2.0)   # rad/s
+
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
         self.reset_thr = float(self.get_parameter('reset_thr_m').value)
@@ -140,6 +168,18 @@ class PentagonQddotCommander(Node):
         self.kd_rot    = float(self.get_parameter('kd_rot').value)
         self._log_dir  = str(self.get_parameter('log_dir').value)
         effort_topic   = str(self.get_parameter('joint_effort_topic').value)
+        self.k_sync_pos       = float(self.get_parameter('k_sync_pos').value)
+        self.k_sync_vel       = float(self.get_parameter('k_sync_vel').value)
+        self.soft_reset_thr   = float(self.get_parameter('soft_reset_thr').value)
+        self.hard_reset_thr   = float(self.get_parameter('hard_reset_thr').value)
+        self.soft_reset_alpha = float(self.get_parameter('soft_reset_alpha').value)
+        self.k_null           = float(self.get_parameter('k_null').value)
+        self.d_null           = float(self.get_parameter('d_null').value)
+        self._lambda_sq_min   = float(self.get_parameter('lambda_sq_min').value)
+        self._lambda_sq_max   = float(self.get_parameter('lambda_sq_max').value)
+        self._manip_thr       = float(self.get_parameter('manip_thr').value)
+        self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
+        self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
         self._dt       = 1.0 / self.rate_hz
 
         # Per-joint q̈ clamps from fr3_control.yaml joint_limits column [3].
@@ -217,12 +257,35 @@ class PentagonQddotCommander(Node):
         self._JJT_reg        = np.zeros((6, 6))
         self._J_pinv         = np.zeros((NUM_JOINTS, 6))
         self._q_ddot         = np.zeros(NUM_JOINTS)
-        # Adaptive damped-LS parameters (Yoshikawa manipulability)
-        self._lambda_sq_min  = 1e-6          # floor (well-conditioned poses)
-        self._lambda_sq_max  = 5e-2          # ceiling (near singularity)
-        self._manip_thr      = 0.05          # w₀: manipulability threshold
+        # Adaptive damped-LS state (limits come from the ROS params above).
         self._lambda_sq      = self._lambda_sq_min
         self._orient_ok      = False
+
+        # ── Null-space posture control (Change 3) ─────────────────────────
+        self._I7             = np.eye(NUM_JOINTS)
+        self._N              = np.zeros((NUM_JOINTS, NUM_JOINTS))   # I − J⁺J
+        self._JpinvJ         = np.zeros((NUM_JOINTS, NUM_JOINTS))
+        self._qddot_task     = np.zeros(NUM_JOINTS)   # task-space solution
+        self._qddot_null     = np.zeros(NUM_JOINTS)   # raw secondary objective
+        self._null_proj      = np.zeros(NUM_JOINTS)   # N·qddot_null (added term)
+        self._q_home         = np.zeros(NUM_JOINTS)   # captured at start-up
+        self._tmp7           = np.zeros(NUM_JOINTS)
+
+        # ── Bounded-integrator / reference-limit scratch (Changes 1 & 6) ──
+        self._sync_vel       = np.zeros(NUM_JOINTS)
+        self._sync_pos       = np.zeros(NUM_JOINTS)
+        self._q_lo           = np.zeros(NUM_JOINTS)
+        self._q_hi           = np.zeros(NUM_JOINTS)
+
+        # ── Saturation monitor + extended diagnostics (Changes 5 & 8) ─────
+        self._sat_ratio            = np.zeros(NUM_JOINTS)
+        self._diag_max_sat         = 0.0
+        self._diag_num_sat         = 0
+        self._diag_qddot_norm      = 0.0
+        self._diag_qddot_task_norm = 0.0
+        self._diag_qddot_null_norm = 0.0
+        self._diag_sync_pos_norm   = 0.0
+        self._diag_sync_vel_norm   = 0.0
 
         # Actual-dt tracking — compensates Python timer jitter in integration
         self._prev_tick_time = None
@@ -468,38 +531,99 @@ class PentagonQddotCommander(Node):
         np.multiply(self.kd_rot, self._edot6[3:], out=self._tmp3)
         self._xddot6[3:] += self._tmp3
 
-        # Adaptive damped LS: λ² = λ_max * (1 - w/w₀)² when w < w₀
+        # Adaptive damped LS with a continuous, non-zero floor (Change 4).
+        #   λ² = λ_min + (λ_max − λ_min)·f(w),  f(w)=(1−w/w₀)² for w<w₀ else 0
+        # Continuous at w=w₀ (f→0) and never below λ_min, so the pseudo-inverse
+        # is always regularised — no near-undamped 1e-6 regime.
         np.dot(self._J_arm, self._J_arm.T, out=self._JJT)
         w = math.sqrt(max(0.0, float(np.linalg.det(self._JJT))))
         if w < self._manip_thr:
-            self._lambda_sq = self._lambda_sq_max * (1.0 - w / self._manip_thr) ** 2
+            f_w = (1.0 - w / self._manip_thr) ** 2
         else:
-            self._lambda_sq = self._lambda_sq_min
+            f_w = 0.0
+        self._lambda_sq = (self._lambda_sq_min
+                           + (self._lambda_sq_max - self._lambda_sq_min) * f_w)
         np.copyto(self._JJT_reg, self._JJT)
         for i in range(6):
             self._JJT_reg[i, i] += self._lambda_sq
-        np.dot(self._J_arm.T, np.linalg.inv(self._JJT_reg), out=self._J_pinv)
 
-        # qddot = J_pinv @ (xddot6 − dJ·qdot)
+        # J⁺ = Jᵀ(JJᵀ+λ²I)⁻¹.  Avoid an explicit inverse (Change 7): A is SPD,
+        # so solve A·X = J for X = A⁻¹J, then J⁺ = (A⁻¹J)ᵀ (A⁻¹ symmetric).
+        self._J_pinv[:] = np.linalg.solve(self._JJT_reg, self._J_arm).T
+
+        # Task-space solution: qddot_task = J⁺(ẍ_d − J̇·q̇)   (7,)
         np.dot(self._dJ_arm, qdot, out=self._tmp6)
         np.subtract(self._xddot6, self._tmp6, out=self._xddot6)
-        np.dot(self._J_pinv, self._xddot6, out=self._q_ddot)
+        np.dot(self._J_pinv, self._xddot6, out=self._qddot_task)
+
+        # Null-space posture control (Change 3): N = I − J⁺J  (7×7).
+        #   qddot_null = −k_null·(q − q_home) − d_null·q̇
+        # Projected by N so it leaves the task acceleration untouched while
+        # damping redundant internal motion (reduces wrist loading / drift).
+        np.dot(self._J_pinv, self._J_arm, out=self._JpinvJ)     # (7×6)(6×7)=7×7
+        np.subtract(self._I7, self._JpinvJ, out=self._N)
+        np.subtract(js['q'], self._q_home, out=self._qddot_null)
+        self._qddot_null *= -self.k_null
+        np.multiply(self.d_null, qdot, out=self._tmp7)
+        self._qddot_null -= self._tmp7
+        np.dot(self._N, self._qddot_null, out=self._null_proj)
+
+        # Total command: task + projected null-space term
+        np.add(self._qddot_task, self._null_proj, out=self._q_ddot)
+        self._diag_qddot_task_norm = float(np.linalg.norm(self._qddot_task))
+        self._diag_qddot_null_norm = float(np.linalg.norm(self._null_proj))
+
+        # Saturation monitor (Change 5): per-joint ratio BEFORE clipping.
+        np.abs(self._q_ddot, out=self._sat_ratio)
+        self._sat_ratio /= self.qddot_max
+        self._diag_max_sat = float(self._sat_ratio.max())
+        self._diag_num_sat = int(np.count_nonzero(self._sat_ratio > 0.95))
 
         # Safety clamp
         np.clip(self._q_ddot, -self.qddot_max, self.qddot_max, out=self._q_ddot)
+        self._diag_qddot_norm = float(np.linalg.norm(self._q_ddot))
 
-        # ── Integrate qddot → dq_d → q_d (Euler, actual dt for jitter tolerance)
+        # ── Bounded reference integration (Change 1) ─────────────────────────
+        # Pure ∫∫qddot drifts indefinitely; couple the reference to the
+        # measured state with first-order sync terms so it stays physical:
+        #   dq_d += qddot·dt + k_sync_vel·(q̇ − dq_d)·dt
+        #   q_d  += dq_d·dt  + k_sync_pos·(q  − q_d )·dt
         self._dq_d += self._q_ddot * actual_dt
-        self._q_d  += self._dq_d   * actual_dt
+        np.subtract(qdot, self._dq_d, out=self._sync_vel)
+        self._sync_vel *= (self.k_sync_vel * actual_dt)
+        self._dq_d += self._sync_vel
+        # Reference velocity clamp (Change 6)
+        np.clip(self._dq_d, -self.dq_des_max, self.dq_des_max, out=self._dq_d)
 
-        # Reset q_d to actual joint state if EE error is too large (anti-windup)
+        self._q_d += self._dq_d * actual_dt
+        np.subtract(js['q'], self._q_d, out=self._sync_pos)
+        self._sync_pos *= (self.k_sync_pos * actual_dt)
+        self._q_d += self._sync_pos
+        # Reference position clamp around the measured config (Change 6)
+        np.subtract(js['q'], self.q_des_max_error, out=self._q_lo)
+        np.add(js['q'],      self.q_des_max_error, out=self._q_hi)
+        np.clip(self._q_d, self._q_lo, self._q_hi, out=self._q_d)
+
+        self._diag_sync_vel_norm = float(np.linalg.norm(self._sync_vel))
+        self._diag_sync_pos_norm = float(np.linalg.norm(self._sync_pos))
+
+        # ── Two-level anti-windup on Cartesian error (Change 2) ──────────────
+        # hard_reset_thr > soft_reset_thr: snap on large error, blend on small.
         ee_err = float(np.linalg.norm(self._e6[:3]))
-        if ee_err > self.reset_thr:
-            np.copyto(self._q_d,  js['q'])
-            np.copyto(self._dq_d, js['qdot'])
+        if ee_err > self.hard_reset_thr:
+            np.copyto(self._q_d,  js['q'])          # full synchronisation
+            np.copyto(self._dq_d, qdot)
             if self._tlog.due(t):
                 self.get_logger().warn(
-                    f'q_d reset: EE error {ee_err:.3f} m > {self.reset_thr} m')
+                    f'HARD reset: EE error {ee_err:.3f} m > {self.hard_reset_thr} m')
+        elif ee_err > self.soft_reset_thr:
+            a = self.soft_reset_alpha               # blend toward measured state
+            self._q_d  *= a; self._q_d  += (1.0 - a) * js['q']
+            self._dq_d *= a; self._dq_d += (1.0 - a) * qdot
+            if self._tlog.due(t):
+                self.get_logger().info(
+                    f'soft reset: EE error {ee_err:.3f} m > {self.soft_reset_thr} m '
+                    f'(blend α={a})')
 
         # ── Publish Float64MultiArray (legacy / CBF filter path) ─────────────
         for i in range(NUM_JOINTS):
@@ -527,7 +651,11 @@ class PentagonQddotCommander(Node):
             self._tlog.info(
                 f'[{seg} s={s:.3f} t={t:.1f}s] '
                 f'p=[{vec_to_str(self._p_ee)}] p_d=[{vec_to_str(p_d)}] '
-                f'|e|={en:.4f} m  |qddot|={qn:.3f} rad/s²')
+                f'|e|={en:.4f} m  |qddot|={qn:.3f} rad/s²\n'
+                f'        |null|={self._diag_qddot_null_norm:.3f} '
+                f'max_sat={self._diag_max_sat:.2f} nsat={self._diag_num_sat} '
+                f'sync_p={self._diag_sync_pos_norm:.4f} '
+                f'sync_v={self._diag_sync_vel_norm:.4f} λ²={self._lambda_sq:.2e}')
 
     # ── Trajectory start-up (replaces the APPROACH/TRACK state machine) ─────
 
@@ -595,6 +723,9 @@ class PentagonQddotCommander(Node):
         np.copyto(self._q_d,  js['q'])
         np.copyto(self._dq_d, js['qdot'])
 
+        # Capture the start configuration as the null-space home posture
+        np.copyto(self._q_home, js['q'])
+
         self._running = True
         self.get_logger().info(
             f'Trajectory start: approach {vec_to_str(p0)} → '
@@ -630,6 +761,11 @@ class PentagonQddotCommander(Node):
         header += ['manipulability', 'lambda_sq']           # conditioning
         header += [f'tau_des_{i}'   for i in range(1, 8)]   # desired torque
         header += [f'tau_meas_{i}'  for i in range(1, 8)]   # measured torque
+        # Extended diagnostics (Change 8)
+        header += ['qddot_norm', 'qddot_task_norm', 'qddot_null_norm']
+        header += [f'sat_joint_{i}' for i in range(1, 8)]   # |qddot|/qddot_max
+        header += ['max_sat_ratio', 'num_saturated_joints']
+        header += ['sync_pos_norm', 'sync_vel_norm']
 
         # Pre-allocated row buffer (filled in place every tick → no allocation).
         self._log_row = [0.0] * len(header)
@@ -698,6 +834,16 @@ class PentagonQddotCommander(Node):
         o += NUM_JOINTS
         for i in range(NUM_JOINTS): row[o + i] = float(self._tau_meas[i]) # tau_meas
         o += NUM_JOINTS
+        # Extended diagnostics (Change 8)
+        row[o] = self._diag_qddot_norm;      o += 1
+        row[o] = self._diag_qddot_task_norm; o += 1
+        row[o] = self._diag_qddot_null_norm; o += 1
+        for i in range(NUM_JOINTS): row[o + i] = float(self._sat_ratio[i])  # sat ratio
+        o += NUM_JOINTS
+        row[o] = self._diag_max_sat;          o += 1
+        row[o] = float(self._diag_num_sat);   o += 1
+        row[o] = self._diag_sync_pos_norm;    o += 1
+        row[o] = self._diag_sync_vel_norm;    o += 1
 
         self._csv_writer.writerow(row)
 
