@@ -320,11 +320,13 @@ def _launch_all(context):
         namespace=p['namespace'],
         output='screen',
         parameters=[{
-            # Pentagon geometry: plane='front' is the YZ plane (X fixed at center[0]).
+            # Geometry: plane='front' is the YZ plane (X fixed at center[0]).
             # The commander builds a cyclic joint-space trajectory offline (Pinocchio
             # IK) and freezes its virtual time while the CBF filter reports active
             # constraints (subscribes to /NS_1/cbf_status).
-            'center_xyz':       [0.4, 0.0, 0.5],
+            'center_xyz':       [0.4, 0.0, 0.45],
+            'path_type':        'circle',
+            'radius':           0.25,   # m — circle radius in the YZ plane
         }],
     )
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))

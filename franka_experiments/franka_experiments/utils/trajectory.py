@@ -23,6 +23,22 @@ _GL5_W = np.array([0.11846344252809454, 0.23931433524968324, 0.28444444444444444
 # Samples used to build the per-blend arc-length inverse table.
 _N_TBL = 32
 
+# ---------------------------------------------------------------------------
+# In-plane unit axes for each supported plane: (û, v̂) ← (first, second) planar
+# coordinate.  Shared by every planar generator/path so the embedding of a 2-D
+# figure into the 3-D base frame is identical everywhere.  Matches
+# :class:`PentagonTrajectory`'s convention.
+#   "xy"            → û = x̂, v̂ = ŷ
+#   "xz"            → û = x̂, v̂ = ẑ
+#   "yz" / "front"  → û = ŷ, v̂ = ẑ
+# ---------------------------------------------------------------------------
+_PLANE_AXES = {
+    'xy':    (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])),
+    'xz':    (np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0])),
+    'yz':    (np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])),
+    'front': (np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])),
+}
+
 
 # ---------------------------------------------------------------------------
 # Pentagon trajectory
@@ -304,6 +320,107 @@ class PentagonTrajectory:
 
 
 # ---------------------------------------------------------------------------
+# Circular trajectory (time-based generator, mirrors PentagonTrajectory's API)
+# ---------------------------------------------------------------------------
+
+class CircularTrajectory:
+    """Smooth periodic circular trajectory traced at constant speed.
+
+    A circle of given *radius* about *center*, embedded in the plane selected by
+    *plane* (using the shared :data:`_PLANE_AXES` mapping).  One full loop is
+    completed every *cycle_time* seconds.  Being a single trigonometric curve it
+    is C∞ and naturally periodic, so — unlike :class:`PentagonTrajectory` — no
+    arc-length tables or corner blending are needed; ``evaluate`` is closed-form
+    and allocation-free.
+
+    Geometry (angle ``θ = ω·t``, ``ω = 2π / cycle_time``)::
+
+        p(t) = center + r·cos θ · û + r·sin θ · v̂
+        v(t) = r·ω·(−sin θ · û + cos θ · v̂)          (‖v‖ = r·ω, constant)
+
+    Parameters
+    ----------
+    center : ndarray (3,)
+        Centre of the circle in the base frame.
+    radius : float
+        Circle radius [m].
+    plane : str
+        ``"xy"``, ``"xz"``, ``"yz"``, or ``"front"``.
+    cycle_time : float
+        Total time for one full loop [s].
+    """
+
+    def __init__(
+        self,
+        center: np.ndarray,
+        radius: float,
+        plane: str,
+        cycle_time: float,
+    ) -> None:
+        self.center = np.asarray(center, dtype=float)
+        self.radius = float(radius)
+        self.plane = plane.lower()
+        self.cycle_time = float(cycle_time)
+
+        try:
+            u, v = _PLANE_AXES[self.plane]
+        except KeyError:
+            raise ValueError(
+                f'Unknown plane "{self.plane}", use xy/xz/yz/front') from None
+        self._u = u.copy()
+        self._v = v.copy()
+
+        # ω = 2π/cycle_time [rad/s]; constant tangential speed = r·ω [m/s].
+        self._omega = 2.0 * math.pi / self.cycle_time
+
+        # Pre-allocated output buffers — evaluate() writes here, returns views.
+        self._p_out = np.zeros(3)
+        self._v_out = np.zeros(3)
+        self._a_out = np.zeros(3)
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def evaluate(self, t: float):
+        """Return ``(p_d, v_d)`` at time *t* (seconds since trajectory start).
+
+        Both arrays are views into pre-allocated buffers — copy them if you
+        need to store them across calls.
+
+        Returns
+        -------
+        p_d : ndarray (3,)  — desired Cartesian position
+        v_d : ndarray (3,)  — desired Cartesian velocity (constant magnitude)
+        """
+        # sin/cos are intrinsically 2π-periodic, so no `t % cycle_time` wrap is
+        # needed and the velocity stays continuous across loop boundaries.
+        theta = self._omega * t
+        ct, st = math.cos(theta), math.sin(theta)
+        r  = self.radius
+        vr = r * self._omega                    # tangential speed magnitude
+        c, u, v = self.center, self._u, self._v
+        for i in range(3):
+            self._p_out[i] = c[i] + r * ct * u[i] + r * st * v[i]
+            self._v_out[i] = vr * (-st * u[i] + ct * v[i])
+        return self._p_out, self._v_out
+
+    def evaluate_with_accel(self, t: float, eps: float = 0.01):
+        """Return ``(p_d, v_d, a_d)`` with acceleration via forward difference.
+
+        ``a_d`` is computed as ``(v_d(t+eps) − v_d(t)) / eps`` — the same scheme
+        used by :meth:`PentagonTrajectory.evaluate_with_accel`.  All returned
+        arrays are safe to read until the next call.
+        """
+        p_d, v_d = self.evaluate(t)
+        p_copy   = p_d.copy()
+        v_copy   = v_d.copy()
+        _, v_fwd = self.evaluate(t + eps)
+        np.subtract(v_fwd, v_copy, out=self._a_out)
+        self._a_out /= eps
+        self.evaluate(t)                 # restore _p_out/_v_out to time t
+        return self._p_out, self._v_out, self._a_out
+
+
+# ---------------------------------------------------------------------------
 # Geometric paths — parametrised by a dimensionless phase s (NOT time)
 #
 # A geometric path is pure geometry: it knows only the curve P(s) and its phase
@@ -399,6 +516,262 @@ class PentagonPath(GeometricPath):
         np.copyto(self._P, p)
         np.multiply(v, self._T, out=self._Pp)
         np.multiply(a, self._T * self._T, out=self._Ppp)
+
+
+class LissajousPath(GeometricPath):
+    r"""Smooth planar Lissajous curve parametrised by the phase ``s ∈ [0, 1]``.
+
+    Mathematical definition
+    ------------------------
+    A Lissajous figure with frequency ratio 2 : 3 traced in a fixed plane.  The
+    normalised phase is mapped to an angle::
+
+        t = 2π · s            (so dt/ds = 2π, a constant)
+
+    and the two *in-plane* coordinates relative to the centre are
+
+        x(t) = A · sin(2t)
+        y(t) = B · sin(3t)
+
+    The full curve ``P(s) = centre + x(t)·û + y(t)·v̂`` is therefore
+
+      * **closed and periodic** with period ``Δs = 1`` — at ``s = 0`` and
+        ``s = 1`` we have ``t = 0`` and ``t = 2π`` so ``sin(2t) = sin(3t) = 0``
+        and both ``P`` and all its derivatives repeat exactly, and
+      * **globally C∞ smooth** — it is a finite sum of sinusoids, so curvature
+        is bounded and continuous everywhere (no corners, no segment switching).
+
+    This is the key motivation for replacing the polygonal pentagon path: the
+    pentagon has piecewise geometry with discontinuous curvature at the corners,
+    which injects unbounded reference accelerations that the Operational Space
+    Controller must fight.  A Lissajous curve is everywhere differentiable, so
+    ``P'(s)`` and ``P''(s)`` — and hence the commanded Cartesian velocity and
+    acceleration — stay bounded and continuous.
+
+    Plane embedding
+    ---------------
+    ``(x, y)`` are laid into 3-D along the two in-plane unit axes ``û, v̂`` chosen
+    by *plane*, matching :class:`PentagonTrajectory`'s convention:
+
+      * ``"xy"``           → û = x̂, v̂ = ŷ
+      * ``"xz"``           → û = x̂, v̂ = ẑ
+      * ``"yz"`` / ``"front"`` → û = ŷ, v̂ = ẑ
+
+    Analytical derivatives
+    ----------------------
+    Because the closed form is known, the phase derivatives are computed
+    analytically (not by finite differences), so they are exact to machine
+    precision and free of differencing noise / lag.  Since ``t`` is *linear* in
+    ``s`` (``dt/ds = 2π`` constant, ``d²t/ds² = 0``) the chain rule reduces to a
+    plain power of ``dt/ds``::
+
+        dx/ds   = (dx/dt)·(dt/ds)        = (2A·cos 2t)·(2π)   =  4π·A·cos 2t
+        d²x/ds² = (d²x/dt²)·(dt/ds)²     = (−4A·sin 2t)·(2π)² = −16π²·A·sin 2t
+        dy/ds   = (dy/dt)·(dt/ds)        = (3B·cos 3t)·(2π)   =  6π·B·cos 3t
+        d²y/ds² = (d²y/dt²)·(dt/ds)²     = (−9B·sin 3t)·(2π)² = −36π²·B·sin 3t
+
+    The inherited :meth:`velocity` / :meth:`acceleration` then apply the outer
+    chain rule in the phase rate::
+
+        v = P'(s)·ṡ
+        a = P''(s)·ṡ² + P'(s)·s̈
+
+    Parameters
+    ----------
+    center : ndarray (3,)
+        Curve centre in the base frame (the ``(x_c, y_c)`` of the figure plus the
+        fixed out-of-plane coordinate).
+    A, B : float
+        In-plane amplitudes [m] of the ``sin 2t`` and ``sin 3t`` components.
+    plane : str
+        ``"xy"``, ``"xz"``, ``"yz"`` or ``"front"`` — selects the in-plane axes.
+    """
+
+    # Unit axes for each supported plane: (û, v̂) ← (x(t), y(t)).
+    _PLANE_AXES = _PLANE_AXES
+
+    def __init__(self, center, A: float = 0.12, B: float = 0.08,
+                 plane: str = 'front') -> None:
+        super().__init__()
+        self._center = np.asarray(center, dtype=float).copy()
+        self._A = float(A)
+        self._B = float(B)
+        plane = plane.lower()
+        try:
+            u, v = self._PLANE_AXES[plane]
+        except KeyError:
+            raise ValueError(
+                f'Unknown plane "{plane}", use xy/xz/yz/front') from None
+        self._u = u.copy()
+        self._v = v.copy()
+        self._two_pi = 2.0 * math.pi
+        self._tan_out = np.zeros(3)   # scratch for tangent()
+
+    def _compute(self, s: float) -> None:
+        # Phase → angle.  No `s mod 1` is needed: t = 2π·s and the curve is a
+        # sum of sin(2t)/sin(3t), already exactly periodic with period Δs = 1.
+        t = self._two_pi * s
+        sin2, cos2 = math.sin(2.0 * t), math.cos(2.0 * t)
+        sin3, cos3 = math.sin(3.0 * t), math.cos(3.0 * t)
+        A, B, two_pi = self._A, self._B, self._two_pi
+
+        # In-plane position offsets:  x(t) = A·sin 2t,  y(t) = B·sin 3t
+        px = A * sin2
+        py = B * sin3
+
+        # dP/ds  — analytical chain rule (dt/ds = 2π):
+        #   dx/ds = 4π·A·cos 2t ,  dy/ds = 6π·B·cos 3t
+        dx = 2.0 * A * cos2 * two_pi
+        dy = 3.0 * B * cos3 * two_pi
+
+        # d²P/ds²  — analytical ((dt/ds)² = 4π², d²t/ds² = 0):
+        #   d²x/ds² = −16π²·A·sin 2t ,  d²y/ds² = −36π²·B·sin 3t
+        two_pi_sq = two_pi * two_pi
+        ddx = -4.0 * A * sin2 * two_pi_sq
+        ddy = -9.0 * B * sin3 * two_pi_sq
+
+        # Embed the planar (x, y) values along the two in-plane axes.  Written
+        # element-wise into the preallocated buffers → zero allocation per call.
+        c, u, v = self._center, self._u, self._v
+        for i in range(3):
+            self._P[i]   = c[i] + px * u[i] + py * v[i]
+            self._Pp[i]  = dx * u[i] + dy * v[i]
+            self._Ppp[i] = ddx * u[i] + ddy * v[i]
+
+    # ── Optional geometric helpers (analytical; not used by the controller) ──
+
+    def tangent(self, s: float):
+        """Unit tangent ``P'(s) / ‖P'(s)‖`` at phase *s* (view, may be zeroed)."""
+        self._ensure(s)
+        n = math.sqrt(float(self._Pp @ self._Pp))
+        if n > 1e-12:
+            np.divide(self._Pp, n, out=self._tan_out)
+        else:
+            self._tan_out[:] = 0.0
+        return self._tan_out
+
+    def curvature(self, s: float) -> float:
+        """Curvature ``κ = ‖P'×P''‖ / ‖P'‖³`` at phase *s* (always finite)."""
+        self._ensure(s)
+        cross = np.cross(self._Pp, self._Ppp)
+        num = math.sqrt(float(cross @ cross))
+        den = float(self._Pp @ self._Pp) ** 1.5
+        return num / den if den > 1e-12 else 0.0
+
+
+class CircularPath(GeometricPath):
+    r"""Circle parametrised by the dimensionless phase ``s`` (one loop = Δs = 1).
+
+    Mathematical definition
+    ------------------------
+    The normalised phase is mapped to an angle ``t = 2π·s`` (so ``dt/ds = 2π``,
+    a constant) and the two *in-plane* coordinates relative to the centre are
+
+        x(t) = r · cos t
+        y(t) = r · sin t
+
+    The curve ``P(s) = centre + x(t)·û + y(t)·v̂`` is therefore **closed and
+    periodic** with period ``Δs = 1`` (at ``s = 0`` and ``s = 1`` we have
+    ``t = 0`` and ``t = 2π``, so position and all derivatives repeat exactly) and
+    **globally C∞ smooth** with constant curvature ``1/r`` — no corners, no
+    segment switching.  A phase rate ``ṡ = 1/cycle_time`` reproduces the
+    constant-speed circle of :class:`CircularTrajectory`.
+
+    Analytical derivatives
+    ----------------------
+    As in :class:`LissajousPath`, the phase derivatives are computed in closed
+    form (not by finite differences), so they are exact to machine precision and
+    free of differencing noise / lag.  Since ``t`` is *linear* in ``s``
+    (``dt/ds = 2π`` constant, ``d²t/ds² = 0``) the chain rule reduces to a plain
+    power of ``dt/ds``::
+
+        dx/ds   = (−r·sin t)·(2π)   = −2π·r·sin t
+        d²x/ds² = (−r·cos t)·(2π)²  = −4π²·r·cos t
+        dy/ds   = ( r·cos t)·(2π)   =  2π·r·cos t
+        d²y/ds² = (−r·sin t)·(2π)²  = −4π²·r·sin t
+
+    The inherited :meth:`velocity` / :meth:`acceleration` then apply the outer
+    chain rule in the phase rate (``v = P'·ṡ``, ``a = P''·ṡ² + P'·s̈``).
+
+    Parameters
+    ----------
+    center : ndarray (3,)
+        Circle centre in the base frame.
+    radius : float
+        Circle radius [m].
+    plane : str
+        ``"xy"``, ``"xz"``, ``"yz"`` or ``"front"`` — selects the in-plane axes
+        via the shared :data:`_PLANE_AXES` mapping.
+    """
+
+    # Same in-plane embedding mapping as LissajousPath.
+    _PLANE_AXES = _PLANE_AXES
+
+    def __init__(self, center, radius: float = 0.1,
+                 plane: str = 'front') -> None:
+        super().__init__()
+        self._center = np.asarray(center, dtype=float).copy()
+        self._r = float(radius)
+        plane = plane.lower()
+        try:
+            u, v = self._PLANE_AXES[plane]
+        except KeyError:
+            raise ValueError(
+                f'Unknown plane "{plane}", use xy/xz/yz/front') from None
+        self._u = u.copy()
+        self._v = v.copy()
+        self._two_pi = 2.0 * math.pi
+        self._tan_out = np.zeros(3)   # scratch for tangent()
+
+    def _compute(self, s: float) -> None:
+        # Phase → angle.  No `s mod 1` is needed: t = 2π·s and cos t / sin t are
+        # already exactly periodic with period Δs = 1.
+        t = self._two_pi * s
+        ct, st = math.cos(t), math.sin(t)
+        r, two_pi = self._r, self._two_pi
+
+        # In-plane position offsets:  x(t) = r·cos t,  y(t) = r·sin t
+        px = r * ct
+        py = r * st
+
+        # dP/ds  — analytical chain rule (dt/ds = 2π):
+        #   dx/ds = −2π·r·sin t ,  dy/ds = 2π·r·cos t
+        dx = -r * st * two_pi
+        dy = r * ct * two_pi
+
+        # d²P/ds²  — analytical ((dt/ds)² = 4π², d²t/ds² = 0):
+        #   d²x/ds² = −4π²·r·cos t ,  d²y/ds² = −4π²·r·sin t
+        two_pi_sq = two_pi * two_pi
+        ddx = -r * ct * two_pi_sq
+        ddy = -r * st * two_pi_sq
+
+        # Embed the planar (x, y) values along the two in-plane axes.  Written
+        # element-wise into the preallocated buffers → zero allocation per call.
+        c, u, v = self._center, self._u, self._v
+        for i in range(3):
+            self._P[i]   = c[i] + px * u[i] + py * v[i]
+            self._Pp[i]  = dx * u[i] + dy * v[i]
+            self._Ppp[i] = ddx * u[i] + ddy * v[i]
+
+    # ── Optional geometric helpers (analytical; not used by the controller) ──
+
+    def tangent(self, s: float):
+        """Unit tangent ``P'(s) / ‖P'(s)‖`` at phase *s* (view, may be zeroed)."""
+        self._ensure(s)
+        n = math.sqrt(float(self._Pp @ self._Pp))
+        if n > 1e-12:
+            np.divide(self._Pp, n, out=self._tan_out)
+        else:
+            self._tan_out[:] = 0.0
+        return self._tan_out
+
+    def curvature(self, s: float) -> float:
+        """Curvature ``κ = ‖P'×P''‖ / ‖P'‖³`` at phase *s* (constant ``1/r``)."""
+        self._ensure(s)
+        cross = np.cross(self._Pp, self._Ppp)
+        num = math.sqrt(float(cross @ cross))
+        den = float(self._Pp @ self._Pp) ** 1.5
+        return num / den if den > 1e-12 else 0.0
 
 
 class LinearSegmentPath(GeometricPath):

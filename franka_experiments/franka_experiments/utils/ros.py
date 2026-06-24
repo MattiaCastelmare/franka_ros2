@@ -238,7 +238,7 @@ def _generate_cbf_base_yaml(is_real: bool, arm_id: str) -> str:
         f'      update_rate: {1000 if is_real else 100}',
     ]
     if is_real:
-        lines.append('      thread_priority: 98')
+        lines.append('      thread_priority: 85')
     lines += [
         '',
         '      joint_state_broadcaster:',
@@ -336,7 +336,7 @@ def generate_rt_controllers_yaml(
         f'      update_rate: {1000 if is_real else 100}',
     ]
     if is_real:
-        lines.append('      thread_priority: 98')
+        lines.append('      thread_priority: 85')
     lines += [
         '',
         '      joint_state_broadcaster:',
@@ -421,7 +421,7 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha, tau
         f'      update_rate: {1000 if is_real else 100}',
     ]
     if is_real:
-        lines.append('      thread_priority: 98')
+        lines.append('      thread_priority: 85')
     lines += [
         '',
         '      joint_state_broadcaster:',

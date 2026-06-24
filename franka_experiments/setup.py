@@ -48,6 +48,7 @@ setup(
             'experiment_logger = franka_experiments.nodes.experiment_logger:main',
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
+            'frame_grabber = franka_experiments.nodes.frame_grabber:main',
         ],
     },
 )

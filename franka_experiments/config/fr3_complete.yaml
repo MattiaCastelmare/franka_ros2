@@ -122,7 +122,7 @@ distance: # in meters
 
 mask: # in pixels
   robot_mask_dilate_px: 2
-  ee_mask_dilate_px: 12
+  ee_mask_dilate_px: 18
   search_exclusion_extra_px: 8
   # Downsample factor for dilation (runs on H/ds × W/ds image, then upsampled).
   # 4 reduces mask rebuild from ~70 ms to < 2 ms with negligible quality loss.

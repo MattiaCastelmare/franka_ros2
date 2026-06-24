@@ -65,7 +65,8 @@ from franka_experiments.utils.kinematics import (
 )
 from sensor_msgs.msg import JointState as SensorJointState
 from franka_experiments.utils.trajectory import (
-    PentagonTrajectory, PentagonPath, LinearSegmentPath, CompositePath,
+    PentagonTrajectory, PentagonPath, CircularPath, LissajousPath,
+    LinearSegmentPath, CompositePath,
 )
 from franka_experiments.utils.timing_law import (
     LinearTimingLaw, ExponentialTimingLaw, TrapezoidalTimingLaw,
@@ -111,10 +112,17 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('timing_law',          'linear')
         self.declare_parameter('center_xyz',          [0.4, 0.0, 0.4])
         self.declare_parameter('radius',              0.30)
+        # Path shape:  'circle' (default, C∞ analytic — smooth, no accel jumps)
+        # | 'lissajous' (C∞ analytic) | 'pentagon' (C¹ corner-blended: feedforward
+        # acceleration STEPS at every line↔blend junction → jerky; legacy only).
+        self.declare_parameter('path_type',           'circle')
         self.declare_parameter('plane',               'front')
         self.declare_parameter('plane_frame',         'fr3_link0')
-        self.declare_parameter('cycle_time',          8.0)
+        self.declare_parameter('cycle_time',          10.0)
         self.declare_parameter('smoothness',          0.20)
+        # Lissajous amplitudes [m] (used only when path_type='lissajous')
+        self.declare_parameter('lissajous_a',         0.12)
+        self.declare_parameter('lissajous_b',         0.08)
         # kp/kd: task-space Cartesian gains [N/m, N·s/m].
         # Conservative for torque control — overshoot propagates via M·q̈.
         # kd ≈ 2√kp for near-critical damping.
@@ -146,6 +154,9 @@ class PentagonQddotCommander(Node):
         # Reference sanity limits: keep integrated references physical.
         self.declare_parameter('q_des_max_error',  0.5)   # rad, |q_d − q|
         self.declare_parameter('dq_des_max',       2.0)   # rad/s
+        # Low-pass on the *measured* joint velocity, logging only (real signal,
+        # lightly smoothed):  dq_filt += alpha·(dq_meas − dq_filt).
+        self.declare_parameter('dq_filter_alpha',  0.2)
 
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
@@ -158,10 +169,13 @@ class PentagonQddotCommander(Node):
         self.timing_law_name = str(self.get_parameter('timing_law').value).lower()
         center_xyz     = list(self.get_parameter('center_xyz').value)
         radius         = float(self.get_parameter('radius').value)
+        path_type      = str(self.get_parameter('path_type').value).lower()
         plane          = self.get_parameter('plane').value
         plane_frame    = self.get_parameter('plane_frame').value
         self.cycle_time = float(self.get_parameter('cycle_time').value)
         smoothness     = float(self.get_parameter('smoothness').value)
+        lissajous_a    = float(self.get_parameter('lissajous_a').value)
+        lissajous_b    = float(self.get_parameter('lissajous_b').value)
         self.kp        = float(self.get_parameter('kp_cart').value)
         self.kd        = float(self.get_parameter('kd_cart').value)
         self.kp_rot    = float(self.get_parameter('kp_rot').value)
@@ -180,6 +194,7 @@ class PentagonQddotCommander(Node):
         self._manip_thr       = float(self.get_parameter('manip_thr').value)
         self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
         self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
+        self._dq_filter_alpha = float(self.get_parameter('dq_filter_alpha').value)
         self._dt       = 1.0 / self.rate_hz
 
         # Per-joint q̈ clamps from fr3_control.yaml joint_limits column [3].
@@ -195,6 +210,10 @@ class PentagonQddotCommander(Node):
             raise SystemExit(1) from exc
 
         self.pin_model, self.pin_data = load_pinocchio_model(urdf_xml)
+        # Separate Data for the independent open-loop nominal channel so its
+        # kinematics never clobber the measured-state pin_data (also used by
+        # _compute_tau_des for M and nle).
+        self.pin_data_nom = self.pin_model.createData()
 
         try:
             self.ee_frame_id = resolve_frame_id(self.pin_model, ee_frame_name)
@@ -217,17 +236,38 @@ class PentagonQddotCommander(Node):
         self._arm_v_ids = [self.pin_model.joints[p].idx_v for p in self._pin_joint_ids]
 
         # ── Geometric path (pure geometry, immutable) ─────────────────────
-        # PentagonTrajectory stays the time-based generator; PentagonPath wraps
-        # it as a function of phase s (one loop per Δs = 1).  The runtime
-        # approach lead-in + composite path are built in _start_trajectory()
-        # once the current EE position is known.
-        self.traj = PentagonTrajectory(
-            center=np.array(center_xyz), radius=radius,
-            plane=plane, cycle_time=self.cycle_time, smoothness=smoothness,
-        )
-        self._pentagon_path = PentagonPath(self.traj)
-        # Start point = vertex 0 (top of pentagon)
-        self._start_xyz = self.traj.vertices[0].copy()
+        # Phase-parametrised cyclic path selected by path_type.  'circle' and
+        # 'lissajous' compute their derivatives analytically (C∞, smooth/constant
+        # curvature → the feedforward acceleration a_d never jumps).  'pentagon'
+        # is corner-blended C¹ only: a_d steps at the 10 line↔blend junctions per
+        # loop, which makes the robot jerk — kept for legacy, not recommended.
+        # The runtime approach lead-in + composite path are built in
+        # _start_trajectory() once the current EE position is known.
+        center_arr = np.array(center_xyz)
+        self.traj = None
+        if path_type == 'pentagon':
+            self.traj = PentagonTrajectory(
+                center=center_arr, radius=radius,
+                plane=plane, cycle_time=self.cycle_time, smoothness=smoothness,
+            )
+            self._cycle_path = PentagonPath(self.traj)
+            self.get_logger().warn(
+                "path_type='pentagon' is only C¹ (corner-blended): the "
+                'feedforward acceleration steps at each corner → jerky motion. '
+                "Use 'circle' or 'lissajous' for smooth tracking.")
+        elif path_type == 'lissajous':
+            self._cycle_path = LissajousPath(
+                center=center_arr, A=lissajous_a, B=lissajous_b, plane=plane,
+            )
+        else:
+            if path_type != 'circle':
+                self.get_logger().warn(
+                    f'Unknown path_type "{path_type}" → using circle')
+            self._cycle_path = CircularPath(
+                center=center_arr, radius=radius, plane=plane,
+            )
+        # Start point = curve entry P(0) (continuous approach→curve seam).
+        self._start_xyz = self._cycle_path.position(0.0).copy()
 
         # Phase variable + path/timing, assembled in _start_trajectory()
         self._path: Optional[CompositePath] = None
@@ -293,6 +333,45 @@ class PentagonQddotCommander(Node):
         # Joint-space integration buffers for q_d, dq_d
         self._q_d            = np.zeros(NUM_JOINTS)
         self._dq_d           = np.zeros(NUM_JOINTS)
+
+        # ── Independent open-loop NOMINAL channel (ideal trajectory) ──────
+        # Mirrors the task + null-space accel law but on its OWN state and a
+        # separate pin_data; pure ∫∫ (no sync / clamp-to-measured / reset), so
+        # it never reads the robot → the trajectory the arm WOULD follow if the
+        # CBF never deviated it.  Seeded at the measured start in _start_trajectory.
+        self._q_nom          = np.zeros(NUM_JOINTS)
+        self._dq_nom         = np.zeros(NUM_JOINTS)
+        self._qddot_nom      = np.zeros(NUM_JOINTS)
+        self._q_nom_full     = pin.neutral(self.pin_model)
+        self._qdot_nom_full  = np.zeros(nv)
+        self._J6n_nom        = np.zeros((6, nv))
+        self._dJ6n_nom       = np.zeros((6, nv))
+        self._Jn_arm         = np.zeros((6, NUM_JOINTS))
+        self._dJn_arm        = np.zeros((6, NUM_JOINTS))
+        self._Jn_rot_tmp     = np.zeros((3, NUM_JOINTS))
+        self._p_ee_nom       = np.zeros(3)
+        self._R_des_nom      = np.eye(3)
+        self._R_err_nom      = np.zeros((3, 3))
+        self._e_rot_nom      = np.zeros(3)
+        self._en6            = np.zeros(6)
+        self._edotn6         = np.zeros(6)
+        self._xddotn6        = np.zeros(6)
+        self._tmp3n          = np.zeros(3)
+        self._tmp6n          = np.zeros(6)
+        self._tmp7n          = np.zeros(NUM_JOINTS)
+        self._JJTn           = np.zeros((6, 6))
+        self._JJTn_reg       = np.zeros((6, 6))
+        self._Jn_pinv        = np.zeros((NUM_JOINTS, 6))
+        self._qddot_task_nom = np.zeros(NUM_JOINTS)
+        self._qddot_null_nom = np.zeros(NUM_JOINTS)
+        self._null_proj_nom  = np.zeros(NUM_JOINTS)
+        self._Nn             = np.zeros((NUM_JOINTS, NUM_JOINTS))
+        self._JpinvJn        = np.zeros((NUM_JOINTS, NUM_JOINTS))
+        self._lambda_sq_nom  = self._lambda_sq_min
+        self._orient_nom_ok  = False
+
+        # Low-pass-filtered measured velocity (real signal, logging only)
+        self._dq_filt        = np.zeros(NUM_JOINTS)
 
         # ── Logging buffers (pre-allocated → no per-tick allocation) ──────
         # tau_des = M(q)·q̈_des + nle(q, q̇).  computeAllTerms() already fills
@@ -463,6 +542,10 @@ class PentagonQddotCommander(Node):
         for k, vid in enumerate(self._arm_v_ids):
             self._qdot_full[vid] = js['qdot'][k]
         qdot = js['qdot']
+
+        # First-order low-pass of the measured velocity (real signal, logged
+        # alongside the raw dq).  alpha∈(0,1]; smaller = smoother / more lag.
+        self._dq_filt += self._dq_filter_alpha * (qdot - self._dq_filt)
 
         pin.computeAllTerms(self.pin_model, self.pin_data,
                             self._q_full, self._qdot_full)
@@ -638,6 +721,9 @@ class PentagonQddotCommander(Node):
             self._sp_msg.effort[i]   = float(self._q_ddot[i])
         self._sp_pub.publish(self._sp_msg)
 
+        # ── Independent open-loop nominal integration (ideal; ignores robot) ──
+        self._step_nominal(p_d, v_d, a_d, actual_dt)
+
         # ── High-rate CSV log (one row per tick; no-op if logger disabled) ───
         if self._csv_writer is not None:
             self._compute_tau_des()                 # fills self._tau_des
@@ -691,18 +777,130 @@ class PentagonQddotCommander(Node):
             self.get_logger().warn(f'Unknown timing_law "{name}" → using linear')
         return LinearTimingLaw(rate=rate, soft_start_s=self.approach_time)
 
+    def _step_nominal(self, p_d, v_d, a_d, dt) -> None:
+        """Integrate an independent open-loop *nominal* joint trajectory.
+
+        Faithfully mirrors the measured task + null-space acceleration law
+        (see _tick) but on its OWN state (q_nom, dq_nom) and a separate
+        pin_data, so it never reads the robot.  The result is integrated as a
+        pure double integral — no measured-state sync, no clamp-to-measured,
+        no anti-windup reset — hence it stays the trajectory the arm WOULD
+        follow with no CBF deviation.  The only physical limit kept is the
+        per-joint q̈ saturation, identical to the commanded channel.
+        """
+        model, data = self.pin_model, self.pin_data_nom
+
+        # Full-model configuration / velocity from the nominal arm state.
+        np.copyto(self._q_nom_full, self._q_neutral)
+        self._qdot_nom_full[:] = 0.0
+        for k, pid in enumerate(self._pin_joint_ids):
+            self._q_nom_full[model.joints[pid].idx_q] = self._q_nom[k]
+        for k, vid in enumerate(self._arm_v_ids):
+            self._qdot_nom_full[vid] = self._dq_nom[k]
+
+        pin.computeAllTerms(model, data, self._q_nom_full, self._qdot_nom_full)
+        pin.updateFramePlacements(model, data)
+
+        self._J6n_nom[:] = pin.getFrameJacobian(
+            model, data, self.ee_frame_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+        self._dJ6n_nom[:] = pin.getFrameJacobianTimeVariation(
+            model, data, self.ee_frame_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+        for i, vid in enumerate(self._arm_v_ids):
+            self._Jn_arm[:, i]  = self._J6n_nom[:, vid]
+            self._dJn_arm[:, i] = self._dJ6n_nom[:, vid]
+
+        oMee  = data.oMf[self.ee_frame_id]
+        R_cur = np.asarray(oMee.rotation)
+
+        if self._use_plane_frame:
+            p_raw, _ = transform_ee_to_frame(
+                model, data, self._plane_frame_id, oMee,
+                self._J6n_nom[:, self._arm_v_ids])
+            np.copyto(self._p_ee_nom, p_raw)
+            R_ref = np.asarray(data.oMf[self._plane_frame_id].rotation)
+            np.dot(R_ref.T, self._Jn_arm[:3, :], out=self._Jn_rot_tmp)
+            self._Jn_arm[:3, :] = self._Jn_rot_tmp
+            np.dot(R_ref.T, self._dJn_arm[:3, :], out=self._Jn_rot_tmp)
+            self._dJn_arm[:3, :] = self._Jn_rot_tmp
+        else:
+            np.copyto(self._p_ee_nom, oMee.translation)
+
+        # Orientation: capture the nominal hold target once, then hold.
+        if not self._orient_nom_ok:
+            np.copyto(self._R_des_nom, R_cur)
+            self._orient_nom_ok = True
+        np.dot(self._R_des_nom.T, R_cur, out=self._R_err_nom)
+        self._e_rot_nom[0] = 0.5 * (self._R_err_nom[2, 1] - self._R_err_nom[1, 2])
+        self._e_rot_nom[1] = 0.5 * (self._R_err_nom[0, 2] - self._R_err_nom[2, 0])
+        self._e_rot_nom[2] = 0.5 * (self._R_err_nom[1, 0] - self._R_err_nom[0, 1])
+
+        # 6D pose error (against the SAME desired path as the measured channel)
+        np.subtract(p_d, self._p_ee_nom, out=self._tmp3n)
+        self._en6[:3] = self._tmp3n
+        self._en6[3:] = self._e_rot_nom
+
+        # 6D velocity error: [v_d − J_lin·dq_nom ; −J_ang·dq_nom]
+        np.dot(self._Jn_arm, self._dq_nom, out=self._edotn6)
+        np.subtract(v_d, self._edotn6[:3], out=self._edotn6[:3])
+        np.negative(self._edotn6[3:], out=self._edotn6[3:])
+
+        # Task-space acceleration: ẍ = a_d + Kp·e + Kd·edot
+        self._xddotn6[:3] = a_d
+        np.multiply(self.kp,     self._en6[:3],    out=self._tmp3n)
+        self._xddotn6[:3] += self._tmp3n
+        np.multiply(self.kd,     self._edotn6[:3], out=self._tmp3n)
+        self._xddotn6[:3] += self._tmp3n
+        np.multiply(self.kp_rot, self._en6[3:],    out=self._xddotn6[3:])
+        np.multiply(self.kd_rot, self._edotn6[3:], out=self._tmp3n)
+        self._xddotn6[3:] += self._tmp3n
+
+        # Adaptive damped least-squares pseudo-inverse (same law as measured).
+        np.dot(self._Jn_arm, self._Jn_arm.T, out=self._JJTn)
+        w = math.sqrt(max(0.0, float(np.linalg.det(self._JJTn))))
+        if w < self._manip_thr:
+            f_w = (1.0 - w / self._manip_thr) ** 2
+        else:
+            f_w = 0.0
+        self._lambda_sq_nom = (self._lambda_sq_min
+                               + (self._lambda_sq_max - self._lambda_sq_min) * f_w)
+        np.copyto(self._JJTn_reg, self._JJTn)
+        for i in range(6):
+            self._JJTn_reg[i, i] += self._lambda_sq_nom
+        self._Jn_pinv[:] = np.linalg.solve(self._JJTn_reg, self._Jn_arm).T
+
+        # qddot_task = J⁺(ẍ_d − J̇·q̇)
+        np.dot(self._dJn_arm, self._dq_nom, out=self._tmp6n)
+        np.subtract(self._xddotn6, self._tmp6n, out=self._xddotn6)
+        np.dot(self._Jn_pinv, self._xddotn6, out=self._qddot_task_nom)
+
+        # Null-space posture control toward the same home posture.
+        np.dot(self._Jn_pinv, self._Jn_arm, out=self._JpinvJn)
+        np.subtract(self._I7, self._JpinvJn, out=self._Nn)
+        np.subtract(self._q_nom, self._q_home, out=self._qddot_null_nom)
+        self._qddot_null_nom *= -self.k_null
+        np.multiply(self.d_null, self._dq_nom, out=self._tmp7n)
+        self._qddot_null_nom -= self._tmp7n
+        np.dot(self._Nn, self._qddot_null_nom, out=self._null_proj_nom)
+
+        np.add(self._qddot_task_nom, self._null_proj_nom, out=self._qddot_nom)
+        np.clip(self._qddot_nom, -self.qddot_max, self.qddot_max, out=self._qddot_nom)
+
+        # Pure open-loop double integration (NO measured-state coupling).
+        self._dq_nom += self._qddot_nom * dt
+        self._q_nom  += self._dq_nom * dt
+
     def _start_trajectory(self, js: dict) -> None:
         """Assemble the phase-driven path + timing law rooted at the current EE.
 
         The composite path begins exactly at the current EE position (no jump),
-        runs a straight-line lead-in to the pentagon start over phase span
-        ``S_a = approach_time / cycle_time``, then tracks the cyclic pentagon.
+        runs a straight-line lead-in to the curve start over phase span
+        ``S_a = approach_time / cycle_time``, then tracks the cyclic curve.
         """
         p0 = self._current_ee_position(js)
 
-        # Target the *actual* pentagon entry (phase 0 = blend entry point), not
-        # the geometric vertex, so the approach→pentagon seam is continuous.
-        entry = self._pentagon_path.position(0.0).copy()
+        # Target the actual curve entry P(0) so the approach→curve seam is
+        # continuous in position.
+        entry = self._cycle_path.position(0.0).copy()
 
         # Approach span in phase units (constant phase rate ⇒ S_a·cycle_time wall-s)
         self._approach_span = max(0.0, self.approach_time) / self.cycle_time
@@ -711,10 +909,10 @@ class PentagonQddotCommander(Node):
             approach = LinearSegmentPath(p0, entry, span=self._approach_span)
             self._path = CompositePath([
                 (approach, self._approach_span),
-                (self._pentagon_path, math.inf),
+                (self._cycle_path, math.inf),
             ])
         else:
-            self._path = CompositePath([(self._pentagon_path, math.inf)])
+            self._path = CompositePath([(self._cycle_path, math.inf)])
 
         self._timing = self._build_timing_law()
         self._timing.reset(0.0)
@@ -722,6 +920,16 @@ class PentagonQddotCommander(Node):
         # Seed joint-space integration from the current measured state
         np.copyto(self._q_d,  js['q'])
         np.copyto(self._dq_d, js['qdot'])
+
+        # Seed the independent open-loop nominal channel from the SAME start
+        # state so the ideal and real trajectories coincide at t0 and diverge
+        # only once the CBF deviates the real robot.
+        np.copyto(self._q_nom,  js['q'])
+        np.copyto(self._dq_nom, js['qdot'])
+        self._orient_nom_ok = False
+
+        # Seed the velocity low-pass filter at the measured velocity
+        np.copyto(self._dq_filt, js['qdot'])
 
         # Capture the start configuration as the null-space home posture
         np.copyto(self._q_home, js['q'])
@@ -766,6 +974,13 @@ class PentagonQddotCommander(Node):
         header += [f'sat_joint_{i}' for i in range(1, 8)]   # |qddot|/qddot_max
         header += ['max_sat_ratio', 'num_saturated_joints']
         header += ['sync_pos_norm', 'sync_vel_norm']
+        # Independent open-loop NOMINAL (ideal) channel + filtered real velocity.
+        # q_nom/dq_nom/qddot_nom ignore the robot (no CBF deviation); dq_filt is
+        # the measured velocity after the first-order low-pass.
+        header += [f'q_nom_{i}'     for i in range(1, 8)]   # ideal positions
+        header += [f'dq_nom_{i}'    for i in range(1, 8)]   # ideal velocities
+        header += [f'qddot_nom_{i}' for i in range(1, 8)]   # ideal accelerations
+        header += [f'dq_filt_{i}'   for i in range(1, 8)]   # real velocity, low-pass
 
         # Pre-allocated row buffer (filled in place every tick → no allocation).
         self._log_row = [0.0] * len(header)
@@ -844,6 +1059,15 @@ class PentagonQddotCommander(Node):
         row[o] = float(self._diag_num_sat);   o += 1
         row[o] = self._diag_sync_pos_norm;    o += 1
         row[o] = self._diag_sync_vel_norm;    o += 1
+        # Independent nominal (ideal) channel + filtered real velocity
+        for i in range(NUM_JOINTS): row[o + i] = float(self._q_nom[i])     # q_nom
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._dq_nom[i])    # dq_nom
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._qddot_nom[i]) # qddot_nom
+        o += NUM_JOINTS
+        for i in range(NUM_JOINTS): row[o + i] = float(self._dq_filt[i])   # dq_filt
+        o += NUM_JOINTS
 
         self._csv_writer.writerow(row)
 

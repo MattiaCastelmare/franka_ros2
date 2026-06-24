@@ -14,3 +14,4 @@ franka_description
 datasets/
 datasets.zip
 franka_experiments/franka_experiments/nodes/experiment_logs/
+franka_experiments/franka_logs/
