@@ -20,7 +20,7 @@ params:
   distance_timeout: 0.5   # [s] stale distance data → passthrough
 
   # ── cbf_safety_filter decoupled rates ───────────────────────────────────
-  qp_rate_hz: 200.0           # QP loop: solve + publish only (no Pinocchio)
+  qp_rate_hz: 100.0           # QP loop: solve + publish only (no Pinocchio); aligned to pentagon rate_hz (100 Hz) — upstream is camera-limited ~30 Hz, so >100 Hz adds no real safety info and only worsens GIL contention with the 50 Hz constraint rebuild
   cbf_update_rate_hz: 50.0    # constraint geometry rebuild (A, h̄) from 30 Hz input
   nom_timeout: 0.5            # [s] stale qddot_nom → braking -k_brake*qdot
   joint_state_timeout: 0.1    # [s] stale joint state → zero output

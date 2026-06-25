@@ -158,6 +158,31 @@ class PentagonQddotCommander(Node):
         # lightly smoothed):  dq_filt += alpha·(dq_meas − dq_filt).
         self.declare_parameter('dq_filter_alpha',  0.2)
 
+        # ── Sequential Joint Isolation Test (TEMPORARY diagnostic) ────────
+        # When isolation_test=True the Cartesian pentagon/circle trajectory is
+        # bypassed: each arm joint in turn performs a single-joint sinusoid for
+        # isolation_seg_s seconds while every OTHER joint is held at its home
+        # value with strictly zero velocity/acceleration.  The sequence runs
+        # joint1→joint7 (indices 0→6), then the node stops.  Purpose: confirm
+        # from the CSV that a commanded joint index actually moves the matching
+        # physical joint (diagnoses cross-mapping / unresponsive joints 6 & 7).
+        #
+        # Profile = raised-cosine bump (C¹, zero velocity at every window edge):
+        #   q   = q_home + 0.5·A·(1 − cos(ω·τ))
+        #   q̇  =          0.5·A·ω·sin(ω·τ)
+        #   q̈  =          0.5·A·ω²·cos(ω·τ)
+        # with ω = 2π·isolation_freq_hz.  At 1 Hz the active joint runs exactly
+        # 2 smooth out-and-back cycles per 2 s window.  A vigorous A=0.4 rad
+        # (~23°) makes the motion physically unmistakable.  An isolation-only
+        # joint-space PD (isolation_kp / isolation_kd) is added on top of the
+        # feedforward q̈ to overcome FR3 wrist static friction.
+        self.declare_parameter('isolation_test',    False)
+        self.declare_parameter('isolation_amp',     0.4)   # rad, bump amplitude
+        self.declare_parameter('isolation_seg_s',   2.0)   # s dedicated to each joint
+        self.declare_parameter('isolation_freq_hz', 1.0)   # Hz (1.0 → 2 cycles/window)
+        self.declare_parameter('isolation_kp',      40.0)  # joint-space P gain
+        self.declare_parameter('isolation_kd',      12.0)  # joint-space D gain
+
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
         self.reset_thr = float(self.get_parameter('reset_thr_m').value)
@@ -195,6 +220,12 @@ class PentagonQddotCommander(Node):
         self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
         self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
         self._dq_filter_alpha = float(self.get_parameter('dq_filter_alpha').value)
+        self.isolation_test   = bool(self.get_parameter('isolation_test').value)
+        self.iso_amp          = float(self.get_parameter('isolation_amp').value)
+        self.iso_seg_s        = float(self.get_parameter('isolation_seg_s').value)
+        self.iso_freq_hz      = float(self.get_parameter('isolation_freq_hz').value)
+        self.iso_kp           = float(self.get_parameter('isolation_kp').value)
+        self.iso_kd           = float(self.get_parameter('isolation_kd').value)
         self._dt       = 1.0 / self.rate_hz
 
         # Per-joint q̈ clamps from fr3_control.yaml joint_limits column [3].
@@ -329,6 +360,14 @@ class PentagonQddotCommander(Node):
 
         # Actual-dt tracking — compensates Python timer jitter in integration
         self._prev_tick_time = None
+
+        # Isolation-test run clock (set on the first running tick) + done latch
+        self._iso_t0   = None
+        self._iso_done = False
+        # Isolation scratch: PD-augmented command + joint-space tracking errors
+        self._qddot_cmd = np.zeros(NUM_JOINTS)
+        self._iso_e_q   = np.zeros(NUM_JOINTS)
+        self._iso_e_dq  = np.zeros(NUM_JOINTS)
 
         # Joint-space integration buffers for q_d, dq_d
         self._q_d            = np.zeros(NUM_JOINTS)
@@ -586,6 +625,15 @@ class PentagonQddotCommander(Node):
         self._e_rot[1] = 0.5 * (self._R_err[0, 2] - self._R_err[2, 0])
         self._e_rot[2] = 0.5 * (self._R_err[1, 0] - self._R_err[0, 1])
 
+        # ── TEMPORARY: Sequential Joint Isolation Test ────────────────────────
+        # Bypass the whole Cartesian task-space trajectory + nominal integrator
+        # and instead drive one joint at a time with a joint-space sinusoid.
+        # _p_ee / dq_filt / computeAllTerms are already done above, so the CSV
+        # (incl. the genuine measured q/dq and tau_des) stays fully populated.
+        if self.isolation_test:
+            self._tick_isolation(t, js, qdot)
+            return
+
         # Unified timing law + geometric path — no APPROACH/TRACK branching.
         #   s, s_dot, s_ddot = timing.step(dt)
         #   p_d = P(s) ; v_d = P'(s)·s_dot ; a_d = P''(s)·s_dot² + P'(s)·s_ddot
@@ -742,6 +790,111 @@ class PentagonQddotCommander(Node):
                 f'max_sat={self._diag_max_sat:.2f} nsat={self._diag_num_sat} '
                 f'sync_p={self._diag_sync_pos_norm:.4f} '
                 f'sync_v={self._diag_sync_vel_norm:.4f} λ²={self._lambda_sq:.2e}')
+
+    # ── Sequential Joint Isolation Test (TEMPORARY diagnostic) ──────────────
+
+    def _tick_isolation(self, t: float, js: dict, qdot: np.ndarray) -> None:
+        """Drive one joint at a time with a raised-cosine bump.
+
+        Segment ``seg = ⌊(t − t0) / iso_seg_s⌋`` selects the active joint
+        (0→6 ⇒ joint1→joint7).  The active joint follows the C¹ bump
+            q   = q_home + 0.5·A·(1 − cos(ω·τ))
+            q̇  =          0.5·A·ω·sin(ω·τ)
+            q̈  =          0.5·A·ω²·cos(ω·τ)
+        with ω = 2π·iso_freq_hz and τ the in-segment time.  q̇ = 0 at every
+        window edge (τ = k/iso_freq_hz) ⇒ smooth handoffs between joints; at
+        1 Hz the active joint runs exactly 2 out-and-back cycles per 2 s window.
+        Every other joint is held strictly at its q_home with 0 velocity / 0
+        acceleration.
+
+        The desired reference (q_d, dq_d) and the nominal channel
+        (q_nom, dq_nom, q̈_nom) carry this profile EXACTLY (feedforward only).
+        The published command q̈ adds an isolation-only joint-space PD on top of
+        the feedforward q̈ to overcome FR3 wrist static friction:
+            q̈_cmd = q̈_ff + Kp·(q_d − q_meas) + Kd·(dq_d − dq_meas).
+
+        The logged *real* q/dq stay genuine encoder feedback (js['q'],
+        js['qdot'] from /joint_states) — never a software integral — so a CSV
+        plot directly compares commanded-vs-measured per joint.
+        """
+        if self._iso_t0 is None:
+            self._iso_t0 = t
+        tau = t - self._iso_t0
+        seg = int(tau // self.iso_seg_s)
+
+        # Default for ALL joints: hold the captured home posture, zero motion.
+        np.copyto(self._q_d, self._q_home)
+        self._dq_d[:]      = 0.0
+        self._qddot_nom[:] = 0.0            # feedforward q̈ profile (= q̈_des)
+
+        if 0 <= seg < NUM_JOINTS:
+            local_t = tau - seg * self.iso_seg_s
+            w = 2.0 * math.pi * self.iso_freq_hz
+            A = self.iso_amp
+            c = math.cos(w * local_t)
+            s = math.sin(w * local_t)
+            # Only the active joint index `seg` is perturbed (raised-cosine bump).
+            self._q_d[seg]      = self._q_home[seg] + 0.5 * A * (1.0 - c)
+            self._dq_d[seg]     = 0.5 * A * w * s
+            self._qddot_nom[seg] = 0.5 * A * w * w * c
+            active = seg + 1                       # human-readable joint number
+        else:
+            active, local_t = -1, 0.0              # sequence finished
+            if not self._iso_done:
+                self._iso_done = True
+                self.get_logger().info(
+                    'Isolation sequence complete (joints 1-7 probed) — stopping.')
+                self.request_stop()
+
+        # Nominal (ideal) channel mirrors the profile EXACTLY — pure feedforward,
+        # no PD term, no measured-state coupling (q̈_nom already set above).
+        np.copyto(self._q_nom,  self._q_d)
+        np.copyto(self._dq_nom, self._dq_d)
+
+        # Published command = feedforward q̈ + joint-space PD (beats wrist
+        # friction):  q̈_cmd = q̈_ff + Kp·(q_d − q_meas) + Kd·(dq_d − dq_meas).
+        np.subtract(self._q_d,  js['q'], out=self._iso_e_q)
+        np.subtract(self._dq_d, qdot,    out=self._iso_e_dq)
+        np.copyto(self._qddot_cmd, self._qddot_nom)
+        self._qddot_cmd += self.iso_kp * self._iso_e_q
+        self._qddot_cmd += self.iso_kd * self._iso_e_dq
+        # Same per-joint q̈ safety clamp as the normal command path.
+        np.clip(self._qddot_cmd, -self.qddot_max, self.qddot_max,
+                out=self._qddot_cmd)
+        # q_ddot is the buffer the publish/log/tau_des path reads.
+        np.copyto(self._q_ddot, self._qddot_cmd)
+
+        # ── Publish: Float64MultiArray (qddot) + JointState setpoint ─────────
+        for i in range(NUM_JOINTS):
+            self._out_msg.data[i] = float(self._q_ddot[i])
+        self.pub.publish(self._out_msg)
+
+        self._sp_msg.header.stamp = self.get_clock().now().to_msg()
+        for i in range(NUM_JOINTS):
+            self._sp_msg.position[i] = float(self._q_d[i])
+            self._sp_msg.velocity[i] = float(self._dq_d[i])
+            self._sp_msg.effort[i]   = float(self._q_ddot[i])
+        self._sp_pub.publish(self._sp_msg)
+
+        # ── CSV log: real q/dq are genuine encoder feedback (js), not ∫ ──────
+        # Cartesian columns are not meaningful here; report desired EE = measured
+        # EE so the error columns read ~0 and never mask the joint comparison.
+        self._e6[:] = 0.0
+        zero3 = (0.0, 0.0, 0.0)
+        if self._csv_writer is not None:
+            self._compute_tau_des()                # fills self._tau_des
+            self._log_data(t, js['q'], qdot, self._p_ee, zero3, zero3,
+                           tau, 0.0, 0.0, 0.0, 0.0)
+
+        if self._tlog.due(t):
+            if active > 0:
+                j = active - 1
+                self._tlog.info(
+                    f'[ISOLATION joint{active} t={t:.1f}s τ={local_t:.2f}s] '
+                    f'q_des={self._q_d[j]:+.4f} q_meas={js["q"][j]:+.4f} '
+                    f'dq_des={self._dq_d[j]:+.4f} dq_meas={qdot[j]:+.4f}')
+            else:
+                self._tlog.info(f'[ISOLATION complete t={t:.1f}s — holding home]')
 
     # ── Trajectory start-up (replaces the APPROACH/TRACK state machine) ─────
 

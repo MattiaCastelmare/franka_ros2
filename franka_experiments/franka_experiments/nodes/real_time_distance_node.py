@@ -303,6 +303,8 @@ class RealTimeDistance(Node):
                 x=x, y=y, step=step,
                 search_exclusion_mask=self.mask_builder.search_exclusion_mask,
                 transforms=transforms,
+                ee_source_mask=self.mask_builder.ee_source_mask,
+                dilation_margins_px=self.mask_builder.dilation_margins_px,
             )
         if cp_results is None:
             return

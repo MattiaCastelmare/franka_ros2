@@ -8,6 +8,16 @@ Collision Avoidance"):
   cdist self-filter (the search_exclusion_mask handles robot-body exclusion
   in 2D, which is sufficient given the dilated robot mask).
 
+Dilation-margin compensation:
+  The search_exclusion_mask is dilated in pixel-space (MaskBuilder) to reject
+  depth noise and self-occlusion, which shifts the first observable obstacle
+  pixel artificially beyond the true robot surface.  When ee_source_mask and
+  dilation_margins_px are supplied, compute() converts that pixel margin back to
+  metres at the local pixel depth (per-pixel EE vs body margin) and subtracts it
+  BEFORE the nearest-pixel selection, so an obstacle touching the dilated border
+  reports ≈0 instead of a hidden positive offset.  Omitting either argument
+  restores the legacy output bit-for-bit.
+
 Low-pass filter:
   Per-CP EMA across frames.  When a new measurement is CLOSER than the
   smoothed value, the raw measurement is used immediately (conservative /
@@ -71,6 +81,8 @@ class DistanceEngine:
         step: int,
         search_exclusion_mask: Optional[np.ndarray],
         transforms: Optional[dict] = None,  # kept for API compatibility
+        ee_source_mask: Optional[np.ndarray] = None,            # bool (H, W)
+        dilation_margins_px: Optional[Tuple[int, int]] = None,  # (margin_body_px, margin_ee_px)
     ) -> Tuple[Optional[List[ControlPointResult]], int]:
         """Depth-space CP distance pipeline with LPF smoothing.
 
@@ -98,10 +110,16 @@ class DistanceEngine:
             keep   = ~search_exclusion_mask[vg, ug]
             ug, vg = ug[keep], vg[keep]
 
+        # Sample the EE-vs-body provenance with the SAME (vg, ug) indices used
+        # for Z below, so it stays index-aligned with p_cam through Step 4.
+        ee_src = ee_source_mask[vg, ug] if ee_source_mask is not None else None
+
         # ── Step 3: depth filter ──────────────────────────────────────────
         Z     = depth[vg, ug].astype(np.float32) * np.float32(0.001)
         valid = (Z >= self.min_depth) & (Z <= self.max_depth)
         ug, vg, Z = ug[valid], vg[valid], Z[valid]
+        if ee_src is not None:
+            ee_src = ee_src[valid]   # same boolean filter as Z/ug/vg
 
         if ug.size == 0:
             return self._lpf_pass(self._empty_results(control_points)), 0
@@ -113,6 +131,22 @@ class DistanceEngine:
         p_cam[:, 1] = (vg.astype(np.float32) - cy_f32) * (Z * fy_inv_f32)
         p_cam[:, 2] = Z
 
+        # ── Step 4b: dilation-margin → metres, per obstacle pixel ─────────
+        # Convert the pixel-space exclusion-mask dilation back to metres at the
+        # LOCAL depth of each obstacle pixel so Step 6 can subtract it.  ee_src
+        # picks the EE margin (hand region) vs the body margin per pixel.
+        # Gated on BOTH inputs present — if either is None the correction is
+        # skipped entirely and the output is identical to the legacy path.
+        if ee_src is not None and dilation_margins_px is not None:
+            # margin_px: (N_pix,) — margin_ee_px where ee_src True, else margin_body_px
+            margin_px = np.where(ee_src, dilation_margins_px[1], dilation_margins_px[0])
+            # SIMPLIFICATION: use fx_inv only (not the fx/fy average).  fx≈fy for the
+            # RealSense cameras used in this project, so the metric error is
+            # negligible; revisit if a camera with anisotropic focals is adopted.
+            margin_m = margin_px.astype(np.float32) * Z * fx_inv_f32
+        else:
+            margin_m = np.float32(0.0)   # scalar → natural broadcast, no-op
+
         # ── Step 5: project CPs into camera frame ─────────────────────────
         # R_base maps base→camera (rotation part of extrinsic).
         # cp_cam[i] = R_base.T @ (cp_base[i] − t_base)
@@ -121,11 +155,16 @@ class DistanceEngine:
 
         # ── Step 6: per-CP nearest obstacle ───────────────────────────────
         # Direct vectorised subtraction per CP — no KDTree overhead.
+        # margin_m is either a scalar 0.0 (correction disabled) or a (N_pix,)
+        # array index-aligned with p_cam/dist_3d (same Step-3 `valid` filter),
+        # so the subtraction below broadcasts correctly with no shape mismatch.
+        # Subtracting the margin BEFORE argmin lets it change which pixel wins,
+        # and np.maximum(..., 0.0) stays the LAST op so surface never goes < 0.
         results: List[ControlPointResult] = []
         for i, cp in enumerate(control_points):
             diff    = p_cam - cp_cam[i]                          # (N_pix, 3)
             dist_3d = np.sqrt((diff * diff).sum(axis=1))         # (N_pix,)
-            surface = np.maximum(dist_3d - radii[i], np.float32(0.0))
+            surface = np.maximum(dist_3d - radii[i] - margin_m, np.float32(0.0))
 
             best     = int(surface.argmin())
             min_dist = float(surface[best])

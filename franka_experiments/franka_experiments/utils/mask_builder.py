@@ -11,6 +11,10 @@ Outputs (all at full depth-image resolution):
   .robot_mask            — bool array (H, W)
   .search_exclusion_mask — bool array (H, W), dilated beyond robot_mask
   .contours              — list from cv2.findContours (pre-scaled to full res)
+  .ee_source_mask        — bool array (H, W), True where the EE dilation dominates
+                           the combined exclusion mask (vs. the body dilation)
+  .dilation_margins_px   — (margin_body_px, margin_ee_px), effective full-res
+                           dilation margins for downstream metric compensation
 """
 from __future__ import annotations
 
@@ -57,6 +61,8 @@ class MaskBuilder:
         self.robot_mask: Optional[np.ndarray] = None
         self.search_exclusion_mask: Optional[np.ndarray] = None
         self.contours: Optional[list] = None
+        self.ee_source_mask: Optional[np.ndarray] = None
+        self.dilation_margins_px: Tuple[int, int] = (0, 0)
 
     def set_intrinsics(self, K: np.ndarray):
         self._K = K
@@ -128,6 +134,23 @@ class MaskBuilder:
         mask_normal = _dilate(mask_normal, dilate_px)
         mask_ee     = _dilate(mask_ee,     ee_dilate_px)
 
+        # ── EE-margin compensation data (consumed downstream by DistanceEngine) ──
+        # search_exclusion_mask dilata il bordo del robot in pixel-space per evitare
+        # falsi positivi da rumore di profondità/self-occlusion. Questo sposta
+        # artificialmente il primo pixel-ostacolo osservabile oltre la vera superficie
+        # del robot. DistanceEngine usa ee_source_mask e dilation_margins_px per
+        # sottrarre questo margine in metri dalla distanza calcolata, così che un
+        # ostacolo a contatto col bordo dilatato riporti distanza ≈ 0 invece di un
+        # offset positivo nascosto.
+        #
+        # Provenienza per-pixel del massimo combinato: True dove la dilatazione EE
+        # domina quella body. In caso di parità si attribuisce alla sorgente EE,
+        # perché è il margine più grande/conservativo (sovrastimare il margine EE può
+        # solo accorciare la distanza riportata, mai mascherare una violazione).
+        # Calcolata sulle mask già dilatate, PRIMA del np.maximum, così resta coerente
+        # col pixel che vincerà il massimo.
+        ee_source_ds = (mask_ee >= mask_normal) & (mask_ee > 0)
+
         combined_u8 = np.maximum(mask_normal, mask_ee)   # (Hds, Wds) uint8
 
         # Contours computed on downsampled mask; coordinates scaled to full res
@@ -145,6 +168,25 @@ class MaskBuilder:
             excl_ds = _dilate(excl_ds, extra_px)
         excl_full = cv2.resize(excl_ds, (W, H), interpolation=cv2.INTER_NEAREST)
         self.search_exclusion_mask = excl_full > 0
+
+        # Propaga la provenienza EE nella stessa fascia di dilatazione extra usata
+        # per excl_ds (stesso kernel ellittico / raggio extra_px di _dilate()), poi
+        # threshold > 0. Approssima "il pixel pre-extra-dilation più vicino era EE",
+        # così la banda aggiunta eredita la sorgente corretta. Upsample con NEAREST
+        # esattamente come search_exclusion_mask.
+        ee_source_u8 = ee_source_ds.astype(np.uint8) * 255
+        if extra_px > 0:
+            ee_source_u8 = _dilate(ee_source_u8, extra_px)
+        ee_source_full = cv2.resize(ee_source_u8, (W, H), interpolation=cv2.INTER_NEAREST)
+        self.ee_source_mask = ee_source_full > 0
+
+        # Margini totali EFFETTIVI a piena risoluzione: il raggio di dilatazione è
+        # applicato in spazio downsampled, quindi un raggio di N px downsampled vale
+        # N·ds px a piena risoluzione. Sommiamo dilatazione base + extra per sorgente.
+        self.dilation_margins_px = (
+            dilate_px * ds + extra_px * ds,        # margin_body_px
+            ee_dilate_px * ds + extra_px * ds,     # margin_ee_px
+        )
 
         self._last_t_vecs = {n: t.copy() for n, (_, t) in transforms.items()}
 
