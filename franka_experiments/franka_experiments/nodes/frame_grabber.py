@@ -63,6 +63,7 @@ class FrameGrabber(Node):
         self._latest        = None    # latest cv2 BGR frame
         self._cbf_active    = False
         self._n_constraints = 0.0
+        self._fault         = False   # cbf_status data[2]: safety-chain fault braking
         self._saved         = 0
         self._t0            = time.monotonic()
 
@@ -101,7 +102,9 @@ class FrameGrabber(Node):
     def _cbf_cb(self, msg: Float64MultiArray) -> None:
         if len(msg.data) >= 1:
             self._n_constraints = float(msg.data[0])
-            self._cbf_active = self._n_constraints > 0.0
+            fault = float(msg.data[2]) if len(msg.data) >= 3 else 0.0
+            self._fault = fault > 0.0
+            self._cbf_active = (self._n_constraints > 0.0) or (fault > 0.0)
 
     # ── Timer: save the latest frame ───────────────────────────────────────
 
@@ -121,7 +124,7 @@ class FrameGrabber(Node):
             img = frame.copy()
             label = (f't={t:6.2f}s  '
                      f'CBF={"ON" if self._cbf_active else "off"} '
-                     f'(n={self._n_constraints:.0f})')
+                     f'(n={self._n_constraints:.0f} fault={int(self._fault)})')
             # Black outline + green text for legibility on any background.
             cv2.putText(img, label, (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
                         0.8, (0, 0, 0), 4, cv2.LINE_AA)

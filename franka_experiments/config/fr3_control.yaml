@@ -10,7 +10,7 @@ topics:
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
-  d_safe: 0.15          # minimum safe distance from obstacles [m]
+  d_safe: 0.20          # minimum safe distance from obstacles [m]
   d_safe_default: 0.1  # alias kept for backward compatibility
 
   # QP solver
@@ -35,9 +35,25 @@ params:
   # HOCBF:      n^T J qddot >= -c_i - k1*hdot - k0*h
   gamma: 1.0               # kept for backward compat (unused by HOCBF path)
   k0_cbf: 25.0             # HOCBF position gain  (class-K alpha_0)
-  k1_cbf: 10.0             # HOCBF velocity gain  (class-K alpha_1)
+  k1_cbf: 10.5             # HOCBF velocity gain  (class-K alpha_1)
+                           # NOTE: with k0_cbf=25.0, k1=10.0 gives EXACTLY critical
+                           # damping (Δ=k1²-4k0=0) — a knife-edge fragile to
+                           # discretization/latency-induced underdamping. Kept at
+                           # 10.5 → Δ=10.25>0, ζ≈1.05 (mildly overdamped) for margin;
+                           # checked safe vs cbf_activation_margin (penetration ≤~1 cm
+                           # at 1 m/s, less than at k1=10.0). See CBF review notes.
+                           # Do NOT "round down" to 10.0 without re-checking Δ.
   cbf_activation_margin: 0.10  # [m] QP activates at d < d_safe + margin
   cbf_hysteresis: 0.05     # [m] QP deactivates at d > d_safe + margin + hysteresis
+  cbf_min_leverage: 0.05   # [m/rad] min CBF leverage ‖a‖=‖n̂ᵀJp‖ to keep a
+                           # constraint. REPLACES the old cond(Jp)>1e5 test:
+                           # cond(Jp) measured conditioning of the whole 3×7
+                           # position map, not the leverage of the specific
+                           # constraint row aᵢ=n̂ᵀJp the QP uses (high cond only
+                           # weakens ‖a‖ when n̂ ≈ the ill-conditioned singular
+                           # direction). 0.05 is an INITIAL estimate (~10× below
+                           # the healthy O(0.3-0.8) scale) — validate empirically
+                           # on FR3 (fr3_cond_probe.py) before trusting it.
 
   # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
   qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
