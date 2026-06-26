@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -26,11 +27,17 @@ RtTorqueController::command_interface_configuration() const {
 
 controller_interface::InterfaceConfiguration
 RtTorqueController::state_interface_configuration() const {
-  // Pure torque-command controller: no state feedback needed in the RT path.
-  // Add joint position/velocity interfaces here when implementing damping or
-  // other state-dependent terms.
+  // Position + velocity per giunto: la velocità alimenta il feedback a 1 kHz
+  // (Kd·(q̇_des − q̇)); la posizione è richiesta anche se non usata dalla legge
+  // attuale, per non richiedere un secondo refactor delle interfacce se in
+  // futuro si aggiungesse un termine Kp. Ordine [pos, vel] per giunto: stesso
+  // pattern di joint_impedance_example_controller (indici 2*i, 2*i+1).
   controller_interface::InterfaceConfiguration config;
-  config.type = controller_interface::interface_configuration_type::NONE;
+  config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+  for (size_t i = 0; i < kNumJoints; ++i) {
+    config.names.push_back(joint_names_[i] + "/position");
+    config.names.push_back(joint_names_[i] + "/velocity");
+  }
   return config;
 }
 
@@ -44,21 +51,55 @@ RtTorqueController::state_interface_configuration() const {
 // ═══════════════════════════════════════════════════════════════════════════
 
 controller_interface::return_type RtTorqueController::update(
-    const rclcpp::Time& /*time*/,
-    const rclcpp::Duration& /*period*/) {
+    const rclcpp::Time& time,
+    const rclcpp::Duration& period) {
 
-  // 1. Read latest user torques (lock-free)
+  // 1. Stato misurato (posizione+velocità) dalle interfacce hardware.
+  updateJointStates();   // riempie q_, dq_
+
+  // 2. Ultimo feedforward τ_ff (lock-free) — trasporto invariato.
   const auto input = *command_buf_.readFromRT();
 
-  // 2. Pure pass-through: tau_hw = tau_in.
-  //    NO low-pass filtering and NO software saturation here — safety limits,
-  //    torque saturation and collision behavior are delegated entirely to the
-  //    Franka low-level stack.
-  //    NOTE: gravity compensation is handled by the Franka firmware — do NOT
-  //    add g(q) here, or gravity will be compensated twice and the robot will
-  //    accelerate upward at activation.
+  // 3. Ultimo q̈_safe (lock-free) + check di freschezza.
+  const auto accel = *accel_buf_.readFromRT();
+  const double now_s   = time.seconds();
+  const bool   accel_ok =
+      accel.received && (now_s - accel.stamp) < accel_timeout_;
+
+  // dt per l'integrale di q̇_des: il period del controller-manager È il dt
+  // esatto del loop RT a 1 kHz (questo è il "dt_RT" del design — NON il tempo
+  // Python, quindi il jitter dei 100 Hz non entra qui). Guardia su period non
+  // positivo/teleportato (startup, salti di sim-time); il clamp duro sotto
+  // limita comunque ogni residuo.
+  const double dt = period.seconds();
+
+  // NOTA: la gravità g(q) è compensata dal firmware Franka — NON aggiungerla
+  // qui, o verrebbe compensata due volte. Nessun LPF e nessuna saturazione SW:
+  // limiti/saturazione coppia restano delegati allo stack low-level Franka.
   for (size_t i = 0; i < kNumJoints; ++i) {
-    command_interfaces_[i].set_value(input.tau[i]);
+    double e;
+    if (accel_ok && dt > 0.0) {
+      // Integra q̇_des da q̈_safe, poi CLAMP DURO dell'errore di velocità a
+      // ±e_max (anti-windup; NESSUN leak proporzionale — vedi Diagnosi/4b: un
+      // leak reintrodurrebbe una frazione k_sync/(Kd+k_sync) proprio del
+      // deficit che questo termine esiste per annullare).
+      qdot_des_[i] += accel.qddot[i] * dt;
+      e = qdot_des_[i] - dq_[i];
+      if (std::abs(e) > e_max_) {
+        e = std::copysign(e_max_, e);   // errore POST-clamp: è quello
+        qdot_des_[i] = dq_[i] + e;      // "fisicamente ammesso" → usato per τ
+      }
+    } else {
+      // Nessun q̈_safe fresco: degrada in modo SICURO al puro pass-through del
+      // feedforward (comportamento odierno). Congela q̇_des sulla misura, così
+      // l'errore — e quindi la coppia di feedback — è esattamente zero, e
+      // l'integratore è già riallineato per quando q̈_safe riprende.
+      qdot_des_[i] = dq_[i];
+      e = 0.0;
+    }
+
+    // 4. Legge di controllo: τ = τ_ff + Kd·e   (errore post-clamp).
+    command_interfaces_[i].set_value(input.tau[i] + d_gains_[i] * e);
   }
 
   return controller_interface::return_type::OK;
@@ -74,6 +115,15 @@ CallbackReturn RtTorqueController::on_init() {
     auto_declare<std::vector<std::string>>("joints", std::vector<std::string>{});
     auto_declare<std::string>("command_topic", "torque_cmd");
     auto_declare<bool>("gazebo", false);
+    // ── Feedback di velocità a 1 kHz ──────────────────────────────────────
+    // Dichiarati qui per NON perpetuare il disallineamento del generatore YAML
+    // (che oggi passa lpf_alpha/tau_max_scale/urdf_path senza che il C++ li
+    // dichiari → ignorati). Tutti VALORI INIZIALI da validare in hardware.
+    auto_declare<std::string>("accel_topic", "/NS_1/qddot_safe");
+    auto_declare<std::vector<double>>(
+        "d_gains", std::vector<double>{30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0});
+    auto_declare<double>("e_max", 1.0);
+    auto_declare<double>("accel_timeout", 0.1);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception in RtTorqueController::on_init: %s\n", e.what());
     return CallbackReturn::ERROR;
@@ -94,6 +144,17 @@ CallbackReturn RtTorqueController::on_configure(
   arm_id_        = get_node()->get_parameter("arm_id").as_string();
   command_topic_ = get_node()->get_parameter("command_topic").as_string();
   is_gazebo_     = get_node()->get_parameter("gazebo").as_bool();
+  accel_topic_   = get_node()->get_parameter("accel_topic").as_string();
+  e_max_         = get_node()->get_parameter("e_max").as_double();
+  accel_timeout_ = get_node()->get_parameter("accel_timeout").as_double();
+
+  const auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
+  if (d_gains.size() != kNumJoints) {
+    RCLCPP_ERROR(logger, "d_gains must have %zu entries, got %zu",
+                 kNumJoints, d_gains.size());
+    return CallbackReturn::ERROR;
+  }
+  std::copy_n(d_gains.begin(), kNumJoints, d_gains_.begin());
 
   const auto joints_param = get_node()->get_parameter("joints").as_string_array();
   if (joints_param.empty()) {
@@ -138,6 +199,7 @@ CallbackReturn RtTorqueController::on_configure(
   // ── RealtimeBuffer + subscriber ─────────────────────────────────────────
   TorqueInput zero{};
   command_buf_.writeFromNonRT(zero);
+  accel_buf_.writeFromNonRT(AccelInput{});
 
   command_sub_ = get_node()->create_subscription<std_msgs::msg::Float64MultiArray>(
       command_topic_, rclcpp::SensorDataQoS().keep_last(1),
@@ -145,10 +207,17 @@ CallbackReturn RtTorqueController::on_configure(
         commandCb(msg);
       });
 
+  accel_sub_ = get_node()->create_subscription<std_msgs::msg::Float64MultiArray>(
+      accel_topic_, rclcpp::SensorDataQoS().keep_last(1),
+      [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+        accelCb(msg);
+      });
+
   RCLCPP_INFO(logger,
-      "RtTorqueController configured (pure torque pass-through, no LPF/clamp)  "
-      "arm=%s  topic=%s  gazebo=%s",
-      arm_id_.c_str(), command_topic_.c_str(), is_gazebo_ ? "true" : "false");
+      "RtTorqueController configured (τ_ff + Kd·(q̇_des−q̇), clamp e_max=%.3f rad/s, "
+      "accel_timeout=%.3f s)  arm=%s  τ_topic=%s  q̈_topic=%s  gazebo=%s",
+      e_max_, accel_timeout_, arm_id_.c_str(), command_topic_.c_str(),
+      accel_topic_.c_str(), is_gazebo_ ? "true" : "false");
 
   return CallbackReturn::SUCCESS;
 }
@@ -162,6 +231,14 @@ CallbackReturn RtTorqueController::on_activate(
 
   TorqueInput zero{};
   command_buf_.writeFromNonRT(zero);
+  accel_buf_.writeFromNonRT(AccelInput{});   // scarta q̈_safe pre-attivazione
+
+  // Inizializza il riferimento integrato sulla velocità misurata, così il
+  // primo errore (e quindi la coppia di feedback) parte da zero — niente
+  // transitorio all'attivazione (analogo a initial_q_ = q_ nell'esempio).
+  updateJointStates();
+  qdot_des_ = dq_;
+
   for (size_t i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(0.0);
   }
@@ -187,6 +264,19 @@ CallbackReturn RtTorqueController::on_deactivate(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  updateJointStates  (RT thread) — legge q_/dq_ dalle interfacce di stato
+//  Ordine [pos, vel] per giunto: indici 2*i, 2*i+1 (vedi
+//  state_interface_configuration). Stesso pattern dell'esempio Franka.
+// ═══════════════════════════════════════════════════════════════════════════
+
+void RtTorqueController::updateJointStates() {
+  for (size_t i = 0; i < kNumJoints; ++i) {
+    q_[i]  = state_interfaces_[2 * i].get_value();
+    dq_[i] = state_interfaces_[2 * i + 1].get_value();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  commandCb  (non-RT thread)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -204,6 +294,27 @@ void RtTorqueController::commandCb(
   std::copy_n(msg->data.begin(), kNumJoints, input.tau.begin());
   input.received = true;
   command_buf_.writeFromNonRT(input);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  accelCb  (non-RT thread) — riceve q̈_safe (uscita CBF), gemello di commandCb
+// ═══════════════════════════════════════════════════════════════════════════
+
+void RtTorqueController::accelCb(
+    const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+
+  if (msg->data.size() != kNumJoints) {
+    RCLCPP_WARN_THROTTLE(
+        get_node()->get_logger(), *get_node()->get_clock(), 1000,
+        "qddot_safe: expected %zu values, got %zu — IGNORING",
+        kNumJoints, msg->data.size());
+    return;
+  }
+  AccelInput accel;
+  std::copy_n(msg->data.begin(), kNumJoints, accel.qddot.begin());
+  accel.received = true;
+  accel.stamp    = get_node()->now().seconds();
+  accel_buf_.writeFromNonRT(accel);
 }
 
 }  // namespace franka_rt_controllers

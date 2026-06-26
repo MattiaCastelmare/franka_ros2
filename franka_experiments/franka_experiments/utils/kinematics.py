@@ -174,6 +174,54 @@ def transform_ee_to_frame(
 
 
 # ---------------------------------------------------------------------------
+# SO(3) logarithm (axis*angle) — robust orientation error
+# ---------------------------------------------------------------------------
+
+def so3_log(R_err: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """SO(3) logarithm: return ``axis * angle`` of the rotation ``R_err``.
+
+    This is the exact (large-angle) generalisation of the classic small-angle
+    orientation error ``½·vee(R_err − R_errᵀ)``: for small angles it reduces to
+    exactly that vector (the ``angle < eps`` branch), but its magnitude equals
+    the TRUE geodesic angle and is therefore **monotone over the whole
+    ``[0, π]`` range** — unlike the bare antisymmetric vee, whose norm is
+    ``sin(angle)`` and folds back to zero at π (non-monotone above 90°, which
+    inverts a PD gradient that minimises it).
+
+    Robust at both singular endpoints:
+      * ``angle → 0``:  ``½·vee`` (continuous limit of ``angle/(2 sin angle)``).
+      * ``angle → π``:  ``sin(angle) → 0`` makes the vee term vanish (0/0), so
+        the axis is extracted from ``R_err + I = 2·a·aᵀ`` (largest diagonal
+        column, for numerical stability), with the sign disambiguated from the
+        (vanishing) antisymmetric part when usable.
+
+    Notes
+    -----
+    The returned vector lives in the SAME frame ``R_err`` is written in. For a
+    world-frame feedback loop combined with a LOCAL_WORLD_ALIGNED Jacobian, the
+    caller must rotate it into world (e.g. ``−R_des @ so3_log(R_des.T @ R_cur)``
+    ``= so3_log(R_des @ R_cur.T)``).
+    """
+    cos_t = np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0)
+    angle = np.arccos(cos_t)
+    vee = np.array([R_err[2, 1] - R_err[1, 2],
+                    R_err[0, 2] - R_err[2, 0],
+                    R_err[1, 0] - R_err[0, 1]])
+    if angle < eps:
+        return 0.5 * vee
+    if (np.pi - angle) < eps:
+        A = (R_err + np.eye(3)) / 2.0          # = a·aᵀ  (a = unit axis)
+        k = int(np.argmax(np.diag(A)))
+        axis = A[:, k] / np.sqrt(max(A[k, k], 0.0))
+        axis = axis / np.linalg.norm(axis)
+        if np.dot(axis, vee) < 0.0:            # keep continuity with the else-branch
+            axis = -axis
+        return angle * axis
+    axis = vee / (2.0 * np.sin(angle))
+    return angle * axis
+
+
+# ---------------------------------------------------------------------------
 # Damped-least-squares solver
 # ---------------------------------------------------------------------------
 

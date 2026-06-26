@@ -62,6 +62,7 @@ from franka_experiments.utils.kinematics import (
     resolve_frame_id,
     resolve_arm_joint_ids,
     transform_ee_to_frame,
+    so3_log,
 )
 from sensor_msgs.msg import JointState as SensorJointState
 from franka_experiments.utils.trajectory import (
@@ -128,7 +129,14 @@ class PentagonQddotCommander(Node):
         # kd ≈ 2√kp for near-critical damping.
         self.declare_parameter('kp_cart',             20.0)
         self.declare_parameter('kd_cart',              9.0)
-        self.declare_parameter('kp_rot',              10.0)
+        # kp_rot temporaneamente ridotto 10.0 → 5.0 per il PRIMO test con
+        # l'anello di orientamento ora effettivamente regolante: prima la
+        # formula di e_rot era in frame/segno errati → loop di fatto
+        # divergente, quindi nessun comportamento osservato finora è
+        # indicativo del loop chiuso correttamente. Da rivalutare (probabile
+        # ritorno verso ~10) dopo aver osservato il transitorio corretto su
+        # hardware. kd_rot invariato: con kp_rot=5 dà ζ=kd/(2√kp)≈1.34.
+        self.declare_parameter('kp_rot',               5.0)
         self.declare_parameter('kd_rot',               6.0)
         # High-rate CSV logging: output directory + measured-effort source topic.
         self.declare_parameter('log_dir',
@@ -620,10 +628,16 @@ class PentagonQddotCommander(Node):
         if not self._orient_ok:
             np.copyto(self._R_des, R_cur)
             self._orient_ok = True
+        # Errore di orientamento = so3_log(R_des @ R_cur.T), espresso in WORLD
+        # (coerente con J_arm[3:] in LOCAL_WORLD_ALIGNED) e con segno "des − cur"
+        # (coerente con l'errore di posizione p_d − p_ee). Calcolato come
+        # −R_des @ so3_log(R_des.T @ R_cur), riusando il buffer R_err già qui.
+        # so3_log NON degenera per disallineamenti grandi (vedi kinematics.py):
+        # la vecchia ½·vee(R_err−R_errᵀ) era in frame body, segno opposto, e con
+        # norma sin(angle) non monotona → invertiva il gradiente del PD >90°.
         np.dot(self._R_des.T, R_cur, out=self._R_err)
-        self._e_rot[0] = 0.5 * (self._R_err[2, 1] - self._R_err[1, 2])
-        self._e_rot[1] = 0.5 * (self._R_err[0, 2] - self._R_err[2, 0])
-        self._e_rot[2] = 0.5 * (self._R_err[1, 0] - self._R_err[0, 1])
+        np.dot(self._R_des, so3_log(self._R_err), out=self._e_rot)
+        np.negative(self._e_rot, out=self._e_rot)
 
         # ── TEMPORARY: Sequential Joint Isolation Test ────────────────────────
         # Bypass the whole Cartesian task-space trajectory + nominal integrator
@@ -982,10 +996,11 @@ class PentagonQddotCommander(Node):
         if not self._orient_nom_ok:
             np.copyto(self._R_des_nom, R_cur)
             self._orient_nom_ok = True
+        # Stesso errore di orientamento corretto del canale misurato
+        # (so3_log(R_des @ R_cur.T), world, segno des−cur). Vedi _tick.
         np.dot(self._R_des_nom.T, R_cur, out=self._R_err_nom)
-        self._e_rot_nom[0] = 0.5 * (self._R_err_nom[2, 1] - self._R_err_nom[1, 2])
-        self._e_rot_nom[1] = 0.5 * (self._R_err_nom[0, 2] - self._R_err_nom[2, 0])
-        self._e_rot_nom[2] = 0.5 * (self._R_err_nom[1, 0] - self._R_err_nom[0, 1])
+        np.dot(self._R_des_nom, so3_log(self._R_err_nom), out=self._e_rot_nom)
+        np.negative(self._e_rot_nom, out=self._e_rot_nom)
 
         # 6D pose error (against the SAME desired path as the measured channel)
         np.subtract(p_d, self._p_ee_nom, out=self._tmp3n)

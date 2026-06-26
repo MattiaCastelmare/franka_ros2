@@ -303,6 +303,9 @@ def generate_rt_controllers_yaml(
     torque_command_topic='torque_cmd',
     lpf_alpha=1.0,
     tau_max_scale=1.0,
+    d_gains=None,
+    e_max=1.0,
+    accel_topic='/NS_1/qddot_safe',
 ):
     """Build a complete, self-contained controllers YAML.
 
@@ -324,6 +327,9 @@ def generate_rt_controllers_yaml(
             gazebo=gazebo,
             lpf_alpha=lpf_alpha,
             tau_max_scale=tau_max_scale,
+            d_gains=d_gains,
+            e_max=e_max,
+            accel_topic=accel_topic,
         )
 
     lines = [
@@ -409,8 +415,25 @@ def _ensure_urdf_cached(arm_id: str) -> str:
     return cache_path
 
 
-def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha, tau_max_scale):
-    """Build controllers YAML for rt_torque_controller."""
+def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
+                          tau_max_scale, d_gains=None, e_max=1.0,
+                          accel_topic='/NS_1/qddot_safe'):
+    """Build controllers YAML for rt_torque_controller.
+
+    d_gains / e_max / accel_topic parametrizzano il feedback di velocità a 1 kHz
+    (τ = τ_ff + Kd·(q̇_des − q̇)). VALORI INIZIALI da validare in hardware.
+    """
+    if d_gains is None:
+        # Per-giunto, decrescente verso il polso (inerzie minori, attrito
+        # relativo maggiore → si tara indipendentemente). INITIAL estimate.
+        d_gains = [30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0]
+    if not is_real:
+        # Fake hardware: il mock non simula la dinamica di coppia (un comando di
+        # effort non viene integrato in velocità), quindi il feedback Kd·(q̇_des−q̇)
+        # sarebbe privo di significato fisico. Lo si disattiva via configurazione
+        # (gain a zero → il controller resta puro pass-through del feedforward),
+        # NON con un ramo condizionale nel C++.
+        d_gains = [0.0] * 7
     lines = [
         '# Auto-generated at launch time by the launch system',
         '# Controller: rt_torque_controller  —  DO NOT EDIT (regenerated every launch)',
@@ -465,8 +488,16 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha, tau
     for i in range(1, 8):
         lines.append(f'        - {arm_id}_joint{i}')
     urdf_path = _ensure_urdf_cached(arm_id)
+    d_gains_str = '[' + ', '.join(f'{g}' for g in d_gains) + ']'
     lines += [
         f'      command_topic: {command_topic}',
+        f'      accel_topic: {accel_topic}',
+        # Feedback di velocità a 1 kHz (vedi rt_torque_controller). INITIAL —
+        # tarare in hardware. Su fake hardware il controller gira a 100 Hz e il
+        # mock non simula la dinamica di coppia: il feedback resta limitato dal
+        # clamp ma è privo di significato fisico (vedi note di design).
+        f'      d_gains: {d_gains_str}',
+        f'      e_max: {e_max}',
         f'      lpf_alpha: {lpf_alpha}',
         f'      tau_max_scale: {tau_max_scale}',
         f'      gazebo: {gazebo}',
