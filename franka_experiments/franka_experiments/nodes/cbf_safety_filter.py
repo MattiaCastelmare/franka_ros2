@@ -106,6 +106,7 @@ class _ConstraintSnap(NamedTuple):
     jdot_qdot: np.ndarray  # (n_c,)        ċᵢ = n̂ᵢᵀ(J̇ᵢ q̇) at the snapshot q̇
     G:         np.ndarray  # (n_c, NV+1)   prebuilt [−A | −1] for the QP
     t_dist:    float       # stamp of the distance data the geometry is based on
+    links:     tuple       # (n_c,) link names, DIAGNOSTIC only — not used by QP
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -148,7 +149,10 @@ class CBFSafetyFilter(Node):
         qp_rate          = float(p.get('qp_rate_hz',           200.0))
         cbf_rate         = float(p.get('cbf_update_rate_hz',    50.0))
         self._d_safe     = float(p.get('d_safe',                 0.20))
-        self._margin     = float(p.get('cbf_activation_margin',  0.10))
+        # Pure computational horizon (NOT a safety activation gate): obstacles
+        # beyond this are skipped only to cap/stabilize n_c. The linear HOCBF
+        # self-deactivates at large d (k0·h̄ term), so activation is continuous.
+        self._obstacle_horizon = float(p.get('cbf_obstacle_horizon', 1.2))
         self._k0         = float(p.get('k0_cbf',                25.0))
         self._k1         = float(p.get('k1_cbf',                10.5))
         self._rho        = float(p.get('rho_slack',           1000.0))
@@ -200,6 +204,30 @@ class CBFSafetyFilter(Node):
         self._nom: _NomSnap        | None = None
         self._obs: _ObstacleSnap   | None = None
         self._con: _ConstraintSnap | None = None
+
+        # ── Structured CBF-episode diagnostic (manual time throttle) ─────────
+        # Emitted only when n_c>0. Manual gate (not get_logger throttle) so the
+        # projection math + f-string are computed ONLY when actually emitted,
+        # keeping per-tick overhead ~0 between emissions. ~50 ms → good temporal
+        # resolution for a few-second approach episode without log spam.
+        self._diag_period = 0.05
+        self._last_diag_t = 0.0
+
+        # ── DIAGNOSTIC ONLY — realized joint acceleration estimate ───────────
+        # q̈_real ≈ Δq̇/Δt from consecutive MEASURED q̇ (finite difference at the
+        # native joint_states rate), lightly EMA-smoothed. This is a NOISY
+        # numerical-derivative estimate kept SOLELY to compare commanded q̈_safe
+        # against what the robot actually does (Phase-1 actuation debug). It is
+        # NEVER read by the QP, the constraint builder, or ANY control/safety
+        # decision — only by the CBFDIAG log block below. Do not wire it into
+        # control. EMA α=0.7: measured-velocity differencing is noisy at the
+        # high joint_states rate; 0.7 trims high-freq derivative noise while
+        # still tracking the ~50 ms-scale trend a sub-second approach needs —
+        # light enough not to mask a genuine commanded-vs-realized deficit.
+        self._diag_qddot_real  = np.zeros(NV)               # latest est [rad/s²]
+        self._diag_qdot_prev: np.ndarray | None = None
+        self._diag_t_prev:    float | None = None
+        self._diag_qddot_alpha = 0.7
 
         # ── Diagnostics: detect QP-tick scheduling gaps (see _qp_tick) ───────
         self._last_tick_t = None
@@ -259,7 +287,7 @@ class CBFSafetyFilter(Node):
         self.get_logger().info(
             f'CBF filter  QP={qp_rate:.0f} Hz  constraints={cbf_rate:.0f} Hz  '
             f'solver={self._solver}\n'
-            f'  d_safe={self._d_safe} m   margin={self._margin} m\n'
+            f'  d_safe={self._d_safe} m   obstacle_horizon={self._obstacle_horizon} m\n'
             f'  k0={self._k0}   k1={self._k1}   rho={self._rho}')
 
         # ── Diagnostic: optionally disable the garbage collector ─────────────
@@ -363,6 +391,22 @@ class CBFSafetyFilter(Node):
             return
         self._js = _JointSnap(q, qdot, self._now())
 
+        # ── DIAGNOSTIC ONLY — realized q̈ estimate (see __init__; NOT control) ─
+        # Finite difference of MEASURED q̇ → q̈_real, EMA-smoothed. Δt uses the
+        # ROS header stamp (sensor/controller time), NOT receipt wall-time:
+        # callback-scheduling jitter would corrupt the derivative (a late
+        # callback inflates Δt and deflates the estimate). Guarded to a sane
+        # joint_states interval so a dropped/duplicated stamp can't blow it up.
+        t_hdr = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self._diag_qdot_prev is not None and self._diag_t_prev is not None:
+            dt = t_hdr - self._diag_t_prev
+            if 1e-4 < dt < 0.1:
+                raw = (qdot - self._diag_qdot_prev) / dt
+                a   = self._diag_qddot_alpha
+                self._diag_qddot_real = a * self._diag_qddot_real + (1.0 - a) * raw
+        self._diag_qdot_prev = qdot
+        self._diag_t_prev    = t_hdr
+
     def _on_qddot_nom(self, msg: Float64MultiArray) -> None:
         data = np.asarray(msg.data, dtype=np.float64)
         if data.shape == (NV,):
@@ -395,17 +439,26 @@ class CBFSafetyFilter(Node):
             self._con = None
             return
 
-        d_threshold = self._d_safe + self._margin
         # with_jdot=True: also run computeJointJacobiansTimeVariation so that
         # point_jacobian() can return J̇p — needed for the J̇q̇ term of d̈
         # (h̄ has relative degree 2). One extra O(nv) backward pass at 50 Hz.
         self._kin.update(js.q, js.qdot, with_jdot=True)
         rows_a, rows_h, rows_jdq = [], [], []
+        rows_link     = []          # link name per kept row (DIAGNOSTIC only)
         n_weak        = 0           # obstacles dropped this tick for low leverage
         min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
 
         for ob in obs.items:
-            if ob.d > d_threshold or ob.conf < self._conf_min:
+            # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
+            # linear HOCBF row self-deactivates at large d (its lower bound
+            # −k0·h̄ becomes very negative), and the k1·ḣ̄ + jdq terms let a fast
+            # approach engage the row gradually from afar — so activation is now
+            # continuous. We skip only obstacles so far that engaging them would
+            # need a physically unrealistic approach speed (at 1.2 m with the
+            # current k0/k1 that is ≈ −2.4 m/s, beyond human motion), purely to
+            # bound/stabilize n_c and avoid OSQP setup() churn. Replaces the old
+            # d_safe+cbf_activation_margin step gate.
+            if ob.d > self._obstacle_horizon or ob.conf < self._conf_min:
                 continue
 
             delta = ob.pr - ob.ph
@@ -445,6 +498,7 @@ class CBFSafetyFilter(Node):
                 rows_a.append(a)
                 rows_h.append(h)
                 rows_jdq.append(jdq)
+                rows_link.append(ob.link)
 
         if n_weak > 0:
             # Previously this drop was silent (no log/counter). Throttled so a
@@ -465,7 +519,7 @@ class CBFSafetyFilter(Node):
         G     = np.empty((n_c, NV + 1))                # [−A | −1]: A q̈ + s ≥ b
         G[:, :NV] = -A
         G[:, -1]  = -1.0
-        self._con = _ConstraintSnap(A, h_bar, jdq_v, G, obs.stamp)
+        self._con = _ConstraintSnap(A, h_bar, jdq_v, G, obs.stamp, tuple(rows_link))
 
     def _frame_id(self, link: str) -> int | None:
         if link not in self._fid_cache:
@@ -690,6 +744,47 @@ class CBFSafetyFilter(Node):
         self._status_msg.data[1] = slack
         self._status_msg.data[2] = fault_braking
         self._status_pub.publish(self._status_msg)
+
+        # ── Structured CBF-episode diagnostic ────────────────────────────────
+        # One compact, CSV-like line per ~50 ms while any CBF row is active.
+        # Whole block (projections + f-string) runs only when the manual throttle
+        # is due → negligible average per-tick cost. DIAGNOSTIC ONLY: reads
+        # already-computed values, changes nothing in the control/safety path.
+        # Field guide (units): d_min [m] closest active obstacle (= min h̄ + d_safe);
+        #   link closest link; hdot=aᵀq̇ [m/s] approach rate (velocity anticipation);
+        #   h_qp [m/s²] RHS of that row's bound (more positive ⇒ looser/inactive);
+        #   dnorm=‖q̈_safe−q̈_nom‖ [rad/s²] how hard the QP bends the nominal;
+        #   s slack (>0 ⇒ QP relaxing the constraint, local conflict/infeasibility);
+        #   dq_rad/dq_ort split of (q̈_safe−q̈_nom) along/⊥ the constrained joint
+        #   direction â (large dq_ort ⇒ motion leaking into UNconstrained joints —
+        #   the suspected "throws itself backward"); cart_rad=aᵀΔq̈ [m/s²] Cartesian
+        #   accel change along n̂ at the control point.
+        #   Phase-1 actuation debug (commanded vs realized, DIAGNOSTIC q̈_real):
+        #   qdd_cmd_rad=aᵀq̈_safe [m/s²] COMMANDED Cartesian accel along n̂;
+        #   qdd_real_rad=aᵀq̈_real [m/s²] REALIZED (from measured q̇ finite diff);
+        #   trk_err=‖q̈_safe−q̈_real‖ [rad/s²] joint-space tracking error.
+        #   qdd_real_rad ≪ qdd_cmd_rad while pushing away ⇒ command not executed.
+        if n_c > 0 and (now - self._last_diag_t) >= self._diag_period:
+            self._last_diag_t = now
+            dq    = qddot_safe - qddot_nom
+            i     = int(np.argmin(con.h_bar))           # closest obstacle row
+            a_i   = con.A[i]
+            a_n   = float(np.linalg.norm(a_i))
+            a_hat = a_i / a_n if a_n > 1e-12 else a_i
+            dq_rad = float(a_hat @ dq)
+            dq_ort = float(np.linalg.norm(dq - dq_rad * a_hat))
+            link_i = con.links[i] if i < len(con.links) else '?'
+            # Phase-1: commanded vs realized accel along â (diagnostic q̈_real).
+            qddot_real   = self._diag_qddot_real
+            qdd_cmd_rad  = float(a_i @ qddot_safe)
+            qdd_real_rad = float(a_i @ qddot_real)
+            trk_err      = float(np.linalg.norm(qddot_safe - qddot_real))
+            self.get_logger().info(
+                f'CBFDIAG t={now:.3f} n_c={n_c} d_min={float(con.h_bar[i]) + self._d_safe:.3f} '
+                f'link={link_i} hdot={float(a_i @ qdot):+.3f} h_qp={float(h_qp[i]):+.3f} '
+                f'dnorm={float(np.linalg.norm(dq)):.3f} s={slack:.4f} '
+                f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} cart_rad={float(a_i @ dq):+.3f} '
+                f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f}')
 
     def _publish(self, qddot_safe: np.ndarray) -> None:
         msg      = Float64MultiArray()

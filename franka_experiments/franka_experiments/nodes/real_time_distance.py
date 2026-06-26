@@ -328,6 +328,7 @@ class RealTimeDistance(Node):
                 transforms=transforms,
                 ee_source_mask=self.mask_builder.ee_source_mask,
                 dilation_margins_px=self.mask_builder.dilation_margins_px,
+                frame_stamp=stamp.sec + stamp.nanosec * 1e-9,  # REAL dt for approach rate-limit
             )
         if cp_results is None:
             return

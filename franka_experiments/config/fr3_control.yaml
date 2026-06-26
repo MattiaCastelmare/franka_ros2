@@ -43,8 +43,21 @@ params:
                            # checked safe vs cbf_activation_margin (penetration ≤~1 cm
                            # at 1 m/s, less than at k1=10.0). See CBF review notes.
                            # Do NOT "round down" to 10.0 without re-checking Δ.
-  cbf_activation_margin: 0.10  # [m] QP activates at d < d_safe + margin
-  cbf_hysteresis: 0.05     # [m] QP deactivates at d > d_safe + margin + hysteresis
+  # NOTE: cbf_activation_margin / cbf_hysteresis below are RETIRED for
+  # cbf_safety_filter — that node replaced its old step activation gate
+  # (d < d_safe + margin) with continuous HOCBF activation + the purely
+  # computational cbf_obstacle_horizon. They are KEPT here only because
+  # cbf_velocity_filter.py still reads them as live params (and a test refs
+  # them); do NOT delete them while that node depends on them.
+  cbf_activation_margin: 0.10  # [m] (cbf_velocity_filter only) activation gate
+  cbf_hysteresis: 0.05     # [m] (cbf_velocity_filter only) deactivation hysteresis
+  cbf_obstacle_horizon: 1.2  # [m] COMPUTATIONAL cutoff for cbf_safety_filter, NOT
+                           # a safety gate: the linear HOCBF self-deactivates at
+                           # large d, so far obstacles add slack (non-binding)
+                           # rows. n_c is already hard-bounded ~8-9 by the robot
+                           # geometry (one LinkDistance per segment link), so this
+                           # mainly avoids OSQP setup() churn from obstacles
+                           # flickering near a tight boundary. Initial estimate.
   cbf_min_leverage: 0.05   # [m/rad] min CBF leverage ‖a‖=‖n̂ᵀJp‖ to keep a
                            # constraint. REPLACES the old cond(Jp)>1e5 test:
                            # cond(Jp) measured conditioning of the whole 3×7

@@ -1,7 +1,6 @@
 """Shared utilities for RealTimeDistance ROS 2 nodes.
 
-Centralises boilerplate duplicated across real_time_distance.py and
-real_time_distance_node.py:
+Centralises boilerplate used by real_time_distance.py:
 
   PerfTimer          — lightweight named-stage wall-clock profiler
   get_safety_zone()  — distance → zone label classification

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DistanceVisualizationNode — standalone rendering node for human-robot distance.
 
-Completely independent from the compute node (real_time_distance_node).  A
+Completely independent from the compute node (real_time_distance).  A
 freeze or restart of either node does not affect the other.
 
 Subscriptions
