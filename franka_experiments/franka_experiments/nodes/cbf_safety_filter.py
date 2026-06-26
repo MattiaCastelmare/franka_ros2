@@ -145,6 +145,12 @@ class CBFSafetyFilter(Node):
 
         self._lb = np.array([-lims[k][3] for k in keys])   # −qddot_max per joint
         self._ub = np.array([ lims[k][3] for k in keys])   #  qddot_max per joint
+        # Official Franka per-joint velocity limit (joint_limits.yaml limit.velocity,
+        # = fr3_control.yaml col[2]). Until now UNUSED by the QP — the box bounded
+        # only q̈, so a sustained q̈ could integrate q̇ past this limit and trip the
+        # firmware `joint_velocity_violation` reflex. Now used to tighten the accel
+        # box per tick (see _update_velocity_box).
+        self._qdot_max = np.array([lims[k][2] for k in keys])   # q̇_max per joint [rad/s]
 
         qp_rate          = float(p.get('qp_rate_hz',           200.0))
         cbf_rate         = float(p.get('cbf_update_rate_hz',    50.0))
@@ -186,8 +192,33 @@ class CBFSafetyFilter(Node):
         # sparse matrices; reusing this instance avoids per-tick conversion.
         self._P_csc  = sparse.csc_matrix(self._P)
         self._qvec   = np.zeros(NV + 1)
+        # Box bounds: indices 0..NV-1 are the per-joint q̈ bounds (STATIC accel
+        # part from decel_limit, dynamically TIGHTENED by the velocity bound each
+        # tick in _update_velocity_box); index NV is the slack slot s∈[0, 1e6]
+        # (NEVER touched by the velocity update).
         self._box_lb = np.append(self._lb, 0.0)
         self._box_ub = np.append(self._ub, 1e6)
+        # Velocity-aware box: one integration step (Δt = nominal QP period) must
+        # not push |q̇| past v_margin·q̇_max. Nominal Δt (not measured) chosen on
+        # purpose — see _update_velocity_box: error only shifts conservativeness,
+        # absorbed by the 0.9 margin, and a fixed Δt keeps the bound deterministic
+        # (independent of scheduling jitter).
+        self._v_margin = 0.9
+        self._dt_qp    = 1.0 / qp_rate
+        # Per-joint velocity diagnostics, refilled each tick by
+        # _update_velocity_box; read by the CBFDIAG line and the high-res VELHI
+        # log. ratio = |q̇|/q̇_max; bite = this joint's q̈ box was tightened by the
+        # velocity bound (vs the static decel box).
+        self._diag_vel_ratio = np.zeros(NV)
+        self._diag_vel_bite  = np.zeros(NV, dtype=bool)
+        # VELHI gate: emit the per-tick (10 ms) per-joint line only when the worst
+        # joint exceeds this q̇/q̇_max ratio. Default 0.85 → silent in normal
+        # operation, full resolution in the pre-violation window. >1.0 disables.
+        self.declare_parameter('diag_vel_ratio_thr', 0.85)
+        self._diag_vel_ratio_thr = float(self.get_parameter('diag_vel_ratio_thr').value)
+        # Cumulative QP-failure counter (surfaced in the QP-fail error + the
+        # periodic tick log) to correlate failures with the critical window.
+        self._qp_fail_count = 0
         self._prev_nc = -1   # forces (re)setup the first time n_c is seen
         # Persistent native-OSQP problem. solve_qp() rebuilt the OSQP problem
         # (alloc + scaling + factorization) on every call — 5-24 ms even for the
@@ -550,6 +581,69 @@ class CBFSafetyFilter(Node):
         cbf  = sparse.csc_matrix((G.ravel(), (rows, cols)), shape=(n_c, NV + 1))
         return sparse.vstack([cbf, box], format='csc')
 
+    def _update_velocity_box(self, qdot: np.ndarray) -> None:
+        """Tighten the per-joint q̈ box so q̇ cannot exceed v_margin·q̇_max.
+
+        One-step bound: after one Δt the velocity q̇ + q̈·Δt must stay within
+        ±v_margin·q̇_max. This yields a velocity-dependent acceleration box that
+        is intersected (min/max) with the STATIC decel-limit box self._lb/_ub:
+
+            q̈_ub = min( +decel,  (+v_margin·q̇_max − q̇)/Δt )
+            q̈_lb = max( −decel,  (−v_margin·q̇_max − q̇)/Δt )
+
+        Recomputed every tick from the fresh q̇ the QP already reads. Only the
+        accel rows (0..NV-1) of the box are written; the slack slot (index NV)
+        is left untouched.
+
+        Anti-asymmetry note (matches the design): near +q̇_max the upper bound
+        collapses toward 0 (no further +accel) while the lower bound stays at
+        −decel (full braking authority) — and symmetrically near −q̇_max. So the
+        CBF keeps full authority to decelerate AWAY from an obstacle; only the
+        velocity-increasing direction is curtailed.
+
+        SAFETY caveat (accepted): if a CBF avoidance row conflicts with this
+        HARD box at velocity saturation, OSQP relaxes the (soft) CBF row via its
+        slack s rather than violate the box — a bounded softening of CBF
+        authority, deliberately preferred over a total firmware motion abort.
+        """
+        vmax   = self._v_margin * self._qdot_max
+        ub_vel = (vmax - qdot) / self._dt_qp
+        lb_vel = (-vmax - qdot) / self._dt_qp
+        ub = np.minimum(self._ub, ub_vel)
+        lb = np.maximum(self._lb, lb_vel)
+        # Feasibility guard: if already past v_margin·q̇_max by more than one
+        # tick's decel authority, the velocity bound would invert the box
+        # (lb > ub). Clamp ub UP to lb (NOT lb down — that could exceed −decel
+        # and violate the accel limit) → forces q̈ = −decel, i.e. hardest legal
+        # braking. No-op whenever the box is already feasible (ub ≥ lb).
+        ub = np.maximum(ub, lb)
+
+        # Per-joint velocity diagnostics (read by the CBFDIAG line and the
+        # high-res VELHI log in _qp_tick — logging is done THERE, where now/n_c
+        # are in scope). ratio = fraction of the official q̇_max; bite[i] = this
+        # joint's q̈ box was tightened by the velocity bound (tighter than the
+        # static decel box) → the bound is "biting" on joint i specifically.
+        self._diag_vel_ratio = np.abs(qdot) / self._qdot_max
+        self._diag_vel_bite  = (ub < self._ub - 1e-9) | (lb > self._lb + 1e-9)
+
+        # Write back accel rows only; slack slot (index NV) untouched.
+        self._box_lb[:NV] = lb
+        self._box_ub[:NV] = ub
+
+    def _fmt_vel(self, qdot: np.ndarray) -> str:
+        """Compact per-joint velocity summary string (shared by CBFDIAG/VELHI).
+
+        worst joint (signed q̇ + ratio), the 7 ratios in order, and a 7-char
+        bite mask (X = velocity bound tightened that joint's q̈ box this tick).
+        """
+        ratio = self._diag_vel_ratio
+        bite  = self._diag_vel_bite
+        k     = int(np.argmax(ratio))
+        rats  = '/'.join(f'{r:.2f}' for r in ratio)
+        mask  = ''.join('X' if b else '.' for b in bite)
+        return (f'worst=j{k+1}:q̇={qdot[k]:+.2f}({ratio[k]:.2f}) '
+                f'vrat=[{rats}] vbite={mask}')
+
     def _osqp_lu(self, G: np.ndarray | None, h_qp: np.ndarray | None):
         """Bounds for A x: CBF rows  −inf ≤ Gx ≤ h_qp,  box rows  lb ≤ x ≤ ub.
 
@@ -683,11 +777,30 @@ class CBFSafetyFilter(Node):
 
         self._qvec[:NV] = -qddot_nom
 
+        # Velocity-aware box: tighten the per-joint q̈ bounds from the fresh q̇ so
+        # the integrated velocity can't trip the firmware joint_velocity_violation
+        # reflex. Mutates self._box_lb/_box_ub (accel rows only) in place → must
+        # run BEFORE _osqp_lu reads them. Also refills self._diag_vel_ratio/_bite.
+        self._update_velocity_box(qdot)
+
+        # ── High-resolution velocity telemetry (VELHI) ───────────────────────
+        # Per-TICK (10 ms, NO throttle) per-joint line, emitted ONLY when the
+        # worst joint exceeds diag_vel_ratio_thr (0.85) — silent in normal
+        # operation, full resolution exactly in the pre-violation window. Catches
+        # transients faster than the 50 ms CBFDIAG throttle and is independent of
+        # n_c, so it shows a velocity saturation even when no CBF row is active
+        # (the suspected "biting joint ≠ CBF-projected joint" case). Disable with
+        # diag_vel_ratio_thr > 1.0.
+        if float(np.max(self._diag_vel_ratio)) > self._diag_vel_ratio_thr:
+            self.get_logger().info(
+                f'VELHI t={now:.3f} n_c={n_c} {self._fmt_vel(qdot)}')
+
         # ── Native-OSQP solve ────────────────────────────────────────────────
         # Reuse one OSQP instance: setup() (alloc + scaling + symbolic
         # factorization) only when n_c changes the sparsity pattern; otherwise
         # update() the vectors that move each tick and reuse the factorization.
-        #   n_c == 0 : A is the constant identity block → only q changes.
+        #   n_c == 0 : A is the constant identity block, but the box bounds l/u
+        #              now MOVE every tick (velocity box) → push q AND l/u.
         #   n_c  > 0 : the CBF normals in G move every tick (geometry recomputed
         #              at cbf_rate) and h_qp moves with q̇/h̄ → push Ax + u too.
         l, u = self._osqp_lu(G, h_qp)
@@ -701,7 +814,8 @@ class CBFSafetyFilter(Node):
             self._osqp_prob.update(q=self._qvec, l=l, u=u,
                                    Ax=self._osqp_A(G).data)
         else:
-            self._osqp_prob.update(q=self._qvec)
+            # Box-only problem, but the box is now dynamic → push l/u, not just q.
+            self._osqp_prob.update(q=self._qvec, l=l, u=u)
 
         # solve_ms measures .solve() only (not setup/update), so it stays
         # directly comparable to the pre-migration diagnostic.
@@ -717,7 +831,7 @@ class CBFSafetyFilter(Node):
             qddot_nom_norm = float(np.linalg.norm(qddot_nom))
             self.get_logger().info(
                 f'tick={self._tick_count} n_c={n_c} solve={solve_ms:.2f}ms '
-                f'qddot_nom_norm={qddot_nom_norm:.2f} '
+                f'qddot_nom_norm={qddot_nom_norm:.2f} qp_fails={self._qp_fail_count} '
                 + (f'iter={res.info.iter} status={res.info.status} h_norm={float(np.linalg.norm(h_qp)):.2f}'
                    if n_c > 0 else 'iter=- status=- h_norm=-')
             )
@@ -725,8 +839,10 @@ class CBFSafetyFilter(Node):
         slack = 0.0
         solved = res.info.status_val == osqp.constant('OSQP_SOLVED')
         if not solved or x is None or not np.all(np.isfinite(x)):
+            self._qp_fail_count += 1
             self.get_logger().error(
-                f'QP not solved ({res.info.status}) → braking output',
+                f'QP not solved ({res.info.status}) → braking output '
+                f'[qp_fail_count={self._qp_fail_count}]',
                 throttle_duration_sec=0.5)
             # Discard the (possibly poisoned) internal warm-start iterate: force
             # a clean setup() next tick so a bad solve can't seed the next one.
@@ -784,7 +900,8 @@ class CBFSafetyFilter(Node):
                 f'link={link_i} hdot={float(a_i @ qdot):+.3f} h_qp={float(h_qp[i]):+.3f} '
                 f'dnorm={float(np.linalg.norm(dq)):.3f} s={slack:.4f} '
                 f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} cart_rad={float(a_i @ dq):+.3f} '
-                f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f}')
+                f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f} '
+                f'| {self._fmt_vel(qdot)}')
 
     def _publish(self, qddot_safe: np.ndarray) -> None:
         msg      = Float64MultiArray()

@@ -295,14 +295,13 @@ def _launch_all(context):
         name='cbf_safety_filter',
         output='screen',
     )
-    # qddot_to_torque subscribes to qddot_nom by default; remap to qddot_safe
-    # so it converts the CBF-filtered acceleration to torque.
+    # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
+    # acceleration) and converts it to torque — no remap needed.
     qddot_to_torque_node = Node(
         package='franka_experiments',
         executable='qddot_to_torque',
         name='qddot_to_torque',
         output='screen',
-        remappings=[('/NS_1/qddot_nom', '/NS_1/qddot_safe')],
     )
     actions.append(TimerAction(period=dynamics_delay,
                                actions=[cbf_node, qddot_to_torque_node]))

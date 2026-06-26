@@ -116,8 +116,8 @@ class PentagonQddotCommander(Node):
         # Path shape:  'circle' (default, C∞ analytic — smooth, no accel jumps)
         # | 'lissajous' (C∞ analytic) | 'pentagon' (C¹ corner-blended: feedforward
         # acceleration STEPS at every line↔blend junction → jerky; legacy only).
-        self.declare_parameter('path_type',           'circle')
-        self.declare_parameter('plane',               'front')
+        self.declare_parameter('path_type',           'cricle')
+        self.declare_parameter('plane',               'xy')
         self.declare_parameter('plane_frame',         'fr3_link0')
         self.declare_parameter('cycle_time',          10.0)
         self.declare_parameter('smoothness',          0.20)
