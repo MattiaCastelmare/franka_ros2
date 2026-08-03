@@ -49,6 +49,11 @@ setup(
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
             'frame_grabber = franka_experiments.nodes.frame_grabber:main',
+            'human_hand_tracker = franka_experiments.nodes.human_hand_tracker:main',
+            "microphone = franka_experiments.nodes.microphone:main",
+            "speech = franka_experiments.nodes.speech:main",
+            "interaction_manager = franka_experiments.nodes.interaction_manager:main",
+
         ],
     },
 )
