@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
+import time
+
 import cv2
-import subprocess
 import mediapipe as mp
 import numpy as np
 import rclpy
@@ -9,10 +10,12 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Pose, PoseArray, PoseStamped
+from franka_msgs.msg import HandTrackingRaw
+from geometry_msgs.msg import Point, Pose, PoseArray, PoseStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
 
 from franka_experiments.utils.camera_yaml import load_camera_info_yaml
@@ -21,27 +24,15 @@ from franka_experiments.utils.hand_visualization import (
     draw_status,
 )
 
-from scipy.spatial.transform import Rotation
-
 
 class HumanHandTracker(Node):
-    """
-    Simple Tracker RGB-D for human hand.
-
-    Publish:
-      /handover/hand_state_raw -> wrist 3D
-      /handover/hand_landmarks_raw -> landmark 0, 5, 9, 17 in 3D
-      /handover/hand_debug_image -> image RGB for RViz
-    """
+    """RGB-D tracker for hand landmarks 0, 5, 9 and 17."""
 
     LANDMARK_IDS = (0, 5, 9, 17)
 
     def __init__(self):
         super().__init__('human_hand_tracker')
 
-        # -------------------------------------------------------------
-        # Camera Calibration
-        # -------------------------------------------------------------
         config_dir = (
             get_package_share_directory('franka_experiments') + '/config/'
         )
@@ -68,9 +59,9 @@ class HumanHandTracker(Node):
         self.target_frame = extrinsics['parent_frame']
         self.camera_frame = extrinsics['child_frame']
 
-        # Transformation camera -> base, directly applied.
         t = extrinsics['translation']
         q = extrinsics['rotation']
+
         self.camera_translation = np.array(
             [t['x'], t['y'], t['z']],
             dtype=float,
@@ -82,28 +73,22 @@ class HumanHandTracker(Node):
             q['w'],
         ]).as_matrix()
 
-        # Parameters.
-        self.declare_parameter('play_bag', True)
-        self.declare_parameter(
-            'bag_path',
-            '/ros2_ws/rosbags/handratacker_objecy',
-        )
         self.declare_parameter('show_selected_landmarks', False)
-
-        self.bag_process = None
         self.show_selected_landmarks = bool(
             self.get_parameter('show_selected_landmarks').value
         )
 
-        # -------------------------------------------------------------
-        # OpenCV and MediaPipe
-        # -------------------------------------------------------------
+        self.declare_parameter('publish_debug_image', True)
+        self.publish_debug = bool(
+            self.get_parameter('publish_debug_image').value
+        )
+
         self.bridge = CvBridge()
 
         self.hands = mp.solutions.hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
-            model_complexity=1,
+            model_complexity=0,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
@@ -111,53 +96,55 @@ class HumanHandTracker(Node):
         self.drawing_utils = mp.solutions.drawing_utils
         self.hand_connections = mp.solutions.hands.HAND_CONNECTIONS
 
-        # -------------------------------------------------------------
-        # Publisher
-        # -------------------------------------------------------------
         self.wrist_publisher = self.create_publisher(
             PoseStamped,
             '/handover/hand_state_raw',
             10,
         )
-
         self.landmarks_publisher = self.create_publisher(
             PoseArray,
             '/handover/hand_landmarks_raw',
             10,
         )
-
+        self.tracking_publisher = self.create_publisher(
+            HandTrackingRaw,
+            '/handover/hand_tracking_raw',
+            10,
+        )
         self.debug_image_publisher = self.create_publisher(
             Image,
             '/handover/hand_debug_image',
             10,
         )
 
-        # -------------------------------------------------------------
-        # RGB and depth synchronized
-        # -------------------------------------------------------------
-        self.rgb_subscriber = Subscriber(
+        image_qos = QoSProfile(
+            depth=5,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+
+        self.rgb_sub = Subscriber(
             self,
             Image,
             '/camera/camera/color/image_raw',
-            qos_profile=qos_profile_sensor_data,
+            qos_profile=image_qos,
         )
 
-        self.depth_subscriber = Subscriber(
+        self.depth_sub = Subscriber(
             self,
             Image,
             '/camera/camera/aligned_depth_to_color/image_raw',
-            qos_profile=qos_profile_sensor_data,
+            qos_profile=image_qos,
         )
 
-        self.create_subscription(
+        self.camera_info_subscription = self.create_subscription(
             CameraInfo,
             '/camera/camera/aligned_depth_to_color/camera_info',
             self.color_info_callback,
-            10,
+            qos_profile_sensor_data,
         )
 
         self.synchronizer = ApproximateTimeSynchronizer(
-            [self.rgb_subscriber, self.depth_subscriber],
+            [self.rgb_sub, self.depth_sub],
             queue_size=4,
             slop=0.05,
         )
@@ -171,14 +158,7 @@ class HumanHandTracker(Node):
             f'show_selected_landmarks={self.show_selected_landmarks}'
         )
 
-        if self.get_parameter('play_bag').value:
-            bag_path = self.get_parameter('bag_path').value
-            self.bag_process = subprocess.Popen(
-                ['ros2', 'bag', 'play', bag_path, '--clock']
-            )
-
     def color_info_callback(self, msg):
-        """Update camera intrinsics with CameraInfo of the depth image."""
         if msg.k[0] <= 0.0 or msg.k[4] <= 0.0:
             return
 
@@ -188,7 +168,7 @@ class HumanHandTracker(Node):
         self.cy = float(msg.k[5])
 
     def image_callback(self, rgb_msg, depth_msg):
-        """Elaborate a synchronized RGB-depth pair."""
+        start_time = time.perf_counter()
 
         try:
             bgr_image = self.bridge.imgmsg_to_cv2(
@@ -200,49 +180,61 @@ class HumanHandTracker(Node):
                 desired_encoding='passthrough',
             )
         except Exception as error:
-            self.get_logger().warn(f'Error in cv_bridge: {error}')
-            return
-
-        # The depth image is already registered by the camera driver, so we can directly use the pixel coordinates of the RGB image to access the depth values.
-        depth_encoding = depth_msg.encoding
-        debug_image = bgr_image.copy()
-
-        # MediaPipe works in RGB.
-        rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
-        result = self.hands.process(rgb_image)
-
-        if not result.multi_hand_landmarks:
-            draw_status(debug_image, 'NO HAND')
-            self.publish_debug_image(debug_image, rgb_msg)
-            self.get_logger().info(
-                'Nessuna mano rilevata da MediaPipe',
+            self.get_logger().warn(
+                f'Error in cv_bridge: {error}',
                 throttle_duration_sec=2.0,
             )
             return
 
-        hand_landmarks = min(
-            result.multi_hand_landmarks,
-            key=lambda detected_hand: detected_hand.landmark[0].y,
+        depth_encoding = depth_msg.encoding
+
+        debug_image = (
+            bgr_image.copy()
+            if self.show_selected_landmarks
+            else None
         )
+
+        rgb_image = cv2.cvtColor(
+            bgr_image,
+            cv2.COLOR_BGR2RGB,
+        )
+        result = self.hands.process(rgb_image)
+
+        if not result.multi_hand_landmarks:
+            self.publish_tracking(
+                rgb_msg.header.stamp,
+                HandTrackingRaw.NO_HAND,
+                [None] * 4,
+                [HandTrackingRaw.INVALID] * 4,
+                start_time,
+            )
+
+            if debug_image is not None:
+                draw_status(debug_image, 'NO HAND')
+
+            self.publish_debug_image(debug_image, rgb_msg)
+
+            self.get_logger().info(
+                'No hand detected by MediaPipe',
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        hand_landmarks = result.multi_hand_landmarks[0]
         hand = hand_landmarks.landmark
 
-        # Visualization
         if self.show_selected_landmarks:
             self.drawing_utils.draw_landmarks(
                 debug_image,
                 hand_landmarks,
                 self.hand_connections,
             )
-
             draw_selected_landmarks(
                 debug_image,
                 hand,
                 self.LANDMARK_IDS,
             )
 
-        # -------------------------------------------------------------
-        # 3D Reconstruction of landmarks 0, 5, 9 and 17
-        # -------------------------------------------------------------
         points_camera = {}
 
         for landmark_id in self.LANDMARK_IDS:
@@ -253,7 +245,11 @@ class HumanHandTracker(Node):
                 depth_encoding,
             )
 
-        # Median depth of valid landmarks, used as fallback for missing points.
+        direct_valid = {
+            landmark_id: points_camera[landmark_id] is not None
+            for landmark_id in self.LANDMARK_IDS
+        }
+
         valid_depths = [
             point[2]
             for point in points_camera.values()
@@ -264,6 +260,7 @@ class HumanHandTracker(Node):
 
         if len(valid_depths) >= 2:
             reference_depth = float(np.median(valid_depths))
+
             consistent_depths = [
                 depth
                 for depth in valid_depths
@@ -271,7 +268,9 @@ class HumanHandTracker(Node):
             ]
 
             if len(consistent_depths) >= 2:
-                reference_depth = float(np.median(consistent_depths))
+                reference_depth = float(
+                    np.median(consistent_depths)
+                )
 
                 for landmark_id in self.LANDMARK_IDS:
                     if points_camera[landmark_id] is None:
@@ -284,36 +283,76 @@ class HumanHandTracker(Node):
                         )
                         estimated = True
 
-        wrist_camera = points_camera[0]
+        points_base = [
+            self.apply_transform(points_camera[landmark_id])
+            if points_camera[landmark_id] is not None
+            else None
+            for landmark_id in self.LANDMARK_IDS
+        ]
 
-        if wrist_camera is None:
-            draw_status(debug_image, 'INVALID WRIST DEPTH')
-            self.publish_debug_image(debug_image, rgb_msg)
+        measurement_types = [
+            HandTrackingRaw.DIRECT
+            if direct_valid[landmark_id]
+            else (
+                HandTrackingRaw.ESTIMATED
+                if points_camera[landmark_id] is not None
+                else HandTrackingRaw.INVALID
+            )
+            for landmark_id in self.LANDMARK_IDS
+        ]
+
+        valid_count = sum(
+            point is not None
+            for point in points_base
+        )
+
+        if valid_count == 0:
+            tracking_state = HandTrackingRaw.INVALID_DEPTH
+        elif valid_count < 4:
+            tracking_state = HandTrackingRaw.TRACKING_PARTIAL
+        elif HandTrackingRaw.ESTIMATED in measurement_types:
+            tracking_state = HandTrackingRaw.TRACKING_ESTIMATED
+        else:
+            tracking_state = HandTrackingRaw.TRACKING_FULL
+
+        self.publish_tracking(
+            rgb_msg.header.stamp,
+            tracking_state,
+            points_base,
+            measurement_types,
+            start_time,
+        )
+
+        wrist = points_base[0]
+
+        if wrist is None:
+            if debug_image is not None:
+                draw_status(
+                    debug_image,
+                    'INVALID WRIST DEPTH',
+                )
+
+            self.publish_debug_image(
+                debug_image,
+                rgb_msg,
+            )
+
             self.get_logger().warn(
                 'Hand detected, but wrist depth is invalid',
                 throttle_duration_sec=2.0,
             )
             return
 
-        wrist = self.apply_transform(wrist_camera)
-        self.publish_wrist(wrist, rgb_msg.header.stamp)
-
-        all_landmarks_valid = all(
-            points_camera[landmark_id] is not None
-            for landmark_id in self.LANDMARK_IDS
+        self.publish_wrist(
+            wrist,
+            rgb_msg.header.stamp,
         )
 
-        if all_landmarks_valid:
-            points_3d = [
-                self.apply_transform(points_camera[landmark_id])
-                for landmark_id in self.LANDMARK_IDS
-            ]
-
+        if all(point is not None for point in points_base):
             self.publish_landmarks(
-                points_3d,
+                points_base,
                 rgb_msg.header.stamp,
             )
-
             status = (
                 'TRACKING ESTIMATED'
                 if estimated
@@ -322,13 +361,23 @@ class HumanHandTracker(Node):
         else:
             status = 'TRACKING WRIST'
 
-        draw_status(debug_image, status, wrist)
-        self.publish_debug_image(debug_image, rgb_msg)
+        if debug_image is not None:
+            draw_status(
+                debug_image,
+                status,
+                wrist,
+            )
+
+        self.publish_debug_image(
+            debug_image,
+            rgb_msg,
+        )
 
         self.published_frames += 1
+
         if self.published_frames % 30 == 0:
             self.get_logger().info(
-                f'Polso [cm] in {self.target_frame}: '
+                f'Wrist [cm] in {self.target_frame}: '
                 f'x={100.0 * wrist[0]:.1f}, '
                 f'y={100.0 * wrist[1]:.1f}, '
                 f'z={100.0 * wrist[2]:.1f}'
@@ -342,8 +391,6 @@ class HumanHandTracker(Node):
         depth_encoding,
         fallback_depth=None,
     ):
-        """Landmark MediaPipe -> pixel -> depth -> 3D point in camera frame."""
-
         rgb_height, rgb_width = rgb_shape[:2]
 
         u_rgb = int(np.clip(
@@ -363,6 +410,7 @@ class HumanHandTracker(Node):
             u_rgb,
             v_rgb,
         )
+
         if depth_m is None:
             depth_m = fallback_depth
 
@@ -371,14 +419,14 @@ class HumanHandTracker(Node):
 
         x = (u_rgb - self.cx) * depth_m / self.fx
         y = (v_rgb - self.cy) * depth_m / self.fy
-        z = depth_m
 
-        return np.array([x, y, z], dtype=float)
+        return np.array(
+            [x, y, depth_m],
+            dtype=float,
+        )
 
     @staticmethod
     def median_depth(depth_image, encoding, u, v):
-        """Median of valid values in a 5x5 depth patch."""
-
         radius = 2
         height, width = depth_image.shape[:2]
 
@@ -396,7 +444,10 @@ class HumanHandTracker(Node):
 
         depth = float(np.median(valid))
 
-        if encoding in ('16UC1', 'mono16') or depth_image.dtype == np.uint16:
+        if (
+            encoding in ('16UC1', 'mono16')
+            or depth_image.dtype == np.uint16
+        ):
             depth *= 0.001
 
         if depth < 0.10 or depth > 3.00:
@@ -405,8 +456,53 @@ class HumanHandTracker(Node):
         return depth
 
     def apply_transform(self, point):
-        """Apply the fixed camera calibration -> base transform."""
-        return self.camera_rotation @ point + self.camera_translation
+        return (
+            self.camera_rotation @ point
+            + self.camera_translation
+        )
+
+    def publish_tracking(
+        self,
+        stamp,
+        tracking_state,
+        points,
+        measurement_types,
+        start_time,
+    ):
+        msg = HandTrackingRaw()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.target_frame
+
+        msg.tracking_state = int(tracking_state)
+        msg.landmark_ids = list(self.LANDMARK_IDS)
+        msg.valid = [
+            point is not None
+            for point in points
+        ]
+        msg.measurement_type = [
+            int(value)
+            for value in measurement_types
+        ]
+        msg.processing_latency_ms = float(
+            1000.0 * (
+                time.perf_counter() - start_time
+            )
+        )
+
+        ros_points = []
+
+        for point in points:
+            ros_point = Point()
+
+            if point is not None:
+                ros_point.x = float(point[0])
+                ros_point.y = float(point[1])
+                ros_point.z = float(point[2])
+
+            ros_points.append(ros_point)
+
+        msg.positions = ros_points
+        self.tracking_publisher.publish(msg)
 
     def publish_wrist(self, wrist, stamp):
         msg = PoseStamped()
@@ -425,7 +521,6 @@ class HumanHandTracker(Node):
         msg.header.stamp = stamp
         msg.header.frame_id = self.target_frame
 
-        # Fixed order: 0, 5, 9, 17.
         for point in points:
             pose = Pose()
             pose.position.x = float(point[0])
@@ -437,6 +532,13 @@ class HumanHandTracker(Node):
         self.landmarks_publisher.publish(msg)
 
     def publish_debug_image(self, image, original_msg):
+        if not self.publish_debug:
+            return
+
+        if image is None:
+            self.debug_image_publisher.publish(original_msg)
+            return
+
         msg = self.bridge.cv2_to_imgmsg(
             image,
             encoding='bgr8',
@@ -445,8 +547,6 @@ class HumanHandTracker(Node):
         self.debug_image_publisher.publish(msg)
 
     def destroy_node(self):
-        if self.bag_process is not None:
-            self.bag_process.terminate()
         self.hands.close()
         super().destroy_node()
 
@@ -461,6 +561,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
+
         if rclpy.ok():
             rclpy.shutdown()
 

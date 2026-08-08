@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FrankaRobotState.msg"
   "msg/Float64StampedArray.msg"
   "msg/HumanRobotDistance.msg"
+  "msg/HandTrackingRaw.msg"
   "msg/LinkDistance.msg"
   "msg/MultiDistance.msg"
   "msg/MultiLinkDistance.msg"

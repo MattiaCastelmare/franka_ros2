@@ -53,6 +53,7 @@ setup(
             "microphone = franka_experiments.nodes.microphone:main",
             "speech = franka_experiments.nodes.speech:main",
             "interaction_manager = franka_experiments.nodes.interaction_manager:main",
+            'hand_logger = franka_experiments.nodes.hand_logger:main',
 
         ],
     },
