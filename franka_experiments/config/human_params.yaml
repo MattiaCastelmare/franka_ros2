@@ -1,0 +1,55 @@
+# Single source of truth for human_tracker and human_visualizer.
+# Both nodes load this file directly through distance_utils.load_robot_config().
+
+common:
+  use_sim_time: true
+
+human_tracker:
+  # Topics and frames
+  base_frame: fr3_link0
+  pose_side: right
+  color_topic: /camera/camera/color/image_raw
+  depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+  camera_info_topic: /camera/camera/aligned_depth_to_color/camera_info
+  state_topic: /human/arm_state
+  prediction_topic: /human/arm_prediction
+  landmarks_2d_topic: /human/arm_landmarks_2d
+
+  # MediaPipe and RGB-D
+  model_complexity: 1
+  min_detection_confidence: 0.40
+  min_tracking_confidence: 0.30
+  inference_hz: 15.0           # Allineato alla frequenza reale della sorgente (15 Hz)
+  inference_scale: 1.00        # Riportato a 1.0 per massima risoluzione e precisione 3D
+  visibility_threshold: 0.40
+  depth_patch_radius: 2
+  min_depth_m: 0.10
+  max_depth_m: 5.00
+  sync_queue_size: 5           # Ridotto da 10 a 5 per contenere la latenza nei buffer
+  sync_slop_s: 0.025           # Ridotto da 0.05s a 0.025s (25ms) per sincronizzazione stringente
+
+  # Kalman filter
+  kf_nominal_dt: 0.06666666666666667 # dt nominale aggiornato per 15 Hz (1/15 s)
+  kf_process_accel_std: 2.0
+  kf_measurement_std: 0.02
+  max_state_age_s: 0.30
+  reset_after_s: 0.50
+
+  # Constant-velocity prediction
+  publish_prediction: true
+  prediction_dt: 0.10
+  prediction_steps: 10
+
+human_visualizer:
+  # Topics
+  color_topic: /camera/camera/color/image_raw
+  landmarks_topic: /human/arm_landmarks_2d
+  overlay_topic: /human/arm_overlay
+
+  # Overlay behavior
+  visibility_threshold: 0.40
+  max_hz: 15.0
+  scale: 0.50
+  landmark_hold_s: 0.30
+  smoothing_tau_s: 0.12
+  draw_labels: true
