@@ -41,6 +41,7 @@ class ArmKalmanFilter:
         initial_velocity_std: float = 1.0,
         visibility_threshold: float = 0.5,
         keypoint_names: Sequence[str] = DEFAULT_KEYPOINT_NAMES,
+        mahalanobis_threshold: float = 11.34,
     ) -> None:
         
         if len(keypoint_names) != 4:
@@ -57,6 +58,7 @@ class ArmKalmanFilter:
         self.measurement_std = float(measurement_std)
         self.initial_position_std = float(initial_position_std)
         self.initial_velocity_std = float(initial_velocity_std)
+        self.mahalanobis_threshold = float(mahalanobis_threshold)
 
         # One state vector and one covariance matrix for each keypoint
         self.x = np.zeros((self.num_keypoints, self.STATE_SIZE), dtype=float) # shape (4, 6)
@@ -119,12 +121,22 @@ class ArmKalmanFilter:
         self.P[index] = self.F @ self.P[index] @ self.F.T + self.Q
 
     def _update_keypoint(self, index: int, position: np.ndarray) -> None:
+        """Execute the update and return True if the measurement is accepted, False if rejected by the gate."""
         if not self.initialized[index]:
             self._initialize_keypoint(index, position)
-            return
+            return True
 
         innovation = position - self.H @ self.x[index]
         innovation_covariance = self.H @ self.P[index] @ self.H.T + self.R
+
+        # --- INNOVATION GATE (Mahalanobis Distance) ---
+        # D^2 = innovation^T * S^-1 * innovation
+        inv_S_y = np.linalg.solve(innovation_covariance, innovation)
+        mahalanobis_dist_sq = np.dot(innovation, inv_S_y)
+
+        # If the Mahalanobis distance exceeds the threshold, discard the measurement
+        if self.mahalanobis_threshold > 0.0 and mahalanobis_dist_sq > self.mahalanobis_threshold:
+            return False
 
         # K = P H^T S^-1, computed without explicitly inverting S
         PHt = self.P[index] @ self.H.T
@@ -138,6 +150,8 @@ class ArmKalmanFilter:
             correction @ self.P[index] @ correction.T
             + kalman_gain @ self.R @ kalman_gain.T
         )
+
+        return True
 
     def step(
         self,
@@ -198,7 +212,9 @@ class ArmKalmanFilter:
 
             # A valid measurement corrects the prediction, otherwise predict only
             if valid_mask[index]:
-                self._update_keypoint(index, positions_array[index])
+                accepted = self._update_keypoint(index, positions_array[index])
+                if not accepted:
+                    valid_mask[index] = False
 
         filtered_positions, filtered_velocities = self.get_estimates()
 

@@ -85,6 +85,7 @@ class HumanTracker(Node):
             self.max_state_age_s,
             float(config["reset_after_s"]),
         )
+        self.max_speed_m_s = float(config["max_speed_m_s"])
 
         self.publish_prediction_enabled = bool(
             config["publish_prediction"]
@@ -170,6 +171,11 @@ class HumanTracker(Node):
         self.state_pub = self.create_publisher(
             HumanArmState,
             str(config["state_topic"]),
+            latest_qos,
+        )
+        self.raw_state_pub = self.create_publisher(
+            HumanArmState,
+            str(config["raw_state_topic"]),
             latest_qos,
         )
         self.prediction_pub = self.create_publisher(
@@ -383,6 +389,17 @@ class HumanTracker(Node):
                     positions[i] = point_base
                     depths[i] = depth_m
 
+        # Publish raw data for KF post-comparison
+        self.publish_state(
+            positions,
+            np.zeros((4, 3)),
+            visibilities,
+            np.ones(4, dtype=bool),
+            np.ones(4, dtype=bool),
+            np.zeros(4),
+            raw=True
+        )
+
         filtered_pos, filtered_vel, measured = self.arm_kf.step(
             positions=positions,
             visibilities=visibilities,
@@ -408,6 +425,16 @@ class HumanTracker(Node):
             & (age <= self.max_state_age_s)
         )
 
+        # Sanity Check: discard any keypoint whose speed exceeds a reasonable threshold
+        speed = np.linalg.norm(filtered_vel, axis=1)
+        for i in range(4):
+            if keypoint_valid[i] and speed[i] > self.max_speed_m_s:
+                self.get_logger().warn(
+                    f"Anomalous velocity for {self.KEYPOINT_NAMES[i]}: {speed[i]:.2f} m/s. Discard data."
+                )
+                keypoint_valid[i] = False
+                self.arm_kf.reset(i)
+
         self.publish_state(
             filtered_pos,
             filtered_vel,
@@ -415,6 +442,7 @@ class HumanTracker(Node):
             measured,
             keypoint_valid,
             age,
+            raw=False
         )
 
         if self.publish_prediction_enabled:
@@ -455,6 +483,7 @@ class HumanTracker(Node):
         measured,
         keypoint_valid,
         age,
+        raw,
     ):
         msg = HumanArmState()
         msg.header = self.image_header
@@ -482,7 +511,11 @@ class HumanTracker(Node):
         msg.confidence = float(np.mean(visibilities))
         msg.valid = bool(np.all(keypoint_valid))
         msg.occluded = bool(not np.any(measured))
-        self.state_pub.publish(msg)
+        # Choose KF / raw pub
+        if not raw:
+            self.state_pub.publish(msg)
+        else:
+            self.raw_state_pub.publish(msg)
 
     def publish_prediction(self, positions, velocities, valid, age):
         msg = HumanArmPrediction()

@@ -17,7 +17,7 @@ from launch_ros.actions import Node
 from franka_experiments.utils.distance_utils import load_robot_config
 
 
-DEFAULT_BAG_PATH = '/bags/arm_repeated'
+DEFAULT_BAG_PATH = '/bags/arm_complex'
 
 
 def create_bag_player(context):
@@ -84,7 +84,7 @@ def generate_launch_description():
             '--qz', str(rotation['z']),
             '--qw', str(rotation['w']),
             '--frame-id', 'fr3_link0',
-            '--child-frame-id', extrinsics.get('child_frame', 'camera_link'),
+            '--child-frame-id', 'camera_color_optical_frame',
         ],
         parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
@@ -95,6 +95,13 @@ def generate_launch_description():
         executable='human_tracker',
         name='human_tracker',
         output='screen',
+    )
+
+    human_logger_node = Node(
+        package='franka_experiments',
+        executable='human_logging',
+        name='human_logger',
+        output='screen'
     )
 
     visualizer = Node(
@@ -118,12 +125,18 @@ def generate_launch_description():
         actions=[OpaqueFunction(function=create_bag_player)],
     )
 
+    camera_tf_delayed = TimerAction(
+        period=4.0,
+        actions=[camera_tf]
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('play_bag', default_value='true'),
         DeclareLaunchArgument('bag_path', default_value=DEFAULT_BAG_PATH),
         DeclareLaunchArgument('publish_camera_tf', default_value='true'),
-        camera_tf,
+        camera_tf_delayed,
         tracker,
+        human_logger_node,
         visualizer,
         rviz,
         bag_player,

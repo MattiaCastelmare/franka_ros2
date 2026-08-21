@@ -12,6 +12,7 @@ human_tracker:
   depth_topic: /camera/camera/aligned_depth_to_color/image_raw
   camera_info_topic: /camera/camera/aligned_depth_to_color/camera_info
   state_topic: /human/arm_state
+  raw_state_topic: /human/raw_state
   prediction_topic: /human/arm_prediction
   landmarks_2d_topic: /human/arm_landmarks_2d
 
@@ -34,6 +35,7 @@ human_tracker:
   kf_measurement_std: 0.02
   max_state_age_s: 0.30
   reset_after_s: 0.50
+  max_speed_m_s: 3.0
 
   # Constant-velocity prediction
   publish_prediction: true
