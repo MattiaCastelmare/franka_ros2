@@ -10,7 +10,9 @@ import time
 import cv2
 import numpy as np
 import mediapipe as mp
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, Vector3, Point32
+from sensor_msgs.msg import PointCloud, ChannelFloat32
+from franka_msgs.msg import HumanArmState, HumanArmPrediction
 
 
 def extract_arm_landmarks(
@@ -135,6 +137,72 @@ def stamp_to_ns(msg):
     """Convert a ROS message header timestamp to integer nanoseconds."""
     stamp = msg.header.stamp
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def build_arm_state_msg(
+    positions, velocities, visibilities, measured, keypoint_valid, age, header, base_frame
+) -> HumanArmState:
+    """Builds the HumanArmState message."""
+    msg = HumanArmState()
+    msg.header = header
+    msg.header.frame_id = base_frame
+
+    fields = ["shoulder", "elbow", "wrist", "hand"]
+    for i, field in enumerate(fields):
+        if keypoint_valid[i]:
+            setattr(msg, field, to_point(positions[i]))
+            setattr(msg, f"{field}_vel", to_vector(velocities[i]))
+
+    msg.visibility = visibilities.astype(float).tolist()
+    msg.measured = measured.astype(bool).tolist()
+    msg.keypoint_valid = keypoint_valid.astype(bool).tolist()
+    msg.measurement_age = age.astype(float).tolist()
+    msg.confidence = float(np.mean(visibilities))
+    msg.valid = bool(np.all(keypoint_valid))
+    msg.occluded = bool(not np.any(measured))
+    return msg
+
+
+def build_prediction_msg(
+    positions, velocities, valid, age, step_dt, num_steps, header, base_frame
+) -> HumanArmPrediction:
+    """Builds the HumanArmPrediction message."""
+    msg = HumanArmPrediction()
+    msg.header = header
+    msg.header.frame_id = base_frame
+    msg.step_dt = float(step_dt)
+    msg.num_steps = int(num_steps)
+    msg.keypoint_valid = valid.astype(bool).tolist()
+    msg.measurement_age = age.astype(float).tolist()
+
+    fields = ['shoulder', 'elbow', 'wrist', 'hand']
+    for step in range(1, num_steps + 1):
+        future_time = step * step_dt
+        for i, field in enumerate(fields):
+            pt = to_point(positions[i] + future_time * velocities[i]) if valid[i] else Point()
+            getattr(msg, field).append(pt)
+
+    return msg
+
+
+def build_2d_landmarks_msg(landmarks, keypoint_names, header) -> PointCloud:
+    """Costruisce il messaggio PointCloud per i landmark 2D estratti da MediaPipe."""
+    msg = PointCloud()
+    msg.header = header
+    visibility = ChannelFloat32()
+    visibility.name = "visibility"
+
+    if landmarks is not None:
+        for name in keypoint_names:
+            landmark = landmarks[name]
+            point = Point32()
+            point.x = landmark["x_px"]
+            point.y = landmark["y_px"]
+            msg.points.append(point)
+            visibility.values.append(landmark["visibility"])
+
+    msg.channels.append(visibility)
+    return msg
 
 
 def landmarks_are_recent(

@@ -17,7 +17,7 @@ from launch_ros.actions import Node
 from franka_experiments.utils.distance_utils import load_robot_config
 
 
-DEFAULT_BAG_PATH = '/bags/arm_complex'
+DEFAULT_BAG_PATH = '/bags/arm_repeated'
 
 
 def create_bag_player(context):
@@ -84,7 +84,7 @@ def generate_launch_description():
             '--qz', str(rotation['z']),
             '--qw', str(rotation['w']),
             '--frame-id', 'fr3_link0',
-            '--child-frame-id', 'camera_color_optical_frame',
+            '--child-frame-id', 'camera_link',
         ],
         parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
