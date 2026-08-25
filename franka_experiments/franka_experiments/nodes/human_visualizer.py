@@ -21,13 +21,15 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import Image, PointCloud
+from tf2_ros import Buffer, TransformListener
+from sensor_msgs.msg import CameraInfo
+from franka_msgs.msg import MultiLinkDistance
+from geometry_msgs.msg import Point
 
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
-    draw_landmarks,
-    landmarks_are_recent,
-    stamp_to_ns,
-    update_display_points,
+    draw_landmarks, landmarks_are_recent, stamp_to_ns,
+    update_display_points, quaternion_to_rotation,
 )
 
 
@@ -90,6 +92,21 @@ class HumanArmVisualizer(Node):
         self.last_valid_landmark_stamp_ns: int | None = None
         self.last_render_monotonic_ns: int | None = None
 
+        # Camera intrinsics
+        self.fx = self.fy = self.cx = self.cy = None
+        self.camera_frame = None
+        self.latest_distances = None
+        
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        
+        # --- Subscribers ---
+        self.camera_info_sub = self.create_subscription(
+            CameraInfo, '/camera/camera/color/camera_info', self.camera_info_cb, 10)
+            
+        self.dist_sub = self.create_subscription(
+            MultiLinkDistance, '/cbf/per_link_distances', self.dist_cb, 10)
+
         # Both subscriptions keep only one sample. A debug visualizer should
         # always prefer the newest data instead of processing an old queue
         sensor_qos = QoSProfile(
@@ -135,6 +152,17 @@ class HumanArmVisualizer(Node):
             f'max_hz={self.max_hz:.1f}, scale={self.scale:.2f}, '
             f'hold={self.landmark_hold_s:.2f}s'
         )
+
+    def camera_info_cb(self, msg: CameraInfo):
+        """Save camera intrinsics once."""
+        if self.fx is None:
+            self.fx, self.fy = msg.k[0], msg.k[4]
+            self.cx, self.cy = msg.k[2], msg.k[5]
+            self.camera_frame = msg.header.frame_id
+
+    def dist_cb(self, msg: MultiLinkDistance):
+        """Save the latest calculated distances."""
+        self.latest_distances = msg
 
     def image_cb(self, msg: Image) -> None:
         """Store only the newest camera image."""
@@ -237,6 +265,57 @@ class HumanArmVisualizer(Node):
                     self.scale,
                     self.draw_labels,
                 )
+
+        # --- DRAW SHORTEST DISTANCE LINE ---
+        if self.latest_distances and self.fx is not None and self.camera_frame:
+            try:
+                # Find the link with the absolute minimum distance
+                if self.latest_distances.links:
+                    min_link = min(self.latest_distances.links, key=lambda l: l.distance)
+                    
+                    # Get TF from base (fr3_link0) to camera optical frame
+                    tf_msg = self.tf_buffer.lookup_transform(
+                        self.camera_frame, 
+                        'fr3_link0', # Robot base frame
+                        rclpy.time.Time()
+                    )
+                    
+                    # Extract rotation and translation from TF
+                    q = tf_msg.transform.rotation
+                    R = quaternion_to_rotation(q.x, q.y, q.z, q.w)
+                    t = np.array([tf_msg.transform.translation.x, 
+                                  tf_msg.transform.translation.y, 
+                                  tf_msg.transform.translation.z])
+                    
+                    def project_3d_to_2d(point_msg):
+                        """Transforms 3D base point to camera 2D pixel."""
+                        p_base = np.array([point_msg.x, point_msg.y, point_msg.z])
+                        p_cam = R @ p_base + t
+                        
+                        # Only project if the point is in front of the camera (Z > 0)
+                        if p_cam[2] > 0.01:
+                            u = int((p_cam[0] / p_cam[2]) * self.fx + self.cx)
+                            v = int((p_cam[1] / p_cam[2]) * self.fy + self.cy)
+                            return (u, v)
+                        return None
+
+                    # Project both robot and human points
+                    uv_robot = project_3d_to_2d(min_link.closest_point_robot)
+                    uv_human = project_3d_to_2d(min_link.closest_point_human)
+                    
+                    if uv_robot and uv_human:
+                        # Scale the coordinates if the image is resized
+                        if self.scale < 1.0:
+                            uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
+                            uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
+                        
+                        # Draw the white line and points
+                        cv2.line(image, uv_robot, uv_human, (255, 255, 255), 1)
+                        cv2.circle(image, uv_robot, 3, (0, 255, 255), -1) # Yellow dot on robot
+                        cv2.circle(image, uv_human, 3, (0, 0, 255), -1)   # Red dot on human
+            
+            except Exception as e:
+                self.get_logger().warn(f"Could not draw distance line: {e}", throttle_duration_sec=2.0)
 
         overlay_msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
         overlay_msg.header = image_msg.header

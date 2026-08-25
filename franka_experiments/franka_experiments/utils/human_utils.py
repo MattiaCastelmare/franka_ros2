@@ -5,14 +5,56 @@ in human_tracker.py, human_visualizer.py and human.launch.py. Moving them here
 changes only code organization, not runtime behavior.
 """
 
+import os
+import cv2
 import math
 import time
-import cv2
+import xacro
 import numpy as np
 import mediapipe as mp
+from typing import Any
 from geometry_msgs.msg import Point, Vector3, Point32
 from sensor_msgs.msg import PointCloud, ChannelFloat32
 from franka_msgs.msg import HumanArmState, HumanArmPrediction
+from ament_index_python.packages import get_package_share_directory
+from franka_experiments.utils.ros_setup import build_reduced_pinocchio_model_from_urdf
+
+
+def init_pinocchio_from_xacro(node: Any, with_hand: bool = True) -> tuple[bool, Any, Any]:
+    """
+    Initialize the reduced Pinocchio model directly from the Xacro file,
+    bypassing ROS 2 services for robustness with rosbag playback.
+    """
+    pkg_path = get_package_share_directory('franka_description')
+    
+    # Try common paths for the Franka Xacro file
+    xacro_path = os.path.join(pkg_path, 'robots', 'fr3', 'fr3.urdf.xacro')
+    if not os.path.exists(xacro_path):
+        xacro_path = os.path.join(pkg_path, 'urdf', 'fr3.urdf.xacro')
+        
+    if not os.path.exists(xacro_path):
+        if node is not None:
+            node.get_logger().error(f"Could not find Xacro file at {xacro_path}")
+        return False, None, None
+
+    try:
+        # Process Xacro dynamically (injecting the hand argument)
+        mappings = {'hand': 'true' if with_hand else 'false'}
+        doc = xacro.process_file(xacro_path, mappings=mappings)
+        urdf_string = doc.toprettyxml(indent='  ')
+        
+        # Build the model using the existing utility
+        model, data = build_reduced_pinocchio_model_from_urdf(urdf_string)
+        
+        if node is not None:
+            node.get_logger().info("✓ Pinocchio model successfully initialized via Xacro.")
+            
+        return True, model, data
+        
+    except Exception as e:
+        if node is not None:
+            node.get_logger().error(f"Pinocchio initialization failed: {e}")
+        return False, None, None
 
 
 def extract_arm_landmarks(
@@ -117,6 +159,33 @@ def measurement_age(last_valid_time, current_time):
     known = np.isfinite(last_valid_time)
     age[known] = current_time - last_valid_time[known]
     return age
+
+
+def extract_human_keypoints(state_msg: HumanArmState):
+    """
+    Extracts 3D positions, 3D velocities, and validity masks from the state message.
+    Returns:
+        positions (np.ndarray): Shape (4, 3) XYZ positions.
+        velocities (np.ndarray): Shape (4, 3) XYZ velocities.
+        valid (np.ndarray): Shape (4,) boolean validity mask.
+    """
+    positions = np.array([
+        [state_msg.shoulder.x, state_msg.shoulder.y, state_msg.shoulder.z],
+        [state_msg.elbow.x, state_msg.elbow.y, state_msg.elbow.z],
+        [state_msg.wrist.x, state_msg.wrist.y, state_msg.wrist.z],
+        [state_msg.hand.x, state_msg.hand.y, state_msg.hand.z]
+    ], dtype=float)
+    
+    velocities = np.array([
+        [state_msg.shoulder_vel.x, state_msg.shoulder_vel.y, state_msg.shoulder_vel.z],
+        [state_msg.elbow_vel.x, state_msg.elbow_vel.y, state_msg.elbow_vel.z],
+        [state_msg.wrist_vel.x, state_msg.wrist_vel.y, state_msg.wrist_vel.z],
+        [state_msg.hand_vel.x, state_msg.hand_vel.y, state_msg.hand_vel.z]
+    ], dtype=float)
+    
+    valid = np.array(state_msg.keypoint_valid, dtype=bool)
+    
+    return positions, velocities, valid
 
 
 def to_point(values):
