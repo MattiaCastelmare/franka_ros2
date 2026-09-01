@@ -15,8 +15,19 @@ Three rates, one process (MultiThreadedExecutor + per-group callback threads):
 QP solved per control tick:
 
     min  ½ ‖qddot − qddot_nom‖²  +  ½ ρ s²
-    s.t. qddot_min ≤ qddot ≤ qddot_max
-         aᵢᵀ qddot + s ≥ bᵢ   ∀ ostacolo attivo   (s ≥ 0, slack)
+    s.t. box(q, q̇, q̈_prev):  hard state-limit box — static decel authority
+         ∩ one-step velocity bound ∩ position braking curve √(2ηa·h)
+         ∩ slew continuity |q̈ − q̈_prev| ≤ Δ     (utils/cbf_hard_limits.py)
+         aᵢᵀ qddot + s ≥ bᵢ   ∀ ostacolo attivo   (SOFT: s ≥ 0, slack)
+         aⱼᵀ qddot     ≥ bⱼ   ∀ faccia workspace vicina (HARD: no slack)
+
+Role in the avoidance-first architecture: this node is the safety CERTIFICATE,
+not the motion planner. The avoidance DIRECTION is generated upstream by
+pentagon_qddot_commander (EE tangential redirection + null-space repulsion from
+/cbf/per_link_distances); progressive SLOWDOWN is the commander's phase
+governor, driven by the slack/fault fields this node publishes on cbf_status —
+feasibility evidence, never raw distance. h̄ uses the engine's FILTERED
+ld.distance and n̂ the message direction (never recomputed from raw points).
 
 Per active obstacle i (h̄ has relative degree 2 → HOCBF, d̈ depends on q̈):
     h̄ᵢ  = dᵢ − d_safe                 ┐ geometry — rebuilt at ~50 Hz
@@ -32,10 +43,14 @@ under the GIL. Each consumer reads the attribute once into a local variable
 and works on that consistent snapshot. No field is ever mutated in place.
 
 Staleness policy (checked in the QP loop with carried timestamps):
-    distances older than distance_timeout → CBF rows dropped (passthrough)
+    distances older than distance_timeout → obstacle rows dropped + braking
+                                            fallback (workspace rows kept)
     qddot_nom older than nom_timeout      → braking fallback  −k_brake·q̇
-    joint state older than js_timeout     → publish zeros, log error
+    joint state older than js_timeout     → zeros (finalized), log error
     QP failure                            → braking fallback, reset warm start
+Every published output — QP solution and all fallbacks — passes through the
+hard state-limit ∩ slew box (_finalize_and_publish), so acceleration continuity
+and joint velocity/position limits hold on every code path by construction.
 
 Pubblica /NS_1/qddot_safe (Float64MultiArray, 7-dim); la conversione
 qddot_safe → torque resta delegata a qddot_to_torque.py.
@@ -67,6 +82,11 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.cbf_kinematics import CBFKinematics
+from franka_experiments.utils.cbf_hard_limits import (
+    hard_accel_box,
+    apply_slew_limit,
+    workspace_face_rows,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -89,9 +109,9 @@ class _NomSnap(NamedTuple):
 
 class _Obstacle(NamedTuple):
     link: str
-    d:    float
-    pr:   np.ndarray    # closest point on robot, world frame
-    ph:   np.ndarray    # closest point on human, world frame
+    d:    float         # FILTERED surface distance from the engine (ld.distance)
+    pr:   np.ndarray    # closest point on robot (CP center), world frame
+    n:    np.ndarray    # unit normal obstacle → robot (ld.direction, EMA-smoothed)
     conf: float
 
 
@@ -104,9 +124,12 @@ class _ConstraintSnap(NamedTuple):
     A:         np.ndarray  # (n_c, NV)     aᵢ = n̂ᵢᵀ Jᵢ rows
     h_bar:     np.ndarray  # (n_c,)        barrier values h̄ᵢ
     jdot_qdot: np.ndarray  # (n_c,)        ċᵢ = n̂ᵢᵀ(J̇ᵢ q̇) at the snapshot q̇
-    G:         np.ndarray  # (n_c, NV+1)   prebuilt [−A | −1] for the QP
+    G:         np.ndarray  # (n_c, NV+1)   prebuilt [−A | −soft] for the QP:
+                           # soft=1 (obstacle rows, slack-relaxable) or 0
+                           # (workspace rows, HARD — slack cannot relax them)
     t_dist:    float       # stamp of the distance data the geometry is based on
     links:     tuple       # (n_c,) link names, DIAGNOSTIC only — not used by QP
+    n_obs:     int         # rows 0..n_obs-1 are obstacle (soft) rows
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -145,12 +168,14 @@ class CBFSafetyFilter(Node):
 
         self._lb = np.array([-lims[k][3] for k in keys])   # −qddot_max per joint
         self._ub = np.array([ lims[k][3] for k in keys])   #  qddot_max per joint
-        # Official Franka per-joint velocity limit (joint_limits.yaml limit.velocity,
-        # = fr3_control.yaml col[2]). Until now UNUSED by the QP — the box bounded
-        # only q̈, so a sustained q̈ could integrate q̇ past this limit and trip the
-        # firmware `joint_velocity_violation` reflex. Now used to tighten the accel
-        # box per tick (see _update_velocity_box).
-        self._qdot_max = np.array([lims[k][2] for k in keys])   # q̇_max per joint [rad/s]
+        # Official joint position/velocity limits (fr3_control.yaml cols 0-2),
+        # consumed by the hard state-limit box (see hard_accel_box in _qp_tick):
+        # the q̈ box is tightened every tick so neither |q̇| nor q can leave its
+        # limit — the firmware joint_velocity_violation / position reflex can
+        # then never be reached by an integrated command.
+        self._q_min    = np.array([lims[k][0] for k in keys])
+        self._q_max    = np.array([lims[k][1] for k in keys])
+        self._qdot_max = np.array([lims[k][2] for k in keys])
 
         qp_rate          = float(p.get('qp_rate_hz',           200.0))
         cbf_rate         = float(p.get('cbf_update_rate_hz',    50.0))
@@ -172,8 +197,37 @@ class CBFSafetyFilter(Node):
         # Replaces the old cond(Jp)>1e5 test (see _update_constraints).
         self._a_min      = float(p.get('cbf_min_leverage',      0.05))
 
+        # ── Hard state-limit shielding (see utils/cbf_hard_limits.py) ────────
+        # Per-tick q̈ box = static decel box ∩ one-step velocity bound ∩
+        # position braking curve, then ∩ slew-continuity box around the LAST
+        # PUBLISHED command. Every published output (QP and all fallbacks)
+        # passes through this box → velocity/position limits and acceleration
+        # continuity hold by construction on every path.
+        self._hard_v_margin  = float(p.get('hard_v_margin',   0.9))
+        self._hard_q_margin  = float(p.get('hard_q_margin',   0.05))
+        self._hard_brake_eta = float(p.get('hard_brake_eta',  0.7))
+        self._slew_delta     = float(p.get('max_qddot_delta', 5.0))
+        self._dt_qp          = 1.0 / qp_rate
+        self._qddot_prev     = np.zeros(NV)   # last PUBLISHED q̈ (slew anchor)
+
+        # ── Workspace box on the EE (HARD HOCBF rows, slack col = 0) ─────────
+        self._ws_enable  = bool(p.get('ws_enable', True))
+        self._ws_min     = np.array(p.get('ws_min', [0.05, -0.60, 0.05]),
+                                    dtype=np.float64)
+        self._ws_max     = np.array(p.get('ws_max', [0.75,  0.60, 0.95]),
+                                    dtype=np.float64)
+        self._ws_margin  = float(p.get('ws_margin',  0.02))
+        self._ws_horizon = float(p.get('ws_horizon', 0.25))
+        self._ws_link    = str(p.get('ws_ee_link', 'fr3_link8'))
+
         self._kin = CBFKinematics(pin.buildModelFromUrdf(_build_urdf_no_hand()))
         self._fid_cache: dict[str, int | None] = {}
+        self._ws_fid = self._kin.resolve_frame_id(self._ws_link) \
+            if self._ws_enable else None
+        if self._ws_enable and self._ws_fid is None:
+            self.get_logger().error(
+                f'ws_ee_link "{self._ws_link}" not found in model — '
+                'workspace rows DISABLED')
 
         # ── Preallocated QP buffers (fixed-shape; G/h vary with n_c) ─────────
         # Slack penalty is QUADRATIC (½ρs²: ρ sits on the s² diagonal of P,
@@ -192,33 +246,8 @@ class CBFSafetyFilter(Node):
         # sparse matrices; reusing this instance avoids per-tick conversion.
         self._P_csc  = sparse.csc_matrix(self._P)
         self._qvec   = np.zeros(NV + 1)
-        # Box bounds: indices 0..NV-1 are the per-joint q̈ bounds (STATIC accel
-        # part from decel_limit, dynamically TIGHTENED by the velocity bound each
-        # tick in _update_velocity_box); index NV is the slack slot s∈[0, 1e6]
-        # (NEVER touched by the velocity update).
         self._box_lb = np.append(self._lb, 0.0)
         self._box_ub = np.append(self._ub, 1e6)
-        # Velocity-aware box: one integration step (Δt = nominal QP period) must
-        # not push |q̇| past v_margin·q̇_max. Nominal Δt (not measured) chosen on
-        # purpose — see _update_velocity_box: error only shifts conservativeness,
-        # absorbed by the 0.9 margin, and a fixed Δt keeps the bound deterministic
-        # (independent of scheduling jitter).
-        self._v_margin = 0.9
-        self._dt_qp    = 1.0 / qp_rate
-        # Per-joint velocity diagnostics, refilled each tick by
-        # _update_velocity_box; read by the CBFDIAG line and the high-res VELHI
-        # log. ratio = |q̇|/q̇_max; bite = this joint's q̈ box was tightened by the
-        # velocity bound (vs the static decel box).
-        self._diag_vel_ratio = np.zeros(NV)
-        self._diag_vel_bite  = np.zeros(NV, dtype=bool)
-        # VELHI gate: emit the per-tick (10 ms) per-joint line only when the worst
-        # joint exceeds this q̇/q̇_max ratio. Default 0.85 → silent in normal
-        # operation, full resolution in the pre-violation window. >1.0 disables.
-        self.declare_parameter('diag_vel_ratio_thr', 0.85)
-        self._diag_vel_ratio_thr = float(self.get_parameter('diag_vel_ratio_thr').value)
-        # Cumulative QP-failure counter (surfaced in the QP-fail error + the
-        # periodic tick log) to correlate failures with the critical window.
-        self._qp_fail_count = 0
         self._prev_nc = -1   # forces (re)setup the first time n_c is seen
         # Persistent native-OSQP problem. solve_qp() rebuilt the OSQP problem
         # (alloc + scaling + factorization) on every call — 5-24 ms even for the
@@ -304,7 +333,8 @@ class CBFSafetyFilter(Node):
         self._status_pub = self.create_publisher(
             Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
         self._status_msg = Float64MultiArray()
-        self._status_msg.data = [0.0, 0.0, 0.0]
+        # [n_c, slack, fault_braking, min obstacle h̄ (99.0 = none active)]
+        self._status_msg.data = [0.0, 0.0, 0.0, 99.0]
 
         # Pay one-shot lazy costs now (robot stationary) instead of on the first
         # real tick — must run before the timers start firing callbacks.
@@ -444,6 +474,14 @@ class CBFSafetyFilter(Node):
             self._nom = _NomSnap(data, self._now())
 
     def _on_distances(self, msg: MultiLinkDistance) -> None:
+        # d and n̂ are taken from the MESSAGE fields, not recomputed from the
+        # closest-point pair: ld.distance is the engine's FILTERED surface
+        # distance (EMA + approach rate-limit + outlier confirmation, radius
+        # and dilation-margin corrected) and ld.direction its EMA-smoothed
+        # unit normal.  Recomputing ‖pr−ph‖ here (the old behaviour) bypassed
+        # that whole anti-spike pipeline AND, when a CP held its last value
+        # with no fresh measurement, read the unset closest_point_human as
+        # (0,0,0) — a phantom obstacle at the base origin with a bogus normal.
         items = tuple(
             _Obstacle(
                 link=ld.robot_link_name,
@@ -451,9 +489,7 @@ class CBFSafetyFilter(Node):
                 pr=np.array([ld.closest_point_robot.x,
                              ld.closest_point_robot.y,
                              ld.closest_point_robot.z]),
-                ph=np.array([ld.closest_point_human.x,
-                             ld.closest_point_human.y,
-                             ld.closest_point_human.z]),
+                n=np.array([ld.direction.x, ld.direction.y, ld.direction.z]),
                 conf=float(ld.confidence),
             )
             for ld in msg.links if ld.valid
@@ -464,11 +500,16 @@ class CBFSafetyFilter(Node):
 
     def _update_constraints(self) -> None:
         js, obs = self._js, self._obs
-        if js is None or obs is None:
+        if js is None:
             return
-        if self._now() - obs.stamp > self._dist_to:
-            self._con = None
-            return
+        now = self._now()
+        # Obstacle rows are built ONLY from fresh distance data; workspace rows
+        # (below) depend only on the joint state, so they are built regardless —
+        # a dead camera must not disable the workspace shield. The conservative
+        # braking response to stale distances lives in _qp_tick, decoupled from
+        # the row set.
+        obs_ok    = obs is not None and (now - obs.stamp) <= self._dist_to
+        obs_items = obs.items if obs_ok else ()
 
         # with_jdot=True: also run computeJointJacobiansTimeVariation so that
         # point_jacobian() can return J̇p — needed for the J̇q̇ term of d̈
@@ -479,7 +520,13 @@ class CBFSafetyFilter(Node):
         n_weak        = 0           # obstacles dropped this tick for low leverage
         min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
 
-        for ob in obs.items:
+        for ob in obs_items:
+            # Unit-norm guard on the message direction (held/degenerate entries
+            # can carry a stale or zero normal — skip rather than constrain on
+            # bogus geometry; the hard box + fallbacks still cover safety).
+            n_norm = float(np.linalg.norm(ob.n))
+            if n_norm < 0.5:
+                continue
             # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
             # linear HOCBF row self-deactivates at large d (its lower bound
             # −k0·h̄ becomes very negative), and the k1·ḣ̄ + jdq terms let a fast
@@ -491,12 +538,7 @@ class CBFSafetyFilter(Node):
             # d_safe+cbf_activation_margin step gate.
             if ob.d > self._obstacle_horizon or ob.conf < self._conf_min:
                 continue
-
-            delta = ob.pr - ob.ph
-            d     = float(np.linalg.norm(delta))
-            if d < 1e-8:
-                continue
-            n_w = delta / d
+            n_w = ob.n / n_norm
 
             fid = self._frame_id(ob.link)
             if fid is None:
@@ -519,7 +561,7 @@ class CBFSafetyFilter(Node):
                 min_a_dropped = min(min_a_dropped, a_norm)
                 continue
 
-            h = d - self._d_safe                        # barrier value h̄
+            h = ob.d - self._d_safe                     # barrier value h̄
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
@@ -539,6 +581,27 @@ class CBFSafetyFilter(Node):
                 f'{self._a_min:.3g} (min ‖a‖={min_a_dropped:.3g})',
                 throttle_duration_sec=2.0)
 
+        n_obs = len(rows_a)
+
+        # ── Workspace box rows on the EE (HARD: slack column = 0) ───────────
+        # Same HOCBF row semantics as the obstacle rows, but the slack variable
+        # is NOT allowed to relax them: the EE must stay inside the (margin-
+        # shrunk) axis-aligned workspace box. Rows appear only within ws_horizon
+        # of a face; the linear HOCBF self-deactivates further inside anyway.
+        if self._ws_enable and self._ws_fid is not None:
+            p_ee = np.asarray(self._kin.data.oMf[self._ws_fid].translation)
+            Jp_ee, Jpd_ee = self._kin.point_jacobian(self._ws_fid, p_ee)
+            jd_ee = Jpd_ee @ js.qdot
+            for a_row, h_ws, jdq_ws, label in workspace_face_rows(
+                    p_ee, Jp_ee, jd_ee, self._ws_min, self._ws_max,
+                    self._ws_margin, self._ws_horizon):
+                if np.all(np.isfinite(a_row)) and np.isfinite(h_ws) \
+                        and np.isfinite(jdq_ws):
+                    rows_a.append(a_row)
+                    rows_h.append(h_ws)
+                    rows_jdq.append(jdq_ws)
+                    rows_link.append(label)
+
         if not rows_a:
             self._con = None
             return
@@ -547,10 +610,15 @@ class CBFSafetyFilter(Node):
         h_bar = np.array(rows_h,   dtype=np.float64)
         jdq_v = np.array(rows_jdq, dtype=np.float64)    # (n_c,) ċᵢ
         n_c   = A.shape[0]
-        G     = np.empty((n_c, NV + 1))                # [−A | −1]: A q̈ + s ≥ b
+        G     = np.empty((n_c, NV + 1))         # [−A | −soft]: A q̈ + soft·s ≥ b
         G[:, :NV] = -A
-        G[:, -1]  = -1.0
-        self._con = _ConstraintSnap(A, h_bar, jdq_v, G, obs.stamp, tuple(rows_link))
+        G[:, -1]  = 0.0                         # hard rows: slack cannot relax
+        G[:n_obs, -1] = -1.0                    # obstacle rows stay soft
+        # t_dist: obstacle geometry may never be used past distance_timeout of
+        # its source data; workspace-only snapshots are stamped at build time.
+        t_dist = obs.stamp if (obs_ok and n_obs > 0) else now
+        self._con = _ConstraintSnap(A, h_bar, jdq_v, G, t_dist,
+                                    tuple(rows_link), n_obs)
 
     def _frame_id(self, link: str) -> int | None:
         if link not in self._fid_cache:
@@ -580,69 +648,6 @@ class CBFSafetyFilter(Node):
         cols = np.tile(np.arange(NV + 1), n_c)
         cbf  = sparse.csc_matrix((G.ravel(), (rows, cols)), shape=(n_c, NV + 1))
         return sparse.vstack([cbf, box], format='csc')
-
-    def _update_velocity_box(self, qdot: np.ndarray) -> None:
-        """Tighten the per-joint q̈ box so q̇ cannot exceed v_margin·q̇_max.
-
-        One-step bound: after one Δt the velocity q̇ + q̈·Δt must stay within
-        ±v_margin·q̇_max. This yields a velocity-dependent acceleration box that
-        is intersected (min/max) with the STATIC decel-limit box self._lb/_ub:
-
-            q̈_ub = min( +decel,  (+v_margin·q̇_max − q̇)/Δt )
-            q̈_lb = max( −decel,  (−v_margin·q̇_max − q̇)/Δt )
-
-        Recomputed every tick from the fresh q̇ the QP already reads. Only the
-        accel rows (0..NV-1) of the box are written; the slack slot (index NV)
-        is left untouched.
-
-        Anti-asymmetry note (matches the design): near +q̇_max the upper bound
-        collapses toward 0 (no further +accel) while the lower bound stays at
-        −decel (full braking authority) — and symmetrically near −q̇_max. So the
-        CBF keeps full authority to decelerate AWAY from an obstacle; only the
-        velocity-increasing direction is curtailed.
-
-        SAFETY caveat (accepted): if a CBF avoidance row conflicts with this
-        HARD box at velocity saturation, OSQP relaxes the (soft) CBF row via its
-        slack s rather than violate the box — a bounded softening of CBF
-        authority, deliberately preferred over a total firmware motion abort.
-        """
-        vmax   = self._v_margin * self._qdot_max
-        ub_vel = (vmax - qdot) / self._dt_qp
-        lb_vel = (-vmax - qdot) / self._dt_qp
-        ub = np.minimum(self._ub, ub_vel)
-        lb = np.maximum(self._lb, lb_vel)
-        # Feasibility guard: if already past v_margin·q̇_max by more than one
-        # tick's decel authority, the velocity bound would invert the box
-        # (lb > ub). Clamp ub UP to lb (NOT lb down — that could exceed −decel
-        # and violate the accel limit) → forces q̈ = −decel, i.e. hardest legal
-        # braking. No-op whenever the box is already feasible (ub ≥ lb).
-        ub = np.maximum(ub, lb)
-
-        # Per-joint velocity diagnostics (read by the CBFDIAG line and the
-        # high-res VELHI log in _qp_tick — logging is done THERE, where now/n_c
-        # are in scope). ratio = fraction of the official q̇_max; bite[i] = this
-        # joint's q̈ box was tightened by the velocity bound (tighter than the
-        # static decel box) → the bound is "biting" on joint i specifically.
-        self._diag_vel_ratio = np.abs(qdot) / self._qdot_max
-        self._diag_vel_bite  = (ub < self._ub - 1e-9) | (lb > self._lb + 1e-9)
-
-        # Write back accel rows only; slack slot (index NV) untouched.
-        self._box_lb[:NV] = lb
-        self._box_ub[:NV] = ub
-
-    def _fmt_vel(self, qdot: np.ndarray) -> str:
-        """Compact per-joint velocity summary string (shared by CBFDIAG/VELHI).
-
-        worst joint (signed q̇ + ratio), the 7 ratios in order, and a 7-char
-        bite mask (X = velocity bound tightened that joint's q̈ box this tick).
-        """
-        ratio = self._diag_vel_ratio
-        bite  = self._diag_vel_bite
-        k     = int(np.argmax(ratio))
-        rats  = '/'.join(f'{r:.2f}' for r in ratio)
-        mask  = ''.join('X' if b else '.' for b in bite)
-        return (f'worst=j{k+1}:q̇={qdot[k]:+.2f}({ratio[k]:.2f}) '
-                f'vrat=[{rats}] vbite={mask}')
 
     def _osqp_lu(self, G: np.ndarray | None, h_qp: np.ndarray | None):
         """Bounds for A x: CBF rows  −inf ≤ Gx ≤ h_qp,  box rows  lb ≤ x ≤ ub.
@@ -719,9 +724,29 @@ class CBFSafetyFilter(Node):
         if now - js.stamp > self._js_to:
             self.get_logger().error('joint state stale → zero output',
                                     throttle_duration_sec=0.5)
-            self._publish(np.zeros(NV))
+            # Finalized (box+slew from the previous tick) so even this
+            # emergency zero cannot introduce an acceleration discontinuity.
+            self._finalize_and_publish(np.zeros(NV))
             return
         qdot = js.qdot
+
+        # ── Hard state-limit box ∩ slew-continuity box (in-place update) ─────
+        # hard_accel_box: static decel authority ∩ one-step velocity bound ∩
+        # position braking curve √(2ηa·h) — keeps q̇ AND q inside their limits.
+        # apply_slew_limit: |q̈ − q̈_prev| ≤ Δ around the last PUBLISHED output
+        # (never empty: pins to the nearest slew edge if disjoint). Written
+        # into _box_lb/_box_ub BEFORE _osqp_lu reads them.
+        h_lb, h_ub = hard_accel_box(
+            js.q, qdot,
+            acc_lb=self._lb, acc_ub=self._ub,
+            qdot_max=self._qdot_max, v_margin=self._hard_v_margin,
+            q_min=self._q_min, q_max=self._q_max,
+            q_margin=self._hard_q_margin, brake_eta=self._hard_brake_eta,
+            dt=self._dt_qp)
+        box_lo, box_hi = apply_slew_limit(
+            h_lb, h_ub, self._qddot_prev, self._slew_delta)
+        self._box_lb[:NV] = box_lo
+        self._box_ub[:NV] = box_hi
 
         nom = self._nom
         if nom is not None and now - nom.stamp < self._nom_to:
@@ -756,20 +781,19 @@ class CBFSafetyFilter(Node):
             h_qp = (self._k1 * (con.A @ qdot)
                     + self._k0 * con.h_bar
                     + con.jdot_qdot)
-        elif obs is not None and (now - obs.stamp) > self._dist_to:
+        if obs is not None and (now - obs.stamp) > self._dist_to:
             # Genuine perception staleness: distance data WAS received but the
             # latest sample is older than distance_timeout (camera frozen,
             # distance node crashed, link down). A failure in the channel that
             # feeds the safety barrier must degrade toward a MORE conservative
-            # behaviour, not toward zero constraints (silent passthrough). Mirror
-            # the stale-qddot_nom fallback above: replace the nominal with
-            # braking, so the QP then runs with n_c=0 (no CBF rows) but on an
-            # already-decelerating nominal. The expression is intentionally
-            # duplicated from the qddot_nom-stale branch rather than factored,
-            # to keep that branch byte-for-byte unchanged.
+            # behaviour, not toward zero constraints (silent passthrough).
+            # Replace the nominal with braking; any surviving rows above are
+            # workspace-only (_update_constraints never builds obstacle rows
+            # from stale distances, and obstacle-bearing snapshots expire via
+            # t_dist), so the QP brakes while still shielding the workspace.
             # This branch is reached ONLY on real staleness; when obstacles are
             # simply out of range obs is fresh (now-obs.stamp ≤ dist_to) so we
-            # fall through here and keep normal passthrough — no spurious braking.
+            # skip it and keep normal passthrough — no spurious braking.
             qddot_nom = -self._k_brake * qdot          # safe deceleration
             fault_braking = 1.0                         # safety-feed fault (status data[2])
             self.get_logger().warn('distance stale → braking fallback (CBF inactive)',
@@ -777,30 +801,12 @@ class CBFSafetyFilter(Node):
 
         self._qvec[:NV] = -qddot_nom
 
-        # Velocity-aware box: tighten the per-joint q̈ bounds from the fresh q̇ so
-        # the integrated velocity can't trip the firmware joint_velocity_violation
-        # reflex. Mutates self._box_lb/_box_ub (accel rows only) in place → must
-        # run BEFORE _osqp_lu reads them. Also refills self._diag_vel_ratio/_bite.
-        self._update_velocity_box(qdot)
-
-        # ── High-resolution velocity telemetry (VELHI) ───────────────────────
-        # Per-TICK (10 ms, NO throttle) per-joint line, emitted ONLY when the
-        # worst joint exceeds diag_vel_ratio_thr (0.85) — silent in normal
-        # operation, full resolution exactly in the pre-violation window. Catches
-        # transients faster than the 50 ms CBFDIAG throttle and is independent of
-        # n_c, so it shows a velocity saturation even when no CBF row is active
-        # (the suspected "biting joint ≠ CBF-projected joint" case). Disable with
-        # diag_vel_ratio_thr > 1.0.
-        if float(np.max(self._diag_vel_ratio)) > self._diag_vel_ratio_thr:
-            self.get_logger().info(
-                f'VELHI t={now:.3f} n_c={n_c} {self._fmt_vel(qdot)}')
-
         # ── Native-OSQP solve ────────────────────────────────────────────────
         # Reuse one OSQP instance: setup() (alloc + scaling + symbolic
         # factorization) only when n_c changes the sparsity pattern; otherwise
         # update() the vectors that move each tick and reuse the factorization.
         #   n_c == 0 : A is the constant identity block, but the box bounds l/u
-        #              now MOVE every tick (velocity box) → push q AND l/u.
+        #              move every tick (hard state-limit + slew box) → push l/u.
         #   n_c  > 0 : the CBF normals in G move every tick (geometry recomputed
         #              at cbf_rate) and h_qp moves with q̇/h̄ → push Ax + u too.
         l, u = self._osqp_lu(G, h_qp)
@@ -814,7 +820,6 @@ class CBFSafetyFilter(Node):
             self._osqp_prob.update(q=self._qvec, l=l, u=u,
                                    Ax=self._osqp_A(G).data)
         else:
-            # Box-only problem, but the box is now dynamic → push l/u, not just q.
             self._osqp_prob.update(q=self._qvec, l=l, u=u)
 
         # solve_ms measures .solve() only (not setup/update), so it stays
@@ -831,7 +836,7 @@ class CBFSafetyFilter(Node):
             qddot_nom_norm = float(np.linalg.norm(qddot_nom))
             self.get_logger().info(
                 f'tick={self._tick_count} n_c={n_c} solve={solve_ms:.2f}ms '
-                f'qddot_nom_norm={qddot_nom_norm:.2f} qp_fails={self._qp_fail_count} '
+                f'qddot_nom_norm={qddot_nom_norm:.2f} '
                 + (f'iter={res.info.iter} status={res.info.status} h_norm={float(np.linalg.norm(h_qp)):.2f}'
                    if n_c > 0 else 'iter=- status=- h_norm=-')
             )
@@ -839,26 +844,30 @@ class CBFSafetyFilter(Node):
         slack = 0.0
         solved = res.info.status_val == osqp.constant('OSQP_SOLVED')
         if not solved or x is None or not np.all(np.isfinite(x)):
-            self._qp_fail_count += 1
             self.get_logger().error(
-                f'QP not solved ({res.info.status}) → braking output '
-                f'[qp_fail_count={self._qp_fail_count}]',
+                f'QP not solved ({res.info.status}) → braking output',
                 throttle_duration_sec=0.5)
             # Discard the (possibly poisoned) internal warm-start iterate: force
             # a clean setup() next tick so a bad solve can't seed the next one.
             self._osqp_prob = None
             self._prev_nc   = -1
-            qddot_safe = np.clip(-self._k_brake * qdot, self._lb, self._ub)
+            qddot_safe = -self._k_brake * qdot     # clipped in _finalize below
             fault_braking = 1.0                         # safety-QP fault (status data[2])
         else:
             qddot_safe = x[:NV]
             if n_c > 0:
                 slack = float(x[-1])
 
-        self._publish(qddot_safe)
+        qddot_safe = self._finalize_and_publish(qddot_safe)
+        # Status layout: [n_c, slack, fault_braking, min obstacle h̄].
+        # data[3] < 0 ⇔ an obstacle is inside d_safe; +99 sentinel when no
+        # obstacle row is active. DIAGNOSTIC for downstream consumers — the
+        # commander's phase governor deliberately reads slack/fault, NOT this.
         self._status_msg.data[0] = float(n_c)
         self._status_msg.data[1] = slack
         self._status_msg.data[2] = fault_braking
+        self._status_msg.data[3] = (float(np.min(con.h_bar[:con.n_obs]))
+                                    if (n_c > 0 and con.n_obs > 0) else 99.0)
         self._status_pub.publish(self._status_msg)
 
         # ── Structured CBF-episode diagnostic ────────────────────────────────
@@ -880,10 +889,13 @@ class CBFSafetyFilter(Node):
         #   qdd_real_rad=aᵀq̈_real [m/s²] REALIZED (from measured q̇ finite diff);
         #   trk_err=‖q̈_safe−q̈_real‖ [rad/s²] joint-space tracking error.
         #   qdd_real_rad ≪ qdd_cmd_rad while pushing away ⇒ command not executed.
-        if n_c > 0 and (now - self._last_diag_t) >= self._diag_period:
+        if n_c > 0 and con.n_obs > 0 \
+                and (now - self._last_diag_t) >= self._diag_period:
             self._last_diag_t = now
             dq    = qddot_safe - qddot_nom
-            i     = int(np.argmin(con.h_bar))           # closest obstacle row
+            i     = int(np.argmin(con.h_bar[:con.n_obs]))  # closest OBSTACLE row
+            #      (workspace rows excluded: their h̄ is a face distance, and
+            #       d_min = h̄ + d_safe below is only meaningful for obstacles)
             a_i   = con.A[i]
             a_n   = float(np.linalg.norm(a_i))
             a_hat = a_i / a_n if a_n > 1e-12 else a_i
@@ -900,8 +912,22 @@ class CBFSafetyFilter(Node):
                 f'link={link_i} hdot={float(a_i @ qdot):+.3f} h_qp={float(h_qp[i]):+.3f} '
                 f'dnorm={float(np.linalg.norm(dq)):.3f} s={slack:.4f} '
                 f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} cart_rad={float(a_i @ dq):+.3f} '
-                f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f} '
-                f'| {self._fmt_vel(qdot)}')
+                f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f}')
+
+    def _finalize_and_publish(self, qddot: np.ndarray) -> np.ndarray:
+        """Single exit point for EVERY command this node emits.
+
+        Clips into the current hard state-limit ∩ slew box (_box_lb/_box_ub,
+        refreshed each tick; on the stale-JS path the previous tick's box is
+        reused) and records the result as the slew anchor for the next tick.
+        The QP solution already satisfies the box — the clip is a no-op there;
+        it exists so the braking/zero FALLBACKS obey the same continuity and
+        state-limit guarantees as the nominal path (no torque_discontinuity).
+        """
+        q_out = np.clip(qddot, self._box_lb[:NV], self._box_ub[:NV])
+        np.copyto(self._qddot_prev, q_out)
+        self._publish(q_out)
+        return q_out
 
     def _publish(self, qddot_safe: np.ndarray) -> None:
         msg      = Float64MultiArray()

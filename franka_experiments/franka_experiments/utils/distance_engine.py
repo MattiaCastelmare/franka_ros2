@@ -84,44 +84,16 @@ class DistanceEngine:
         self._v_max_approach       = float(distance_cfg.get('lpf_v_max_approach', 2.0))
         self._outlier_recover_frac = float(distance_cfg.get('lpf_outlier_recover_frac', 0.10))
         self._outlier_recover_abs  = float(distance_cfg.get('lpf_outlier_recover_abs', 0.03))
-        # Spatial-continuity gate (option c): when a suspicious approach jump ALSO
-        # teleports the winning surface point by more than this in 3D [m], the
-        # argmin likely switched surface REGION (a static-obstacle artefact, not a
-        # real fast approach), so demand ONE EXTRA confirmation frame (2 instead of
-        # 1) before accepting it. Default 1.0 m = deliberately permissive / nearly
-        # disabled: with no real d3d distribution yet, this MUST NOT change today's
-        # behaviour (the analysis estimates the eventual threshold at ~0.1-0.2 m,
-        # to be confirmed from the logged d3d before tightening). The reported
-        # distance is NEVER altered by this gate — only the acceptance latency.
-        self._d3d_gate             = float(distance_cfg.get('lpf_d3d_gate_m', 1.0))
-        # Sync-jump gate (complementary to the per-CP d3d gate): when a large
-        # FRACTION of the control points with a valid measurement this frame ALL
-        # trip the approach rate-limit simultaneously, treat it as a likely
-        # SYSTEMIC artefact (TF jitter, robot-mask instability, timestamp
-        # mismatch) that shifts the whole observed surface — not independent
-        # per-pixel noise — and demand the same extra confirmation frame the d3d
-        # gate uses. The d3d gate is per-CP and blind to this cross-CP
-        # correlation. frac chosen conservatively high so it fires only on broad,
-        # correlated jumps; min_cps avoids a meaningless ratio on a tiny sample.
-        self._sync_jump_frac    = float(distance_cfg.get('lpf_sync_jump_frac', 0.5))
-        self._sync_jump_min_cps = int(distance_cfg.get('lpf_sync_jump_min_cps', 3))
 
         self._grid_roi: Optional[tuple] = None
         self._grid_ug:  Optional[np.ndarray] = None
         self._grid_vg:  Optional[np.ndarray] = None
 
-        # LPF state: (seg_idx, cp_idx) → (d_smooth, dir_smooth, pt_acc, px_acc),
-        # where pt_acc/px_acc are the last ACCEPTED winning obstacle point (base
-        # frame) / pixel — kept frozen through a pending window so d3d measures the
-        # teleport vs the last STABLE winner. Used only for the d3d gate + RTDDIAG
-        # logging; the reported distance/direction never read from here.
-        self._lpf: Dict[Tuple[int, int],
-                        Tuple[float, Optional[np.ndarray],
-                              Optional[np.ndarray], Optional[Tuple[int, int]]]] = {}
-        # Pending suspicious-jump state: (seg_idx, cp_idx) → (d_pre, d_susp,
-        # frames_left). Presence of a key ⇒ awaiting confirmation; frames_left =
-        # confirmation frames still required (1 normally, 2 when the d3d gate fires).
-        self._pending: Dict[Tuple[int, int], Tuple[float, float, int]] = {}
+        # LPF state: (seg_idx, cp_idx) → (d_smooth, dir_smooth)
+        self._lpf: Dict[Tuple[int, int], Tuple[float, Optional[np.ndarray]]] = {}
+        # Pending suspicious-jump state: (seg_idx, cp_idx) → (d_pre, d_susp).
+        # Presence of a key ⇒ that CP is awaiting 1-frame confirmation.
+        self._pending: Dict[Tuple[int, int], Tuple[float, float]] = {}
         # Timestamp [s] of the previous processed frame, for the REAL dt.
         self._prev_stamp: Optional[float] = None
 
@@ -291,31 +263,6 @@ class DistanceEngine:
 
         dt_valid = dt is not None and dt > 1e-4   # guard div-by-0 / dup stamps
 
-        # ── Pre-pass: detect a SYNCHRONOUS approach jump across CPs ───────────
-        # Read-only count (touches neither self._lpf nor self._pending): how many
-        # CPs with a valid measurement AND a prior state would trip the approach
-        # rate-limit (v_impl > v_max_approach) THIS frame. If a large fraction do
-        # it together, it is almost certainly a systemic artefact → flag the whole
-        # frame so the main loop demands an extra confirmation frame on those CPs
-        # (same mechanism as the d3d gate; the reported distance is unchanged).
-        sync_jump_detected = False
-        if dt_valid:
-            n_valid = n_suspect = 0
-            for r in results:
-                if not np.isfinite(r.distance):
-                    continue
-                prev = self._lpf.get((r.seg_idx, r.cp_idx))
-                if prev is None:
-                    continue
-                n_valid += 1
-                d_prev = prev[0]
-                if r.distance < d_prev and \
-                        (d_prev - r.distance) / dt > self._v_max_approach:
-                    n_suspect += 1
-            sync_jump_detected = (
-                n_valid >= self._sync_jump_min_cps
-                and n_suspect / n_valid >= self._sync_jump_frac)
-
         smoothed: List[ControlPointResult] = []
         for r in results:
             key  = (r.seg_idx, r.cp_idx)
@@ -323,12 +270,11 @@ class DistanceEngine:
 
             if prev is None:
                 if np.isfinite(r.distance):
-                    self._lpf[key] = (r.distance, r.direction,
-                                      r.closest_obstacle_point, r.closest_pixel)
+                    self._lpf[key] = (r.distance, r.direction)
                 smoothed.append(r)
                 continue
 
-            d_prev, dir_prev, pt_prev, px_prev = prev
+            d_prev, dir_prev = prev
 
             if not np.isfinite(r.distance):
                 # No valid measurement: hold last smoothed value (pending left
@@ -346,47 +292,25 @@ class DistanceEngine:
 
             pend = self._pending.get(key)
             if pend is not None:
-                # ── Resolve a pending suspicious jump (multi-frame confirm) ──
-                # d3d = teleport of the current winning point vs the last STABLE
-                # accepted point (pt_prev stays frozen through the whole pending
-                # window → true teleport magnitude at every frame).
-                d_pre, d_susp, frames_left = pend
-                d3d = self._pt_dist(r.closest_obstacle_point, pt_prev)
+                # ── Resolve a pending suspicious jump (1-frame confirmation) ──
+                d_pre, d_susp = pend
+                del self._pending[key]
                 recover_tol = max(self._outlier_recover_frac * d_pre,
                                   self._outlier_recover_abs)
                 if r.distance >= d_pre - recover_tol:
-                    # Recovered to baseline at ANY confirm frame → isolated
-                    # OUTLIER: discard now, keep the old stable winning point.
-                    del self._pending[key]
+                    # Recovered to baseline → isolated OUTLIER: rewind to d_pre
+                    # and continue with the standard asymmetric logic on d_raw
+                    # (which is ≈ d_pre here, so velocity is no longer suspect).
                     if r.distance < d_pre:
                         d_new = r.distance
                     else:
                         d_new = alpha * d_pre + (1.0 - alpha) * r.distance
-                    self._log_jump('outlier-discarded', r, d_pre, r.distance,
-                                   dt, d_new, d3d=d3d, sync=sync_jump_detected)
-                    pt_acc, px_acc = pt_prev, px_prev
+                    self._log_jump('outlier-discarded', r, d_pre, r.distance, dt, d_new)
                 else:
-                    frames_left -= 1
-                    if frames_left <= 0:
-                        # Stayed close through ALL required frames → CONFIRMED:
-                        # accept raw and adopt the current winner as the new stable.
-                        del self._pending[key]
-                        d_new = r.distance
-                        self._log_jump('confirmed', r, d_pre, r.distance,
-                                       dt, d_new, d3d=d3d, sync=sync_jump_detected)
-                        pt_acc, px_acc = r.closest_obstacle_point, r.closest_pixel
-                    else:
-                        # Still pending one more frame: KEEP the conservative
-                        # rate-limit (never the optimistic d_pre, never a freeze —
-                        # it keeps approaching r.distance at v_max each frame) and
-                        # keep the old stable winning point.
-                        d_new = (max(d_prev - self._v_max_approach * dt, r.distance)
-                                 if dt_valid else r.distance)
-                        self._pending[key] = (d_pre, r.distance, frames_left)
-                        self._log_jump('pending', r, d_prev, r.distance,
-                                       dt, d_new, d3d=d3d, sync=sync_jump_detected)
-                        pt_acc, px_acc = pt_prev, px_prev
-                self._lpf[key] = (d_new, dir_new, pt_acc, px_acc)
+                    # Stayed close (or closer) → CONFIRMED real: accept raw now.
+                    d_new = r.distance
+                    self._log_jump('confirmed', r, d_pre, r.distance, dt, d_new)
+                self._lpf[key] = (d_new, dir_new)
                 smoothed.append(self._mk_result(r, d_new, dir_new))
                 continue
 
@@ -397,48 +321,20 @@ class DistanceEngine:
                 # as before.  Above threshold → rate-limit + start pending.
                 v_impl = (d_prev - r.distance) / dt if dt_valid else 0.0
                 if dt_valid and v_impl > self._v_max_approach:
-                    # d3d = teleport of the winning point vs the last accepted
-                    # point. A large teleport on a suspicious jump ⇒ the argmin
-                    # likely switched surface REGION (not a real fast approach) ⇒
-                    # demand an EXTRA confirmation frame. Small/zero teleport ⇒
-                    # frames_needed=1 = today's behaviour exactly (no regression).
-                    d3d = self._pt_dist(r.closest_obstacle_point, pt_prev)
-                    # Extra confirmation frame if EITHER the per-CP teleport gate
-                    # (d3d) OR the cross-CP synchronous-jump gate fires.
-                    frames_needed = 2 if (d3d > self._d3d_gate
-                                          or sync_jump_detected) else 1
                     d_new = max(d_prev - self._v_max_approach * dt, r.distance)
-                    self._pending[key] = (d_prev, r.distance, frames_needed)
-                    self._log_jump('rate-limited', r, d_prev, r.distance, dt,
-                                   d_new, v_impl=v_impl, d3d=d3d,
-                                   sync=sync_jump_detected)
-                    # Jump not accepted yet → KEEP the old stable winning point.
-                    self._lpf[key] = (d_new, dir_new, pt_prev, px_prev)
-                    smoothed.append(self._mk_result(r, d_new, dir_new))
-                    continue
-                d_new = r.distance
+                    self._pending[key] = (d_prev, r.distance)
+                    self._log_jump('rate-limited', r, d_prev, r.distance, dt, d_new,
+                                   v_impl=v_impl)
+                else:
+                    d_new = r.distance
             else:
                 # Obstacle moving away → smooth to avoid acting on sensor noise
                 d_new = alpha * d_prev + (1.0 - alpha) * r.distance
 
-            # Accepted a (non-suspicious) value → adopt the current winner point.
-            self._lpf[key] = (d_new, dir_new,
-                              r.closest_obstacle_point, r.closest_pixel)
+            self._lpf[key] = (d_new, dir_new)
             smoothed.append(self._mk_result(r, d_new, dir_new))
 
         return smoothed
-
-    @staticmethod
-    def _pt_dist(p_a, p_b) -> float:
-        """3D teleport magnitude [m] between two closest-obstacle points.
-
-        Returns 0.0 if either point is missing (no finite winner) → the d3d gate
-        defaults to today's single-frame behaviour (safe: no extra confirmation
-        demanded when we can't measure the teleport).
-        """
-        if p_a is None or p_b is None:
-            return 0.0
-        return float(np.linalg.norm(np.asarray(p_a) - np.asarray(p_b)))
 
     @staticmethod
     def _smooth_direction(dir_prev, dir_raw, alpha):
@@ -459,25 +355,20 @@ class DistanceEngine:
             closest_pixel=r.closest_pixel,
         )
 
-    def _log_jump(self, outcome, r, d_prev, d_raw, dt, d_new, v_impl=None,
-                  d3d=None, sync=None):
+    def _log_jump(self, outcome, r, d_prev, d_raw, dt, d_new, v_impl=None):
         """Diagnostic for suspicious-approach events (RTDDIAG, analog to CBFDIAG).
 
-        Fires only on the rate-limit / pending / confirm / discard branches
-        (rare), so it is intentionally NOT throttled — every event is a data
-        point for validating the fix on hardware. d3d (winning-point 3D teleport
-        [m]) is logged on EVERY jump event so the real d3d distribution for
-        outlier-vs-confirmed can be collected before tightening lpf_d3d_gate_m.
+        Fires only on the rate-limit / confirm / discard branches (rare), so it
+        is intentionally NOT throttled — every event is a data point for
+        validating the fix on hardware.
         """
         if self._log is None:
             return
         v_txt = f'{v_impl:.2f}' if v_impl is not None else '   —'
-        d3d_txt = f'{d3d:.3f}' if d3d is not None else '  —'
-        sync_txt = f'{sync}' if sync is not None else '—'
         dt_ms = f'{dt * 1e3:.1f}' if dt is not None else '—'
         self._log.warning(
             f'RTDDIAG approach-jump [{outcome}] CP=({r.seg_idx},{r.cp_idx}) '
-            f'v_impl={v_txt} m/s dt={dt_ms} ms d3d={d3d_txt} m sync={sync_txt} '
+            f'v_impl={v_txt} m/s dt={dt_ms} ms '
             f'd_prev={d_prev:.3f} d_raw={d_raw:.3f} -> d_out={d_new:.3f} m')
 
     def invalidate_grid_cache(self):

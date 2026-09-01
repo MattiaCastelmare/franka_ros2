@@ -110,32 +110,6 @@ distance: # in meters
   # 0.0 = no filter (raw), 0.9 = heavy smoothing (slow recovery)
   lpf_alpha: 0.5
 
-  # Spatial-continuity gate (option c): a suspicious approach jump (implied speed
-  # > lpf_v_max_approach) that ALSO teleports the winning surface point by more
-  # than this in 3D [m] requires 2 confirmation frames instead of 1 — it is likely
-  # the memoryless argmin switching surface REGION (a static-obstacle artefact),
-  # not a real fast approach. Never alters the reported distance, only acceptance
-  # latency. Default 1.0 m = deliberately permissive (≈ disabled): no real d3d
-  # distribution yet, so this MUST NOT change today's behaviour. Tighten to the
-  # eventual ~0.1-0.2 m only AFTER collecting the logged RTDDIAG d3d values.
-  lpf_d3d_gate_m: 1.0
-
-  # ── DistanceEngine rate-limiter / outlier rejection ─────────────────────
-  # These were hardcoded defaults inside DistanceEngine.__init__ — now exposed
-  # for tuning. Values below REPRODUCE the previous hardcoded defaults exactly,
-  # so adding them here does NOT change runtime behaviour until tuned.
-  # (lpf_alpha and lpf_d3d_gate_m above are part of the same group.)
-  lpf_v_max_approach: 2.0         # [m/s] implied approach speed gate
-  lpf_outlier_recover_frac: 0.10  # fraction of d_pre to call "recovered"
-  lpf_outlier_recover_abs: 0.03   # [m] absolute floor for recovery tolerance
-  # Sync-jump gate (cross-CP): when this FRACTION of valid CPs all trip the
-  # approach rate-limit in the same frame (with at least min_cps valid samples),
-  # demand an extra confirmation frame on those CPs — likely a systemic artefact
-  # (TF jitter, mask instability), not independent per-pixel noise. Conservative
-  # defaults; the reported distance is never altered, only acceptance latency.
-  lpf_sync_jump_frac: 0.5         # fraction of valid CPs rate-limited together
-  lpf_sync_jump_min_cps: 3        # min valid-CP sample size for the gate
-
   # Throttle interval [s] for repeated distance/obstacle log messages.
   log_throttle_s: 2.0
 

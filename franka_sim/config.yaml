@@ -1,0 +1,117 @@
+# ============================================================================
+# franka_sim — central configuration (Safe RL + CBF, Sim-to-Real)
+#
+# One file for the whole training experiment so runs are reproducible for the
+# paper. The `cbf:` and `joint_limits:` blocks MIRROR the on-robot
+# franka_experiments/config/fr3_control.yaml — keep them in sync so the policy
+# is trained under exactly the safety filter it meets on hardware.
+# ============================================================================
+
+# ── Simulation / episode ─────────────────────────────────────────────────────
+env:
+  scene_xml: assets/franka_fr3/scene_cbf.xml   # relative to franka_sim/
+  ee_site: attachment_site        # FR3 flange TCP (link7 + 0.107 z)
+  control_rate_hz: 100.0          # policy + CBF tick rate (matches real qp_rate)
+  sim_timestep: 0.002             # MuJoCo integration step (→ 5 substeps/tick)
+  max_episode_steps: 500          # 5 s episodes at 100 Hz
+
+# ── Reaching task ─────────────────────────────────────────────────────────────
+task:
+  target_box_min: [0.30, -0.35, 0.25]   # [m] target sampled uniformly in this box
+  target_box_max: [0.60,  0.35, 0.65]
+  target_tol: 0.05                # [m] EE within this of target ⇒ success
+  q_init_noise: 0.05              # [rad] uniform joint noise around `home`
+
+# ── Human-proxy obstacle (moving sphere) ─────────────────────────────────────
+obstacle:
+  radius: 0.08                    # [m] sphere radius — MUST match obstacle_geom
+                                  # in scene_cbf.xml (the env asserts it). Read
+                                  # on the robot by rl_policy_commander to
+                                  # rebuild the observation's obstacle slot from
+                                  # the point-cloud surface distance.
+  mode: sinusoidal                # static | linear | sinusoidal | random_walk
+  box_min: [0.30, -0.40, 0.30]    # [m] obstacle base sampled + motion clipped here
+  box_max: [0.65,  0.40, 0.70]
+  amplitude: 0.30                 # [m] oscillation amplitude along a random axis
+  speed: 0.6                      # oscillation frequency [Hz]
+  random_walk_std: 0.01           # [m/tick] step size for random_walk mode
+
+# ── Reward weights (task reward + safety/effort penalties) ───────────────────
+reward:
+  w_dist: 1.0                     # dense: −‖ee − target‖
+  w_success: 5.0                  # bonus when within target_tol
+  w_action: 0.001                 # effort penalty ‖a‖²  (normalized action)
+  w_intervention: 0.02            # penalize how hard the CBF bends q̈_nom
+  w_slack: 0.5                    # penalize CBF slack (infeasibility / relaxation)
+  w_smooth: 0.001                 # jerk penalty ‖q̈ − q̈_prev‖
+  w_qdot: 0.001                   # joint-velocity penalty ‖q̇‖²
+  collision_dist: 0.0             # [m] surface distance below this ⇒ collision
+  collision_penalty: 10.0         # one-off penalty on collision (then terminate)
+  terminate_on_success: true
+
+# ── CBF safety filter (MIRROR of fr3_control.yaml `params`) ──────────────────
+cbf:
+  d_safe: 0.20                    # [m] minimum safe surface distance
+  k0_cbf: 25.0                    # HOCBF position gain (class-K α₀)
+  k1_cbf: 10.5                    # HOCBF velocity gain (class-K α₁)
+  rho_slack: 1000.0               # quadratic slack penalty ½ρs²
+  cbf_obstacle_horizon: 1.2       # [m] computational cutoff (not a safety gate)
+  cbf_min_leverage: 0.05          # [m/rad] min ‖a‖=‖n̂ᵀJp‖ to keep a row
+  k_brake: 3.0                    # QP-fail fallback: q̈ = −k_brake·q̇
+  osqp_max_iter: 20000
+  include_jdot: true              # add ċ = n̂ᵀ(J̇p q̇) via finite-diff Jacobian
+
+  # Hard state-limit shielding (velocity/position braking + slew continuity).
+  hard_v_margin: 0.9
+  hard_q_margin: 0.05
+  hard_brake_eta: 0.7
+  max_qddot_delta: 5.0            # [rad/s² per tick] slew-continuity bound
+
+  # Workspace box on the EE (hard HOCBF rows; slack cannot relax them).
+  ws_enable: true
+  ws_min: [0.05, -0.60, 0.05]
+  ws_max: [0.75,  0.60, 0.95]
+  ws_margin: 0.02
+  ws_horizon: 0.25
+
+  # Control points (robot body + capsule-approx radius) for per-link distance.
+  control_points:
+    - {body: fr3_link4, radius: 0.09}
+    - {body: fr3_link5, radius: 0.09}
+    - {body: fr3_link6, radius: 0.08}
+    - {body: fr3_link7, radius: 0.07}
+
+# ── Per-joint limits [q_min, q_max, qdot_max, qddot_max, tau_max] ─────────────
+# Copied verbatim from fr3_control.yaml so sim and robot clamp identically.
+joint_limits:
+  joint1: [-2.9007,  2.9007, 2.62,  6.0,   500.0]
+  joint2: [-1.8361,  1.8361, 2.62,  2.585, 500.0]
+  joint3: [-2.9007,  2.9007, 2.62,  3.5,   500.0]
+  joint4: [-3.0770, -0.1169, 2.62,  4.0,   500.0]
+  joint5: [-2.8763,  2.8763, 5.26, 17.0,   500.0]
+  joint6: [ 0.4398,  4.6216, 4.18,  5.5,   500.0]
+  joint7: [-3.0508,  3.0508, 5.26, 17.0,   500.0]
+
+# ── RL hyperparameters (SAC, tuned for an 8 GB RTX 4070 Laptop) ──────────────
+rl:
+  algo: SAC                       # continuous-control off-policy (safe-exploration)
+  total_timesteps: 2_000_000
+  n_envs: 1                       # SAC is off-policy; 1 env keeps the shield exact
+  seed: 0
+  policy: MlpPolicy
+  learning_rate: 0.0003
+  buffer_size: 1_000_000          # ~fits in RAM; lower to 500_000 if tight
+  batch_size: 512
+  gamma: 0.99
+  tau: 0.005
+  train_freq: 1
+  gradient_steps: 1
+  learning_starts: 10_000
+  ent_coef: auto
+  net_arch: [256, 256]
+  device: cuda
+  # Logging / checkpointing (train.py).
+  tensorboard_log: runs/
+  checkpoint_freq: 50_000
+  eval_freq: 25_000
+  save_path: models/

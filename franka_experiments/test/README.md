@@ -8,13 +8,23 @@ test/
 ├── launch/
 │   ├── test_velocity_fake.launch.py
 │   ├── test_torque_fake.launch.py
-│   └── test_oscbf_fake.launch.py
+│   ├── test_oscbf_fake.launch.py
+│   └── test_rl_fake.launch.py          # Safe-RL (ONNX policy) accel pipeline
 ├── scripts/
 │   └── check_topics.sh
 ├── config/
 │   └── test_defaults.yaml
+├── smoke_cbf_safety_filter.py          # node-level, no bringup
+├── smoke_rl_policy_commander.py        # node-level, no bringup
+├── test_avoidance.py                   # pytest (pure numpy)
+├── test_cbf_hard_constraints.py
+├── test_cbf_velocity_filter.py
+├── test_rl_policy.py                   # sim↔real observation/action contract
 └── README.md  ← this file
 ```
+
+Pure-python unit tests run with `pytest test/` (68 tests, no ROS graph
+needed beyond a sourced workspace).
 
 ---
 
@@ -128,6 +138,13 @@ See `refactoring_code.md §10.2` for the full analysis of gravity handling.
 
 ## Pipeline 3 — OSCBF (fake hardware)
 
+> ⚠️ **`test_oscbf_fake.launch.py` does not exist in this repository** (it never
+> did — see `git log`). The commands in this section are the intended interface
+> and are kept as the specification for that launch file; until it is written,
+> start `pentagon_torque_commander` + `cbf_oscbf_filter` manually. The
+> `check_topics.sh oscbf` / `oscbf_obstacle` checks below do work against a
+> manually started stack.
+
 ### Phase 1 — bypass (default, safe)
 
 ```bash
@@ -196,6 +213,96 @@ ros2 topic echo /NS_1/torque_safe --field data
 | 1 (bypass) | == torque_cmd | 0 ms | none |
 | 2 (joint CBF) | may differ | < 1 ms | joint limits |
 | 3 (obstacle) | differs near obstacle | < 2 ms | joint + obstacle |
+
+---
+
+## Pipeline 4 — Safe-RL / ONNX policy (fake hardware)
+
+Deployment side of `franka_sim_to_real_roadmap.md` Step 3: the SAC policy
+trained in `franka_sim/` against *this* CBF filter, replayed on the robot by
+`rl_policy_commander`.
+
+### Prerequisite — an exported policy
+
+```bash
+cd /ros2_ws/src && export PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl
+python3 -m franka_sim.train --total-timesteps 400000 --exp-name sac_deploy
+python3 -m franka_sim.export_onnx --model franka_sim/models/sac_deploy/best_model.zip
+# score the artifact that actually ships:
+python3 -m franka_sim.scripts.evaluate_policy \
+    --model franka_sim/models/sac_deploy/best_model.onnx --episodes 50
+```
+
+### Node-level smoke test (no bringup, ~10 s)
+
+```bash
+python3 test/smoke_rl_policy_commander.py           # auto-discovers a policy
+```
+
+Checks the warm-up gate, the 100 Hz rate, `|q̈| ≤ q̈_max`, that the node's
+command is **bit-equal** to an independently rebuilt observation + ONNX
+inference (the sim↔real observation contract), that `d_min` propagates from
+`MultiLinkDistance`, and that a stale perception / joint-state stream forces
+zeros.
+
+### Full pipeline with fake hardware
+
+```bash
+ros2 launch franka_experiments test_rl_fake.launch.py \
+    rl_onnx_model:=/ros2_ws/src/franka_sim/models/sac_deploy/best_model.onnx
+```
+
+```bash
+./test/scripts/check_topics.sh rl        # topic/node validation
+```
+
+This is `torque_control_stack.launch.py motion_source:=rl` with fake hardware
+and perception off — camera, `real_time_distance` and `move_group` are not
+started, so the commander runs its documented "perception never started" path
+(parked synthetic obstacle) and the CBF keeps only its hard state/workspace
+rows.
+
+### Topics to monitor
+
+| Topic | Type | Rate | Description |
+|-------|------|------|-------------|
+| `/NS_1/qddot_nom` | Float64MultiArray (7) | ~100 Hz | policy output `a·q̈_max` |
+| `/NS_1/qddot_safe` | Float64MultiArray (7) | ~100 Hz | after the CBF QP |
+| `/NS_1/torque_cmd` | Float64MultiArray (7) | ~100 Hz | τ = M·q̈ + C·q̇ |
+| `/NS_1/rl_status` | Float64MultiArray (6) | ~100 Hz | `[infer_ms, tick_ms, d_min, dist, target_idx, gate]` |
+
+### Expected results
+
+| Check | Expected |
+|-------|----------|
+| `rt_torque_controller` | `active` |
+| `/NS_1/qddot_nom` rate | ~100 Hz, jitter std < 0.5 ms |
+| `rl_status[0]` (inference) | < 0.5 ms per tick |
+| `rl_status[5]` (gate) | 1 during warm-up, then 0 |
+| First 3 s | all-zero commands (warm-up) |
+
+### Timing / jitter evidence
+
+`rl_policy_commander` writes `franka_logs/rl_policy_run_<stamp>.csv` with the
+full observation plus `tick_ms` / `infer_ms` per tick:
+
+```bash
+python3 scripts/plot_rl_timing.py          # newest CSV → stats + figure
+```
+
+Reference numbers from a 120 s fake-hardware run:
+
+```
+loop period        mean  9.998 ms  std 0.159  p99 10.421  max 12.520
+ONNX inference     mean  0.138 ms  std 0.041  p99  0.268  max  1.066
+ticks > 1.5x nominal: 0.00 %
+```
+
+> **Fake-hardware limitation** — mock hardware does not integrate effort
+> commands, so the arm does not move and the observation stays frozen. This
+> test validates the *command chain* (nodes, topics, rates, controller
+> activation, gating), not closed-loop behaviour. Closed-loop policy + CBF
+> behaviour is validated in MuJoCo via `franka_sim.scripts.evaluate_policy`.
 
 ---
 

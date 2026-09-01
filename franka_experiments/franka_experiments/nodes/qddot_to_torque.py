@@ -11,7 +11,6 @@ Gravity is intentionally excluded — ``rt_torque_controller`` adds g(q) interna
 This node acts as a pure dynamics passthrough in the acceleration-space pipeline:
 
     pentagon_qddot_commander → /NS_1/qddot_nom
-    cbf_safety_filter        → /NS_1/qddot_safe
     qddot_to_torque          → /NS_1/torque_cmd
     rt_torque_controller     → hardware  (adds g(q))
 
@@ -22,7 +21,7 @@ other changes to the pipeline.
 Topics (loaded from fr3_control.yaml):
   Subscribes:
     - topics['joint_states_topic']  JointState (q, q̇)
-    - topics['qddot_safe']          Float64MultiArray (7) — q̈ SAFE from the CBF filter
+    - topics['qddot_nom']           Float64MultiArray (7) — q̈ from commander
   Publishes:
     - torque_out_topic              Float64MultiArray (7) — τ to rt_torque_controller
 
@@ -107,15 +106,15 @@ class QddotToTorqueNode(Node):
         )
         self.create_subscription(
             Float64MultiArray,
-            topics['qddot_safe'],
+            topics['qddot_nom'],
             self._on_qddot_nom,
             10,
         )
 
         self.get_logger().info(
             f'qddot_to_torque ready\n'
-            f'  qddot_safe ← {topics["qddot_safe"]}\n'
-            f'  torque     → {torque_out_topic}'
+            f'  qddot_nom ← {topics["qddot_nom"]}\n'
+            f'  torque    → {torque_out_topic}'
         )
 
     # ── Joint state callback ──────────────────────────────────────────────────
