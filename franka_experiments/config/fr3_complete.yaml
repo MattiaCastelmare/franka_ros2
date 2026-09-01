@@ -100,6 +100,11 @@ distance: # in meters
   # distance published when no obstacle is detected within max_thresh
   fallback_distance: 2.0
 
+  # Liveness heartbeat: publish an EMPTY /cbf/per_link_distances when no CP is in
+  # range, so consumers tell "no obstacle near" from "perception dead"; false =
+  # legacy gated behaviour. Authoritative source is the ROS param of the same name.
+  publish_empty_per_link: true
+
   # offset for control point on ee
   ee_tip_offset: 0.10
   ee_tip_axis: 2 # 0=x, 1=y, 2=z
