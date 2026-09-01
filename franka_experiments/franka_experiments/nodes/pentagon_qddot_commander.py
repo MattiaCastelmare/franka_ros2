@@ -33,28 +33,8 @@ double integration is coupled to the measured joint state (``k_sync_pos`` /
 reference can never drift away from the robot, plus a two-level anti-windup
 (soft blend / hard snap) on the Cartesian error.
 
-Avoidance-first shaping (obstacle → DIRECTION, speed as LAST resort)
-────────────────────────────────────────────────────────────────────
-The commander is obstacle-aware (subscribes /cbf/per_link_distances) so that
-the downstream CBF filter is a safety *certificate*, not the motion planner:
-
-  1a. EE tangential redirection — the into-obstacle component of the commanded
-      task acceleration is rotated into the tangent plane (magnitude
-      preserved), steering the EE AROUND obstacles instead of braking;
-  1b. null-space repulsion — the arm body reshapes away from obstacles at zero
-      cost to the EE task (replaces part of the q_home posture pull, which
-      used to fight the avoidance);
-  2.  feasibility phase governor — β ∈ [0,1] scales virtual time, driven by
-      CBF slack/fault (cbf_status) + persistent tracking error +
-      manipulability, NEVER by raw distance; the path waits only when no
-      admissible motion remains, then resumes on its own.
-
-See utils/avoidance.py for the pure math.
-
 Safety: qddot output is clamped to ±qddot_max per joint at every tick; per-joint
-saturation ratios are logged for offline actuator-limit analysis.  Joint
-velocity/position limits, accel continuity and the workspace box are enforced
-downstream by cbf_safety_filter (hard box + hard rows).
+saturation ratios are logged for offline actuator-limit analysis.
 """
 
 from __future__ import annotations
@@ -70,19 +50,9 @@ from typing import List, Optional
 import numpy as np
 import pinocchio as pin
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
-from franka_msgs.msg import MultiLinkDistance
-
-from franka_experiments.utils.avoidance import (
-    influence_weight,
-    tangential_redirect,
-    feasibility_beta_target,
-    rate_limited,
-)
-from franka_experiments.utils.math_utils import skew
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS, AUTO_SENTINEL
 from franka_experiments.utils.ros import get_namespace_from_config, run_node_main
 from franka_experiments.utils.cbf_utils import load_robot_config
@@ -146,8 +116,8 @@ class PentagonQddotCommander(Node):
         # Path shape:  'circle' (default, C∞ analytic — smooth, no accel jumps)
         # | 'lissajous' (C∞ analytic) | 'pentagon' (C¹ corner-blended: feedforward
         # acceleration STEPS at every line↔blend junction → jerky; legacy only).
-        self.declare_parameter('path_type',           'circle')
-        self.declare_parameter('plane',               'front')
+        self.declare_parameter('path_type',           'cricle')
+        self.declare_parameter('plane',               'xy')
         self.declare_parameter('plane_frame',         'fr3_link0')
         self.declare_parameter('cycle_time',          10.0)
         self.declare_parameter('smoothness',          0.20)
@@ -195,41 +165,6 @@ class PentagonQddotCommander(Node):
         # Low-pass on the *measured* joint velocity, logging only (real signal,
         # lightly smoothed):  dq_filt += alpha·(dq_meas − dq_filt).
         self.declare_parameter('dq_filter_alpha',  0.2)
-
-        # ── Avoidance-first shaping (obstacle → DIRECTION, not speed) ─────
-        # Distances from /cbf/per_link_distances shape the nominal command in
-        # two redundant ways (see utils/avoidance.py):
-        #   1a. EE tangential redirection — the into-obstacle component of the
-        #       commanded task acceleration is rotated into the tangent plane
-        #       (magnitude preserved) so the EE steers AROUND instead of being
-        #       braked by the CBF projection downstream;
-        #   1b. null-space repulsion — the arm body reshapes away from the
-        #       obstacle at zero cost to the EE task (projected by N).
-        # γ(d) ramps 0 → 1 over avoid_d_influence → avoid_d_close (smoothstep).
-        self.declare_parameter('avoid_enable',       True)
-        self.declare_parameter('avoid_d_influence',  0.40)   # [m] γ > 0 below this
-        self.declare_parameter('avoid_d_close',      0.25)   # [m] γ = 1 below this
-        self.declare_parameter('k_null_rep',         10.0)   # repulsion gain [rad/s² per m/rad]
-        self.declare_parameter('rep_accel_max',       5.0)   # [rad/s²] cap on ‖q̈_rep‖
-        self.declare_parameter('redirect_accel_max',  8.0)   # [m/s²] cap on re-injected tangential accel
-        self.declare_parameter('ee_avoid_links',     ['fr3_link7', 'fr3_link8'])
-        self.declare_parameter('obstacle_timeout',    0.5)   # [s] stale distances → shaping off
-
-        # ── Feasibility-driven phase governor (speed as LAST resort) ──────
-        # β ∈ [0,1] scales the virtual time fed to the timing law. Driven by
-        # FEASIBILITY evidence only — CBF slack / safety fault (from
-        # cbf_status), persistent EE tracking error, manipulability collapse —
-        # NEVER by raw obstacle distance: distance shapes direction (above);
-        # the path slows only when no admissible motion remains, and resumes
-        # by itself when feasibility returns. err_lo/err_hi reuse
-        # soft/hard_reset_thr so the governor engages exactly in the regime
-        # where the anti-windup resets used to trash the reference.
-        self.declare_parameter('governor_enable',    True)
-        self.declare_parameter('beta_rate_up',        1.0)   # [1/s] resume gently
-        self.declare_parameter('beta_rate_down',      4.0)   # [1/s] brake fast
-        self.declare_parameter('slack_engage',        0.02)  # slack below → no slowdown
-        self.declare_parameter('slack_full',          0.50)  # slack at/above → stop
-        self.declare_parameter('cbf_status_timeout',  0.5)   # [s] stale status → fail-open
 
         # ── Sequential Joint Isolation Test (TEMPORARY diagnostic) ────────
         # When isolation_test=True the Cartesian pentagon/circle trajectory is
@@ -293,20 +228,6 @@ class PentagonQddotCommander(Node):
         self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
         self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
         self._dq_filter_alpha = float(self.get_parameter('dq_filter_alpha').value)
-        self.avoid_enable       = bool(self.get_parameter('avoid_enable').value)
-        self.avoid_d_influence  = float(self.get_parameter('avoid_d_influence').value)
-        self.avoid_d_close      = float(self.get_parameter('avoid_d_close').value)
-        self.k_null_rep         = float(self.get_parameter('k_null_rep').value)
-        self.rep_accel_max      = float(self.get_parameter('rep_accel_max').value)
-        self.redirect_accel_max = float(self.get_parameter('redirect_accel_max').value)
-        self._ee_avoid_links    = set(self.get_parameter('ee_avoid_links').value)
-        self.obstacle_timeout   = float(self.get_parameter('obstacle_timeout').value)
-        self.governor_enable    = bool(self.get_parameter('governor_enable').value)
-        self.beta_rate_up       = float(self.get_parameter('beta_rate_up').value)
-        self.beta_rate_down     = float(self.get_parameter('beta_rate_down').value)
-        self.slack_engage       = float(self.get_parameter('slack_engage').value)
-        self.slack_full         = float(self.get_parameter('slack_full').value)
-        self.cbf_status_timeout = float(self.get_parameter('cbf_status_timeout').value)
         self.isolation_test   = bool(self.get_parameter('isolation_test').value)
         self.iso_amp          = float(self.get_parameter('isolation_amp').value)
         self.iso_seg_s        = float(self.get_parameter('isolation_seg_s').value)
@@ -499,31 +420,6 @@ class PentagonQddotCommander(Node):
         # Low-pass-filtered measured velocity (real signal, logging only)
         self._dq_filt        = np.zeros(NUM_JOINTS)
 
-        # ── Avoidance-first + governor state ─────────────────────────────────
-        # Snapshots follow the same lock-free rule as the CBF filter: producers
-        # assign one immutable tuple per message (atomic under the GIL),
-        # consumers read the attribute once per tick.
-        #   _obs_snap: (entries, stamp) — entries = tuple of
-        #              (link, d_filtered, n̂ obstacle→robot, p_robot) per link
-        #   _cbf_snap: (slack, fault, stamp) from /NS_1/cbf_status
-        self._obs_snap: Optional[tuple] = None
-        self._cbf_snap: Optional[tuple] = None
-        self._beta        = 1.0
-        self._beta_target = 1.0
-        self._beta_dot    = 0.0
-        self._t_avoid: Optional[np.ndarray] = None   # tangent hysteresis (3,)
-        self._qddot_rep   = np.zeros(NUM_JOINTS)
-        self._R_plane     = np.eye(3)                # plane-frame rotation cache
-        self._rep_fid_cache: dict = {}
-        # Last-tick feasibility evidence for the governor (10 ms stale by
-        # design: the governor runs BEFORE this tick's error/manipulability).
-        self._last_ee_err = 0.0
-        self._last_w      = float('inf')
-        # Diagnostics (CSV columns)
-        self._diag_gamma_ee  = 0.0
-        self._diag_rep_norm  = 0.0
-        self._diag_d_min_obs = 99.0
-
         # ── Logging buffers (pre-allocated → no per-tick allocation) ──────
         # tau_des = M(q)·q̈_des + nle(q, q̇).  computeAllTerms() already fills
         # pin_data.M (upper triangle only) and pin_data.nle each tick, so we
@@ -571,20 +467,6 @@ class PentagonQddotCommander(Node):
         # Measured-effort subscription (configurable; used only for logging)
         self._eff_sub = self.create_subscription(
             JointState, effort_topic, self._effort_cb, 10)
-
-        # Avoidance-first inputs: per-link filtered distances (shaping) and CBF
-        # status (governor feasibility evidence). depth=1: latest sample only.
-        if self.avoid_enable:
-            self._obs_sub = self.create_subscription(
-                MultiLinkDistance,
-                _topics.get('per_link_distances', '/cbf/per_link_distances'),
-                self._obs_cb,
-                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
-        if self.governor_enable:
-            self._cbf_status_sub = self.create_subscription(
-                Float64MultiArray,
-                _topics.get('cbf_status', '/NS_1/cbf_status'),
-                self._cbf_status_cb, QoSProfile(depth=1))
 
         # ── Publisher / timer ─────────────────────────────────────────────
         self.pub      = self.create_publisher(Float64MultiArray, qddot_topic, 10)
@@ -642,41 +524,6 @@ class PentagonQddotCommander(Node):
             return
         for k, i in enumerate(self._eff_imap):
             self._tau_meas[k] = msg.effort[i]
-
-    # ── Avoidance inputs (atomic snapshot swap, no locks) ─────────────────
-
-    def _obs_cb(self, msg: MultiLinkDistance) -> None:
-        """Per-link FILTERED distances → immutable snapshot for _tick.
-
-        d and n̂ come straight from the message (the engine's LPF/outlier-
-        rejected surface distance and EMA-smoothed unit normal) — same
-        convention as cbf_safety_filter. Entries with an unset/degenerate
-        direction are dropped.
-        """
-        entries = []
-        for ld in msg.links:
-            if not ld.valid or not math.isfinite(ld.distance):
-                continue
-            n = np.array([ld.direction.x, ld.direction.y, ld.direction.z])
-            n_norm = float(np.linalg.norm(n))
-            if n_norm < 0.5:
-                continue
-            entries.append((
-                ld.robot_link_name,
-                float(ld.distance),
-                n / n_norm,
-                np.array([ld.closest_point_robot.x,
-                          ld.closest_point_robot.y,
-                          ld.closest_point_robot.z]),
-            ))
-        self._obs_snap = (tuple(entries),
-                          self.get_clock().now().nanoseconds * 1e-9)
-
-    def _cbf_status_cb(self, msg: Float64MultiArray) -> None:
-        """cbf_status → (slack, fault) feasibility evidence for the governor."""
-        if len(msg.data) >= 3:
-            self._cbf_snap = (float(msg.data[1]), bool(msg.data[2]),
-                              self.get_clock().now().nanoseconds * 1e-9)
 
     # ── Stop ─────────────────────────────────────────────────────────────
 
@@ -770,7 +617,6 @@ class PentagonQddotCommander(Node):
                 self._J6n[:, self._arm_v_ids])
             np.copyto(self._p_ee, p_raw)
             R_ref = np.asarray(self.pin_data.oMf[self._plane_frame_id].rotation)
-            np.copyto(self._R_plane, R_ref)   # cached for avoidance n̂ rotation
             np.dot(R_ref.T, self._J_arm[:3, :], out=self._J_rot_tmp)
             self._J_arm[:3, :] = self._J_rot_tmp
             np.dot(R_ref.T, self._dJ_arm[:3, :], out=self._J_rot_tmp)
@@ -802,41 +648,13 @@ class PentagonQddotCommander(Node):
             self._tick_isolation(t, js, qdot)
             return
 
-        # ── Feasibility-driven phase governor (slow down as LAST resort) ─────
-        # β ∈ [0,1] scales virtual time. Evidence: CBF slack / fault from
-        # cbf_status (fail-open when stale/missing) + LAST tick's EE tracking
-        # error and manipulability. NOT distance: obstacles shape the command
-        # direction below; the path waits only when no admissible motion
-        # remains, and resumes on its own when feasibility returns.
-        beta_prev = self._beta
-        if self.governor_enable:
-            slack, fault = 0.0, False
-            snap = self._cbf_snap
-            now_s = now_stamp.nanoseconds * 1e-9
-            if snap is not None and (now_s - snap[2]) < self.cbf_status_timeout:
-                slack, fault = snap[0], snap[1]
-            self._beta_target = feasibility_beta_target(
-                slack, fault, self._last_ee_err, self._last_w,
-                slack_engage=self.slack_engage, slack_full=self.slack_full,
-                err_lo=self.soft_reset_thr, err_hi=self.hard_reset_thr,
-                manip_thr=self._manip_thr)
-            self._beta = rate_limited(self._beta, self._beta_target,
-                                      self.beta_rate_up, self.beta_rate_down,
-                                      actual_dt)
-            self._beta_dot = (self._beta - beta_prev) / actual_dt
-        else:
-            self._beta, self._beta_target, self._beta_dot = 1.0, 1.0, 0.0
-        beta = self._beta
-
         # Unified timing law + geometric path — no APPROACH/TRACK branching.
-        # Virtual time τ advances at β·dt; chain rule restores REAL-time
-        # derivatives:  v_d = P'·(ṡβ),  a_d = P''·(ṡβ)² + P'·(s̈β² + ṡβ̇).
-        s, s_dot, s_ddot = self._timing.step(beta * actual_dt)
+        #   s, s_dot, s_ddot = timing.step(dt)
+        #   p_d = P(s) ; v_d = P'(s)·s_dot ; a_d = P''(s)·s_dot² + P'(s)·s_ddot
+        s, s_dot, s_ddot = self._timing.step(actual_dt)
         p_d = self._path.position(s)
-        v_d = self._path.velocity(s, s_dot * beta)
-        a_d = self._path.acceleration(s, s_dot * beta,
-                                      s_ddot * beta * beta
-                                      + s_dot * self._beta_dot)
+        v_d = self._path.velocity(s, s_dot)
+        a_d = self._path.acceleration(s, s_dot, s_ddot)
 
         # 6D error
         np.subtract(p_d, self._p_ee, out=self._tmp3)
@@ -858,50 +676,12 @@ class PentagonQddotCommander(Node):
         np.multiply(self.kd_rot, self._edot6[3:], out=self._tmp3)
         self._xddot6[3:] += self._tmp3
 
-        # ── Avoidance-first shaping, Layer 1a: EE tangential redirection ─────
-        # The into-obstacle component of the commanded EE acceleration is
-        # ROTATED into the tangent plane (magnitude preserved, hysteresis on
-        # the detour side) instead of being left for the CBF projection to
-        # delete — steer around, don't brake in front. Safety is still
-        # certified downstream by the CBF QP.
-        self._diag_gamma_ee  = 0.0
-        self._diag_d_min_obs = 99.0
-        obs_entries = ()
-        if self.avoid_enable:
-            osnap = self._obs_snap
-            if osnap is not None and \
-                    (now_stamp.nanoseconds * 1e-9 - osnap[1]) < self.obstacle_timeout:
-                obs_entries = osnap[0]
-        if obs_entries:
-            d_ee, n_ee = float('inf'), None
-            for link, d, n_hat, _pnt in obs_entries:
-                self._diag_d_min_obs = min(self._diag_d_min_obs, d)
-                if link in self._ee_avoid_links and d < d_ee:
-                    d_ee, n_ee = d, n_hat
-            if n_ee is not None:
-                gamma = influence_weight(d_ee, self.avoid_d_close,
-                                         self.avoid_d_influence)
-                if gamma > 0.0:
-                    # n̂ arrives in the base frame; xddot6 lives in the control
-                    # frame (plane frame when plane='front') → rotate to match.
-                    n_ctrl = (self._R_plane.T @ n_ee) if self._use_plane_frame \
-                             else n_ee
-                    a_new, t_hat = tangential_redirect(
-                        self._xddot6[:3], n_ctrl, gamma, v_d,
-                        t_prev=self._t_avoid,
-                        redirect_max=self.redirect_accel_max)
-                    self._xddot6[:3] = a_new
-                    if t_hat is not None:
-                        self._t_avoid = t_hat
-                    self._diag_gamma_ee = gamma
-
         # Adaptive damped LS with a continuous, non-zero floor (Change 4).
         #   λ² = λ_min + (λ_max − λ_min)·f(w),  f(w)=(1−w/w₀)² for w<w₀ else 0
         # Continuous at w=w₀ (f→0) and never below λ_min, so the pseudo-inverse
         # is always regularised — no near-undamped 1e-6 regime.
         np.dot(self._J_arm, self._J_arm.T, out=self._JJT)
         w = math.sqrt(max(0.0, float(np.linalg.det(self._JJT))))
-        self._last_w = w        # feasibility evidence for next tick's governor
         if w < self._manip_thr:
             f_w = (1.0 - w / self._manip_thr) ** 2
         else:
@@ -931,30 +711,6 @@ class PentagonQddotCommander(Node):
         self._qddot_null *= -self.k_null
         np.multiply(self.d_null, qdot, out=self._tmp7)
         self._qddot_null -= self._tmp7
-
-        # ── Avoidance-first shaping, Layer 1b: null-space repulsion ──────────
-        # q̈_rep = Σᵢ k·γ(dᵢ)·Jpᵢᵀ n̂ᵢ over near links — pushes each threatened
-        # body point along its obstacle normal. Added BEFORE the N projection,
-        # so the arm reshapes away from the obstacle at ZERO cost to the EE
-        # task; the redundancy is no longer monopolised by the q_home posture
-        # pull (which used to actively FIGHT the CBF's avoidance deviation).
-        self._qddot_rep[:] = 0.0
-        for link, d, n_hat, pnt in obs_entries:
-            gamma = influence_weight(d, self.avoid_d_close,
-                                     self.avoid_d_influence)
-            if gamma <= 0.0:
-                continue
-            Jp = self._link_point_jacobian(link, pnt)
-            if Jp is None:
-                continue
-            self._qddot_rep += (self.k_null_rep * gamma) * (n_hat @ Jp)
-        rep_norm = float(np.linalg.norm(self._qddot_rep))
-        if rep_norm > self.rep_accel_max:
-            self._qddot_rep *= self.rep_accel_max / rep_norm
-            rep_norm = self.rep_accel_max
-        self._diag_rep_norm = rep_norm
-        self._qddot_null += self._qddot_rep
-
         np.dot(self._N, self._qddot_null, out=self._null_proj)
 
         # Total command: task + projected null-space term
@@ -998,11 +754,7 @@ class PentagonQddotCommander(Node):
 
         # ── Two-level anti-windup on Cartesian error (Change 2) ──────────────
         # hard_reset_thr > soft_reset_thr: snap on large error, blend on small.
-        # With the phase governor active these resets become a rare backstop:
-        # β slows the path over the SAME [soft, hard] error band, so the error
-        # is regulated before the thresholds trip.
         ee_err = float(np.linalg.norm(self._e6[:3]))
-        self._last_ee_err = ee_err   # feasibility evidence for next tick's governor
         if ee_err > self.hard_reset_thr:
             np.copyto(self._q_d,  js['q'])          # full synchronisation
             np.copyto(self._dq_d, qdot)
@@ -1051,11 +803,7 @@ class PentagonQddotCommander(Node):
                 f'        |null|={self._diag_qddot_null_norm:.3f} '
                 f'max_sat={self._diag_max_sat:.2f} nsat={self._diag_num_sat} '
                 f'sync_p={self._diag_sync_pos_norm:.4f} '
-                f'sync_v={self._diag_sync_vel_norm:.4f} λ²={self._lambda_sq:.2e}\n'
-                f'        β={self._beta:.2f}(→{self._beta_target:.2f}) '
-                f'γ_ee={self._diag_gamma_ee:.2f} '
-                f'|rep|={self._diag_rep_norm:.2f} '
-                f'd_min={self._diag_d_min_obs:.3f}')
+                f'sync_v={self._diag_sync_vel_norm:.4f} λ²={self._lambda_sq:.2e}')
 
     # ── Sequential Joint Isolation Test (TEMPORARY diagnostic) ──────────────
 
@@ -1162,33 +910,6 @@ class PentagonQddotCommander(Node):
             else:
                 self._tlog.info(f'[ISOLATION complete t={t:.1f}s — holding home]')
 
-    # ── Avoidance kinematics ────────────────────────────────────────────────
-
-    def _link_point_jacobian(self, link: str, p_world: np.ndarray):
-        """(3×7) world-frame position Jacobian of point ``p_world`` on ``link``.
-
-        Valid after computeAllTerms + updateFramePlacements this tick (both run
-        at the top of _tick).  Standard rigid-body shift of the link frame
-        Jacobian:  Jp = Jv − [p − o]× Jw.  Arm columns only.  Unknown frames
-        resolve once and cache None (returns None → caller skips the entry).
-        """
-        fid = self._rep_fid_cache.get(link, -1)
-        if fid == -1:
-            try:
-                fid = resolve_frame_id(self.pin_model, link)
-            except RuntimeError:
-                fid = None
-                self.get_logger().warn(
-                    f'avoidance: link "{link}" not in model — entry ignored')
-            self._rep_fid_cache[link] = fid
-        if fid is None:
-            return None
-        J6 = pin.getFrameJacobian(self.pin_model, self.pin_data, fid,
-                                  pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
-        o = self.pin_data.oMf[fid].translation
-        Jp = J6[:3, :] - skew(p_world - o) @ J6[3:, :]
-        return Jp[:, self._arm_v_ids]
-
     # ── Trajectory start-up (replaces the APPROACH/TRACK state machine) ─────
 
     def _current_ee_position(self, js: dict) -> np.ndarray:
@@ -1233,11 +954,6 @@ class PentagonQddotCommander(Node):
         no anti-windup reset — hence it stays the trajectory the arm WOULD
         follow with no CBF deviation.  The only physical limit kept is the
         per-joint q̈ saturation, identical to the commanded channel.
-
-        NOTE: the nominal channel tracks the GOVERNED path (p_d/v_d/a_d already
-        include the phase-governor β) but carries NO avoidance shaping (no EE
-        redirection, no null-space repulsion) — it stays the un-avoided ideal,
-        so CSV real-vs-nominal comparison isolates the avoidance deviation.
         """
         model, data = self.pin_model, self.pin_data_nom
 
@@ -1433,9 +1149,6 @@ class PentagonQddotCommander(Node):
         header += [f'dq_nom_{i}'    for i in range(1, 8)]   # ideal velocities
         header += [f'qddot_nom_{i}' for i in range(1, 8)]   # ideal accelerations
         header += [f'dq_filt_{i}'   for i in range(1, 8)]   # real velocity, low-pass
-        # Avoidance-first diagnostics: phase governor β (+ its target), EE
-        # redirect activation γ, null-space repulsion norm, min link distance.
-        header += ['beta', 'beta_target', 'gamma_ee', 'rep_norm', 'd_min_obs']
 
         # Pre-allocated row buffer (filled in place every tick → no allocation).
         self._log_row = [0.0] * len(header)
@@ -1523,12 +1236,6 @@ class PentagonQddotCommander(Node):
         o += NUM_JOINTS
         for i in range(NUM_JOINTS): row[o + i] = float(self._dq_filt[i])   # dq_filt
         o += NUM_JOINTS
-        # Avoidance-first diagnostics
-        row[o] = float(self._beta);          o += 1
-        row[o] = float(self._beta_target);   o += 1
-        row[o] = float(self._diag_gamma_ee); o += 1
-        row[o] = float(self._diag_rep_norm); o += 1
-        row[o] = float(self._diag_d_min_obs); o += 1
 
         self._csv_writer.writerow(row)
 

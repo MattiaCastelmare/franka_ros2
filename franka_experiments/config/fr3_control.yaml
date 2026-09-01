@@ -71,30 +71,8 @@ params:
   # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
   qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
 
-  # Slew-rate: encoded as QP box constraint — NOT post-QP clip [rad/s²/tick].
-  # Applied around the LAST PUBLISHED q̈ on EVERY output path (QP + fallbacks)
-  # via _finalize_and_publish → acceleration continuity by construction.
+  # Slew-rate: encoded as QP box constraint — NOT post-QP clip [rad/s²/tick]
   max_qddot_delta: 5.0
-
-  # ── Hard state-limit shielding (cbf_safety_filter, utils/cbf_hard_limits) ──
-  # Per-tick q̈ box = static decel box ∩ one-step velocity bound ∩ position
-  # braking curve v = √(2·η·a·h). Keeps |q̇| ≤ v_margin·q̇_max and q inside
-  # [q_min+q_margin, q_max−q_margin] so firmware velocity/position reflexes
-  # are unreachable by an integrated command.
-  hard_v_margin: 0.9    # fraction of the official q̇_max actually allowed
-  hard_q_margin: 0.05   # [rad] stay this far from the position limits
-  hard_brake_eta: 0.7   # fraction of decel authority for the braking curve
-                        # (< 1 ⇒ riding the curve never saturates the static box)
-
-  # ── Workspace box on the EE (cbf_safety_filter, HARD HOCBF rows) ───────────
-  # Axis-aligned Cartesian box in the base frame; one hard row (slack CANNOT
-  # relax it) per face within ws_horizon. Same k0/k1 class-K as obstacle rows.
-  ws_enable: true
-  ws_ee_link: fr3_link8       # constrained point = this frame's origin
-  ws_min: [0.05, -0.60, 0.05] # [m] lower corner (x, y, z)
-  ws_max: [0.75,  0.60, 0.95] # [m] upper corner
-  ws_margin: 0.02             # [m] barrier zero this far inside each face
-  ws_horizon: 0.25            # [m] emit a row only when closer than this to a face
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
   max_tau_delta: 15.0
@@ -102,7 +80,10 @@ params:
   # Braking gain for QP-fail fallback: qddot = -k_brake * qdot
   k_brake: 3.0
 
-  # EMA weight on SCALAR distance only — positions kept raw [0=frozen, 1=raw]
+  # DEPRECATED/UNUSED: not read by any code. DistanceEngine reads its EMA weight
+  # from `lpf_alpha` in fr3_complete.yaml (the `distance:` section), NOT from this
+  # key or this file. Kept only for historical reference — do not tune expecting
+  # an effect. Candidate for removal in a future cleanup.
   distance_ema_alpha: 0.5
 
 joint_limits:

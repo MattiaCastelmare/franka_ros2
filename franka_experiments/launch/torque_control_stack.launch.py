@@ -6,7 +6,6 @@ Pipeline:
   [Perception]     RealSense camera driver
   [Distance est.]  real_time_distance       →  /cbf/per_link_distances
   [Motion gen.]    pentagon_qddot_commander →  /NS_1/qddot_nom   (q̈_nom)
-                   or rl_policy_commander   →  /NS_1/qddot_nom   (motion_source:=rl)
   [CBF filter]     cbf_safety_filter        →  /NS_1/qddot_safe  (safe q̈)
   [Dynamics conv.] qddot_to_torque          →  /NS_1/torque_cmd  (τ = M·q̈ + C·q̇)
   [Execution]      rt_torque_controller      ←  /NS_1/torque_cmd  →  hardware  (adds g(q))
@@ -36,11 +35,6 @@ Examples
 
     # Fake hardware (simulation):
     ros2 launch franka_experiments torque_control_stack.launch.py use_fake_hardware:=true
-
-    # Sim-to-real: run the ONNX Safe-RL policy instead of the pentagon
-    # (see franka_sim_to_real_roadmap.md — the CBF filter is unchanged):
-    ros2 launch franka_experiments torque_control_stack.launch.py \\
-        motion_source:=rl rl_onnx_model:=/path/to/best_model.onnx
 """
 
 import yaml
@@ -82,21 +76,11 @@ _ALL_PARAMS = [
     'start_real_time_distance',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
-    'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
-    'rl_target_sequence', 'rl_action_scale',
 ]
 
 
 def _as_bool(x: str) -> bool:
     return str(x).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
-
-
-def _as_float_list(x: str):
-    """Parse ``'[0.4, 0.0, 0.45]'`` / ``'0.4,0.0,0.45'`` → list[float] ([] if empty)."""
-    s = str(x).strip().strip('[]')
-    if not s:
-        return []
-    return [float(v) for v in s.replace(';', ',').split(',') if v.strip()]
 
 
 def _launch_all(context):
@@ -203,13 +187,6 @@ def _launch_all(context):
         )
         actions.append(move_group_launch)
         actions.append(LogInfo(msg='[torque_stack] [MoveIt]          move_group ENABLED'))
-        if str(p['motion_source']).strip().lower() == 'rl':
-            # Not auto-disabled: start_move_group is an explicit user argument
-            # and silently ignoring it would be worse than a wasted node.
-            actions.append(LogInfo(
-                msg='[torque_stack] [MoveIt]          NOTE: motion_source:=rl '
-                    'does not use move_group — pass start_move_group:=false to '
-                    'save the startup cost'))
     else:
         actions.append(LogInfo(msg='[torque_stack] [MoveIt]          move_group DISABLED — '
                                    'pentagon_qddot_commander will publish zeros until '
@@ -318,81 +295,42 @@ def _launch_all(context):
         name='cbf_safety_filter',
         output='screen',
     )
-    # qddot_to_torque subscribes to qddot_nom by default; remap to qddot_safe
-    # so it converts the CBF-filtered acceleration to torque.
+    # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
+    # acceleration) and converts it to torque — no remap needed.
     qddot_to_torque_node = Node(
         package='franka_experiments',
         executable='qddot_to_torque',
         name='qddot_to_torque',
         output='screen',
-        remappings=[('/NS_1/qddot_nom', '/NS_1/qddot_safe')],
     )
     actions.append(TimerAction(period=dynamics_delay,
                                actions=[cbf_node, qddot_to_torque_node]))
     actions.append(LogInfo(msg=['[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque'
                                 ' (delay=', str(dynamics_delay), 's)']))
 
-    # ── [Motion generation] one q̈_nom source — never two ─────────────────────
-    # Both sources publish /NS_1/qddot_nom and would fight for the topic, so
-    # motion_source selects exactly one:
-    #   'pentagon' — analytic path + avoidance-first shaping (default)
-    #   'rl'       — ONNX Safe-RL policy trained in franka_sim against this same
-    #                CBF filter (franka_sim_to_real_roadmap.md, Step 3)
-    # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
-    # identical in both cases: the safety certificate does not depend on who
-    # generates the nominal acceleration.
-    motion_source = str(p['motion_source']).strip().lower()
-    if motion_source not in ('pentagon', 'rl'):
-        raise RuntimeError(
-            f'motion_source="{motion_source}" — expected "pentagon" or "rl"')
-
-    if motion_source == 'rl':
-        rl_params = {
-            'action_scale': float(p['rl_action_scale']),
-            'target_xyz':   _as_float_list(p['rl_target_xyz']) or [0.45, 0.0, 0.45],
-        }
-        if p['rl_onnx_model']:
-            rl_params['onnx_model'] = p['rl_onnx_model']
-        if p['rl_sim_config']:
-            rl_params['sim_config'] = p['rl_sim_config']
-        seq = _as_float_list(p['rl_target_sequence'])
-        if seq:
-            rl_params['target_sequence'] = seq
-        commander_node = Node(
-            package='franka_experiments',
-            executable='rl_policy_commander',
-            name='rl_policy_commander',
-            namespace=p['namespace'],
-            output='screen',
-            parameters=[rl_params],
-        )
-        commander_label = 'rl_policy_commander (ONNX Safe-RL policy)'
-    else:
-        # Runs in the robot namespace so its relative MoveIt service clients
-        # (compute_fk, compute_cartesian_path) resolve to move_group above.
-        # Its topics are absolute (/NS_1/…) and unaffected by the namespace.
-        commander_node = Node(
-            package='franka_experiments',
-            executable='pentagon_qddot_commander',
-            name='pentagon_qddot_commander',
-            namespace=p['namespace'],
-            output='screen',
-            parameters=[{
-                # Geometry: plane='front' is the YZ plane (X fixed at center[0]).
-                # Avoidance-first: the commander shapes its own command around
-                # obstacles (subscribes /cbf/per_link_distances — EE tangential
-                # redirection + null-space repulsion) and scales virtual time with
-                # the feasibility governor β driven by /NS_1/cbf_status slack/fault
-                # (slow down as last resort, auto-resume).
-                'center_xyz':       [0.4, 0.0, 0.45],
-                'path_type':        'circle',
-                'radius':           0.25,   # m — circle radius in the YZ plane
-            }],
-        )
-        commander_label = 'pentagon_qddot_commander'
+    # ── [Motion generation] pentagon_qddot_commander ──────────────────────────
+    # Runs in the robot namespace so its relative MoveIt service clients
+    # (compute_fk, compute_cartesian_path) resolve to move_group above.
+    # Its topics are absolute (/NS_1/…) and unaffected by the namespace.
+    commander_node = Node(
+        package='franka_experiments',
+        executable='pentagon_qddot_commander',
+        name='pentagon_qddot_commander',
+        namespace=p['namespace'],
+        output='screen',
+        parameters=[{
+            # Geometry: plane='front' is the YZ plane (X fixed at center[0]).
+            # The commander builds a cyclic joint-space trajectory offline (Pinocchio
+            # IK) and freezes its virtual time while the CBF filter reports active
+            # constraints (subscribes to /NS_1/cbf_status).
+            'center_xyz':       [0.4, 0.0, 0.45],
+            'path_type':        'circle',
+            'radius':           0.25,   # m — circle radius in the YZ plane
+        }],
+    )
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
-    actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     ', commander_label,
-                                ' (delay=', str(commander_delay), 's)']))
+    actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     pentagon_qddot_commander '
+                                '(delay=', str(commander_delay), 's)']))
 
     # ── Experiment logger ─────────────────────────────────────────────────────
     if _as_bool(p['start_experiment_logger']):
@@ -460,36 +398,7 @@ def generate_launch_description():
                 'start_move_group',
                 default_value='true',
                 description='Start move_group (MoveIt planning services used by '
-                            'pentagon_qddot_commander; not needed by '
-                            'motion_source:=rl)'),
-            DeclareLaunchArgument(
-                'motion_source',
-                default_value=_DEFAULTS.get('motion_source', 'pentagon'),
-                description='q̈_nom generator: "pentagon" (analytic path) or '
-                            '"rl" (ONNX Safe-RL policy from franka_sim)'),
-            DeclareLaunchArgument(
-                'rl_onnx_model',
-                default_value=_DEFAULTS.get('rl_onnx_model', ''),
-                description='[rl] Path to the exported .onnx policy (absolute, '
-                            'or relative to franka_sim/)'),
-            DeclareLaunchArgument(
-                'rl_sim_config',
-                default_value='',
-                description='[rl] franka_sim config used for training '
-                            '(default: config.yaml frozen next to the model)'),
-            DeclareLaunchArgument(
-                'rl_target_xyz',
-                default_value='[0.45, 0.0, 0.45]',
-                description='[rl] Single Cartesian target for the policy [m]'),
-            DeclareLaunchArgument(
-                'rl_target_sequence',
-                default_value='',
-                description='[rl] Flat "x,y,z,x,y,z,…" target cycle '
-                            '(overrides rl_target_xyz)'),
-            DeclareLaunchArgument(
-                'rl_action_scale',
-                default_value='1.0',
-                description='[rl] Deployment derate on q̈_nom (0 < s ≤ 1)'),
+                            'pentagon_qddot_commander)'),
             OpaqueFunction(function=_launch_all),
         ]
     )
