@@ -72,3 +72,16 @@ def skew(v: np.ndarray) -> np.ndarray:
          [-v[1],  v[0],  0.0]],
         dtype=float,
     )
+
+
+# MOVED here from nodes/experiment_logger.py (Phase 3): finite-float
+# coercion is generic numeric hygiene. Body unchanged.
+import math  # noqa: E402
+
+
+def _safe_float(x, default=np.nan) -> float:
+    try:
+        y = float(x)
+        return y if math.isfinite(y) else default
+    except Exception:
+        return default

@@ -5,14 +5,11 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 
 from franka_experiments.utils.math_utils import skew  # noqa: F401 — re-exported
-
-
-def load_robot_config(file):
-    pkg_share = get_package_share_directory('franka_experiments')
-    filename = os.path.join(pkg_share, 'config', f'fr3_{file}.yaml')
-    with open(filename, 'r') as f:
-        data = yaml.safe_load(f)
-    return data
+# MOVED to utils/config.py (Phase 2). Re-exported under the original name so
+# every existing call site keeps working unchanged.
+from franka_experiments.utils.config import (  # noqa: F401
+    load_package_config as load_robot_config,
+)
 
 
 def select_gamma(zone: str, confidence: float,

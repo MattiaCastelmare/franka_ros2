@@ -51,10 +51,9 @@ from franka_experiments.utils.distance_utils import (
 )
 from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
-from franka_experiments.utils.node_utils import (
-    PerfTimer,
-    build_cp_messages,
-)
+from franka_experiments.utils.params import declare_bool, declare_str
+from franka_experiments.utils.logging_utils import PerfTimer
+from franka_experiments.utils.perception_msgs import build_cp_messages
 from franka_experiments.utils.tf_manager import TFManager
 from franka_experiments.utils.visualization import VisFrame, draw_overlay
 
@@ -65,21 +64,14 @@ class RealTimeDistance(Node):
         super().__init__('real_time_distance')
 
         # ── Parameters ──────────────────────────────────────────────────
-        self.declare_parameter('robot_config_path', '')
-        self.declare_parameter('camera_extrinsics_path', '')
-        self.declare_parameter('publish_overlay_image', False)
-        # Liveness heartbeat: publish an EMPTY MultiLinkDistance when no control
-        # point is in range, so /cbf/per_link_distances never goes silent while
-        # the perception chain is alive.  False = legacy gated behaviour.
-        self.declare_parameter('publish_empty_per_link', True)
-
-        robot_config_path      = self.get_parameter('robot_config_path').value
-        camera_extrinsics_path = self.get_parameter('camera_extrinsics_path').value
-
-        if not robot_config_path:
-            raise RuntimeError('Parameter robot_config_path must be set.')
-        if not camera_extrinsics_path:
-            raise RuntimeError('Parameter camera_extrinsics_path must be set.')
+        # declare_str(allow_empty=False) logs at ERROR naming the parameter and
+        # the received value, then raises — replacing the two bare RuntimeErrors
+        # that used to be raised below without any log line.
+        robot_config_path      = declare_str(self, 'robot_config_path', '')
+        camera_extrinsics_path = declare_str(self, 'camera_extrinsics_path', '')
+        _publish_overlay_param = declare_bool(self, 'publish_overlay_image', False)
+        # publish_empty_per_link (liveness heartbeat) is declared further down,
+        # once distance_cfg is loaded, so its default can come from the YAML.
 
         # ── Load configs ─────────────────────────────────────────────────
         self.config       = load_robot_config(robot_config_path)
@@ -102,11 +94,12 @@ class RealTimeDistance(Node):
         self.visualize_only_raw_video    = booleans.get('raw_video', False)
         self.visual_ROI                  = booleans.get('visual_ROI', False)
         self.publish_overlay_image       = (
-            self.get_parameter('publish_overlay_image').value
+            _publish_overlay_param
             or booleans.get('publish_overlay_image', False)
         )
-        self._publish_empty_per_link     = bool(
-            self.get_parameter('publish_empty_per_link').value)
+        self._publish_empty_per_link     = declare_bool(
+            self, 'publish_empty_per_link',
+            self.distance_cfg.get('publish_empty_per_link', True))
 
         # ── Camera intrinsics (populated by camera_info_callback) ────────
         self.bridge    = CvBridge()

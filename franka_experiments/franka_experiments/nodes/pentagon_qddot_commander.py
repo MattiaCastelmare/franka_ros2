@@ -54,7 +54,10 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS, AUTO_SENTINEL
-from franka_experiments.utils.ros import get_namespace_from_config, run_node_main
+from franka_experiments.utils.node_runtime import (
+    get_namespace_from_config,
+    run_node_main,
+)
 from franka_experiments.utils.cbf_utils import load_robot_config
 from franka_experiments.utils.kinematics import (
     generate_urdf_from_xacro,
@@ -88,6 +91,7 @@ class PentagonQddotCommander(Node):
         # ── Load robot config (topics + per-joint limits) ────────────────
         _cfg    = load_robot_config('control')
         _topics = _cfg['topics']
+        _params = _cfg.get('params', {})
         _limits = _cfg['joint_limits']
         _jnames = [f'joint{i}' for i in range(1, 8)]
 
@@ -98,6 +102,7 @@ class PentagonQddotCommander(Node):
         # and let the CBF filter publish from qddot_nom to qddot_safe.
         self.declare_parameter('qddot_safe_topic',  _topics.get('qddot_nom', '/NS_1/qddot_nom'))
         self.declare_parameter('q_des_topic',       '/NS_1/q_des_state')
+        # TODO[LEGACY]: reset_thr_m is declared and read into self.reset_thr, which is then referenced nowhere; superseded by the two-level soft_reset_thr/hard_reset_thr | confidence: high | superseded-by: soft_reset_thr + hard_reset_thr | flagged: 2026-09-01
         self.declare_parameter('reset_thr_m',       0.10)
         self.declare_parameter('joint_state_topic', AUTO_SENTINEL)
         self.declare_parameter('ee_frame',          'fr3_hand_tcp')
@@ -111,12 +116,19 @@ class PentagonQddotCommander(Node):
         # 'exponential' (one-shot ease — does not cycle).
         self.declare_parameter('approach_time',       2.5)
         self.declare_parameter('timing_law',          'linear')
-        self.declare_parameter('center_xyz',          [0.4, 0.0, 0.4])
-        self.declare_parameter('radius',              0.30)
+        # Geometry defaults come from config/fr3_control.yaml (params:
+        # path_center_xyz / path_radius / path_type). They used to be injected by
+        # torque_control_stack.launch.py; launch files now carry wiring only.
+        self.declare_parameter('center_xyz',
+                               [float(v) for v in
+                                _params.get('path_center_xyz', [0.4, 0.0, 0.4])])
+        self.declare_parameter('radius',
+                               float(_params.get('path_radius', 0.30)))
         # Path shape:  'circle' (default, C∞ analytic — smooth, no accel jumps)
         # | 'lissajous' (C∞ analytic) | 'pentagon' (C¹ corner-blended: feedforward
         # acceleration STEPS at every line↔blend junction → jerky; legacy only).
-        self.declare_parameter('path_type',           'circle')
+        self.declare_parameter('path_type',
+                               str(_params.get('path_type', 'circle')))
         self.declare_parameter('plane',               'yz')
         self.declare_parameter('plane_frame',         'fr3_link0')
         self.declare_parameter('cycle_time',          10.0)

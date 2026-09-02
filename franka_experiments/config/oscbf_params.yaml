@@ -1,3 +1,4 @@
+# TODO[LEGACY]: loaded by no code; cbf_OSCBF_filter reads fr3_control.yaml instead | confidence: high | superseded-by: config/fr3_control.yaml | flagged: 2026-09-01
 # OSCBF Safety Filter — parameter file
 # Morton & Pavone 2025, Eq. 36–38 (Dynamic-OSCBF, torque control)
 #

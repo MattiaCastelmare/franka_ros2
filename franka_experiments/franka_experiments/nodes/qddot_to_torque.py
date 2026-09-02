@@ -11,6 +11,7 @@ Gravity is intentionally excluded — ``rt_torque_controller`` adds g(q) interna
 This node acts as a pure dynamics passthrough in the acceleration-space pipeline:
 
     pentagon_qddot_commander → /NS_1/qddot_nom
+    cbf_safety_filter        → /NS_1/qddot_safe
     qddot_to_torque          → /NS_1/torque_cmd
     rt_torque_controller     → hardware  (adds g(q))
 
@@ -21,7 +22,7 @@ other changes to the pipeline.
 Topics (loaded from fr3_control.yaml):
   Subscribes:
     - topics['joint_states_topic']  JointState (q, q̇)
-    - topics['qddot_nom']           Float64MultiArray (7) — q̈ from commander
+    - topics['qddot_safe']          Float64MultiArray (7) — q̈ SAFE from the CBF filter
   Publishes:
     - torque_out_topic              Float64MultiArray (7) — τ to rt_torque_controller
 
@@ -48,7 +49,8 @@ from franka_experiments.utils.kinematics import (
     load_pinocchio_model,
     resolve_arm_joint_ids,
 )
-from franka_experiments.utils.ros import run_node_main
+from franka_experiments.utils.params import declare_str
+from franka_experiments.utils.node_runtime import run_node_main
 
 
 class QddotToTorqueNode(Node):
@@ -62,8 +64,9 @@ class QddotToTorqueNode(Node):
         cfg    = load_robot_config('control')
         topics = cfg['topics']
 
-        self.declare_parameter('torque_out_topic', '/NS_1/torque_cmd')
-        torque_out_topic = self.get_parameter('torque_out_topic').value
+        torque_out_topic = declare_str(
+            self, 'torque_out_topic',
+            topics.get('torque_cmd', '/NS_1/torque_cmd'))
 
         # ── Pinocchio dynamics model (hand:=true — matches rt_torque_controller) ─
         self.get_logger().info('Building dynamics model via xacro …')
@@ -106,15 +109,15 @@ class QddotToTorqueNode(Node):
         )
         self.create_subscription(
             Float64MultiArray,
-            topics['qddot_nom'],
+            topics['qddot_safe'],
             self._on_qddot_nom,
             10,
         )
 
         self.get_logger().info(
             f'qddot_to_torque ready\n'
-            f'  qddot_nom ← {topics["qddot_nom"]}\n'
-            f'  torque    → {torque_out_topic}'
+            f'  qddot_safe ← {topics["qddot_safe"]}\n'
+            f'  torque     → {torque_out_topic}'
         )
 
     # ── Joint state callback ──────────────────────────────────────────────────
@@ -145,6 +148,7 @@ class QddotToTorqueNode(Node):
 
     # ── Acceleration callback → compute and publish torque ────────────────────
 
+    # TODO[LEGACY]: name is now a misnomer — this callback carries qddot_SAFE (the CBF-filtered acceleration), not qddot_nom. Not renamed: ground rule 3 forbids renaming | confidence: high | superseded-by: none | flagged: 2026-09-01
     def _on_qddot_nom(self, msg: Float64MultiArray) -> None:
         with self._lock:
             if not self._has_js:

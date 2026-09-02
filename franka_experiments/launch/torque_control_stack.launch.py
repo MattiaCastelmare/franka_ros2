@@ -53,11 +53,13 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
-from franka_experiments.utils.ros import (
-    declare_robot_args,
-    declare_rt_torque_args,
+from franka_experiments.utils.config import (
     load_franka_config_defaults,
     load_launch_defaults,
+)
+from franka_experiments.utils.launch_support import (
+    declare_robot_args,
+    declare_rt_torque_args,
     pick_controllers_yaml,
     resolve_controller_manager_name,
 )
@@ -76,6 +78,11 @@ _ALL_PARAMS = [
     'start_real_time_distance',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
+    'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
+    'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
+    'torque_world_tf_delay_s', 'torque_camera_tf_delay_s',
+    'torque_image_republisher_extra_delay_s',
+    'torque_finger_pub_delay_s', 'torque_finger_pub_rate_hz',
 ]
 
 
@@ -91,9 +98,9 @@ def _launch_all(context):
     start_rtd    = _as_bool(p['start_real_time_distance'])
 
     control_delay   = float(p['control_spawner_delay_s'])
-    dynamics_delay  = 2.0                   # cbf + qddot_to_torque pre-init (before RT loop)
-    rtd_delay       = 2.0                   # real_time_distance pre-init (trimesh before RT loop)
-    commander_delay = control_delay + 2.0   # commander starts after controller is active
+    dynamics_delay  = float(p['torque_dynamics_delay_s'])  # cbf + qddot_to_torque pre-init (before RT loop)
+    rtd_delay       = float(p['torque_rtd_delay_s'])       # real_time_distance pre-init (trimesh before RT loop)
+    commander_delay = control_delay + float(p['torque_commander_extra_delay_s'])
 
     # ── Build controller YAML for rt_torque_controller ────────────────────────
     # The controller listens on torque_cmd — the direct output of qddot_to_torque.
@@ -101,7 +108,7 @@ def _launch_all(context):
         is_real=not use_fake,
         arm_id=p['arm_id'],
         controller_type='torque',
-        torque_command_topic='torque_cmd',
+        torque_command_topic=p['torque_command_topic'],
         gazebo=p['gazebo'],
         lpf_alpha=float(p['lpf_alpha']),
         tau_max_scale=float(p['tau_max_scale']),
@@ -129,7 +136,8 @@ def _launch_all(context):
         package='controller_manager', executable='spawner',
         arguments=['rt_torque_controller',
                    '--controller-manager', cm_name,
-                   '--controller-manager-timeout', '30'],
+                   '--controller-manager-timeout',
+                   str(int(float(p['controller_spawner_timeout_s'])))],
         output='screen',
     )
 
@@ -159,7 +167,8 @@ def _launch_all(context):
             '  fake=', p['use_fake_hardware'],
         ]),
         franka_launch,
-        TimerAction(period=1.0, actions=[world_tf_node]),
+        TimerAction(period=float(p['torque_world_tf_delay_s']),
+                    actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
 
@@ -206,12 +215,13 @@ def _launch_all(context):
             'sensor_msgs/msg/JointState',
             '{name: [fr3_finger_joint1, fr3_finger_joint2],'
             ' position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]}',
-            '--rate', '10',
+            '--rate', str(float(p['torque_finger_pub_rate_hz'])),
         ],
         output='log',
         name='finger_state_publisher',
     )
-    actions.append(TimerAction(period=2.0, actions=[finger_state_publisher]))
+    actions.append(TimerAction(period=float(p['torque_finger_pub_delay_s']),
+                               actions=[finger_state_publisher]))
     actions.append(LogInfo(msg='[torque_stack] [MoveIt]          finger_state_publisher ENABLED'))
 
     # ── [Perception] RealSense camera ─────────────────────────────────────────
@@ -231,7 +241,9 @@ def _launch_all(context):
             name='image_republisher',
             output='log',
         )
-        actions.append(TimerAction(period=cam_delay + 3.0, actions=[image_republisher]))
+        actions.append(TimerAction(
+            period=cam_delay + float(p['torque_image_republisher_extra_delay_s']),
+            actions=[image_republisher]))
 
         # TF publisher: base → camera_link (connects the RealSense TF sub-tree
         # to the robot tree). Uses camera_link_extrinsics.yaml, NOT the same
@@ -258,7 +270,8 @@ def _launch_all(context):
                 '--child-frame-id', link_ext['child_frame'],
             ],
         )
-        actions.append(TimerAction(period=1.0, actions=[camera_tf_node]))
+        actions.append(TimerAction(period=float(p['torque_camera_tf_delay_s']),
+                                   actions=[camera_tf_node]))
         actions.append(LogInfo(msg=['[torque_stack] [Perception]      camera ENABLED '
                                     '(delay=', str(cam_delay), 's)']))
     else:
@@ -266,10 +279,7 @@ def _launch_all(context):
 
     # ── [Distance estimation] real_time_distance ──────────────────────────────
     if start_rtd:
-        rtd_config = PathJoinSubstitution([
-            FindPackageShare('franka_experiments'),
-            'config', 'fr3_complete.yaml',
-        ]).perform(context)
+        rtd_config = p['robot_config_yaml']
         real_time_distance_node = Node(
             package='franka_experiments',
             executable='real_time_distance',
@@ -318,15 +328,11 @@ def _launch_all(context):
         name='pentagon_qddot_commander',
         namespace=p['namespace'],
         output='screen',
-        parameters=[{
-            # Geometry: plane='front' is the YZ plane (X fixed at center[0]).
-            # The commander builds a cyclic joint-space trajectory offline (Pinocchio
-            # IK) and freezes its virtual time while the CBF filter reports active
-            # constraints (subscribes to /NS_1/cbf_status).
-            'center_xyz':       [0.4, 0.0, 0.45],
-            'path_type':        'circle',
-            'radius':           0.25,   # m — circle radius in the YZ plane
-        }],
+        # Path geometry (centre / shape / radius) is NOT set here: the node
+        # reads it from config/fr3_control.yaml (params: path_center_xyz,
+        # path_type, path_radius) as its declare_parameter defaults. Launch
+        # files carry wiring, not tunables.
+
     )
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
     actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     pentagon_qddot_commander '
@@ -388,17 +394,70 @@ def generate_launch_description():
                 description='Start real_time_distance node'),
             DeclareLaunchArgument(
                 'start_experiment_logger',
-                default_value='true',
+                default_value=str(_DEFAULTS.get('start_experiment_logger', 'true')),
                 description='Start experiment logger automatically'),
             DeclareLaunchArgument(
                 'experiment_logger_delay_s',
-                default_value='2.0',
+                default_value=str(_DEFAULTS.get('experiment_logger_delay_s', '2.0')),
                 description='Seconds before launching experiment_logger'),
             DeclareLaunchArgument(
                 'start_move_group',
-                default_value='true',
+                default_value=str(_DEFAULTS.get('start_move_group', 'true')),
                 description='Start move_group (MoveIt planning services used by '
                             'pentagon_qddot_commander)'),
+
+            # ── Wiring / sequencing (defaults in config/launch_defaults.yaml) ──
+            DeclareLaunchArgument(
+                'robot_config_yaml',
+                default_value=PathJoinSubstitution([
+                    FindPackageShare('franka_experiments'),
+                    'config', 'fr3_complete.yaml',
+                ]),
+                description='Path to fr3_complete.yaml (robot/mesh/distance config '
+                            'loaded by real_time_distance)'),
+            DeclareLaunchArgument(
+                'torque_command_topic',
+                default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd')),
+                description='Topic rt_torque_controller reads tau from (relative to '
+                            'the controller_manager namespace)'),
+            DeclareLaunchArgument(
+                'controller_spawner_timeout_s',
+                default_value=str(_DEFAULTS.get('controller_spawner_timeout_s', '30.0')),
+                description='[s] controller_manager spawner timeout'),
+            DeclareLaunchArgument(
+                'torque_dynamics_delay_s',
+                default_value=str(_DEFAULTS.get('torque_dynamics_delay_s', '2.0')),
+                description='[s] delay before cbf_safety_filter + qddot_to_torque'),
+            DeclareLaunchArgument(
+                'torque_rtd_delay_s',
+                default_value=str(_DEFAULTS.get('torque_rtd_delay_s', '2.0')),
+                description='[s] delay before real_time_distance'),
+            DeclareLaunchArgument(
+                'torque_commander_extra_delay_s',
+                default_value=str(_DEFAULTS.get('torque_commander_extra_delay_s', '2.0')),
+                description='[s] added to control_spawner_delay_s before the commander'),
+            DeclareLaunchArgument(
+                'torque_world_tf_delay_s',
+                default_value=str(_DEFAULTS.get('torque_world_tf_delay_s', '1.0')),
+                description='[s] delay before the world -> base static TF'),
+            DeclareLaunchArgument(
+                'torque_camera_tf_delay_s',
+                default_value=str(_DEFAULTS.get('torque_camera_tf_delay_s', '1.0')),
+                description='[s] delay before the base -> camera_link static TF'),
+            DeclareLaunchArgument(
+                'torque_image_republisher_extra_delay_s',
+                default_value=str(_DEFAULTS.get(
+                    'torque_image_republisher_extra_delay_s', '3.0')),
+                description='[s] added to camera_delay_s before the image republisher'),
+            DeclareLaunchArgument(
+                'torque_finger_pub_delay_s',
+                default_value=str(_DEFAULTS.get('torque_finger_pub_delay_s', '2.0')),
+                description='[s] delay before the MoveIt finger joint-state publisher'),
+            DeclareLaunchArgument(
+                'torque_finger_pub_rate_hz',
+                default_value=str(_DEFAULTS.get('torque_finger_pub_rate_hz', '10.0')),
+                description='[Hz] MoveIt finger joint-state publisher rate'),
+
             OpaqueFunction(function=_launch_all),
         ]
     )

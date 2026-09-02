@@ -29,6 +29,8 @@ de-facto motion planner.  Design intent (see the avoidance-first refactor):
   which the commander chain-rules into v_d/a_d.
 """
 
+# TODO[LEGACY]: imported only by test/test_avoidance.py; the restored commander has no governor | confidence: medium | superseded-by: none (was pentagon_qddot_commander governor, reverted in 4d4d450) | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import numpy as np

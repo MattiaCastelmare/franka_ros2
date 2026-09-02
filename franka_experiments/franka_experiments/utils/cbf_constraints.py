@@ -1,3 +1,5 @@
+
+# TODO[LEGACY]: no importer; velocity-era ZCBF rows (b = -gamma*h), not the HOCBF the stack uses | confidence: high | superseded-by: cbf_safety_filter HOCBF rows | flagged: 2026-09-01
 from dataclasses import dataclass, field
 import numpy as np
 from franka_experiments.utils.cbf_kinematics import CBFKinematics

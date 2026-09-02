@@ -50,6 +50,8 @@ by ``cbf_safety_filter`` (hard box + hard rows), exactly as for the pentagon
 commander.
 """
 
+# TODO[LEGACY]: no launch file starts it since the RL branch was reverted in 4d4d450 | confidence: medium | superseded-by: none (RL work to KEEP — needs a launch entry point restored) | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import csv

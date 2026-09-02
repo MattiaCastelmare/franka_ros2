@@ -36,6 +36,7 @@ from __future__ import annotations
 import numpy as np
 
 
+# TODO[LEGACY]: used only by test/test_cbf_hard_constraints.py; the restored filter uses velocity_accel_box | confidence: medium | superseded-by: velocity_accel_box (same module) | flagged: 2026-09-01
 def hard_accel_box(
     q: np.ndarray,
     qdot: np.ndarray,
@@ -78,6 +79,7 @@ def hard_accel_box(
     return lb, ub
 
 
+# TODO[LEGACY]: used only by test/test_cbf_hard_constraints.py; no slew box in the restored filter | confidence: medium | superseded-by: none | flagged: 2026-09-01
 def apply_slew_limit(
     lb: np.ndarray,
     ub: np.ndarray,
@@ -104,6 +106,7 @@ def apply_slew_limit(
     return lo, hi
 
 
+# TODO[LEGACY]: used only by test/test_cbf_hard_constraints.py; workspace rows reverted in 4d4d450 | confidence: medium | superseded-by: none | flagged: 2026-09-01
 def workspace_face_rows(
     p: np.ndarray,        # (3,) constrained point, world/base frame
     Jp: np.ndarray,       # (3, nv) point Jacobian
@@ -135,3 +138,69 @@ def workspace_face_rows(
             rows.append((-Jp[k], h_hi, float(-Jpd_qd[k]),
                          f'ws:{axes[k]}+'))
     return rows
+
+
+def velocity_accel_box(
+    qdot: np.ndarray,
+    *,
+    acc_lb: np.ndarray,      # (n,) static lower accel bound (< 0)
+    acc_ub: np.ndarray,      # (n,) static upper accel bound (> 0)
+    qdot_max: np.ndarray,    # (n,) official per-joint |qdot| limit
+    v_margin: float,         # fraction of qdot_max actually allowed
+    dt: float,               # one-step horizon (nominal QP period)
+    out_lb: np.ndarray,      # (n,) OUTPUT buffer, written in place
+    out_ub: np.ndarray,      # (n,) OUTPUT buffer, written in place
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tighten the per-joint qddot box so |qdot| cannot exceed v_margin*qdot_max.
+
+    MOVED here from ``CBFSafetyFilter._update_velocity_box`` in Phase 3. The
+    arithmetic and its ordering are unchanged; only the destination of the two
+    box arrays became an explicit output-buffer argument, so the node keeps
+    owning its pre-allocated storage and this stays allocation-neutral on the
+    100 Hz path (the two diagnostic arrays were freshly allocated before and
+    still are).
+
+    One-step bound: after one dt the velocity qdot + qddot*dt must stay within
+    +/-v_margin*qdot_max, intersected with the static decel box::
+
+        qddot_ub = min( +decel,  (+v_margin*qdot_max - qdot)/dt )
+        qddot_lb = max( -decel,  (-v_margin*qdot_max - qdot)/dt )
+
+    Anti-asymmetry (by design): near +qdot_max the upper bound collapses toward
+    0 while the lower bound stays at -decel, so full braking authority AWAY from
+    an obstacle is always retained; only the velocity-increasing direction is
+    curtailed.
+
+    Args:
+        qdot: (n,) measured joint velocities [rad/s].
+        acc_lb: (n,) static lower acceleration bound (negative).
+        acc_ub: (n,) static upper acceleration bound (positive).
+        qdot_max: (n,) official per-joint velocity limit [rad/s].
+        v_margin: Fraction of *qdot_max* actually allowed, in (0, 1].
+        dt: One-step horizon [s] (the nominal QP period, not the measured one).
+        out_lb: (n,) buffer receiving the lower qddot bound; written in place.
+        out_ub: (n,) buffer receiving the upper qddot bound; written in place.
+
+    Returns:
+        ``(ratio, bite)`` diagnostics: *ratio* is ``|qdot| / qdot_max`` per
+        joint, *bite* is a boolean mask marking joints whose box was tightened
+        by the velocity bound rather than by the static decel box. Both are
+        DIAGNOSTIC ONLY and are never read by the QP.
+    """
+    vmax   = v_margin * qdot_max
+    ub_vel = (vmax - qdot) / dt
+    lb_vel = (-vmax - qdot) / dt
+    ub = np.minimum(acc_ub, ub_vel)
+    lb = np.maximum(acc_lb, lb_vel)
+    # Feasibility guard: if already past v_margin*qdot_max by more than one
+    # tick's decel authority, the velocity bound would invert the box (lb > ub).
+    # Clamp ub UP to lb (NOT lb down — that could exceed -decel and violate the
+    # accel limit) → forces qddot = -decel, i.e. hardest legal braking.
+    ub = np.maximum(ub, lb)
+
+    ratio = np.abs(qdot) / qdot_max
+    bite  = (ub < acc_ub - 1e-9) | (lb > acc_lb + 1e-9)
+
+    out_lb[:] = lb
+    out_ub[:] = ub
+    return ratio, bite

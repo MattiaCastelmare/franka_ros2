@@ -23,6 +23,8 @@ Conventions
   ``fr3_link5_sc`` frame); it drives the adjacency logic for pair selection.
 """
 
+# TODO[LEGACY]: imported only by test/test_cbf_hard_constraints.py | confidence: medium | superseded-by: none | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import math

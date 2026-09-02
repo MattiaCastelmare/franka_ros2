@@ -1,3 +1,5 @@
+
+# TODO[LEGACY]: no importer; the CBF filter builds and solves its OSQP problem inline | confidence: high | superseded-by: cbf_safety_filter inline OSQP + utils/cbf_qp_assembly.py | flagged: 2026-09-01
 import numpy as np
 import qpsolvers
 

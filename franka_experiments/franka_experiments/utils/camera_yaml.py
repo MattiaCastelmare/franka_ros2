@@ -8,37 +8,10 @@ to fail with *"expected a single document in the stream"*.
 This module provides a single helper that handles this correctly.
 """
 
-from __future__ import annotations
+# TODO[LEGACY]: compatibility shim: load_camera_info_yaml now lives in utils/config.py | confidence: high | superseded-by: utils/config.py | flagged: 2026-09-01
 
-from typing import Any, Dict, Optional
-
-import yaml
-
-
-def load_camera_info_yaml(
-    path: str,
-    required_keys: tuple[str, ...] = ("k",),
-) -> Optional[Dict[str, Any]]:
-    """Load a CameraInfo-style YAML file, handling multi-document streams.
-
-    Parameters
-    ----------
-    path : str
-        Absolute path to the YAML file.
-    required_keys : tuple[str, ...]
-        Keys that must be present in the returned document for it to be
-        considered valid.  Defaults to ``("k",)``.
-
-    Returns
-    -------
-    dict or None
-        The first YAML document that is a non-empty ``dict`` containing all
-        *required_keys*, or ``None`` if no such document is found.
-    """
-    with open(path, "r") as fh:
-        for doc in yaml.safe_load_all(fh):
-            if not isinstance(doc, dict):
-                continue
-            if all(key in doc for key in required_keys):
-                return doc
-    return None
+# MOVED to utils/config.py (Phase 2). Re-exported under the original name so
+# every existing call site keeps working unchanged.
+from franka_experiments.utils.config import (  # noqa: F401
+    load_camera_info_yaml,
+)

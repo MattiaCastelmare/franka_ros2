@@ -27,6 +27,14 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from franka_msgs.msg import MultiDistance
 
+from franka_experiments.utils.math_utils import _safe_float  # noqa: F401
+from franka_experiments.utils.node_runtime import (  # noqa: F401
+    _as_list7,
+    _now_sec,
+    _stamp_to_sec,
+)
+from franka_experiments.utils.params import declare_float, declare_int
+
 try:
     from scipy.signal import savgol_filter as _savgol
     _SCIPY_OK = True
@@ -54,36 +62,12 @@ DEFAULT_QDOT_CMD_TOPIC = "/NS_1/qdot_cmd"
 DEFAULT_TORQUE_CMD_TOPIC = "/NS_1/torque_cmd"
 
 
-def _now_sec(node: Node) -> float:
-    return node.get_clock().now().nanoseconds * 1e-9
-
-
-def _stamp_to_sec(msg_stamp, fallback: float) -> float:
-    sec = float(msg_stamp.sec) + float(msg_stamp.nanosec) * 1e-9
-    return sec if sec > 0.0 else fallback
-
-
-def _safe_float(x, default=np.nan) -> float:
-    try:
-        y = float(x)
-        return y if math.isfinite(y) else default
-    except Exception:
-        return default
-
-
-def _as_list7(data: Sequence[float]) -> np.ndarray:
-    arr = np.full(NUM_JOINTS, np.nan, dtype=float)
-    n = min(NUM_JOINTS, len(data))
-    if n > 0:
-        arr[:n] = np.asarray(data[:n], dtype=float)
-    return arr
-
-
 class ExperimentLogger(Node):
     def __init__(self):
         super().__init__("experiment_logger")
 
         # Try to reuse your YAML config defaults, but keep the node standalone.
+        # TODO[LEGACY]: cfg_topics is built from two YAML files and never read; its keys (joint_states_topic) would not match the parameter names (joint_state_topic) even if wired | confidence: high | superseded-by: none | flagged: 2026-09-01
         cfg_topics: Dict[str, str] = {}
         cfg_dsafe: Optional[float] = None
         try:
@@ -99,10 +83,16 @@ class ExperimentLogger(Node):
         self.declare_parameter("output_dir", DEFAULT_OUTPUT_DIR)
         self.declare_parameter("run_dir_override", "")
         self.declare_parameter("experiment_name", DEFAULT_EXPERIMENT_NAME)
-        self.declare_parameter("sample_rate_hz", 100.0)
-        self.declare_parameter("d_safe", 0.20 if cfg_dsafe is None else cfg_dsafe)
-        self.declare_parameter("max_cbf_entries", 12)
-        self.declare_parameter("accel_lpf_alpha", 0.35)
+        # Range-checked on startup: a non-positive rate would divide by zero in
+        # create_timer, a bad alpha would silently corrupt every logged trace.
+        # Declared + range-checked here; the values are read back below through
+        # get_parameter(), exactly as before.
+        declare_float(self, "sample_rate_hz", 100.0,
+                      positive=True, maximum=10000.0)
+        declare_float(self, "d_safe", 0.20 if cfg_dsafe is None else cfg_dsafe,
+                      minimum=0.0, maximum=2.0)
+        declare_int(self, "max_cbf_entries", 12, positive=True)
+        declare_float(self, "accel_lpf_alpha", 0.35, minimum=0.0, maximum=1.0)
         self.declare_parameter("joint_names", DEFAULT_JOINT_NAMES)
 
         self.declare_parameter("joint_state_topic", DEFAULT_JOINT_STATE_TOPIC)

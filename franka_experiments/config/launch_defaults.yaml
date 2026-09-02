@@ -50,6 +50,25 @@ human_pose_delay_s: 0.0
 start_real_time_distance: true
 real_time_distance_delay_s: 8.0
 
+# ── Torque control stack (torque_control_stack.launch.py) ─────────────
+# Startup sequencing and wiring for the acceleration-space torque pipeline.
+# NOTE the `torque_*` prefix: `real_time_distance_delay_s` above is already
+# taken by minimal/thales launches with a DIFFERENT value (8.0 s), so these
+# keys are namespaced to avoid silently changing those stacks.
+torque_command_topic: "torque_cmd"        # rt_torque_controller tau topic (relative to the CM namespace)
+controller_spawner_timeout_s: 30.0        # [s] controller_manager spawner timeout
+torque_dynamics_delay_s: 2.0              # [s] cbf_safety_filter + qddot_to_torque pre-init (before the RT loop)
+torque_rtd_delay_s: 2.0                   # [s] real_time_distance pre-init (trimesh loading before the RT loop)
+torque_commander_extra_delay_s: 2.0       # [s] added to control_spawner_delay_s → commander start
+torque_world_tf_delay_s: 1.0              # [s] world → base static TF
+torque_camera_tf_delay_s: 1.0             # [s] base → camera_link static TF
+torque_image_republisher_extra_delay_s: 3.0  # [s] added to camera_delay_s → image republisher
+torque_finger_pub_delay_s: 2.0            # [s] MoveIt finger joint-state publisher
+torque_finger_pub_rate_hz: 10.0           # [Hz] MoveIt finger joint-state publisher rate
+start_move_group: true                    # MoveIt planning services used by pentagon_qddot_commander
+start_experiment_logger: true             # CSV/plot run logger
+experiment_logger_delay_s: 2.0            # [s] experiment_logger start
+
 # ── Rosbag recording ──────────────────────────────────────────────────
 start_rosbag: false
 rosbag_output_dir: ""          # empty = ~/ros2_bags/rosbag_YYYYMMDD_HHMMSS

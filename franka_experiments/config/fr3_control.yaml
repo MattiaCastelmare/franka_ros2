@@ -4,6 +4,7 @@ topics:
   velocity_topic:     /NS_1/qdot_cmd
   qdot_nom:           /NS_1/tracking_qdot
   qddot_safe:         /NS_1/qddot_safe
+  torque_cmd:         /NS_1/torque_cmd
   cbf_status:         /NS_1/cbf_status
   multi_distance:     /human_robot/multi_distance
   per_link_distances: /cbf/per_link_distances
@@ -11,11 +12,13 @@ topics:
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
   d_safe: 0.20          # minimum safe distance from obstacles [m]
+  # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
   d_safe_default: 0.1  # alias kept for backward compatibility
 
   # QP solver
   rho_slack: 1000.0
   qp_solver: osqp
+  # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: qp_rate_hz | flagged: 2026-09-01
   control_rate_hz: 100.0
   distance_timeout: 0.5   # [s] stale distance data → passthrough
 
@@ -28,11 +31,13 @@ params:
 
   # DEPRECATED: ema_alpha was used to smooth the QP output in cbf_velocity_filter.
   # Post-QP smoothing invalidates CBF safety guarantees — do not re-introduce.
+  # TODO[LEGACY]: read by no active node; post-QP smoothing was removed | confidence: high | superseded-by: none | flagged: 2026-09-01
   ema_alpha: 0.4
 
   # ── HOCBF acceleration-space safety filter (cbf_safety_filter) ─────────────
   # Barrier:    h = d - d_safe
   # HOCBF:      n^T J qddot >= -c_i - k1*hdot - k0*h
+  # TODO[LEGACY]: read by no active node; velocity-era ZCBF gain | confidence: high | superseded-by: k0_cbf + k1_cbf | flagged: 2026-09-01
   gamma: 1.0               # kept for backward compat (unused by HOCBF path)
   k0_cbf: 25.0             # HOCBF position gain  (class-K alpha_0)
   k1_cbf: 10.5             # HOCBF velocity gain  (class-K alpha_1)
@@ -49,7 +54,9 @@ params:
   # computational cbf_obstacle_horizon. They are KEPT here only because
   # cbf_velocity_filter.py still reads them as live params (and a test refs
   # them); do NOT delete them while that node depends on them.
+  # TODO[LEGACY]: read only by cbf_velocity_filter, itself flagged legacy | confidence: high | superseded-by: continuous HOCBF activation + cbf_obstacle_horizon | flagged: 2026-09-01
   cbf_activation_margin: 0.10  # [m] (cbf_velocity_filter only) activation gate
+  # TODO[LEGACY]: read only by cbf_velocity_filter, itself flagged legacy | confidence: high | superseded-by: continuous HOCBF activation | flagged: 2026-09-01
   cbf_hysteresis: 0.05     # [m] (cbf_velocity_filter only) deactivation hysteresis
   cbf_obstacle_horizon: 1.2  # [m] COMPUTATIONAL cutoff for cbf_safety_filter, NOT
                            # a safety gate: the linear HOCBF self-deactivates at
@@ -69,21 +76,48 @@ params:
                            # on FR3 (fr3_cond_probe.py) before trusting it.
 
   # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
+  # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: none | flagged: 2026-09-01
   qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
 
   # Slew-rate: encoded as QP box constraint — NOT post-QP clip [rad/s²/tick]
+  # TODO[LEGACY]: read by no active node — the restored cbf_safety_filter has no slew-rate box (that was a WIP feature reverted in 4d4d450) | confidence: high | superseded-by: none | flagged: 2026-09-01
   max_qddot_delta: 5.0
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
+  # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: none | flagged: 2026-09-01
   max_tau_delta: 15.0
 
   # Braking gain for QP-fail fallback: qddot = -k_brake * qdot
   k_brake: 3.0
 
+  # ── Velocity-aware acceleration box (cbf_safety_filter) ────────────────────
+  # One integration step (dt = nominal QP period) must not push |qdot| past
+  # velocity_box_margin * qdot_max. Was hardcoded as self._v_margin = 0.9.
+  velocity_box_margin: 0.9   # fraction of the official qdot_max actually allowed
+
+  # ── OSQP solver limits (cbf_safety_filter) ─────────────────────────────────
+  # OSQP's own default max_iter (4000) can be hit on ill-scaled instances; at
+  # this problem size 20k iterations still complete in < 1.5 ms.
+  osqp_max_iter: 20000
+
+  # ── Diagnostics (cbf_safety_filter) — logging only, never read by the QP ───
+  diag_period_s: 0.05          # [s] min interval between CBFDIAG lines
+  diag_qddot_alpha: 0.7        # EMA on the realized-qddot estimate [0=raw, 1=frozen]
+  tick_gap_warn_factor: 3.0    # warn when a QP tick gap exceeds N x the nominal period
+  diag_vel_ratio_thr: 0.85     # emit VELHI when worst |qdot|/qdot_max exceeds this (>1 disables)
+
+  # ── Path geometry (pentagon_qddot_commander) ───────────────────────────────
+  # Moved out of torque_control_stack.launch.py: launch files carry wiring, not
+  # tunables. The node reads these as its declare_parameter defaults.
+  path_center_xyz: [0.4, 0.0, 0.45]  # [m] circle/lissajous centre, plane_frame
+  path_type: circle                  # circle | lissajous | pentagon
+  path_radius: 0.25                  # [m] circle radius in the selected plane
+
   # DEPRECATED/UNUSED: not read by any code. DistanceEngine reads its EMA weight
   # from `lpf_alpha` in fr3_complete.yaml (the `distance:` section), NOT from this
   # key or this file. Kept only for historical reference — do not tune expecting
   # an effect. Candidate for removal in a future cleanup.
+  # TODO[LEGACY]: read by no code; DistanceEngine reads lpf_alpha from fr3_complete.yaml instead | confidence: high | superseded-by: fr3_complete.yaml distance.lpf_alpha | flagged: 2026-09-01
   distance_ema_alpha: 0.5
 
 joint_limits:

@@ -1,3 +1,4 @@
+# TODO[LEGACY]: not referenced by the active launch graph | confidence: medium | superseded-by: generated controllers YAML (utils/launch_support.py) | flagged: 2026-09-01
 # Parameters for joint_velocity_example_controller with mock/fake hardware.
 # Setting gazebo:=true skips the set_full_collision_behavior service call
 # which does not exist with mock hardware and would deadlock the controller_manager.
