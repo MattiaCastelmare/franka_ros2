@@ -31,15 +31,17 @@ import numpy as np
 import scipy.sparse as sparse
 
 
-def build_osqp_A(G: Optional[np.ndarray], nv: int) -> sparse.csc_matrix:
+def build_osqp_A(G: Optional[np.ndarray], nv: int,
+                 n_slack: int = 1) -> sparse.csc_matrix:
     """Build the native-OSQP constraint matrix ``A = [ G ; I ]``.
 
     MOVED here from ``CBFSafetyFilter._osqp_A`` in Phase 3; body unchanged
     except that the joint count is now an argument instead of a module global.
 
-    Rows ``0..n_c-1`` are the CBF constraints (``[-A | -1]``); the trailing
-    ``nv + 1`` rows are the identity block carrying the box bounds (joint qddot
-    limits plus ``slack >= 0``). The CBF block is stored with a FULL (dense)
+    Rows ``0..n_c-1`` are the CBF constraints (``[-A | -e_group]``, the slack
+    column being the one belonging to that row's family); the trailing
+    ``nv + n_slack`` rows are the identity block carrying the box bounds (joint
+    qddot limits plus ``slack >= 0`` for each family). The CBF block is stored with a FULL (dense)
     sparsity pattern — every entry is an explicit structural nonzero, including
     zeros — so the pattern is invariant for a given ``n_c``. That is what lets
     ``prob.update(Ax=...)`` stay valid across ticks even when a Jacobian entry
@@ -50,20 +52,30 @@ def build_osqp_A(G: Optional[np.ndarray], nv: int) -> sparse.csc_matrix:
         G: ``(n_c, nv + 1)`` CBF row block, or ``None`` when no CBF row is
             active (``n_c == 0``), in which case only the identity block is
             returned.
-        nv: Number of joint variables (the decision vector is ``nv + 1`` long,
-            the last entry being the slack).
+        nv: Number of joint variables.
+        n_slack: Number of slack variables appended after them, so the decision
+            vector is ``nv + n_slack`` long. One slack per CONSTRAINT FAMILY,
+            not one overall: a single shared slack lets a badly-violated row of
+            one kind relax every row of every other kind. Measured on hardware —
+            a joint-limit row drove s to 3.37, which relaxed the self-collision
+            rows by the same 3.37 until the firmware had to fire
+            self_collision_avoidance_violation itself.
 
     Returns:
         The CSC constraint matrix. ``l <= A x <= u`` is set by
         :func:`build_osqp_bounds`, which uses the same row order.
     """
-    box = sparse.identity(nv + 1, format='csc')
+    n_x = nv + n_slack
+    box = sparse.identity(n_x, format='csc')
     if G is None:                       # n_c == 0 → box bounds only
         return box
+    if G.shape[1] != n_x:
+        raise ValueError(
+            f'G has {G.shape[1]} columns, expected nv + n_slack = {n_x}')
     n_c  = G.shape[0]
-    rows = np.repeat(np.arange(n_c), nv + 1)
-    cols = np.tile(np.arange(nv + 1), n_c)
-    cbf  = sparse.csc_matrix((G.ravel(), (rows, cols)), shape=(n_c, nv + 1))
+    rows = np.repeat(np.arange(n_c), n_x)
+    cols = np.tile(np.arange(n_x), n_c)
+    cbf  = sparse.csc_matrix((G.ravel(), (rows, cols)), shape=(n_c, n_x))
     return sparse.vstack([cbf, box], format='csc')
 
 

@@ -172,6 +172,36 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('lambda_sq_max',    5e-2)
         self.declare_parameter('manip_thr',        0.05)
         # Reference sanity limits: keep integrated references physical.
+        # ── Obstacle-driven phase governor ──────────────────────────────
+        # Scales the phase rate by how close the nearest obstacle is, read from
+        # cbf_status data[4]. NOT from the tracking error: an error-driven
+        # governor deadlocks (CBF blocks -> error grows -> phase freezes ->
+        # reference parked on the blocked pose -> CBF keeps blocking, stable at
+        # zero motion — that is why the old feasibility_beta governor was
+        # reverted in 4d4d450). Distance is self-releasing: as the CBF pushes
+        # the arm clear, d grows and the phase resumes on its own.
+        #
+        # Above governor_d_full the trajectory runs at full speed and the CBF
+        # handles avoidance on its own (it starts acting at d_safe = 0.20 m).
+        # Only below that does the path itself slow down.
+        self.declare_parameter('governor_enabled',   True)
+        self.declare_parameter('governor_d_full',    0.05)  # [m] sigma = 1 above
+        self.declare_parameter('governor_d_stop',    0.02)  # [m] sigma = min below
+        self.declare_parameter('governor_sigma_min', 0.05)  # never exactly 0
+        self.declare_parameter('governor_timeout',   0.5)   # [s] stale -> sigma=1
+        self.declare_parameter('cbf_status_topic',   '/NS_1/cbf_status')
+
+        # [m] Cap on the Cartesian error fed to the PD. The task law is
+        # xddot = a_d + Kp*e + Kd*edot, so Kp*e grows without bound as the CBF
+        # pushes the arm off the path: after a large deviation the RETURN
+        # command is enormous, J-pinv maps it onto the joints, the per-joint
+        # clip at qddot_max (17 on the wrist) does not contain it, and the
+        # controller integrates it straight into a velocity violation.
+        # Saturating the error direction-preserving makes the return a
+        # CONSTANT-strength pull: the arm comes back at a normal rate no matter
+        # how far it went. 0 disables the cap.
+        self.declare_parameter('cart_err_max',     0.08)
+
         self.declare_parameter('q_des_max_error',  0.5)   # rad, |q_d − q|
         self.declare_parameter('dq_des_max',       2.0)   # rad/s
         # Low-pass on the *measured* joint velocity, logging only (real signal,
@@ -237,6 +267,19 @@ class PentagonQddotCommander(Node):
         self._lambda_sq_min   = float(self.get_parameter('lambda_sq_min').value)
         self._lambda_sq_max   = float(self.get_parameter('lambda_sq_max').value)
         self._manip_thr       = float(self.get_parameter('manip_thr').value)
+        self.gov_on      = bool(self.get_parameter('governor_enabled').value)
+        self.gov_d_full  = float(self.get_parameter('governor_d_full').value)
+        self.gov_d_stop  = float(self.get_parameter('governor_d_stop').value)
+        self.gov_s_min   = float(self.get_parameter('governor_sigma_min').value)
+        self.gov_timeout = float(self.get_parameter('governor_timeout').value)
+        self.cart_err_max = float(self.get_parameter('cart_err_max').value)
+        # (d_obs_min, monotonic stamp) from cbf_status; +inf = nothing in range.
+        self._cbf_dmin   = float('inf')
+        self._cbf_stamp  = 0.0
+        self._gov_sigma  = 1.0
+        self._gov_slow_since = None
+        self._diag_cart_err  = 0.0
+
         self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
         self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
         self._dq_filter_alpha = float(self.get_parameter('dq_filter_alpha').value)
@@ -475,6 +518,10 @@ class PentagonQddotCommander(Node):
             js_topic = f'/{ns}/joint_states' if ns else '/joint_states'
 
         self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, 10)
+        self._cbf_sub = self.create_subscription(
+            Float64MultiArray,
+            str(self.get_parameter('cbf_status_topic').value),
+            self._cbf_status_cb, 10)
 
         # Measured-effort subscription (configurable; used only for logging)
         self._eff_sub = self.create_subscription(
@@ -547,6 +594,51 @@ class PentagonQddotCommander(Node):
         self.get_logger().info(f'Stopping: zero qddot for {dur} s')
 
     # ── Main tick ────────────────────────────────────────────────────────
+
+    def _cbf_status_cb(self, msg) -> None:
+        """cbf_status -> nearest obstacle distance for the phase governor.
+
+        data[4] is the closest OBSTACLE surface gap in metres (+inf when nothing
+        is in range). Older filters publish only 4 elements; treat that as "no
+        information" and leave the governor open rather than crawling forever.
+        """
+        if len(msg.data) >= 5:
+            self._cbf_dmin  = float(msg.data[4])
+            self._cbf_stamp = time.monotonic()
+
+    def _governor_sigma(self, now_mono: float) -> float:
+        """Phase-rate scale in [sigma_min, 1] from the nearest obstacle distance.
+
+        1 above ``governor_d_full`` (trajectory at full speed; the CBF alone
+        handles avoidance — it already engages at d_safe = 0.20 m), ramping down
+        to ``governor_sigma_min`` at ``governor_d_stop``.
+
+        Driven by DISTANCE, never by tracking error. An error-driven governor has
+        a stable fixed point at zero motion: the CBF blocks, the error grows, the
+        phase freezes, the reference parks on the blocked pose, the CBF keeps
+        blocking. That is the deadlock that got the previous feasibility_beta
+        governor reverted in 4d4d450. Distance is self-releasing — as the CBF
+        pushes the arm clear, d grows and the phase resumes on its own.
+
+        The floor is deliberately non-zero for the same reason: a phase that can
+        reach exactly zero can be parked forever. With a floor the reference
+        always creeps, so a fixed obstacle sitting on the path gets walked past
+        rather than deadlocked against.
+
+        *now_mono* must be a time.monotonic() reading — the same clock
+        _cbf_status_cb stamps with.
+        """
+        if not self.gov_on:
+            return 1.0
+        if self._cbf_stamp == 0.0 or (now_mono - self._cbf_stamp) > self.gov_timeout:
+            return 1.0
+        d = self._cbf_dmin
+        if not math.isfinite(d) or d >= self.gov_d_full:
+            return 1.0
+        if d <= self.gov_d_stop:
+            return self.gov_s_min
+        f = (d - self.gov_d_stop) / max(self.gov_d_full - self.gov_d_stop, 1e-9)
+        return self.gov_s_min + (1.0 - self.gov_s_min) * f
 
     def _tick(self):
         if self._stopping:
@@ -663,13 +755,39 @@ class PentagonQddotCommander(Node):
         # Unified timing law + geometric path — no APPROACH/TRACK branching.
         #   s, s_dot, s_ddot = timing.step(dt)
         #   p_d = P(s) ; v_d = P'(s)·s_dot ; a_d = P''(s)·s_dot² + P'(s)·s_ddot
-        s, s_dot, s_ddot = self._timing.step(actual_dt)
+        # Phase governor: advance the phase by a SCALED dt, so the reference
+        # itself slows near an obstacle instead of running away from a robot the
+        # CBF is holding back. Scaling dt (not s_dot afterwards) keeps the
+        # timing law's own soft-start and its s_ddot consistent.
+        self._gov_sigma = self._governor_sigma(time.monotonic())
+        if self._gov_sigma < 0.999:
+            if self._gov_slow_since is None:
+                self._gov_slow_since = t
+            elif (t - self._gov_slow_since) > 3.0 and self._tlog.due(t):
+                self.get_logger().warn(
+                    f'phase governor throttling for {t - self._gov_slow_since:.1f} s '
+                    f'(sigma={self._gov_sigma:.2f}, obstacle at '
+                    f'{self._cbf_dmin:.3f} m) — path may be blocked')
+        else:
+            self._gov_slow_since = None
+        s, s_dot, s_ddot = self._timing.step(actual_dt * self._gov_sigma)
         p_d = self._path.position(s)
         v_d = self._path.velocity(s, s_dot)
         a_d = self._path.acceleration(s, s_dot, s_ddot)
 
         # 6D error
         np.subtract(p_d, self._p_ee, out=self._tmp3)
+        # Direction-preserving saturation. The task law below is
+        # xddot = a_d + Kp*e + Kd*edot, so an unbounded e makes the RETURN
+        # command scale with how far the CBF pushed the arm — exactly the
+        # "enormous command to rejoin the path" that saturates joint velocity
+        # and trips the firmware. Capping |e| turns the return into a
+        # constant-strength pull: same normal rate whether the deviation was
+        # 6 cm or 60. The direction is untouched, so the arm still heads back to
+        # the right place, just never harder than Kp * cart_err_max.
+        self._diag_cart_err = float(np.linalg.norm(self._tmp3))
+        if self.cart_err_max > 0.0 and self._diag_cart_err > self.cart_err_max:
+            self._tmp3 *= (self.cart_err_max / self._diag_cart_err)
         self._e6[:3] = self._tmp3
         self._e6[3:] = self._e_rot
 
@@ -766,13 +884,28 @@ class PentagonQddotCommander(Node):
 
         # ── Two-level anti-windup on Cartesian error (Change 2) ──────────────
         # hard_reset_thr > soft_reset_thr: snap on large error, blend on small.
-        ee_err = float(np.linalg.norm(self._e6[:3]))
+        # The TRUE error, not the saturated one fed to the PD: this guard exists
+        # to keep the internal reference (q_d, dq_d) physical, so it must see how
+        # far the arm really is. Using the capped value would blind it exactly
+        # when windup is largest.
+        ee_err = self._diag_cart_err
         if ee_err > self.hard_reset_thr:
             np.copyto(self._q_d,  js['q'])          # full synchronisation
             np.copyto(self._dq_d, qdot)
             if self._tlog.due(t):
-                self.get_logger().warn(
-                    f'HARD reset: EE error {ee_err:.3f} m > {self.hard_reset_thr} m')
+                # An error this size is EXPECTED while the CBF is steering
+                # around something — say so, instead of reporting a fault.
+                near = (math.isfinite(self._cbf_dmin)
+                        and self._cbf_dmin < self.gov_d_full * 4.0)
+                if near:
+                    self.get_logger().info(
+                        f'reference resync: EE error {ee_err:.3f} m while '
+                        f'avoiding an obstacle at {self._cbf_dmin:.3f} m '
+                        f'(expected — the CBF is steering)')
+                else:
+                    self.get_logger().warn(
+                        f'HARD reset: EE error {ee_err:.3f} m > '
+                        f'{self.hard_reset_thr} m with no obstacle nearby')
         elif ee_err > self.soft_reset_thr:
             a = self.soft_reset_alpha               # blend toward measured state
             self._q_d  *= a; self._q_d  += (1.0 - a) * js['q']

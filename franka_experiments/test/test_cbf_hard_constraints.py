@@ -21,6 +21,8 @@ from franka_experiments.utils.self_collision import (
 from franka_experiments.utils.cbf_hard_limits import (
     apply_slew_limit,
     hard_accel_box,
+    position_velocity_accel_box,
+    velocity_accel_box,
     workspace_face_rows,
 )
 
@@ -297,3 +299,89 @@ if __name__ == '__main__':
                 fails += 1
                 print(f'FAIL {name}: {exc}')
     sys.exit(1 if fails else 0)
+
+
+# ── position_velocity_accel_box: the wrapper cbf_safety_filter actually calls ──
+#
+# It must be hard_accel_box exactly — the point of the wrapper is the calling
+# convention (in-place buffers + the (ratio, bite) diagnostics the CBFDIAG and
+# VELHI log lines read), never different math.
+
+# Real FR3 numbers from franka_description; prefixed so they cannot clobber
+# the synthetic fixtures the hard_accel_box tests above rely on.
+_FR3_ACC  = np.array([6.0, 2.585, 3.5, 4.0, 17.0, 5.5, 17.0])   # decel_max, official
+_FR3_VEL   = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
+_FR3_QMIN = np.array([-2.9007, -1.8361, -2.9007, -3.0770, -2.8763, 0.4398, -3.0508])
+_FR3_QMAX = np.array([2.9007, 1.8361, 2.9007, -0.1169, 2.8763, 4.6216, 3.0508])
+_FR3_KW = dict(acc_lb=-_FR3_ACC, acc_ub=_FR3_ACC, qdot_max=_FR3_VEL, v_margin=0.9,
+           q_min=_FR3_QMIN, q_max=_FR3_QMAX, q_margin=0.05, brake_eta=0.6, dt=0.01)
+
+
+def _pv_box(q, qdot):
+    lb, ub = np.zeros(7), np.zeros(7)
+    ratio, bite = position_velocity_accel_box(q, qdot, out_lb=lb, out_ub=ub, **_FR3_KW)
+    return lb, ub, ratio, bite
+
+
+def test_pv_box_matches_hard_accel_box_exactly():
+    rng = np.random.default_rng(0)
+    for _ in range(3000):
+        q    = _FR3_QMIN + rng.random(7) * (_FR3_QMAX - _FR3_QMIN)
+        qdot = rng.uniform(-1.0, 1.0, 7) * _FR3_VEL
+        ref_lb, ref_ub = hard_accel_box(q, qdot, **_FR3_KW)
+        lb, ub, _, _ = _pv_box(q, qdot)
+        assert np.array_equal(lb, ref_lb) and np.array_equal(ub, ref_ub)
+
+
+def test_pv_box_never_returns_an_inverted_box():
+    """QP feasibility depends on this: lb > ub would empty the box."""
+    rng = np.random.default_rng(1)
+    for _ in range(3000):
+        # Deliberately include states already past a limit / over speed.
+        q    = _FR3_QMIN - 0.2 + rng.random(7) * (_FR3_QMAX - _FR3_QMIN + 0.4)
+        qdot = rng.uniform(-1.4, 1.4, 7) * _FR3_VEL
+        lb, ub, _, _ = _pv_box(q, qdot)
+        assert np.all(lb <= ub)
+
+
+def test_pv_box_diagnostics_shape_and_meaning():
+    q = 0.5 * (_FR3_QMIN + _FR3_QMAX)   # zeros(7) is OUTSIDE joint4/joint6 range
+    qdot = 0.5 * _FR3_VEL
+    _, _, ratio, bite = _pv_box(q, qdot)
+    assert ratio.shape == (7,) and bite.shape == (7,) and bite.dtype == bool
+    assert np.allclose(ratio, 0.5)
+    assert not bite.any(), 'mid-range at half speed must not tighten the box'
+
+
+def test_position_limit_caps_approach_velocity():
+    """The behaviour velocity_accel_box could not provide at all."""
+    J = 1                                   # joint2, q_max = 1.8361
+    q, qdot = np.zeros(7), np.zeros(7)
+    q[J], qdot[J] = 1.70, 0.5               # close to the limit, moving into it
+    lb, ub, _, bite = _pv_box(q, qdot)
+    assert ub[J] < _FR3_ACC[J], 'approaching a position limit must tighten ub'
+    assert bite[J]
+    assert lb[J] == -_FR3_ACC[J], 'braking authority away from the limit is untouched'
+
+    # The velocity-only box has no idea the limit exists.
+    old_lb, old_ub = -_FR3_ACC.copy(), _FR3_ACC.copy()
+    velocity_accel_box(qdot, acc_lb=-_FR3_ACC, acc_ub=_FR3_ACC, qdot_max=_FR3_VEL,
+                       v_margin=0.9, dt=0.01, out_lb=old_lb, out_ub=old_ub)
+    assert old_ub[J] == _FR3_ACC[J]
+
+
+def test_past_the_barrier_forbids_moving_further_in():
+    J = 1
+    q, qdot = np.zeros(7), np.zeros(7)
+    q[J] = _FR3_QMAX[J] - 0.01                  # inside q_margin = 0.05
+    lb, ub, _, _ = _pv_box(q, qdot)
+    assert ub[J] <= 0.0, 'no positive accel allowed past the barrier'
+    assert lb[J] == -_FR3_ACC[J]
+
+
+def test_far_from_every_limit_the_box_is_static():
+    q, qdot = np.zeros(7), np.zeros(7)
+    q[:] = 0.5 * (_FR3_QMIN + _FR3_QMAX)            # mid-range
+    lb, ub, _, bite = _pv_box(q, qdot)
+    assert np.allclose(lb, -_FR3_ACC) and np.allclose(ub, _FR3_ACC)
+    assert not bite.any()

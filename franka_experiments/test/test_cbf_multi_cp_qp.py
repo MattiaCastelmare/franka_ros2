@@ -176,3 +176,128 @@ def test_cbf_block_keeps_a_full_sparsity_pattern():
 if __name__ == '__main__':
     import pytest
     raise SystemExit(pytest.main([__file__, '-v']))
+
+
+# ── Per-family slack ─────────────────────────────────────────────────────────
+#
+# One shared slack couples constraint families that are not even in the same
+# units. Measured on hardware: a joint-limit row (radians) drove the shared
+# slack to 3.37, and that same 3.37 relaxed every self-collision row (metres)
+# by the same amount until the firmware fired its own
+# self_collision_avoidance_violation. These tests pin the separation.
+
+G_OBS, G_SC, G_QLIM = 0, 1, 2
+N_SLACK = 3
+NX = NV + N_SLACK
+RHO = {G_OBS: 1000.0, G_SC: 20000.0, G_QLIM: 200.0}
+
+
+def _grouped_G(A, groups):
+    """[-A | -e_group]: only the row's own family column carries the -1."""
+    n_c = A.shape[0]
+    G = np.zeros((n_c, NX))
+    G[:, :NV] = -A
+    G[np.arange(n_c), NV + np.asarray(groups)] = -1.0
+    return G
+
+
+def _solve_row_closed_form(c, rho, lb_j, ub_j):
+    """Exact optimum of  min ½qdd² + ½rho·s²  s.t.  qdd + s >= c,  qdd in box.
+
+    Solved in closed form rather than handed to SLSQP: the realistic prices
+    (rho up to 2e4) against a demand of ~500 are badly enough conditioned that
+    the solver reports "positive directional derivative" and the assertion would
+    be about the solver, not about the QP. Stationarity of
+    ½qdd² + ½rho(c-qdd)² gives qdd = rho·c/(1+rho); clip it, and the slack takes
+    up whatever the box could not.
+    """
+    if c <= 0.0:
+        return 0.0, 0.0                      # already satisfied at rest
+    qdd = float(np.clip(rho * c / (1.0 + rho), lb_j, ub_j))
+    return qdd, max(c - qdd, 0.0)
+
+
+def test_a_violated_family_does_not_relax_the_others():
+    """The regression, on the exact shape that failed on hardware.
+
+    Row A: a joint-limit row demanding far more than the box can deliver.
+    Row B: a self-collision row, easily satisfiable on its own.
+    They sit on different joints, so with per-family slacks the problem
+    decouples and each family pays for itself.
+    """
+    box_lb, box_ub = _box()
+    c_qlim, c_sc = 500.0, 0.5            # = -h_qp for each row
+
+    qdd4, s_qlim = _solve_row_closed_form(c_qlim, RHO[G_QLIM],
+                                          box_lb[3], box_ub[3])
+    qdd6, s_sc = _solve_row_closed_form(c_sc, RHO[G_SC],
+                                        box_lb[5], box_ub[5])
+
+    assert abs(qdd4 - box_ub[3]) < 1e-9, 'joint4 saturates its box'
+    assert s_qlim > 400.0, 'the impossible row absorbs a huge slack'
+    # The self-collision row is untouched by that: it still commands a real
+    # acceleration instead of being covered by borrowed slack.
+    assert abs(qdd6 - c_sc) < 1e-3, (
+        f'the sc row must still demand ~{c_sc} rad/s², got {qdd6:.4f}')
+    assert s_sc < 1e-3, f'and pay almost no slack, got {s_sc:.5f}'
+
+
+def test_shared_slack_would_have_disarmed_the_self_collision_row():
+    """Contrast: one shared slack, same data, and the sc row commands NOTHING.
+
+    With a single s the joint-limit row drives it to ~496. That same 496 already
+    satisfies  qdd6 + s >= 0.5  at qdd6 = 0, so the self-collision row asks for
+    no acceleration at all — which is why the firmware ended up firing
+    self_collision_avoidance_violation on its own.
+    """
+    box_lb, box_ub = _box()
+    c_qlim, c_sc = 500.0, 0.5
+    # The dominant row sets the shared slack.
+    qdd4, s_shared = _solve_row_closed_form(c_qlim, 1000.0, box_lb[3], box_ub[3])
+    assert s_shared > 400.0, s_shared
+    # The sc row is then satisfied for free.
+    assert 0.0 + s_shared >= c_sc, 'shared slack covers the sc row entirely'
+    qdd6_shared = max(c_sc - s_shared, 0.0)
+    assert qdd6_shared == 0.0, 'the sc row demands nothing — disarmed'
+
+    # Per-family, the same row demands a real acceleration.
+    qdd6_grouped, _ = _solve_row_closed_form(c_sc, RHO[G_SC],
+                                             box_lb[5], box_ub[5])
+    assert qdd6_grouped > 0.4, (qdd6_grouped, qdd6_shared)
+
+
+def test_every_family_stays_feasible_with_its_own_slack():
+    rng = np.random.default_rng(5)
+    box_lb, box_ub = _box()
+    for _ in range(60):
+        n_c = int(rng.integers(1, 12))
+        A = rng.normal(scale=0.4, size=(n_c, NV))
+        groups = rng.integers(0, N_SLACK, size=n_c)
+        h_qp = rng.normal(scale=5.0, size=n_c)
+        G = _grouped_G(A, groups)
+        assert _feasible_nx(G, h_qp, box_lb, box_ub)
+
+
+def _feasible_nx(G, h_qp, box_lb, box_ub):
+    lb = np.concatenate([box_lb[:NV], np.zeros(N_SLACK)])
+    ub = np.concatenate([box_ub[:NV], np.full(N_SLACK, 1e6)])
+    A_qp = build_osqp_A(G, NV, N_SLACK).toarray()
+    l, u = build_osqp_bounds(G, h_qp, lb, ub)
+    ok_u, ok_l = np.isfinite(u), np.isfinite(l)
+    A_ub = np.vstack([A_qp[ok_u], -A_qp[ok_l]])
+    b_ub = np.concatenate([u[ok_u], -l[ok_l]])
+    res = linprog(np.zeros(NX), A_ub=A_ub, b_ub=b_ub,
+                  bounds=[(None, None)] * NX, method='highs')
+    return res.status == 0
+
+
+def test_assembled_shape_carries_all_three_slacks():
+    A = np.zeros((4, NV))
+    G = _grouped_G(A, [G_OBS, G_SC, G_QLIM, G_OBS])
+    A_qp = build_osqp_A(G, NV, N_SLACK)
+    assert A_qp.shape == (4 + NX, NX)
+    # Each row touches exactly one slack column.
+    block = G[:, NV:]
+    assert np.array_equal((block != 0).sum(axis=1), np.ones(4))
+    assert block[0, G_OBS] == -1.0 and block[1, G_SC] == -1.0
+    assert block[2, G_QLIM] == -1.0 and block[3, G_OBS] == -1.0

@@ -26,8 +26,23 @@ params:
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
   d_safe_default: 0.1  # alias kept for backward compatibility
 
-  # QP solver
-  rho_slack: 1000.0
+  # ── QP solver: one slack per constraint FAMILY ─────────────────────────────
+  # A single shared slack couples families that are not even in the same units.
+  # Measured: a joint-limit row (radians) drove the shared slack to 3.37, and
+  # that same 3.37 relaxed every self-collision row (metres) until the firmware
+  # fired self_collision_avoidance_violation itself. Separate slacks let one
+  # family yield without disarming the others.
+  #
+  # Prices reflect what a violation actually costs:
+  #   obstacle  - the human. Expensive.
+  #   self-col  - the only violation the robot cannot undo, and only the
+  #               firmware reflex sits behind it. Dearest, so these rows yield
+  #               LAST even though their horizon is the narrowest.
+  #   joint-lim - the hard box underneath is the real guarantee; the row only
+  #               shapes the approach, so letting it yield costs little.
+  rho_slack: 1000.0                  # obstacle rows
+  rho_slack_self_collision: 20000.0  # self-collision rows
+  rho_slack_joint_limit: 200.0       # joint-limit rows
   qp_solver: osqp
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: qp_rate_hz | flagged: 2026-09-01
   control_rate_hz: 100.0
@@ -111,8 +126,32 @@ params:
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: none | flagged: 2026-09-01
   qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
 
-  # Slew-rate: encoded as QP box constraint — NOT post-QP clip [rad/s²/tick]
-  # TODO[LEGACY]: read by no active node — the restored cbf_safety_filter has no slew-rate box (that was a WIP feature reverted in 4d4d450) | confidence: high | superseded-by: none | flagged: 2026-09-01
+  # ── Slew-rate box on qddot (cbf_safety_filter) ─────────────────────────────
+  # RE-ARMED. This key and utils.cbf_hard_limits.apply_slew_limit both existed
+  # and were both dead (the box was a WIP feature reverted in 4d4d450).
+  #
+  # Nothing else in the QP bounds how fast the COMMAND may change. When the
+  # obstacle becomes hard to avoid, the 50 Hz geometry snapshot can move the
+  # rows enough to jump the solution in a single tick: measured on hardware,
+  # dnorm went 5.278 -> 12.742 and the projected command flipped -0.569 ->
+  # +3.818 rad/s^2 inside one 60 ms window. trk_err then sat at ~9.5 and never
+  # recovered — the arm cannot follow a step that size, rt_torque_controller's
+  # e_max clamp saturates, and the resulting bang-bang torque is what the
+  # firmware sees as joint_velocity_violation.
+  #
+  # Encoded as a BOX intersected with the state box, not a post-QP clip: the
+  # solver knows about it, so it optimises within the reachable set rather than
+  # having its answer truncated afterwards. Where the slew and state boxes are
+  # disjoint the result is pinned to the slew edge nearest the safety box, so a
+  # temporarily unreachable safety bound is approached at the maximum admissible
+  # rate — the barrier keeps its authority, it just cannot be met in one step.
+  slew_box_enabled: true
+
+  # [rad/s^2 per tick] At qp_rate_hz=100 this is 500 rad/s^3. Braking is not
+  # impeded: joint4 goes 0 -> -4 (its full authority) in one tick. The wrist
+  # joints, whose bound is 17, need 4 ticks (40 ms) to saturate. LOWER it if
+  # trk_err stays high; RAISE it if the CBF reacts visibly late to a fast
+  # approach. Watch the `slew=` field in CBFDIAG to see which joints it binds.
   max_qddot_delta: 5.0
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
@@ -122,10 +161,143 @@ params:
   # Braking gain for QP-fail fallback: qddot = -k_brake * qdot
   k_brake: 3.0
 
-  # ── Velocity-aware acceleration box (cbf_safety_filter) ────────────────────
-  # One integration step (dt = nominal QP period) must not push |qdot| past
-  # velocity_box_margin * qdot_max. Was hardcoded as self._v_margin = 0.9.
+  # ── Extra HOCBF rows: joint limits + self-collision ────────────────────────
+  # Both used to live OUTSIDE the QP and both failed the same way: as a hard
+  # box / a post-solve veto they act at the last moment, on one joint, with no
+  # way for the QP to compromise. Measured on hardware: joint4 on its braking
+  # curve had its box collapse to lb=0 while the commander asked for -4 rad/s²,
+  # giving dnorm=10.989 with dq_ort=10.941 (the entire correction dumped
+  # orthogonally to the CBF), a command the arm could not track (trk_err=8.428),
+  # ending in a joint_velocity_violation reflex.
+  #
+  # As rows they engage early and the QP spreads the correction across joints.
+  # The state-limit BOX below stays as the hard floor: a row can be relaxed by
+  # the slack, a box cannot.
+
+  joint_limit_rows_enabled: true
+
+  # [rad] where the row's barrier sits, measured INWARD from the official limit.
+  #
+  # MUST STAY 0 UNLESS YOU KNOW THE TRAJECTORY DOES NOT NEED THAT BAND.
+  # This was 0.10 and it broke the robot: joint6 works at ~4.51 rad, which is
+  # 0.11 rad from its official 4.6216 limit and perfectly legal, but with a
+  # 0.10 barrier the row saw h=+0.011 — the joint parked ON the artificial
+  # barrier — and demanded qddot6 <= -0.357 on EVERY tick. Result: dnorm~10
+  # sustained, slack permanently on, tracking lost (trk_err up to 16.7),
+  # pentagon_qddot_commander HARD reset at 0.587 m of EE error, then a
+  # joint_velocity_violation abort.
+  #
+  # 0.0 puts the barrier at the official limit, so the row shapes the APPROACH
+  # and never removes usable range. position_margin_rad (0.05) in the box below
+  # remains the hard stop.
+  joint_limit_row_margin: 0.0
+
+  # [rad] emit a row only within this distance of the barrier. Narrower than the
+  # old 0.60: with the FR3's tight ranges (joint4 spans only 2.96 rad) a wide
+  # horizon keeps several rows permanently in the QP — n_c hit 18 on hardware,
+  # against 7 DOF plus one shared slack, and the active set chattered tick to
+  # tick. Widen only if a joint reaches its limit faster than the row reacts.
+  joint_limit_row_horizon: 0.30
+
+  self_collision_rows_enabled: true
+
+  # DELIBERATELY PERMISSIVE. These rows must not be what stops the robot; they
+  # are the last geometric guard before the firmware's own
+  # self_collision_avoidance_violation reflex. Restrictive settings here, plus
+  # the obstacle rows, plus the joint-limit rows over-constrain a 7-DOF QP and
+  # it starts fighting itself (measured: n_act swinging 2..9 tick to tick).
+  #
+  # ONE inflation, not two. xacro adds safety_distance to EVERY radius, so at
+  # its 0.03 default a PAIR already carries 0.06 m before anything below
+  # applies. Building the capsules at 0.0 and declaring the clearance once, in
+  # self_collision_row_margin, keeps the number meaningful.
+  self_collision_safety_distance: 0.0
+
+  # [m] required clearance between two capsule surfaces. This IS the whole
+  # margin now.
+  self_collision_row_margin: 0.02
+
+  # [m] gap below which a pair produces a row at all. 0.08 means the rows are
+  # silent in every normal pose and appear only on a genuine approach — the old
+  # 0.15 on top of 0.06 of capsule inflation demanded 0.21 m of real clearance
+  # and was essentially always on.
+  self_collision_row_horizon: 0.08
+
+  # Cap on simultaneous self-collision rows (closest pairs win), so n_c stays
+  # bounded and OSQP does not re-setup() every tick.
+  self_collision_max_rows: 3
+
+  # Pairs to drop, "bodyA-bodyB", order-insensitive, matched on the trailing
+  # part of the link names. THIS IS NOT A GUESS: it is every pair marked
+  # reason="Never" in Franka's own SRDF
+  # (franka_description/robots/common/franka_arm.srdf.xacro and
+  # end_effectors/franka_hand/franka_hand.srdf.xacro) — combinations the
+  # manufacturer states cannot collide at any configuration. MoveIt uses the
+  # same list. build_capsule_pairs() only drops CHAIN-ADJACENT bodies on its
+  # own, which is far weaker: without this, 47 pairs are checked, 23 of them
+  # impossible, and link1/link3 interpenetrates by 4.2 cm at the home pose
+  # purely from the capsule inflation.
+  self_collision_exclude_pairs:
+    - "link0-link2"     # SRDF: Never
+    - "link0-link3"     # SRDF: Never
+    - "link0-link4"     # SRDF: Never
+    - "link1-link3"     # SRDF: Never
+    - "link1-link4"     # SRDF: Never
+    - "link2-link4"     # SRDF: Never
+    - "link2-link6"     # SRDF: Never
+    - "link3-link5"     # SRDF: Never
+    - "link3-link6"     # SRDF: Never
+    - "link3-link7"     # SRDF: Never
+    - "link4-link6"     # SRDF: Never
+    - "link4-link7"     # SRDF: Never
+    - "link5-link7"     # SRDF: Never
+    - "hand-link3"      # SRDF: Never
+    - "hand-link4"      # SRDF: Never
+    - "hand-link6"      # SRDF: Never
+
+  # ── State-limit box (cbf_safety_filter) ────────────────────────────────────
+  # cbf_safety_filter reads its q / qdot / qddot limits from
+  #   franka_description/robots/fr3/joint_limits.yaml
+  # NOT from the joint_limits: block at the bottom of this file. That block is
+  # still read by cbf_OSCBF_filter, cbf_velocity_filter, pentagon_qddot_commander
+  # and rl_policy_commander, so it stays — but it is no longer this node's
+  # source of truth, and the two can now drift without the filter caring.
+  #
+  # The box enforces, per joint, in one shot (utils.cbf_hard_limits.
+  # position_velocity_accel_box -> hard_accel_box):
+  #   qddot :  +-deceleration_limit                            (static)
+  #   qdot  :  |qdot + qddot*dt| <= velocity_box_margin*qdot_max
+  #   q     :  velocity toward a limit capped by the braking curve
+  #            sqrt(2 * brake_eta * qddot_max * distance_to_limit)
+  # with a feasibility guard collapsing the box onto lb (hardest legal braking)
+  # if the demands conflict.
+
   velocity_box_margin: 0.9   # fraction of the official qdot_max actually allowed
+
+  # [s] Approach horizon for the velocity and position caps in the box.
+  #
+  # The one-step form (relax = dt = 0.01) only engages in the last q̈_max·dt
+  # before a cap — 0.17 rad/s on joint5. Measured: joint5 ramped from 39% to
+  # 70% of its velocity limit with `vbite` empty on every single log line, and
+  # the firmware aborted on joint_velocity_violation before the box ever bit.
+  # A one-step guarantee is exact for an ideal discrete system and useless
+  # against 1 kHz firmware checks plus IPC latency.
+  #
+  # 0.10 s makes the bound act ~10x earlier and proportionally. Braking past a
+  # cap still uses the one-step dt, so authority away from a limit is untouched.
+  # Lower it toward dt for a looser (later, harder) box.
+  state_box_relax_s: 0.10
+
+  # [rad] keep the position barrier this far inside the mechanical stop, so the
+  # braking curve reaches zero velocity BEFORE the hard limit rather than at it.
+  position_margin_rad: 0.05
+
+  # Fraction of the decel authority the braking curve is allowed to assume.
+  # < 1 on purpose: riding the curve at eta=1 would demand exactly qddot_max and
+  # leave the QP no room for the obstacle rows, so any CBF push would need slack.
+  # 0.6 keeps 40% of the authority free. Raise it to approach limits faster,
+  # lower it if the box and the obstacle rows fight near a joint limit.
+  position_brake_eta: 0.6
 
   # ── OSQP solver limits (cbf_safety_filter) ─────────────────────────────────
   # OSQP's own default max_iter (4000) can be hit on ill-scaled instances; at
@@ -168,6 +340,10 @@ params:
   # TODO[LEGACY]: read by no code; DistanceEngine reads lpf_alpha from fr3_complete.yaml instead | confidence: high | superseded-by: fr3_complete.yaml distance.lpf_alpha | flagged: 2026-09-01
   distance_ema_alpha: 0.5
 
+# NOTE: read by cbf_OSCBF_filter, cbf_velocity_filter, pentagon_qddot_commander
+# and rl_policy_commander. NOT by cbf_safety_filter any more — that node reads
+# franka_description/robots/fr3/joint_limits.yaml directly (see the state-limit
+# box above). Columns: [q_min, q_max, qdot_max, deceleration_limit, effort].
 joint_limits:
   joint1: [-2.9007,  2.9007, 2.62,  6.0,   500.0]
   joint2: [-1.8361,  1.8361, 2.62,  2.585, 500.0]

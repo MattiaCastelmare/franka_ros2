@@ -510,6 +510,43 @@ class CBFKinematics:
         return Jp, Jpd
 
 
+def build_urdf_with_sc(hand: bool = True,
+                      safety_distance: float | None = None) -> str:
+    """Generate an FR3 URDF that INCLUDES the self-collision capsules.
+
+    ``fr3.urdf.xacro`` gates the ``*_sc`` links behind ``with_sc`` (default
+    false), so :func:`build_urdf_no_hand` produces a model in which
+    ``self_collision.parse_sc_capsules`` finds nothing.
+
+    Args:
+        hand: Include the franka_hand and its two ``*_sc`` capsules.
+        safety_distance: Metres added by xacro to EVERY capsule radius. None
+            keeps the xacro default (0.03), which means a PAIR is inflated by
+            0.06 m before any margin of ours. 0.0 gives the raw geometry and
+            leaves our own margin as the only inflation.
+
+    Returns:
+        Absolute path to a temporary ``.urdf``; the caller owns the file.
+    """
+    from ament_index_python.packages import get_package_share_directory
+    share = get_package_share_directory('franka_description')
+    xs = glob.glob(os.path.join(share, '**', 'fr3.urdf.xacro'), recursive=True)
+    if not xs:
+        raise RuntimeError('fr3.urdf.xacro not found under franka_description share')
+    tmp = tempfile.NamedTemporaryFile(suffix='.urdf', delete=False, prefix='fr3_sc_')
+    tmp.close()
+    cmd = ['xacro', xs[0], f'hand:={str(bool(hand)).lower()}', 'with_sc:=true']
+    if hand:
+        cmd.append('ee_id:=franka_hand')
+    if safety_distance is not None:
+        cmd.append(f'safety_distance:={float(safety_distance)}')
+    cmd += ['-o', tmp.name]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f'xacro failed:\n{r.stderr}')
+    return tmp.name
+
+
 def build_urdf_no_hand() -> str:
     """Generate a hand-less FR3 URDF and return the path to the temp file.
 

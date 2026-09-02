@@ -36,7 +36,6 @@ from __future__ import annotations
 import numpy as np
 
 
-# TODO[LEGACY]: used only by test/test_cbf_hard_constraints.py; the restored filter uses velocity_accel_box | confidence: medium | superseded-by: velocity_accel_box (same module) | flagged: 2026-09-01
 def hard_accel_box(
     q: np.ndarray,
     qdot: np.ndarray,
@@ -50,6 +49,7 @@ def hard_accel_box(
     q_margin: float,         # [rad] stay this far from the position limits
     brake_eta: float,        # fraction of decel authority for the braking curve
     dt: float,               # one-step horizon (nominal QP period)
+    relax_dt: float | None = None,   # approach horizon; None → dt (legacy)
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-joint q̈ box enforcing velocity AND position limits. Returns (lb, ub).
 
@@ -57,6 +57,20 @@ def hard_accel_box(
     lower position limit while already at −v_cap), the box collapses onto lb —
     the bound that encodes "brake away from the lower limit / don't exceed
     −q̈_max" — matching the pre-existing velocity-box guard semantics.
+
+    ``relax_dt`` decouples APPROACHING a cap from being OVER it:
+
+    * below the cap the allowed q̈ is ``(v_bound − q̇)/relax_dt``. A longer
+      horizon means a smaller allowed acceleration, so the bound starts acting
+      well before the cap instead of only in the final ``q̈_max·dt`` sliver.
+      With dt = 10 ms that sliver is 0.17 rad/s on joint5 — measured on
+      hardware, joint5 ramped from 39% to 70% of its limit with the box never
+      once engaging (``vbite`` empty on every log line) and the firmware
+      aborted on ``joint_velocity_violation`` before it ever bit.
+    * once past the cap the one-step ``dt`` is used again, so braking authority
+      is never softened when it is actually needed.
+
+    ``None`` reproduces the legacy one-step behaviour exactly.
     """
     # Distance to the (margin-shrunk) position limits, floored at 0 so a
     # config already past the margin yields v_cap = 0 (full stop demand),
@@ -73,13 +87,66 @@ def hard_accel_box(
     v_ub = np.minimum(v_cap, np.sqrt(2.0 * a_auth * h_up))
     v_lb = np.maximum(-v_cap, -np.sqrt(2.0 * a_auth * h_lo))
 
-    ub = np.minimum(acc_ub, (v_ub - qdot) / dt)
-    lb = np.maximum(acc_lb, (v_lb - qdot) / dt)
+    # Approaching a bound → relax_dt (early, gentle). Already past it → dt
+    # (one step, full authority). np.where keeps this branch-free and per-joint.
+    rdt = dt if relax_dt is None else float(relax_dt)
+    dt_ub = np.where(v_ub >= qdot, rdt, dt)
+    dt_lb = np.where(v_lb <= qdot, rdt, dt)
+
+    ub = np.minimum(acc_ub, (v_ub - qdot) / dt_ub)
+    lb = np.maximum(acc_lb, (v_lb - qdot) / dt_lb)
     ub = np.maximum(ub, lb)          # feasibility guard (priority to lb)
     return lb, ub
 
 
-# TODO[LEGACY]: used only by test/test_cbf_hard_constraints.py; no slew box in the restored filter | confidence: medium | superseded-by: none | flagged: 2026-09-01
+def position_velocity_accel_box(
+    q: np.ndarray,
+    qdot: np.ndarray,
+    *,
+    acc_lb: np.ndarray,
+    acc_ub: np.ndarray,
+    qdot_max: np.ndarray,
+    v_margin: float,
+    q_min: np.ndarray,
+    q_max: np.ndarray,
+    q_margin: float,
+    brake_eta: float,
+    dt: float,
+    relax_dt: float | None = None,
+    out_lb: np.ndarray = None,   # (n,) OUTPUT buffer, written in place
+    out_ub: np.ndarray,      # (n,) OUTPUT buffer, written in place
+) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`hard_accel_box` with the calling convention the QP loop needs.
+
+    Same box, but written into the caller's pre-allocated buffers and returning
+    the ``(ratio, bite)`` diagnostics that :func:`velocity_accel_box` returned —
+    so ``cbf_safety_filter`` can swap one for the other without touching its
+    CBFDIAG / VELHI logging.
+
+    The math is NOT duplicated here: this delegates to :func:`hard_accel_box`,
+    which is the version covered by test_cbf_hard_constraints. It therefore
+    allocates a handful of (n,) temporaries per call — negligible next to the
+    sparse matrix ``build_osqp_A`` builds on the same tick, and worth it to keep
+    a single tested implementation of the braking curve.
+
+    Returns:
+        ``(ratio, bite)``. *ratio* is ``|q̇| / q̇_max`` per joint. *bite* marks
+        joints whose box was tightened by the position or velocity bound rather
+        than by the static accel box — note this is BROADER than the velocity-
+        only *bite* it replaces, since a joint approaching a position limit now
+        also lights up.
+    """
+    lb, ub = hard_accel_box(
+        q, qdot, acc_lb=acc_lb, acc_ub=acc_ub, qdot_max=qdot_max,
+        v_margin=v_margin, q_min=q_min, q_max=q_max, q_margin=q_margin,
+        brake_eta=brake_eta, dt=dt, relax_dt=relax_dt)
+    out_lb[:] = lb
+    out_ub[:] = ub
+    ratio = np.abs(qdot) / qdot_max
+    bite = (ub < acc_ub - 1e-9) | (lb > acc_lb + 1e-9)
+    return ratio, bite
+
+
 def apply_slew_limit(
     lb: np.ndarray,
     ub: np.ndarray,
@@ -87,6 +154,11 @@ def apply_slew_limit(
     delta: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Intersect (lb, ub) with the continuity box qddot_prev ± delta.
+
+    LIVE in cbf_safety_filter._qp_tick since the command-discontinuity failure:
+    the QP solution can jump when the 50 Hz constraint snapshot moves, and the
+    arm cannot track a step (measured trk_err ~9.5 rad/s² after a 2.4x jump in
+    dnorm inside one 60 ms window).
 
     Always returns a non-empty box: where the two boxes are disjoint the
     result is pinned to the slew edge nearest to the safety box, so the
@@ -170,6 +242,11 @@ def velocity_accel_box(
     0 while the lower bound stays at -decel, so full braking authority AWAY from
     an obstacle is always retained; only the velocity-increasing direction is
     curtailed.
+
+    SUPERSEDED in cbf_safety_filter by position_velocity_accel_box, which adds
+    the position-limit braking curve on top of this. Kept: it is the
+    velocity-only box, still the right choice for a caller that has no position
+    limits to enforce, and franka_sim carries its own copy of both.
 
     Args:
         qdot: (n,) measured joint velocities [rad/s].

@@ -240,3 +240,76 @@ def load_package_yaml(pkg: str, rel: str) -> dict:
     """
     with open(os.path.join(get_package_share_directory(pkg), rel)) as f:
         return yaml.safe_load(f)
+
+
+def load_franka_joint_limits(
+    joint_keys=None,
+    robot: str = 'fr3',
+    package: str = 'franka_description',
+) -> dict:
+    """Official per-joint limits, straight from ``franka_description``.
+
+    Reads ``robots/<robot>/joint_limits.yaml`` — the file the URDF itself is
+    generated from — so the numbers a safety filter enforces are the
+    manufacturer's, not a copy that can drift. ``fr3_control.yaml`` still
+    carries a ``joint_limits`` block for the other nodes; this bypasses it.
+
+    Returns arrays in ``joint_keys`` order:
+
+    ==============  ===========================================================
+    ``q_min``       ``limit.lower``  [rad]
+    ``q_max``       ``limit.upper``  [rad]
+    ``qdot_max``    ``limit.velocity``  [rad/s]
+    ``decel_max``   ``position_based_velocity_limits.deceleration_limit``
+                    [rad/s²] — the deceleration authority Franka assumes when
+                    it builds its position-based velocity envelope
+    ``effort_max``  ``limit.effort``  [N·m]
+    ``v_offset``    ``position_based_velocity_limits.velocity_offset`` [rad/s]
+    ==============  ===========================================================
+
+    NOTE — there is no acceleration limit to read. ``joint_limits.yaml`` has no
+    ``acceleration`` field for the FR3 (nor does franka_fr3_moveit_config), so
+    ``decel_max`` is the only official q̈-scale number the robot ships. Used
+    symmetrically it is exact in the braking direction (that is literally what
+    it means) and conservative in the accelerating one.
+
+    ``v_offset`` is returned for completeness but is NOT used by
+    :func:`~franka_experiments.utils.cbf_hard_limits.hard_accel_box`, whose
+    braking curve is the pure ``sqrt(2·a·h)`` form without Franka's offset.
+
+    Raises:
+        KeyError / FileNotFoundError if the package or a joint is missing —
+        deliberately fatal: a safety filter must not silently fall back to
+        guessed limits.
+    """
+    import numpy as _np
+    keys = list(joint_keys) if joint_keys is not None else [
+        f'joint{i}' for i in range(1, 8)]
+    doc = load_package_yaml(package, os.path.join('robots', robot,
+                                                  'joint_limits.yaml'))
+    missing = [k for k in keys if k not in doc]
+    if missing:
+        raise KeyError(
+            f'{package}/robots/{robot}/joint_limits.yaml has no entry for '
+            f'{missing} (found: {sorted(doc)})')
+
+    def _col(path):
+        out = []
+        for k in keys:
+            node = doc[k]
+            for part in path:
+                node = node[part]
+            out.append(float(node))
+        return _np.array(out)
+
+    return {
+        'joints':     keys,
+        'q_min':      _col(('limit', 'lower')),
+        'q_max':      _col(('limit', 'upper')),
+        'qdot_max':   _col(('limit', 'velocity')),
+        'effort_max': _col(('limit', 'effort')),
+        'decel_max':  _col(('position_based_velocity_limits',
+                            'deceleration_limit')),
+        'v_offset':   _col(('position_based_velocity_limits',
+                            'velocity_offset')),
+    }
