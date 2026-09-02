@@ -379,6 +379,18 @@ class CBFSafetyFilter(Node):
         # every line before the firmware aborted. A longer horizon makes the
         # bound act early and gently; braking authority past a cap still uses
         # the one-step dt.
+        # EMA weight on the q̇ that feeds the k1·(aᵀq̇) anticipation term.
+        # 0.0 = raw (legacy). Higher = smoother but later.
+        # EMA weight on the obstacle barrier's RECOVERY only. Closing is always
+        # instant, so the smoothed value is never more optimistic than the
+        # measurement. 0.0 = raw (the staircase), higher = smoother but slower
+        # to relax after the obstacle leaves.
+        self._h_alpha = declare_float(self, 'cbf_h_recovery_alpha',
+                                      p.get('cbf_h_recovery_alpha', 0.8),
+                                      minimum=0.0, maximum=0.95)
+        self._hdot_alpha = declare_float(self, 'cbf_hdot_filter_alpha',
+                                         p.get('cbf_hdot_filter_alpha', 0.6),
+                                         minimum=0.0, maximum=0.95)
         self._relax_dt  = declare_float(self, 'state_box_relax_s',
                                         p.get('state_box_relax_s', 0.10),
                                         positive=True, maximum=1.0)
@@ -404,7 +416,11 @@ class CBFSafetyFilter(Node):
         self._diag_slew_bite = np.zeros(NV, dtype=bool)
         self._diag_slew_step = np.zeros(NV)
         self._diag_slack     = np.zeros(N_SLACK)   # per-family slack, last solve
+        self._qdot_cbf       = np.zeros(NV)        # smoothed q̇, anticipation only
+        self._h_smooth: dict[str, float] = {}      # per-row smoothed barrier
+        self._diag_h_hold    = 0.0                 # recovery held back [m]
         self._dt_qp    = 1.0 / qp_rate
+        self._dt_cbf   = 1.0 / cbf_rate    # constraint-rebuild period
         # Per-joint velocity diagnostics, refilled each tick by
         # velocity_accel_box; read by the CBFDIAG line and the high-res VELHI
         # log. ratio = |q̇|/q̇_max; bite = this joint's q̈ box was tightened by the
@@ -716,6 +732,7 @@ class CBFSafetyFilter(Node):
         n_weak        = 0           # obstacles dropped this tick for low leverage
         min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
         d_obs_min     = np.inf      # closest obstacle gap, obstacle rows only
+        self._diag_h_hold = 0.0     # largest recovery held back this rebuild [m]
 
         for ob in obs.items:
             # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
@@ -778,7 +795,47 @@ class CBFSafetyFilter(Node):
             # a and jdq are UNCHANGED and remain exact: d_surface = d_ctr − r −
             # margin with r constant, so ḋ_surface = ḋ_ctr = n̂ᵀJp q̇.  Only the
             # zeroth-order term of the HOCBF moves.
-            h = ob.d - self._d_safe                     # barrier value h̄
+            # Asymmetric smoothing of the barrier — obstacle rows ONLY.
+            #
+            # Obstacle h comes from the camera at ~30 Hz while the QP runs at
+            # 100 Hz, so it sits frozen for a tick or two and then jumps:
+            # measured, d_min repeated its exact value on 7 of 26 consecutive
+            # diagnostic lines and then moved 24 mm, which k0 = 25 turns into a
+            # 0.60 rad/s² step in the constraint — 31% of h_qp's whole range in
+            # one tick. That staircase is the jerk felt on approach.
+            #
+            # Self-collision and joint-limit rows are NOT smoothed and do not
+            # need to be: their h is built from joint states, which arrive far
+            # faster than the QP and never staircase.
+            #
+            # Asymmetric, in the same spirit as distance_engine's own LPF one
+            # layer upstream: a CLOSER measurement is taken instantly (no lag
+            # where it would cost safety), while RECOVERY is rate-limited. So
+            # h_eff <= the raw measurement at every instant — strictly more
+            # conservative than the unsmoothed value, never less.
+            #
+            # EMA rather than a rate limit: a rate limit leaves a corner at both
+            # ends of the ramp, and sizing it is awkward — 0.5 m/s allows 10 mm
+            # per rebuild, larger than the 9 mm rises actually seen, so it never
+            # engaged at all. The EMA has no corner and its effect scales with
+            # the step. Same shape distance_engine already uses on its own
+            # moving-away branch.
+            #
+            # An earlier attempt extrapolated h forward with ḣ = aᵀq̇ instead.
+            # That assumes a static obstacle, so when the human is the one
+            # moving the prediction is wrong and the correction at the next
+            # frame is BIGGER than the step it was meant to remove — on the
+            # logged sequence 0.124 -> 0.112 -> 0.121 it made the worst step
+            # grow from 12 mm to 13 mm. Rate-limiting cannot do that.
+            h_raw  = ob.d - self._d_safe
+            lbl    = f'{ob.link}#{link_seen.get(ob.link, 0)}'
+            h_prev = self._h_smooth.get(lbl)
+            if h_prev is None or h_raw <= h_prev:
+                h = h_raw                       # closer, or first sight
+            else:
+                h = self._h_alpha * h_prev + (1.0 - self._h_alpha) * h_raw
+            self._h_smooth[lbl] = h
+            self._diag_h_hold = max(self._diag_h_hold, h_raw - h)
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
@@ -946,6 +1003,13 @@ class CBFSafetyFilter(Node):
             self._publish(np.zeros(NV))
             return
         qdot = js.qdot
+        # EMA on the velocity used ONLY by the CBF anticipation term (see h_qp).
+        a_f = self._hdot_alpha
+        if a_f > 0.0:
+            self._qdot_cbf *= a_f
+            self._qdot_cbf += (1.0 - a_f) * qdot
+        else:
+            np.copyto(self._qdot_cbf, qdot)   # alpha = 0 → raw, legacy behaviour
 
         nom = self._nom
         if nom is not None and now - nom.stamp < self._nom_to:
@@ -984,7 +1048,24 @@ class CBFSafetyFilter(Node):
             #   ⇒  h_qp =  k1·(aᵀq̇) + k0·h̄ + n̂ᵀ(J̇q̇)   (J̇q̇ term ADDED, sign +)
             # aᵀq̇ uses the fresh QP-tick q̇; n̂ᵀ(J̇q̇)=con.jdot_qdot is carried
             # from the 50 Hz snapshot (J̇ needs Pinocchio, absent in this loop).
-            h_qp = (self._k1 * (con.A @ qdot)
+            # ḣ = aᵀq̇ is a DERIVATIVE of a measured signal, and k1 multiplies
+            # it by 10.5 straight into the constraint's right-hand side. On
+            # hardware that one term accounted for 159% of h_qp's entire swing
+            # (hdot ranged 0.035..0.323 → ±3.0 of h_qp, against a total h_qp
+            # range of 1.9), the commanded acceleration flipped sign 9 times in
+            # 28 intervals, and the arm visibly oscillated on approach.
+            #
+            # So the anticipation term — and ONLY it — uses a lightly smoothed
+            # q̇. The barrier value h̄ and the direction a are untouched, as is
+            # the q̇ used by the accel box, the braking fallback and every
+            # diagnostic: this is not a filter on the safety state, it is a
+            # filter on a noisy derivative estimate.
+            #
+            # Cost: the anticipation lags by roughly one filter time constant
+            # (~15 ms at alpha 0.6, 100 Hz). Against d_safe = 0.20 m and human
+            # approach speeds under 1 m/s that is ~1.5 cm of extra closure —
+            # far less than the oscillation it removes.
+            h_qp = (self._k1 * (con.A @ self._qdot_cbf)
                     + self._k0 * con.h_bar
                     + con.jdot_qdot)
         elif obs is not None and (now - obs.stamp) > self._dist_to:
@@ -1178,7 +1259,9 @@ class CBFSafetyFilter(Node):
             self.get_logger().info(
                 f'CBFDIAG t={now:.3f} n_c={n_c} n_act={n_active_cps} '
                 f'd_min={con.d_obs_min:.3f} '
-                f'link={link_i} hdot={float(a_i @ qdot):+.3f} h_qp={float(h_qp[i]):+.3f} '
+                f'link={link_i} hdot={float(a_i @ self._qdot_cbf):+.3f}'
+                f'(raw{float(a_i @ qdot):+.3f}) h_qp={float(h_qp[i]):+.3f} '
+                f'hhold={self._diag_h_hold:.4f} '
                 f'dnorm={float(np.linalg.norm(dq)):.3f} '
                 f's[obs/sc/qlim]={self._diag_slack[G_OBS]:.3f}/'
                 f'{self._diag_slack[G_SC]:.3f}/{self._diag_slack[G_QLIM]:.3f} '

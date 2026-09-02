@@ -11,7 +11,7 @@ topics:
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
-  d_safe: 0.20          # minimum safe distance from obstacles [m]
+  d_safe: 0.15          # minimum safe distance from obstacles [m]
                         # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
                         # h = LinkDistance.distance - d_safe, i.e. measured from
                         # the capsule SURFACE. It used to be rebuilt as
@@ -287,6 +287,48 @@ params:
   # cap still uses the one-step dt, so authority away from a limit is untouched.
   # Lower it toward dt for a looser (later, harder) box.
   state_box_relax_s: 0.10
+
+  # ── Anticipation-term filter (cbf_safety_filter) ───────────────────────────
+  # EMA weight on the qdot used by the k1*(a^T qdot) term of h_qp, and by
+  # NOTHING else. hdot is a derivative of a measured signal and k1 = 10.5
+  # multiplies it straight into the constraint's right-hand side. Measured on
+  # hardware: that single term accounted for 159% of h_qp's whole swing (hdot
+  # ranged 0.035..0.323, so +-3.0 of h_qp against a total range of 1.9), the
+  # commanded acceleration flipped sign 9 times in 28 intervals, and the arm
+  # visibly oscillated on approach.
+  #
+  # The barrier value h and the direction a are NOT filtered, nor is the qdot
+  # used by the acceleration box, the braking fallback or any diagnostic. This
+  # smooths a noisy derivative estimate, not the safety state.
+  #
+  # Cost: the anticipation lags by about one time constant (~15 ms at 0.6,
+  # 100 Hz) — roughly 1.5 cm of extra closure at 1 m/s, against d_safe = 0.20.
+  # 0.0 restores the raw, unfiltered legacy behaviour.
+  cbf_hdot_filter_alpha: 0.6
+
+  # ── Barrier smoothing (obstacle rows only) ─────────────────────────────────
+  # EMA weight on the obstacle barrier h, applied to its RECOVERY only. Closing
+  # is ALWAYS instant, so the value the QP sees is never more optimistic than
+  # the measurement.
+  #
+  # Why: obstacle h comes from the camera at ~30 Hz while the QP runs at 100 Hz,
+  # so it sits frozen for a tick or two and then jumps. Measured on hardware,
+  # d_min repeated its exact value on 7 of 26 consecutive diagnostic lines and
+  # then moved 24 mm, which k0 = 25 turns into a 0.60 rad/s^2 step in the
+  # constraint - 31% of h_qp's entire range in one tick.
+  #
+  # This smooths the moving-away half only. The approach half is REAL motion
+  # (12 mm per 33 ms frame is 0.36 m/s of genuine closing) and reacting to it
+  # immediately is the point of the filter - see k0_cbf for the lever on how
+  # violently a perception step shakes the constraint.
+  #
+  # Self-collision and joint-limit rows are NOT smoothed: their h comes from
+  # joint states, which arrive far faster than the QP and never staircase.
+  #
+  # 0.8 at the 50 Hz rebuild rate is a ~80 ms time constant: a 9 mm recovery
+  # moves 1.8 mm on the first tick instead of all at once. 0.0 restores the raw
+  # staircase. Watch `hhold=` in CBFDIAG for how much recovery is being held.
+  cbf_h_recovery_alpha: 0.8
 
   # [rad] keep the position barrier this far inside the mechanical stop, so the
   # braking curve reaches zero velocity BEFORE the hard limit rather than at it.

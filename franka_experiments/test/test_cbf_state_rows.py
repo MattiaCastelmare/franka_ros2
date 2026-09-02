@@ -481,3 +481,222 @@ def test_slew_disabled_reproduces_the_plain_state_box():
         prev = rng.uniform(-3, 3, NV)
         lo, hi = apply_slew_limit(lb, ub, prev, 1e6)   # effectively no limit
         assert np.allclose(lo, lb) and np.allclose(hi, ub)
+
+
+# ── Anticipation-term filter ─────────────────────────────────────────────────
+#
+# hdot = a^T qdot is a derivative of a measured signal, multiplied by k1 = 10.5
+# straight into h_qp. Measured on hardware, that one term covered 159% of
+# h_qp's entire swing and the commanded acceleration flipped sign 9 times in 28
+# intervals. These tests pin what the filter does and, just as importantly,
+# what it must NOT touch.
+
+def _ema(seq, alpha):
+    out, y = [], 0.0
+    for v in seq:
+        y = alpha * y + (1.0 - alpha) * v if alpha > 0.0 else v
+        out.append(y)
+    return np.array(out)
+
+
+# The hdot sequence read off the hardware log, in order.
+HDOT_LOG = np.array([0.323, 0.308, 0.294, 0.259, 0.228, 0.231, 0.219, 0.095,
+                     0.194, 0.105, 0.035, 0.169, 0.137, 0.141, 0.043, 0.121,
+                     0.142, 0.184, 0.188, 0.193, 0.194, 0.192, 0.162, 0.204])
+
+
+def test_filter_cuts_the_swing_that_drove_the_oscillation():
+    raw_swing = float(HDOT_LOG.max() - HDOT_LOG.min())
+    filt = _ema(HDOT_LOG, 0.6)[3:]          # skip the start-up transient
+    filt_swing = float(filt.max() - filt.min())
+    assert raw_swing > 0.28, raw_swing
+    assert filt_swing < 0.6 * raw_swing, (
+        f'the filter must materially reduce the swing: {raw_swing:.3f} -> '
+        f'{filt_swing:.3f}')
+    # And what that means at the constraint: k1 = 10.5 multiplies it.
+    assert 10.5 * (raw_swing - filt_swing) > 1.0, 'worth more than 1.0 of h_qp'
+
+
+def test_alpha_zero_is_exactly_the_legacy_behaviour():
+    assert np.array_equal(_ema(HDOT_LOG, 0.0), HDOT_LOG)
+
+
+def test_filter_is_a_lag_not_a_bias():
+    """A constant approach speed must be tracked exactly, just later."""
+    const = np.full(400, 0.25)
+    out = _ema(const, 0.6)
+    assert abs(out[-1] - 0.25) < 1e-9, 'no steady-state error'
+    assert out[5] < 0.25, 'but it does lag on the way in'
+
+
+def test_lag_is_small_against_d_safe():
+    """Quantify the safety cost: how much extra closure the lag allows."""
+    alpha, dt, approach = 0.6, 0.01, 1.0     # 1 m/s, the human-motion scale
+    tau = alpha * dt / (1.0 - alpha)         # EMA time constant
+    extra_closure = approach * tau
+    assert extra_closure < 0.02, extra_closure
+    assert extra_closure < 0.20 / 5.0, 'must stay well under d_safe = 0.20 m'
+
+
+# ── Asymmetric barrier smoothing (obstacle rows only) ────────────────────────
+#
+# Obstacle h comes from the camera at ~30 Hz while the QP runs at 100 Hz, so it
+# sits frozen for a tick or two and then jumps: measured, d_min repeated its
+# exact value on 7 of 26 consecutive diagnostic lines and then moved 24 mm,
+# which k0 = 25 turns into a 0.60 rad/s^2 step in the constraint.
+#
+# Closing is instant, recovery is rate-limited. The first attempt at this
+# EXTRAPOLATED h forward with hdot = a^T qdot instead; that assumes a static
+# obstacle, so when the human is the one moving it mispredicts and the
+# correction at the next frame is bigger than the step it was removing. The
+# logged sequence below is the one that exposed it.
+
+H_LOG = [0.124, 0.112, 0.121, 0.110, 0.116, 0.121, 0.124, 0.125, 0.123]
+FRAMES_PER_TICK = 3          # 30 Hz perception vs 100 Hz QP
+DT_CBF = 1.0 / 50.0
+
+
+def _smooth_run(h_updates, alpha, per_frame=FRAMES_PER_TICK):
+    """Replay perception frames at rebuild rate through the asymmetric rule."""
+    out, prev = [], None
+    for h_raw in h_updates:
+        for _ in range(per_frame):
+            if prev is None or h_raw <= prev:
+                h = h_raw                      # closer, or first sight
+            else:
+                h = alpha * prev + (1.0 - alpha) * h_raw
+            prev = h
+            out.append(h)
+    return out
+
+
+def _frozen_run(h_updates, per_frame=FRAMES_PER_TICK):
+    return [h for h in h_updates for _ in range(per_frame)]
+
+
+def _worst_step(seq):
+    return max(abs(b - a) for a, b in zip(seq, seq[1:]))
+
+
+def _worst_rise(seq):
+    return max((b - a for a, b in zip(seq, seq[1:])), default=0.0)
+
+
+def _worst_drop(seq):
+    return max((a - b for a, b in zip(seq, seq[1:])), default=0.0)
+
+
+def test_smoothing_shrinks_the_recovery_staircase_only():
+    """It removes the moving-away half of the staircase, by design.
+
+    Approach steps stay instant: a 12 mm drop in measured distance at 30 Hz is
+    0.36 m/s of real closing motion, and reacting to it immediately is the whole
+    point of the filter. Only the recovery side is held back, which is the half
+    that costs nothing to smooth.
+    """
+    frozen = _frozen_run(H_LOG)
+    smooth = _smooth_run(H_LOG, 0.8)
+    assert _worst_rise(frozen) > 0.008, 'precondition: the raw data does rise'
+    assert _worst_rise(smooth) < 0.5 * _worst_rise(frozen), (
+        f'recovery steps must shrink: {_worst_rise(frozen):.4f} -> '
+        f'{_worst_rise(smooth):.4f}')
+    assert _worst_drop(smooth) == _worst_drop(frozen), (
+        'approach steps must be untouched — that reaction is wanted')
+
+
+def test_lower_k0_is_the_lever_for_the_remaining_approach_jerk():
+    """What a perception step does to the constraint, as a function of k0.
+
+    The approach half of the staircase is real motion, so it cannot be filtered
+    away. It CAN be made to matter less: h_qp moves by k0 * delta_h, so k0 sets
+    how violently a 12 mm perception step shakes the constraint — and lowering
+    it also starts the ramp further out, which is the softer onset asked for.
+    """
+    step = 0.012                              # the logged worst approach step
+    k1, d_safe, hdot = 10.5, 0.20, 0.20
+    for k0 in (25.0, 15.0):
+        jolt = k0 * step
+        onset = d_safe + k1 * hdot / k0
+        if k0 == 25.0:
+            assert abs(jolt - 0.30) < 1e-9 and abs(onset - 0.284) < 1e-3
+        else:
+            assert jolt < 0.20, jolt          # 40% less shake per step
+            assert onset > 0.33, onset        # and it starts much earlier
+        assert k1 / (2.0 * np.sqrt(k0)) >= 1.0, 'must stay overdamped'  
+
+
+def test_extrapolation_would_have_made_it_worse():
+    """The rejected approach, on the sequence that exposed it.
+
+    h -> 0.124, 0.112, 0.121: the gap closes then opens, so a static-obstacle
+    prediction is wrong in both directions and the frame boundary gets a bigger
+    correction than the frozen value it replaced.
+    """
+    hdot, dt, cap = -0.20, 0.01, 0.04
+    extrap = []
+    for h_raw in H_LOG:
+        for k in range(FRAMES_PER_TICK):
+            extrap.append(h_raw + hdot * min(k * dt, cap))
+    assert _worst_step(extrap) > _worst_step(_frozen_run(H_LOG)), (
+        'this is exactly why extrapolation was rejected: '
+        f'{_worst_step(_frozen_run(H_LOG)):.4f} -> {_worst_step(extrap):.4f}')
+    # And the chosen rule does not have that failure mode.
+    assert _worst_step(_smooth_run(H_LOG, 0.8)) < _worst_step(extrap)
+
+
+def test_smoothed_value_is_never_more_optimistic_than_the_measurement():
+    """The safety property: h_eff <= h_raw at every instant, always."""
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        seq = list(rng.uniform(0.0, 0.4, 40))
+        smooth = _smooth_run(seq, 0.8)
+        frozen = _frozen_run(seq)
+        assert np.all(np.asarray(smooth) <= np.asarray(frozen) + 1e-12)
+
+
+def test_closing_is_always_instant():
+    """No lag in the direction that matters."""
+    seq = [0.30, 0.05]                    # a sudden 25 cm approach
+    out = _smooth_run(seq, 0.8)
+    assert out[FRAMES_PER_TICK] == 0.05, 'the drop must land on the first tick'
+
+
+def test_recovery_is_rate_limited_but_arrives():
+    seq = [0.05] + [0.30] * 40
+    out = _smooth_run(seq, 0.8)
+    assert out[FRAMES_PER_TICK] < 0.10, 'must not jump back in one tick'
+    assert abs(out[-1] - 0.30) < 1e-9, 'but must get there'
+    rises = [b - a for a, b in zip(out, out[1:]) if b > a]
+    assert max(rises) < 0.25 * (0.30 - 0.05), 'first step is a fraction of the jump'
+
+
+def test_zero_alpha_restores_the_raw_staircase():
+    assert _smooth_run(H_LOG, 0.0) == _frozen_run(H_LOG)
+
+
+# ── The class-K ramp is already continuous ───────────────────────────────────
+
+def test_linear_class_k_gives_a_continuous_ramp_not_a_step():
+    """The demanded accel rises smoothly from zero, it does not switch on."""
+    k0, k1, d_safe, hdot = 25.0, 10.5, 0.20, 0.20
+    def demand(d):
+        return max(k1 * hdot - k0 * (d - d_safe), 0.0)
+    onset = d_safe + k1 * hdot / k0
+    assert abs(demand(onset)) < 1e-12, 'zero exactly at onset — no jump'
+    ds = np.linspace(onset, d_safe, 50)
+    vals = np.array([demand(d) for d in ds])
+    assert np.all(np.diff(vals) > 0), 'monotonically stronger as d shrinks'
+    steps = np.diff(vals)
+    assert steps.max() / steps.min() < 1.05, 'and evenly, with no kink'
+
+
+def test_lowering_k0_widens_and_softens_the_onset():
+    """The lever for "start earlier, push more gently", with damping intact."""
+    k1, d_safe, hdot = 10.5, 0.20, 0.20
+    onset = lambda k0: d_safe + k1 * hdot / k0
+    slope = lambda k0: k0                    # d(demand)/d(-h)
+    assert onset(15.0) > onset(25.0), 'lower k0 starts further out'
+    assert slope(15.0) < slope(25.0), 'and ramps up more gently'
+    # Damping must stay overdamped: zeta = k1 / (2*sqrt(k0)) >= 1.
+    for k0 in (15.0, 25.0):
+        assert k1 / (2.0 * np.sqrt(k0)) >= 1.0, k0
