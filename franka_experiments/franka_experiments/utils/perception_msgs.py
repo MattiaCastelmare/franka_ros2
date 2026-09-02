@@ -17,9 +17,25 @@ DOES NOT OWN
 * Geometry / TF / control-point definition — that is ``utils.distance_utils``.
 * Publishing; callers own their publishers.
 
+Message shape
+-------------
+``MultiDistance`` carries one entry per SEGMENT (argmin over that segment's
+control points) and is the legacy topic, consumed by the visualiser and the
+logger.  ``MultiLinkDistance`` — the topic the CBF chain reads — carries one
+entry per CONTROL POINT, so ``robot_link_name`` repeats across the CPs of a
+link and the filter builds one HOCBF row for each.  It used to be pooled to
+argmin per link too, which hid 6 of the 11 CPs from the QP entirely.
+
+``LinkDistance.distance`` is the surface gap: capsule radius and mask-dilation
+margin already subtracted by ``DistanceEngine``, clamped at 0.  A gap of
+exactly 0.0 means "at the capsule surface" and is published ``valid`` — it is a
+measurement, not a dropout.
+
 Hot-path note: :func:`build_cp_messages` runs once per camera frame (~30 Hz),
-not on the 100 Hz control loop. Its allocation profile is unchanged by the
-Phase 2 move — the bodies below are byte-identical relocations.
+not on the 100 Hz control loop.  Per-CP publishing raised the LinkDistance
+allocation count from ~5 to ~11 per frame, which is immaterial at 30 Hz but is
+the reason the QP's ``n_c`` now ranges over 11 values instead of 5 (see
+``cbf_obstacle_horizon`` in fr3_control.yaml for why that matters to OSQP).
 """
 from __future__ import annotations
 
@@ -113,16 +129,23 @@ def build_cp_messages(
     min_thresh = thresholds['min_thresh']
     max_thresh = thresholds['max_thresh']
 
-    # Single pass: best result per segment index and per end-link
-    seg_best:  dict[int, ControlPointResult] = {}
-    link_best: dict[str, ControlPointResult] = {}
+    # Single pass: best result per segment index (MultiDistance), and every
+    # control point grouped by end-link (MultiLinkDistance).
+    #
+    # MultiLinkDistance used to keep only argmin over each link's control
+    # points, collapsing 11 CPs to 5 entries — the other 6 never reached the
+    # CBF at all, so a link could be pulled clear at its closest CP while a
+    # second CP on the SAME link kept closing on the obstacle.  The QP has
+    # always assembled one HOCBF row per entry it receives (it was never
+    # min-only), so publishing per-CP is what actually turns on simultaneous
+    # multi-CP activation; cbf_safety_filter needs no change to consume it.
+    seg_best: dict[int, ControlPointResult] = {}
+    by_link:  dict[str, list] = {}
     for r in cp_results:
         s = r.seg_idx
         if s not in seg_best or r.distance < seg_best[s].distance:
             seg_best[s] = r
-        lk = r.end_link
-        if lk not in link_best or r.distance < link_best[lk].distance:
-            link_best[lk] = r
+        by_link.setdefault(r.end_link, []).append(r)
 
     # ── MultiDistance (one HumanRobotDistance per segment) ────────────────
     entries = []
@@ -153,32 +176,50 @@ def build_cp_messages(
     multi_msg.header.frame_id = frame_id
     multi_msg.distances       = entries
 
-    # ── MultiLinkDistance (one LinkDistance per segment_link) ─────────────
+    # ── MultiLinkDistance (one LinkDistance per CONTROL POINT) ────────────
+    # Ordered by segment_links, then by (seg_idx, cp_idx) within a link, so the
+    # row order the CBF sees is stable frame to frame.  That matters: OSQP
+    # reuses its factorization while n_c holds and only pushes new Ax values,
+    # so a permuted row order would silently degrade every warm start.
+    #
+    # robot_link_name repeats across the CPs of one link — that is intended and
+    # safe.  cbf_safety_filter uses it only to resolve a Pinocchio frame id, and
+    # then calls point_jacobian(fid, ob.pr), which builds the Jacobian of the
+    # arbitrary world point ob.pr rigidly attached to that frame.  Each CP
+    # therefore gets its own correct row from its own closest_point_robot.
     link_entries = []
     for lk in segment_links:
-        if lk not in link_best:
-            continue
-        r   = link_best[lk]
-        d   = r.distance
-        di  = r.direction
-        pt  = r.point
-        obs = r.closest_obstacle_point
-        ld  = LinkDistance()
-        ld.robot_link_name = lk
-        if pt is not None:
-            ld.closest_point_robot = Point(
-                x=float(pt[0]), y=float(pt[1]), z=float(pt[2]))
-        if obs is not None:
-            ld.closest_point_human = Point(
-                x=float(obs[0]), y=float(obs[1]), z=float(obs[2]))
-        if di is not None:
-            ld.direction = Vector3(
-                x=float(di[0]), y=float(di[1]), z=float(di[2]))
-        ld.distance   = d
-        ld.valid      = math.isfinite(d) and d > 0.0 and di is not None
-        ld.confidence = 1.0
-        ld.zone       = get_safety_zone(d, zones)
-        link_entries.append(ld)
+        for r in sorted(by_link.get(lk, ()), key=lambda x: (x.seg_idx, x.cp_idx)):
+            d   = r.distance
+            di  = r.direction
+            pt  = r.point
+            obs = r.closest_obstacle_point
+            ld  = LinkDistance()
+            ld.robot_link_name = lk
+            if pt is not None:
+                ld.closest_point_robot = Point(
+                    x=float(pt[0]), y=float(pt[1]), z=float(pt[2]))
+            if obs is not None:
+                ld.closest_point_human = Point(
+                    x=float(obs[0]), y=float(obs[1]), z=float(obs[2]))
+            if di is not None:
+                ld.direction = Vector3(
+                    x=float(di[0]), y=float(di[1]), z=float(di[2]))
+            ld.distance   = d
+            # d >= 0.0, NOT d > 0.0.  DistanceEngine clamps the surface gap with
+            # np.maximum(..., 0.0), so a control point that has reached the
+            # capsule surface reports EXACTLY 0.0.  The old `d > 0.0` therefore
+            # marked the single most dangerous sample invalid, and
+            # cbf_safety_filter._on_distances (`for ld in msg.links if ld.valid`)
+            # dropped that CP's HOCBF row from the QP at the exact moment it was
+            # needed.  The clamp is reachable well before physical contact: the
+            # EE dilation margin subtracted upstream is 24 px, i.e. ~0.11 m at
+            # Z = 2 m.  Zero is a valid, maximally-urgent measurement — only a
+            # non-finite distance or a missing direction is not.
+            ld.valid      = math.isfinite(d) and d >= 0.0 and di is not None
+            ld.confidence = 1.0
+            ld.zone       = get_safety_zone(d, zones)
+            link_entries.append(ld)
 
     mld_msg = MultiLinkDistance()
     mld_msg.header.stamp    = stamp

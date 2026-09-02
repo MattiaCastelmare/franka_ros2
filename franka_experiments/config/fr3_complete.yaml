@@ -85,6 +85,18 @@ topics:
   overlay_image: /real_time_distance/overlay_image
   depth_optical_frame: camera_depth_optical_frame
 
+# Distance semantics (what /cbf/per_link_distances carries)
+# ---------------------------------------------------------
+# LinkDistance.distance is the gap from a control point to the nearest OBSERVED
+# obstacle surface point, with the capsule radius and the mask-dilation margin
+# already subtracted, clamped at 0. It is a surface/edge gap by construction: a
+# depth camera returns only the front surface of an obstacle, so there is no
+# interior term and no distance transform anywhere in this pipeline. A gap of
+# exactly 0.0 means "at the capsule surface" and is published valid.
+#
+# One LinkDistance is emitted per CONTROL POINT, not per link, so robot_link_name
+# repeats across the CPs of a segment and the CBF assembles one HOCBF row for
+# each. With the segments below that is 11 rows (2+2+2+2+3), not 5.
 distance: # in meters
   min_depth_m: 0.15
   max_depth_m: 4.0
@@ -92,7 +104,34 @@ distance: # in meters
   image_margin_px: 10
   roi_pad_px: 90
 
-  # consider distance within this range
+  # ── Publish gate for the whole frame (NOT a per-CP filter) ───────────────
+  # real_time_distance builds `valid` = CPs whose distance falls in this band.
+  # If `valid` is EMPTY the frame publishes only the empty heartbeat and no
+  # MultiLinkDistance at all; if ANY CP falls inside, EVERY control point is
+  # published (build_cp_messages applies this band only to the legacy
+  # MultiDistance topic, never to the per-CP MultiLinkDistance the CBF reads).
+  #
+  # UNCHANGED from the pre-multi-CP values, deliberately. Two things to know:
+  #
+  # min_thresh is a lower bound on the reported GAP, not on depth — depth noise
+  # is already gated by min_depth_m below. Its real job is rejecting robot
+  # pixels that leak through the dilated exclusion mask, which read as a gap of
+  # ~0. That guard now costs something: since LinkDistance.valid accepts a gap
+  # of exactly 0.0 (a CP at the capsule surface is a measurement, not a
+  # dropout), a frame in which every CP is either < 0.08 m or > 0.7 m still
+  # publishes nothing and leaves the QP with no rows. Adjacent CPs on a link sit
+  # ~0.1-0.15 m apart, so in practice one of them lands in the band and rescues
+  # the frame — but the hole is real and lives exactly in the contact regime.
+  # Closing it means separating "is this CP self-detection?" from "should this
+  # frame publish?", which is a change inside real_time_distance. Watch for it
+  # on hardware before touching this number: lowering min_thresh toward 0
+  # re-exposes mask leakage as emergency braking.
+  #
+  # max_thresh gates publishing only. CPs beyond it are still published (as long
+  # as some other CP is in band) and are then trimmed by cbf_obstacle_horizon
+  # (1.2 m, fr3_control.yaml). The CBF therefore never sees a frame in which no
+  # CP is within 0.7 m, so that horizon only ever trims — it cannot reach
+  # farther than this band allows.
   thresholds:
     min_thresh: 0.08
     max_thresh: 0.7

@@ -16,10 +16,18 @@ QP solved per control tick:
 
     min  ½ ‖qddot − qddot_nom‖²  +  ½ ρ s²
     s.t. qddot_min ≤ qddot ≤ qddot_max
-         aᵢᵀ qddot + s ≥ bᵢ   ∀ ostacolo attivo   (s ≥ 0, slack)
+         aᵢᵀ qddot + s ≥ bᵢ   ∀ control point attivo   (s ≥ 0, slack)
 
-Per active obstacle i (h̄ has relative degree 2 → HOCBF, d̈ depends on q̈):
+One row per CONTROL POINT (perception publishes one LinkDistance per CP, up to
+11), all active simultaneously — never argmin over them.  A single slack s is
+shared by every row, so one deeply-violated CP relaxes all the others by the
+same amount; watch data[1] of cbf_status when many rows are active.
+
+Per active control point i (h̄ has relative degree 2 → HOCBF, d̈ depends on q̈):
     h̄ᵢ  = dᵢ − d_safe                 ┐ geometry — rebuilt at ~50 Hz
+          dᵢ = LinkDistance.distance,   │ the SURFACE gap (capsule radius and
+          NOT ‖pr − ph‖                 │ pixel-dilation margin already removed
+                                        │ upstream by DistanceEngine)
     aᵢ  = n̂ᵢᵀ Jᵢ                      │ (perception group); the centripetal/
     ċᵢ  = n̂ᵢᵀ (J̇ᵢ q̇)                 ┘ Coriolis term ċᵢ is frozen at the
                                         snapshot q̇ (J̇ needs Pinocchio)
@@ -324,7 +332,14 @@ class CBFSafetyFilter(Node):
             Float64MultiArray, topics['qddot_safe'], 10)
 
         # CBF activity status for downstream consumers.
-        # data = [n_active_constraints, slack, fault_braking].
+        # data = [n_active_constraints, slack, fault_braking, n_active_cps].
+        # data[3] (n_active_cps) counts the rows whose barrier is actually
+        # VIOLATED (h̄ < 0, i.e. the CP is inside d_safe), which is the honest
+        # "how many control points triggered this cycle" figure. data[0] is the
+        # larger count of rows PRESENT in the QP — every CP inside
+        # cbf_obstacle_horizon, most of them non-binding. Both consumers
+        # (frame_grabber, rl_policy_commander) index positionally behind a
+        # len() guard, so appending a 4th element is backward compatible.
         # Today the only subscriber is frame_grabber.py, which uses it to gate
         # frame saving (save while CBF active or fault-braking). NOTE: no
         # consumer currently freezes virtual time on this signal — a "freeze
@@ -336,7 +351,7 @@ class CBFSafetyFilter(Node):
         self._status_pub = self.create_publisher(
             Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
         self._status_msg = Float64MultiArray()
-        self._status_msg.data = [0.0, 0.0, 0.0]
+        self._status_msg.data = [0.0, 0.0, 0.0, 0.0]
 
         # Pay one-shot lazy costs now (robot stationary) instead of on the first
         # real tick — must run before the timers start firing callbacks.
@@ -506,7 +521,12 @@ class CBFSafetyFilter(Node):
         # (h̄ has relative degree 2). One extra O(nv) backward pass at 50 Hz.
         self._kin.update(js.q, js.qdot, with_jdot=True)
         rows_a, rows_h, rows_jdq = [], [], []
-        rows_link     = []          # link name per kept row (DIAGNOSTIC only)
+        # Label per kept row (DIAGNOSTIC only, never read by the QP). Perception
+        # now sends one entry per CONTROL POINT, so several rows share a
+        # robot_link_name; the #k suffix counts occurrences in arrival order so
+        # CBFDIAG can name which CP on a link is driving the constraint.
+        rows_link     = []
+        link_seen: dict[str, int] = {}
         n_weak        = 0           # obstacles dropped this tick for low leverage
         min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
 
@@ -523,11 +543,14 @@ class CBFSafetyFilter(Node):
             if ob.d > self._obstacle_horizon or ob.conf < self._conf_min:
                 continue
 
-            delta = ob.pr - ob.ph
-            d     = float(np.linalg.norm(delta))
-            if d < 1e-8:
+            # delta/‖delta‖ gives the unit normal n̂ (obstacle → control point).
+            # ‖delta‖ itself is the CENTRE-to-obstacle distance and is NOT the
+            # barrier argument — see the h assignment below.
+            delta   = ob.pr - ob.ph
+            d_ctr   = float(np.linalg.norm(delta))
+            if d_ctr < 1e-8:
                 continue
-            n_w = delta / d
+            n_w = delta / d_ctr
 
             fid = self._frame_id(ob.link)
             if fid is None:
@@ -550,7 +573,21 @@ class CBFSafetyFilter(Node):
                 min_a_dropped = min(min_a_dropped, a_norm)
                 continue
 
-            h = d - self._d_safe                        # barrier value h̄
+            # Barrier argument is the SURFACE gap published by perception
+            # (ob.d = LinkDistance.distance), not ‖pr − ph‖.  pr is the control
+            # point on the segment AXIS, so ‖pr − ph‖ omits both the capsule
+            # radius (0.05 m) and the pixel-dilation margin DistanceEngine
+            # already subtracted (0.014 m at Z = 0.5 m, ~0.11 m at Z = 2 m).
+            # Using it made the filter believe it was 6–16 cm farther from the
+            # obstacle than perception reported — an optimistic bias in exactly
+            # the unsafe direction, and a direct cause of contact while the CBF
+            # still read a positive h̄.  ob.d is finite by construction: the
+            # publisher sets valid=False otherwise and _on_distances drops it.
+            #
+            # a and jdq are UNCHANGED and remain exact: d_surface = d_ctr − r −
+            # margin with r constant, so ḋ_surface = ḋ_ctr = n̂ᵀJp q̇.  Only the
+            # zeroth-order term of the HOCBF moves.
+            h = ob.d - self._d_safe                     # barrier value h̄
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
@@ -560,7 +597,9 @@ class CBFSafetyFilter(Node):
                 rows_a.append(a)
                 rows_h.append(h)
                 rows_jdq.append(jdq)
-                rows_link.append(ob.link)
+                k = link_seen.get(ob.link, 0)
+                link_seen[ob.link] = k + 1
+                rows_link.append(f'{ob.link}#{k}')
 
         if n_weak > 0:
             # Previously this drop was silent (no log/counter). Throttled so a
@@ -674,9 +713,16 @@ class CBFSafetyFilter(Node):
         # qddot_nom-stale fallback (that is a nominal-command loss, not a
         # safety-chain fault).
         fault_braking = 0.0
+        # Control points whose barrier is actually violated (h̄ < 0 ⇒ inside
+        # d_safe). Published as status data[3] and logged by CBFDIAG. Since
+        # perception moved to one entry per control point this can exceed 1 —
+        # that is the multi-CP activation working, not a fault. One vectorised
+        # pass over an ≤11-element array per tick.
+        n_active_cps = 0
         if con is not None and now - con.t_dist < self._dist_to:
             n_c  = con.A.shape[0]
             G    = con.G
+            n_active_cps = int(np.count_nonzero(con.h_bar < 0.0))
             # HOCBF, relative degree 2 (per obstacle i), with linear class-K:
             #   d̈ + k1·ḋ + k0·h̄ ≥ 0 ,  ḋ = aᵀq̇ ,  d̈ = aᵀq̈ + n̂ᵀ(J̇q̇)
             #   ⇒  aᵀq̈ + n̂ᵀ(J̇q̇) ≥ −k1·(aᵀq̇) − k0·h̄              (with slack s≥0
@@ -796,6 +842,7 @@ class CBFSafetyFilter(Node):
         self._status_msg.data[0] = float(n_c)
         self._status_msg.data[1] = slack
         self._status_msg.data[2] = fault_braking
+        self._status_msg.data[3] = float(n_active_cps)
         self._status_pub.publish(self._status_msg)
 
         # ── Structured CBF-episode diagnostic ────────────────────────────────
@@ -803,7 +850,11 @@ class CBFSafetyFilter(Node):
         # Whole block (projections + f-string) runs only when the manual throttle
         # is due → negligible average per-tick cost. DIAGNOSTIC ONLY: reads
         # already-computed values, changes nothing in the control/safety path.
-        # Field guide (units): d_min [m] closest active obstacle (= min h̄ + d_safe);
+        # Field guide (units): n_c rows in the QP (every CP inside the horizon);
+        #   n_act rows actually VIOLATED (h̄ < 0, CP inside d_safe) — n_act > 1
+        #   is simultaneous multi-CP activation, expected on an angled approach;
+        #   d_min [m] closest active obstacle (= min h̄ + d_safe), now the SURFACE
+        #   gap, so it should agree with real_time_distance's `dist=` line;
         #   link closest link; hdot=aᵀq̇ [m/s] approach rate (velocity anticipation);
         #   h_qp [m/s²] RHS of that row's bound (more positive ⇒ looser/inactive);
         #   dnorm=‖q̈_safe−q̈_nom‖ [rad/s²] how hard the QP bends the nominal;
@@ -820,7 +871,9 @@ class CBFSafetyFilter(Node):
         if n_c > 0 and (now - self._last_diag_t) >= self._diag_period:
             self._last_diag_t = now
             dq    = qddot_safe - qddot_nom
-            i     = int(np.argmin(con.h_bar))           # closest obstacle row
+            # Closest row, for LABELLING this log line only — every row is in
+            # the QP regardless. Not an activation gate; do not read it as one.
+            i     = int(np.argmin(con.h_bar))
             a_i   = con.A[i]
             a_n   = float(np.linalg.norm(a_i))
             a_hat = a_i / a_n if a_n > 1e-12 else a_i
@@ -833,7 +886,8 @@ class CBFSafetyFilter(Node):
             qdd_real_rad = float(a_i @ qddot_real)
             trk_err      = float(np.linalg.norm(qddot_safe - qddot_real))
             self.get_logger().info(
-                f'CBFDIAG t={now:.3f} n_c={n_c} d_min={float(con.h_bar[i]) + self._d_safe:.3f} '
+                f'CBFDIAG t={now:.3f} n_c={n_c} n_act={n_active_cps} '
+                f'd_min={float(con.h_bar[i]) + self._d_safe:.3f} '
                 f'link={link_i} hdot={float(a_i @ qdot):+.3f} h_qp={float(h_qp[i]):+.3f} '
                 f'dnorm={float(np.linalg.norm(dq)):.3f} s={slack:.4f} '
                 f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} cart_rad={float(a_i @ dq):+.3f} '

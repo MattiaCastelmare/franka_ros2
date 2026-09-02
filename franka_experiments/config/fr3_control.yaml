@@ -12,6 +12,17 @@ topics:
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
   d_safe: 0.20          # minimum safe distance from obstacles [m]
+                        # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
+                        # h = LinkDistance.distance - d_safe, i.e. measured from
+                        # the capsule SURFACE. It used to be rebuilt as
+                        # ||closest_point_robot - closest_point_human|| - d_safe,
+                        # which is the distance from the segment AXIS and so
+                        # silently added back the capsule radius (0.05 m) plus
+                        # the dilation margin (0.014 m at Z=0.5 m, ~0.11 m at
+                        # Z=2 m). The effective standoff therefore GREW by
+                        # 6-16 cm at the same numeric value. Re-tune against
+                        # hardware before assuming 0.20 still behaves as before;
+                        # it is now honest, not equivalent.
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
   d_safe_default: 0.1  # alias kept for backward compatibility
 
@@ -27,7 +38,15 @@ params:
   cbf_update_rate_hz: 50.0    # constraint geometry rebuild (A, h̄) from 30 Hz input
   nom_timeout: 0.5            # [s] stale qddot_nom → braking -k_brake*qdot
   joint_state_timeout: 0.1    # [s] stale joint state → zero output
-  min_confidence: 0.2         # per-link distance confidence threshold
+  min_confidence: 0.2         # per-link distance confidence threshold.
+                              # INERT on the per-CP path: build_cp_messages sets
+                              # LinkDistance.confidence = 1.0 unconditionally, so
+                              # `ob.conf < min_confidence` never drops a row.
+                              # Only the legacy MultiDistance topic carries a
+                              # real find_pt_confidence() score. Left in place —
+                              # it is the intended hook if per-CP confidence is
+                              # ever populated — but do not tune it expecting an
+                              # effect today.
 
   # DEPRECATED: ema_alpha was used to smooth the QP output in cbf_velocity_filter.
   # Post-QP smoothing invalidates CBF safety guarantees — do not re-introduce.
@@ -35,8 +54,12 @@ params:
   ema_alpha: 0.4
 
   # ── HOCBF acceleration-space safety filter (cbf_safety_filter) ─────────────
-  # Barrier:    h = d - d_safe
+  # Barrier:    h = d - d_safe, where d = LinkDistance.distance, the SURFACE gap
+  #             (capsule radius and mask-dilation margin already removed
+  #             upstream) — NOT ||closest_point_robot - closest_point_human||,
+  #             which is the segment-AXIS distance.
   # HOCBF:      n^T J qddot >= -c_i - k1*hdot - k0*h
+  # One row per CONTROL POINT (11 max), all solved simultaneously.
   # TODO[LEGACY]: read by no active node; velocity-era ZCBF gain | confidence: high | superseded-by: k0_cbf + k1_cbf | flagged: 2026-09-01
   gamma: 1.0               # kept for backward compat (unused by HOCBF path)
   k0_cbf: 25.0             # HOCBF position gain  (class-K alpha_0)
@@ -61,10 +84,19 @@ params:
   cbf_obstacle_horizon: 1.2  # [m] COMPUTATIONAL cutoff for cbf_safety_filter, NOT
                            # a safety gate: the linear HOCBF self-deactivates at
                            # large d, so far obstacles add slack (non-binding)
-                           # rows. n_c is already hard-bounded ~8-9 by the robot
-                           # geometry (one LinkDistance per segment link), so this
-                           # mainly avoids OSQP setup() churn from obstacles
-                           # flickering near a tight boundary. Initial estimate.
+                           # rows. This mainly avoids OSQP setup() churn from
+                           # obstacles flickering near a tight boundary.
+                           # n_c is bounded by the CONTROL POINT count, not the
+                           # link count: perception emits one LinkDistance per
+                           # CP, so the ceiling is 11 (fr3_complete.yaml
+                           # segments: 2+2+2+2+3), not the ~8-9 this comment
+                           # claimed while entries were pooled per link.
+                           # Feasibility is unaffected — one shared slack
+                           # relaxes every row at once, so widening the row set
+                           # cannot empty the feasible set (see
+                           # test/test_cbf_multi_cp_qp.py). Solve time and
+                           # setup() churn are what to watch; lower this to trim
+                           # n_c if either bites. Initial estimate.
   cbf_min_leverage: 0.05   # [m/rad] min CBF leverage ‖a‖=‖n̂ᵀJp‖ to keep a
                            # constraint. REPLACES the old cond(Jp)>1e5 test:
                            # cond(Jp) measured conditioning of the whole 3×7
@@ -99,6 +131,22 @@ params:
   # OSQP's own default max_iter (4000) can be hit on ill-scaled instances; at
   # this problem size 20k iterations still complete in < 1.5 ms.
   osqp_max_iter: 20000
+
+  # ── cbf_status contract (/NS_1/cbf_status, Float64MultiArray) ─────────────
+  # data[0] n_active_constraints — HOCBF rows present in the QP this tick, i.e.
+  #         every control point inside cbf_obstacle_horizon. Most are
+  #         non-binding; this is NOT a count of triggered CPs.
+  # data[1] slack — QP slack s. One slack is shared by ALL rows, so a single
+  #         deeply-violated CP relaxes every other row by the same amount.
+  #         Worth watching now that ~11 rows are active instead of ~5.
+  # data[2] fault_braking — safety-chain fault (distance stale, or QP failure)
+  #         forced braking with no geometric rows. Distinct from data[0]==0.
+  # data[3] n_active_cps — rows whose barrier is actually VIOLATED (h < 0, i.e.
+  #         the CP is inside d_safe). This is the honest "how many control
+  #         points triggered". > 1 is expected on an angled approach and is the
+  #         signal that multi-CP activation is working.
+  # Consumers (frame_grabber, rl_policy_commander) index positionally behind a
+  # len() guard, so appending further elements stays backward compatible.
 
   # ── Diagnostics (cbf_safety_filter) — logging only, never read by the QP ───
   diag_period_s: 0.05          # [s] min interval between CBFDIAG lines

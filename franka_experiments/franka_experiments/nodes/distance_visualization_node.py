@@ -8,8 +8,10 @@ Subscriptions
 -------------
   <depth_image topic>            Image            — raw depth frames
   <depth_camera_info topic>      CameraInfo       — camera intrinsics (once)
-  /cbf/per_link_distances        MultiLinkDistance — per-link distances + 3-D
-                                                     closest points from compute
+  /cbf/per_link_distances        MultiLinkDistance — one entry per CONTROL
+                                                     POINT (robot_link_name
+                                                     repeats) + 3-D closest
+                                                     points from compute
 
 The distance subscription uses BEST_EFFORT QoS matching the compute publisher.
 Distance data is decoupled from the depth frame rate: the most-recent message

@@ -19,7 +19,8 @@ In simulation the obstacle is a sphere of radius ``r_obs`` and the observation
 carries its CENTRE; the barrier uses the SURFACE distance
 ``d = ‖p_cp − p_obs‖ − r_obs − r_cp``.
 
-On the robot, ``MultiLinkDistance`` carries, per link, the surface distance
+On the robot, ``MultiLinkDistance`` carries, per CONTROL POINT (several share
+one ``robot_link_name``), the surface distance
 ``d = ‖p_cp − p_human‖ − r_cp`` (``distance_engine`` already subtracts the
 capsule radius), the closest human point ``p_human`` and the unit normal
 ``n̂`` pointing obstacle → robot.  Both quantities therefore already mean
