@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -84,6 +85,22 @@ controller_interface::return_type RtTorqueController::update(
       // leak reintrodurrebbe una frazione k_sync/(Kd+k_sync) proprio del
       // deficit che questo termine esiste per annullare).
       qdot_des_[i] += accel.qddot[i] * dt;
+
+      // TETTO DI VELOCITÀ sul riferimento integrato. q̇_des è un integratore
+      // libero di q̈_safe: finché il CBF chiede accelerazione (ostacolo veloce
+      // ⇒ q̈_safe grande e SOSTENUTO) q̇_des cresce senza alcun limite, e il
+      // clamp e_max lo tiene comunque a dq_+e_max — cioè richiede una velocità
+      // di 1 rad/s SOPRA la misurata, con Kd·e_max di coppia costante che la
+      // insegue. Il box di velocità del CBF vive a 100 Hz e sul COMANDO q̈, non
+      // su questo riferimento: fra i due nulla conosceva q̇_max, e il primo a
+      // reagire era il firmware con `joint_velocity_violation`. Qui, a 1 kHz e
+      // sulla velocità MISURATA, c'è il backstop. Il clamp e_max sotto può solo
+      // avvicinare q̇_des a dq_, quindi non può riportarlo sopra il tetto.
+      if (qdot_margin_ > 0.0) {
+        qdot_des_[i] = std::min(qdotCeiling(i, q_[i]),
+                                std::max(qdotFloor(i, q_[i]), qdot_des_[i]));
+      }
+
       e = qdot_des_[i] - dq_[i];
       if (std::abs(e) > e_max_) {
         e = std::copysign(e_max_, e);   // errore POST-clamp: è quello
@@ -106,6 +123,33 @@ controller_interface::return_type RtTorqueController::update(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  qdotCeiling / qdotFloor  (RT thread) — inviluppo di velocità del firmware
+// ═══════════════════════════════════════════════════════════════════════════
+//  Il firmware FR3 non ammette |q̇| ≤ q̇_max costante: vicino a un fine corsa
+//  il limite si stringe secondo (franka_description, position_based_velocity_
+//  limits)
+//      q̇_max(q) = min( q̇_lim ,  v_off + sqrt(2·a_dec·h) ) ,   h = dist. dal
+//  limite di posizione in quella direzione. Riprodurlo qui — invece del solo
+//  q̇_lim piatto — fa sì che il tetto copra ENTRAMBI i reflex di velocità, non
+//  solo quello sul limite assoluto.
+//
+//  qdot_margin_ (< 1) sposta il tetto sotto la soglia del firmware, così a
+//  mordere è questo controller e non il reflex. Nessuna allocazione, una sola
+//  sqrt per giunto per tick: RT-safe.
+
+double RtTorqueController::qdotCeiling(size_t i, double q) const {
+  const double h = std::max(0.0, q_max_[i] - q);
+  return qdot_margin_ * std::min(qdot_max_[i],
+                                 v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+}
+
+double RtTorqueController::qdotFloor(size_t i, double q) const {
+  const double h = std::max(0.0, q - q_min_[i]);
+  return -qdot_margin_ * std::min(qdot_max_[i],
+                                  v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  on_init
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -124,6 +168,25 @@ CallbackReturn RtTorqueController::on_init() {
         "d_gains", std::vector<double>{30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0});
     auto_declare<double>("e_max", 1.0);
     auto_declare<double>("accel_timeout", 0.1);
+    // ── Tetto di velocità sul riferimento integrato ───────────────────────
+    // Default = franka_description/robots/fr3/joint_limits.yaml (stessa fonte
+    // che legge il box di stato del cbf_safety_filter). qdot_margin = 0
+    // disattiva il tetto e ripristina il comportamento precedente.
+    auto_declare<std::vector<double>>(
+        "qdot_max", std::vector<double>{2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26});
+    auto_declare<std::vector<double>>(
+        "q_min", std::vector<double>{-2.9007, -1.8361, -2.9007, -3.0770,
+                                     -2.8763, 0.4398, -3.0508});
+    auto_declare<std::vector<double>>(
+        "q_max", std::vector<double>{2.9007, 1.8361, 2.9007, -0.1169,
+                                     2.8763, 4.6216, 3.0508});
+    auto_declare<std::vector<double>>(
+        "velocity_offset", std::vector<double>{0.6520, 0.2500, 0.2005, 0.3542,
+                                               0.5738, 0.4885, 0.4592});
+    auto_declare<std::vector<double>>(
+        "deceleration_limit", std::vector<double>{6.0, 2.585, 3.5, 4.0,
+                                                  17.0, 5.5, 17.0});
+    auto_declare<double>("qdot_margin", 0.95);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception in RtTorqueController::on_init: %s\n", e.what());
     return CallbackReturn::ERROR;
@@ -155,6 +218,30 @@ CallbackReturn RtTorqueController::on_configure(
     return CallbackReturn::ERROR;
   }
   std::copy_n(d_gains.begin(), kNumJoints, d_gains_.begin());
+
+  // ── Tetto di velocità: carica e valida i cinque array dell'inviluppo ─────
+  qdot_margin_ = get_node()->get_parameter("qdot_margin").as_double();
+  const std::array<std::pair<const char*, std::array<double, kNumJoints>*>, 5> limit_params{{
+      {"qdot_max", &qdot_max_},
+      {"q_min", &q_min_},
+      {"q_max", &q_max_},
+      {"velocity_offset", &v_offset_},
+      {"deceleration_limit", &decel_},
+  }};
+  for (const auto& [name, dest] : limit_params) {
+    const auto v = get_node()->get_parameter(name).as_double_array();
+    if (v.size() != kNumJoints) {
+      RCLCPP_ERROR(logger, "%s must have %zu entries, got %zu", name, kNumJoints, v.size());
+      return CallbackReturn::ERROR;
+    }
+    std::copy_n(v.begin(), kNumJoints, dest->begin());
+  }
+  if (qdot_margin_ <= 0.0) {
+    RCLCPP_WARN(logger,
+        "qdot_margin=%.3f <= 0 — tetto di velocità DISATTIVATO: q̇_des integra "
+        "q̈_safe senza limite e solo il reflex del firmware ferma il giunto.",
+        qdot_margin_);
+  }
 
   const auto joints_param = get_node()->get_parameter("joints").as_string_array();
   if (joints_param.empty()) {
@@ -215,8 +302,8 @@ CallbackReturn RtTorqueController::on_configure(
 
   RCLCPP_INFO(logger,
       "RtTorqueController configured (τ_ff + Kd·(q̇_des−q̇), clamp e_max=%.3f rad/s, "
-      "accel_timeout=%.3f s)  arm=%s  τ_topic=%s  q̈_topic=%s  gazebo=%s",
-      e_max_, accel_timeout_, arm_id_.c_str(), command_topic_.c_str(),
+      "qdot_margin=%.3f, accel_timeout=%.3f s)  arm=%s  τ_topic=%s  q̈_topic=%s  gazebo=%s",
+      e_max_, qdot_margin_, accel_timeout_, arm_id_.c_str(), command_topic_.c_str(),
       accel_topic_.c_str(), is_gazebo_ ? "true" : "false");
 
   return CallbackReturn::SUCCESS;

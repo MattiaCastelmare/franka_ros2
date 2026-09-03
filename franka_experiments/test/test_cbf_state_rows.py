@@ -700,3 +700,113 @@ def test_lowering_k0_widens_and_softens_the_onset():
     # Damping must stay overdamped: zeta = k1 / (2*sqrt(k0)) >= 1.
     for k0 in (15.0, 25.0):
         assert k1 / (2.0 * np.sqrt(k0)) >= 1.0, k0
+
+
+# ── Obstacle velocity in hdot ────────────────────────────────────────────────
+#
+# The gap closes at ddot = n^T(p_robot_dot - p_obs_dot) = a^T qdot - v_obs. Only
+# the robot's half was modelled, so a STILL robot saw hdot = 0 no matter how
+# fast the human closed, and the k1 anticipation did nothing in exactly the case
+# it exists for.
+
+V_MAX, V_ALPHA = 2.0, 0.7
+
+
+class _ObsVel:
+    """Mirror of CBFSafetyFilter._obstacle_speed, per row."""
+
+    def __init__(self, alpha=V_ALPHA, v_max=V_MAX):
+        self.alpha, self.v_max, self.state = alpha, v_max, {}
+
+    def update(self, lbl, d_now, stamp, adotq):
+        prev = self.state.get(lbl)
+        if prev is None:
+            self.state[lbl] = (d_now, stamp, 0.0)
+            return 0.0
+        d_prev, t_prev, v_prev = prev
+        dt = stamp - t_prev
+        if dt <= 1e-4:
+            return v_prev
+        v_raw = float(np.clip(adotq - (d_now - d_prev) / dt,
+                              -self.v_max, self.v_max))
+        v = self.alpha * v_prev + (1.0 - self.alpha) * v_raw
+        self.state[lbl] = (d_now, stamp, v)
+        return v
+
+
+def test_still_robot_moving_obstacle_is_now_seen():
+    """The case the filter was blind to."""
+    est = _ObsVel(alpha=0.0)                 # unfiltered, to read the estimate
+    speed, dt, d = 0.30, 1.0 / 30.0, 0.40
+    est.update('cp', d, 0.0, 0.0)
+    v = 0.0
+    for k in range(1, 8):
+        d -= speed * dt                       # obstacle closes, robot still
+        v = est.update('cp', d, k * dt, 0.0)  # a^T qdot = 0
+    assert abs(v - speed) < 1e-6, f'must recover the closing speed, got {v:.4f}'
+
+
+def test_moving_robot_still_obstacle_reports_zero():
+    """The robot's own motion must NOT be mistaken for the obstacle's."""
+    est = _ObsVel(alpha=0.0)
+    adotq, dt, d = -0.25, 1.0 / 30.0, 0.40   # robot closing at 0.25 m/s
+    est.update('cp', d, 0.0, adotq)
+    v = 0.0
+    for k in range(1, 8):
+        d += adotq * dt                       # ddot == a^T qdot exactly
+        v = est.update('cp', d, k * dt, adotq)
+    assert abs(v) < 1e-9, f'no obstacle motion, got {v:.4f}'
+
+
+def test_both_moving_splits_correctly():
+    est = _ObsVel(alpha=0.0)
+    adotq, v_true, dt, d = -0.20, 0.35, 1.0 / 30.0, 0.50
+    est.update('cp', d, 0.0, adotq)
+    v = 0.0
+    for k in range(1, 8):
+        d += (adotq - v_true) * dt
+        v = est.update('cp', d, k * dt, adotq)
+    assert abs(v - v_true) < 1e-6, v
+
+
+def test_estimate_is_capped_against_a_bad_depth_frame():
+    est = _ObsVel(alpha=0.0)
+    est.update('cp', 0.40, 0.0, 0.0)
+    v = est.update('cp', 0.00, 1.0 / 30.0, 0.0)   # 0.4 m in one frame = 12 m/s
+    assert abs(v) <= V_MAX + 1e-9, v
+
+
+def test_holding_the_same_perception_frame_holds_the_estimate():
+    est = _ObsVel()
+    est.update('cp', 0.40, 0.0, 0.0)
+    v1 = est.update('cp', 0.39, 1.0 / 30.0, 0.0)
+    v2 = est.update('cp', 0.39, 1.0 / 30.0, 0.0)   # same stamp, QP ticked again
+    assert v1 == v2, 'no spurious derivative between perception frames'
+
+
+def test_approach_only_clamp_can_only_tighten_the_constraint():
+    """The safety property: this term never loosens the QP.
+
+    hdot = a^T qdot - max(v_obs, 0). Clamping at zero means the term either
+    subtracts (more negative hdot -> the row demands more retreat) or does
+    nothing. It can never add to hdot, so it can never relax a barrier on the
+    strength of a 30 Hz vision estimate.
+    """
+    k0, k1, h = 25.0, 10.5, 0.05
+    adotq = -0.10
+    for v_raw in (-1.0, -0.3, 0.0, 0.3, 1.0):
+        v_used = max(v_raw, 0.0)
+        demand_with = -(k1 * (adotq - v_used) + k0 * h)
+        demand_without = -(k1 * adotq + k0 * h)
+        assert demand_with >= demand_without - 1e-12, (
+            f'v_raw={v_raw}: the term must never reduce the demand')
+
+
+def test_closing_obstacle_activates_a_constraint_that_was_inactive():
+    """End to end, at the numbers from the analysis."""
+    k0, k1, d_safe = 25.0, 10.5, 0.20
+    h = 0.25 - d_safe                          # obstacle at 25 cm
+    demand = lambda v: -(k1 * (0.0 - max(v, 0.0)) + k0 * h)   # robot still
+    assert demand(0.0) < 0.0, 'today: inactive with the robot still'
+    assert demand(0.30) > 1.5, 'with the obstacle closing it must demand retreat'
+    assert demand(0.60) > demand(0.30), 'and more, the faster it closes'

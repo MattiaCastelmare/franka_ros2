@@ -51,6 +51,13 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   };
 
   void updateJointStates();
+
+  // Tetto/pavimento di velocità ammessi per il riferimento integrato sul
+  // giunto i alla posizione q. Riproduce l'inviluppo del firmware FR3
+  // (position_based_velocity_limits in franka_description), scalato da
+  // qdot_margin_ così il tetto morde PRIMA del reflex. Vedi update().
+  double qdotCeiling(size_t i, double q) const;   // bound superiore (> 0)
+  double qdotFloor(size_t i, double q) const;     // bound inferiore (< 0)
   void commandCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void accelCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
@@ -64,6 +71,19 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   std::array<double, kNumJoints> d_gains_{};   // Kd per giunto [N·m/(rad/s)]
   double e_max_{1.0};                           // clamp errore velocità [rad/s]
   double accel_timeout_{0.1};                   // finestra freschezza q̈_safe [s]
+
+  // ── Tetto di velocità sul riferimento integrato (backstop del reflex) ────
+  // q̇_des è un integratore libero di q̈_safe: senza questi limiti nulla, tra
+  // il CBF a 100 Hz e il firmware, impedisce a Kd·(q̇_des−q̇) di spingere il
+  // giunto oltre q̇_max → "Move command aborted: joint_velocity_violation".
+  // I valori di default sono quelli di franka_description/robots/fr3/
+  // joint_limits.yaml. qdot_margin_ <= 0 disattiva il tetto.
+  std::array<double, kNumJoints> qdot_max_{};   // |q̇| ufficiale [rad/s]
+  std::array<double, kNumJoints> q_min_{};      // limite posizione inferiore [rad]
+  std::array<double, kNumJoints> q_max_{};      // limite posizione superiore [rad]
+  std::array<double, kNumJoints> v_offset_{};   // offset inviluppo firmware [rad/s]
+  std::array<double, kNumJoints> decel_{};      // autorità di frenata [rad/s²]
+  double qdot_margin_{0.95};                    // frazione di q̇_max concessa
 
   // ── Stato RT-only (aggiornato dentro update(); mai condiviso tra thread) ──
   std::array<double, kNumJoints> q_{};          // posizione misurata

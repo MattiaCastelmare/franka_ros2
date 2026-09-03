@@ -101,11 +101,19 @@ class QddotToTorqueNode(Node):
         # ── Publisher / subscribers ───────────────────────────────────────
         self._pub = self.create_publisher(Float64MultiArray, torque_out_topic, 10)
 
+        # joint_states_fast (the joint_state_broadcaster's own 1 kHz output),
+        # not the 30 Hz Python republisher on joint_states: M(q) and C(q,qdot)
+        # are evaluated at this state, so a 33 ms lag here biases every torque
+        # the CBF asks for. See the topics block in fr3_control.yaml.
+        # depth=1: this callback only CACHES the state (the torque is computed
+        # in the qddot_safe callback), so with a 1 kHz publisher a deeper queue
+        # would only build a backlog of states that are stale by the time they
+        # are read. Always consume the latest.
         self.create_subscription(
             JointState,
-            topics['joint_states_topic'],
+            topics.get('joint_states_fast', topics['joint_states_topic']),
             self._on_joint_state,
-            10,
+            1,
         )
         self.create_subscription(
             Float64MultiArray,

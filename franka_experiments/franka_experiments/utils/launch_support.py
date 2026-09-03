@@ -120,6 +120,7 @@ def generate_rt_controllers_yaml(
     d_gains: Optional[Sequence[float]] = None,
     e_max: float = 1.0,
     accel_topic: str = '/NS_1/qddot_safe',
+    qdot_margin: float = 0.95,
 ) -> str:
     """Build a complete, self-contained controllers YAML.
 
@@ -144,6 +145,7 @@ def generate_rt_controllers_yaml(
             d_gains=d_gains,
             e_max=e_max,
             accel_topic=accel_topic,
+            qdot_margin=qdot_margin,
         )
 
     lines = [
@@ -229,11 +231,16 @@ def _ensure_urdf_cached(arm_id: str) -> str:
 
 def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
                           tau_max_scale, d_gains=None, e_max=1.0,
-                          accel_topic='/NS_1/qddot_safe'):
+                          accel_topic='/NS_1/qddot_safe', qdot_margin=0.95):
     """Build controllers YAML for rt_torque_controller.
 
     d_gains / e_max / accel_topic parametrizzano il feedback di velocità a 1 kHz
     (τ = τ_ff + Kd·(q̇_des − q̇)). VALORI INIZIALI da validare in hardware.
+
+    qdot_margin è il tetto di velocità sul riferimento integrato q̇_des, come
+    frazione dell'inviluppo di velocità del firmware FR3 (il controller porta
+    i limiti di franka_description come default, quindi qui basta la frazione).
+    0 disattiva il tetto.
     """
     if d_gains is None:
         # Per-giunto, decrescente verso il polso (inerzie minori, attrito
@@ -310,6 +317,12 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
         # clamp ma è privo di significato fisico (vedi note di design).
         f'      d_gains: {d_gains_str}',
         f'      e_max: {e_max}',
+        # Backstop a 1 kHz contro `joint_velocity_violation`: q̇_des è un
+        # integratore libero di q̈_safe e il box di velocità del CBF vive a
+        # 100 Hz sul solo COMANDO q̈, quindi senza questo tetto nessuno fra i
+        # due conosce q̇_max. 0.95 lascia il reflex del firmware come ultima
+        # rete, non come prima.
+        f'      qdot_margin: {qdot_margin}',
         f'      lpf_alpha: {lpf_alpha}',
         f'      tau_max_scale: {tau_max_scale}',
         f'      gazebo: {gazebo}',
