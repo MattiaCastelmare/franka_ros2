@@ -54,6 +54,9 @@ setup(
             "speech = franka_experiments.nodes.speech:main",
             "interaction_manager = franka_experiments.nodes.interaction_manager:main",
             'hand_logger = franka_experiments.nodes.hand_logger:main',
+            'kalman_hand = franka_experiments.nodes.kalman_hand:main',
+            'hand_state_estimator = franka_experiments.nodes.hand_state_estimator:main',
+            'hand_compare_visualizer = franka_experiments.nodes.hand_compare_visualizer:main',
 
         ],
     },

@@ -8,30 +8,13 @@ Visualization Manager:
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: base
-    Frame Rate: 30
+    Frame Rate: 15
 
   Displays:
 
-    - Class: rviz_default_plugins/Grid
-      Name: Grid
-      Enabled: true
-      Cell Size: 1
-      Plane: XY
-      Reference Frame: base
-      Value: true
-
     - Class: rviz_default_plugins/Image
-      Name: Hand Debug
+      Name: Hand State Debug
       Enabled: true
       Topic:
-        Value: /handover/hand_debug_image
-      Value: true
-
-    - Class: rviz_default_plugins/PoseArray
-      Name: Hand Landmarks
-      Enabled: true
-      Topic:
-        Value: /handover/hand_landmarks_raw
-      Shape:
-        Value: Axes
+        Value: /handover/hand_state_debug_image
       Value: true

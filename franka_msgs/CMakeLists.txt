@@ -24,6 +24,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Float64StampedArray.msg"
   "msg/HumanRobotDistance.msg"
   "msg/HandTrackingRaw.msg"
+  "msg/HandTrackingFiltered.msg"
+  "msg/HandState.msg"
   "msg/LinkDistance.msg"
   "msg/MultiDistance.msg"
   "msg/MultiLinkDistance.msg"

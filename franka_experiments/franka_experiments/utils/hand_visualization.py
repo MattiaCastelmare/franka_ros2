@@ -1,69 +1,145 @@
 #!/usr/bin/env python3
 
 import cv2
-import numpy as np
 
 
 def draw_selected_landmarks(image, landmarks, landmark_ids):
-    """Draw and number the selected landmarks in red."""
+    """Compatibility helper used by human_hand_tracker."""
     height, width = image.shape[:2]
 
     for landmark_id in landmark_ids:
         landmark = landmarks[landmark_id]
 
-        u = int(np.clip(
-            round(landmark.x * (width - 1)),
-            0,
-            width - 1,
-        ))
-        v = int(np.clip(
-            round(landmark.y * (height - 1)),
-            0,
-            height - 1,
-        ))
+        u = int(round(landmark.x * (width - 1)))
+        v = int(round(landmark.y * (height - 1)))
 
-        cv2.circle(image, (u, v), 7, (0, 0, 255), 2)
-        cv2.putText(
+        u = max(0, min(width - 1, u))
+        v = max(0, min(height - 1, v))
+
+        cv2.circle(
             image,
-            str(landmark_id),
-            (u + 8, v - 8),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            (u, v),
+            4,
             (0, 0, 255),
-            2,
-            cv2.LINE_AA,
+            1,
         )
 
 
 def draw_status(image, status, wrist=None):
-    """Draw the tracking status and, if available, the wrist position in cm."""
+    """Compatibility helper used by human_hand_tracker."""
     cv2.putText(
         image,
         status,
         (20, 35),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.9,
+        0.7,
         (0, 255, 0),
-        2,
-        cv2.LINE_AA,
+        1,
     )
 
-    if wrist is None:
+
+def draw_hand_state_overlay(image, state):
+    """Minimal HandState overlay: scalar C5 palm speed only."""
+
+    if state is None:
         return
 
+    valid = bool(state.valid)
+
+    color = (
+        (0, 255, 0)
+        if valid
+        else (0, 0, 255)
+    )
+
     text = (
-        f'x={100.0 * wrist[0]:.1f} cm  '
-        f'y={100.0 * wrist[1]:.1f} cm  '
-        f'z={100.0 * wrist[2]:.1f} cm'
+        f'v = {state.palm_speed:.2f} m/s'
+        if valid
+        else 'v = --'
+    )
+
+    # Tiny box + one text draw.
+    # No image.copy(), alpha blending, bars or extra data.
+    cv2.rectangle(
+        image,
+        (8, 8),
+        (185, 38),
+        (0, 0, 0),
+        -1,
     )
 
     cv2.putText(
         image,
         text,
-        (20, 70),
+        (14, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (0, 255, 0),
-        2,
-        cv2.LINE_AA,
+        0.6,
+        color,
+        1,
     )
+
+
+def draw_palm_outline(image, hand_landmarks):
+    """
+    Optional ultra-light palm outline.
+
+    Zero runtime cost unless human_hand_tracker explicitly
+    calls this function.
+
+    Uses only landmarks:
+        0  = wrist
+        5  = index MCP
+        9  = middle MCP
+        17 = pinky MCP
+
+    Computational work:
+        4 coordinate conversions
+        4 cv2.line()
+    """
+
+    landmarks = getattr(
+        hand_landmarks,
+        'landmark',
+        hand_landmarks,
+    )
+
+    height, width = image.shape[:2]
+
+    points = []
+
+    for landmark_id in (0, 5, 9, 17):
+        landmark = landmarks[landmark_id]
+
+        u = int(round(
+            landmark.x * (width - 1)
+        ))
+
+        v = int(round(
+            landmark.y * (height - 1)
+        ))
+
+        u = max(
+            0,
+            min(width - 1, u),
+        )
+
+        v = max(
+            0,
+            min(height - 1, v),
+        )
+
+        points.append(
+            (u, v)
+        )
+
+    for start, end in zip(
+        points,
+        points[1:] + points[:1],
+    ):
+        cv2.line(
+            image,
+            start,
+            end,
+            (0, 255, 0),
+            2,
+        )

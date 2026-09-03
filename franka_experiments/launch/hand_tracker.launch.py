@@ -26,7 +26,28 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': True,
             'publish_debug_image': True,
-            'show_selected_landmarks': False,
+            'show_selected_landmarks': True,
+        }],
+    )
+
+    kalman = Node(
+        package='franka_experiments',
+        executable='kalman_hand',
+        output='screen',
+    )
+
+    estimator = Node(
+        package='franka_experiments',
+        executable='hand_state_estimator',
+        output='screen',
+    )
+
+    compare_visualizer = Node(
+        package='franka_experiments',
+        executable='hand_compare_visualizer',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
         }],
     )
 
@@ -62,7 +83,9 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'bag_path',
-            default_value='/ros2_ws/rosbags/handratacker_objecy',
+            default_value='/ros2_ws/rosbags/datasets-001/arm_repeated', 
+            # or  /ros2_ws/rosbags/handratacker_objecy /ros2_ws/rosbags/datasets-001/handtracker_poses
+            # /ros2_ws/rosbags/datasets-001/arm_complex /ros2_ws/rosbags/datasets-001/arm_repeated
         ),
 
         DeclareLaunchArgument(
@@ -71,6 +94,9 @@ def generate_launch_description():
         ),
 
         tracker,
+        kalman,
+        estimator,
+        compare_visualizer,
         logger,
         rviz,
 
