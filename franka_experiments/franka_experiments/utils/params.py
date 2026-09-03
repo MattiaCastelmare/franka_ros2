@@ -10,6 +10,7 @@ value into a live, validated, self-documenting ROS parameter:
 * :func:`declare_bool`   — boolean flag
 * :func:`declare_str`    — string knob (topic name, frame name, enum choice)
 * :func:`declare_vec`    — fixed-length list of floats
+* :func:`declare_from_spec` — declare a WHOLE parameter block from a table
 
 Every helper declares the parameter on the node (so it appears in
 ``ros2 param list`` and can be overridden from a launch file), reads it back,
@@ -218,3 +219,75 @@ def declare_vec(
         if v != v or v in (float('inf'), float('-inf')):
             _fail(node, name, value, 'all elements finite')
     return value
+
+
+# ── Bulk declaration ─────────────────────────────────────────────────────────
+
+def declare_from_spec(node: Node, values: dict, spec: dict,
+                      source: str = ''):
+    """Declare an entire parameter block from a table, return it as an object.
+
+    A node with seventy knobs spends seven hundred lines of ``__init__``
+    repeating ``self._x = declare_float(self, 'x', p.get('x', 1.0), ...)``, and
+    that pattern carries a defect that is invisible until it bites: the default
+    written in the node and the value written in the YAML are two sources of
+    truth for the same number, and they drift. In this package they HAD drifted
+    — ``qp_rate_hz`` read 200.0 in the node against 100.0 in the YAML, ``d_safe``
+    0.2 against 0.15, ``joint_limit_row_horizon`` 0.6 against 0.30. The YAML won
+    every time (the key exists, so ``p.get`` never sees the default), which
+    means the node-side numbers were dead code that nonetheless read like the
+    configuration.
+
+    Here the YAML is the ONLY source of truth. A key missing from *values*
+    raises, naming the key — the node refuses to start rather than silently
+    running on a number nobody chose.
+
+    Args:
+        node: Node to declare the parameters on.
+        values: Already-loaded configuration block (e.g. ``cfg['params']``).
+        source: Path the values were read from, quoted in the failure message.
+            Worth passing: the file that matters is the INSTALLED one, not the
+            one being edited, and naming it turns a puzzling startup death into
+            a one-line diagnosis.
+        spec: ``{name: (kind, kwargs)}`` where *kind* is one of ``'float'``,
+            ``'int'``, ``'bool'``, ``'str'`` and *kwargs* are forwarded to the
+            matching ``declare_*`` helper (bounds, choices). Bounds live in the
+            spec and not in the YAML on purpose: they are validation, not
+            configuration, and a launch file must not be able to widen them.
+
+    Returns:
+        A :class:`~types.SimpleNamespace` with one attribute per spec entry, so
+        call sites read ``P.k0_cbf`` instead of ``self._k0`` — the parameter's
+        real name, greppable against the YAML and against ``ros2 param list``.
+
+    Raises:
+        KeyError: a spec entry has no value in *values*.
+        ValueError: a value fails its declared bounds (from the ``declare_*``
+            helper, which logs the parameter name first).
+    """
+    from types import SimpleNamespace
+
+    fn = {'float': declare_float, 'int': declare_int,
+          'bool': declare_bool, 'str': declare_str}
+    cast = {'float': float, 'int': int, 'bool': bool, 'str': str}
+    missing = [k for k in spec if k not in values]
+    if missing:
+        # Log BEFORE raising. A bare exception out of __init__ dies on the
+        # launch's stderr with the node's own logger never used, so the node's
+        # tag never appears in the log and the failure reads as "the node
+        # simply is not there" — which is exactly how this was first seen.
+        msg = (f'{node.get_name()}: {len(missing)} parameter(s) missing from '
+               f'{source or "the config file"}:\n  '
+               + '\n  '.join(sorted(missing))
+               + '\n\nThere are no node-side defaults to fall back on, by '
+                 'design — the YAML is the single source of truth. If those '
+                 'keys DO exist in the source tree, the INSTALLED copy is '
+                 'stale: rebuild the package so the new config is installed '
+                 '(colcon build --packages-select franka_experiments), or use '
+                 '--symlink-install so config edits take effect without one.')
+        node.get_logger().error(msg)
+        raise KeyError(msg)
+    out = {}
+    for name, (kind, kwargs) in spec.items():
+        out[name] = fn[kind](node, name, cast[kind](values[name]), **kwargs)
+    return SimpleNamespace(**out)
