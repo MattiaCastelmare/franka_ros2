@@ -85,6 +85,10 @@ from franka_experiments.utils.cbf_singularity import SingularityRowBuilder
 from franka_experiments.utils.cbf_state_rows import (
     build_self_collision_builder,
     joint_limit_rows,
+    link_speed_cap,
+    link_speed_row,
+    retreat_cap_rhs,
+    retreat_cap_speed,
 )
 from franka_experiments.utils.kinematics import (
     CBFKinematics,
@@ -112,10 +116,18 @@ FR3_JOINT_KEYS = [f'joint{i}' for i in range(1, 8)]
 # fire self_collision_avoidance_violation on its own. Separate slacks let one
 # family yield without disarming the others.
 NV         = 7
-G_OBS, G_SC, G_QLIM, G_SING = 0, 1, 2, 3
-N_SLACK = 4
-GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing')
-NX = NV + N_SLACK   # decision vector: [qddot(7), s_obs, s_sc, s_qlim, s_sing]
+G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD = 0, 1, 2, 3, 4, 5
+N_SLACK = 6
+GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
+NX = NV + N_SLACK   # [qddot(7), s_obs, s_sc, s_qlim, s_sing, s_cap, s_spd]
+
+# h̄ stored on a retreat-cap row. Cap rows are not barriers — their RHS is
+# overwritten in the QP tick — but they live in the same h_bar array, which is
+# ALSO read by `n_active_cps` (count of h̄ < 0) and by the argmin that picks
+# which row labels the CBFDIAG line. A large positive sentinel keeps them out of
+# both without needing a mask in either place, and without inf ever entering the
+# arithmetic.
+CAP_H_SENTINEL = 1.0e3
 
 
 # ── Immutable snapshots (atomic-swap shared state) ───────────────────────────
@@ -162,6 +174,22 @@ class _ConstraintSnap(NamedTuple):
     v_obs:     np.ndarray  # (n_c,) obstacle closing speed along n̂ [m/s], >= 0.
                            # Zero for self-collision and joint-limit rows: both
                            # sides of those are the robot's own, already in q̇.
+    cap_v:     np.ndarray  # (n_cap,) [m/s] the rate each RATE-CAP row allows.
+                           # Two families share this block: retreat caps (a
+                           # separation rate along n̂) and task-space speed caps
+                           # (a point's own speed along its direction of
+                           # travel). Both are stored with a negated row, so the
+                           # generic G = [−A | −e] turns them into UPPER bounds,
+                           # and both take their RHS from retreat_cap_rhs.
+    n_cap:     int         # how many rate-cap rows. Always the LAST n_cap rows,
+                           # so the QP tick addresses them with a SLICE (a view)
+                           # rather than a boolean mask (a copy) — the only
+                           # reason their position in the snapshot is pinned.
+                           # 0 disables the whole branch.
+    n_rtr:     int         # of those, how many are RETREAT caps. They come
+                           # first in the block, so retreat is [-n_cap:][:n_rtr]
+                           # and task-space speed is [-n_cap:][n_rtr:]. Keeps
+                           # the two diagnostics apart without a per-tick mask.
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -239,6 +267,22 @@ class CBFSafetyFilter(Node):
         # after the fact — it cannot steer the pose out of the bad region.
         self._rho_sing   = declare_float(self, 'rho_slack_singularity',
                                          p.get('rho_slack_singularity', 2000.0),
+                                         positive=True)
+        # CHEAPEST family by design. The retreat cap and the obstacle barrier
+        # pull in opposite directions on the same row direction, and when a
+        # human closes faster than the cap allows there is no command that
+        # satisfies both. The cap must be the one that yields — keep this well
+        # below rho_slack or a comfort bound will start outranking the barrier.
+        self._rho_cap    = declare_float(self, 'rho_slack_retreat',
+                                         p.get('rho_slack_retreat', 100.0),
+                                         positive=True)
+        # Task-space speed rows sit BETWEEN the retreat cap and the obstacle
+        # barrier: dearer than a comfort bound (this one is what stops a link
+        # from jumping its own clearance between two perception frames), but
+        # still cheaper than the barrier, so a genuine emergency retreat can
+        # still buy its way past.
+        self._rho_spd    = declare_float(self, 'rho_slack_link_speed',
+                                         p.get('rho_slack_link_speed', 500.0),
                                          positive=True)
         self._solver     = declare_str(self, 'qp_solver',
                                        p.get('qp_solver', 'osqp'),
@@ -429,6 +473,8 @@ class CBFSafetyFilter(Node):
         self._P[NV + G_SC,   NV + G_SC]   = self._rho_sc
         self._P[NV + G_QLIM, NV + G_QLIM] = self._rho_qlim
         self._P[NV + G_SING, NV + G_SING] = self._rho_sing
+        self._P[NV + G_CAP,  NV + G_CAP]  = self._rho_cap
+        self._P[NV + G_SPD,  NV + G_SPD]  = self._rho_spd
         # Cost matrix is constant → convert to CSC once. Native OSQP requires
         # sparse matrices; reusing this instance avoids per-tick conversion.
         self._P_csc  = sparse.csc_matrix(self._P)
@@ -481,6 +527,134 @@ class CBFSafetyFilter(Node):
                                           p.get('obstacle_velocity_max', 2.0),
                                           positive=True, maximum=10.0)
         self._obs_vel: dict[str, tuple] = {}   # label → (d, stamp, v_smooth)
+
+        # ── Retreat cap ─────────────────────────────────────────────────────
+        # The HOCBF row is one-sided: it puts a FLOOR under the separation rate
+        # (−k1·ḣ − k0·h̄) and nothing above it. Once the barrier is violated the
+        # floor grows with k0·|h̄| and the QP happily accelerates the arm away
+        # for as long as that lasts — measured as "il robot si allontana molto
+        # velocemente", which next to a person is its own hazard. Nothing in the
+        # filter ever said how fast retreating is fast ENOUGH.
+        #
+        # These rows say it. Per obstacle control point, an UPPER bound on the
+        # same quantity the barrier bounds from below:
+        #
+        #     n̂ᵀJ q̇  ≤  v_cap ,   v_cap = min( v_max ,
+        #                                       v_base
+        #                                     + g_obs   · v_obs
+        #                                     + g_depth · max(−h̄, 0) )
+        #
+        # Read the three terms as the three questions this has to answer:
+        #   v_base            the controlled creep allowed at all times;
+        #   g_obs · v_obs     "va bene che si allontani quando l'ostacolo si
+        #                     avvicina" — retreat is allowed to track the
+        #                     approach speed, not to exceed it by fiat;
+        #   g_depth·max(−h̄,0) escalation, and ONLY while genuinely inside
+        #                     d_safe. h̄ ≥ 0 ⇒ this term is exactly 0, so the
+        #                     instant the obstacle leaves d_safe the cap falls
+        #                     back to v_base (+v_obs, itself → 0 as the obstacle
+        #                     recedes: _obstacle_speed clamps the receding half
+        #                     to zero). That is the "torna a comportamento
+        #                     safe" the barrier alone never did.
+        #   v_max             absolute ceiling regardless of the above.
+        self._rtr_on    = declare_bool(self, 'retreat_cap_enabled',
+                                       p.get('retreat_cap_enabled', True))
+        self._rtr_base  = declare_float(self, 'retreat_cap_base_speed',
+                                        p.get('retreat_cap_base_speed', 0.05),
+                                        minimum=0.0, maximum=5.0)
+        self._rtr_gobs  = declare_float(self, 'retreat_cap_obstacle_gain',
+                                        p.get('retreat_cap_obstacle_gain', 1.0),
+                                        minimum=0.0, maximum=5.0)
+        self._rtr_gdep  = declare_float(self, 'retreat_cap_depth_gain',
+                                        p.get('retreat_cap_depth_gain', 2.0),
+                                        minimum=0.0, maximum=50.0)
+        # [m/s] closing speed at which the depth escalation reaches full
+        # strength. Without it the depth term is the hole in the
+        # proportionality: a SLOW obstacle that ends up deep inside d_safe
+        # authorises a fast retreat purely because the geometry looks bad.
+        # 0 disables the ramp and restores that older behaviour.
+        self._rtr_dref  = declare_float(self, 'retreat_cap_depth_speed_ref',
+                                        p.get('retreat_cap_depth_speed_ref', 0.30),
+                                        minimum=0.0, maximum=5.0)
+        # [m] distance over which the cap ramps from free (at h̄ = gap) to
+        # fully proportional (at h̄ = 0). The cap shapes AVOIDANCE, not ordinary
+        # task motion: applied at full strength over the whole 1.2 m obstacle
+        # horizon it throttled the arm any time a person stood anywhere nearby
+        # — logged as retreat=+0.161/0.150 with d_min=0.389 m and no avoidance
+        # happening. A RAMP, not an on/off gate: a gate would have to sit either
+        # above the distance where a fast approach first engages the barrier
+        # (useless) or below it (a step in the cap at the worst moment).
+        self._rtr_gap   = declare_float(self, 'retreat_cap_engage_gap',
+                                        p.get('retreat_cap_engage_gap', 0.15),
+                                        positive=True, maximum=2.0)
+        self._rtr_vmax  = declare_float(self, 'retreat_cap_max_speed',
+                                        p.get('retreat_cap_max_speed', 0.6),
+                                        positive=True, maximum=5.0)
+        # Enforcement horizon: aᵀ(q̇ + q̈·T) ≤ v_cap. SYMMETRIC, unlike the
+        # joint velocity box's asymmetric relax/dt pair — that box switches to a
+        # one-step dt past the cap because braking authority there is a safety
+        # guarantee. Here "past the cap" means retreating too eagerly, and
+        # answering that with a one-step deceleration demand would replace one
+        # abrupt motion with another. Smoothness IS the feature, so both
+        # directions get the same gentle horizon.
+        self._rtr_T     = declare_float(self, 'retreat_cap_horizon_s',
+                                        p.get('retreat_cap_horizon_s', 0.15),
+                                        positive=True, maximum=2.0)
+        # Diagnostics: worst current separation rate and the tightest cap that
+        # was applied to it, last QP tick.
+        self._diag_rtr     = 0.0
+        self._diag_rtr_cap = 0.0
+
+        # ── Task-space speed rows ───────────────────────────────────────────
+        # "Il robot deve avere velocità feasible": a bound on how fast any
+        # CONTROL POINT travels, which nothing in the filter had. The joint
+        # velocity box bounds q̇ per joint, and a folded or near-singular arm
+        # decouples that from task speed in both directions — the logged
+        # failure had every joint under 0.31 of its limit while link5 and the
+        # hand closed to a 2.9 cm gap.
+        #
+        #     ‖ṗ_i‖ ≤ v_allow_i ,  v_allow_i = min(v_max, clearance_i / T_react)
+        #
+        # The second term is the geometric one and the reason for the row. The
+        # barrier is rebuilt at 50 Hz from ~30 Hz perception, so a point travels
+        # v·Δt BLIND between evaluations; faster than its own remaining gap over
+        # that blind time and it crosses the barrier BETWEEN samples — never
+        # violating a constraint the QP ever looked at, and interpenetrating
+        # anyway. That is discretisation tunnelling; no k0/k1 fixes it, only
+        # forbidding the speed that makes the gap jumpable.
+        #
+        # clearance_i is min(this point's obstacle gap, the closest
+        # self-collision gap): a self-collision is a whole-arm geometric event,
+        # so it tightens every point, not just the pair that reported it.
+        self._spd_on   = declare_bool(self, 'link_speed_rows_enabled',
+                                      p.get('link_speed_rows_enabled', True))
+        # [m/s] flat ceiling. Kept ABOVE retreat_cap_max_speed on purpose: this
+        # row is the outer bound that catches a whip, not the shaper of the
+        # retreat — that is the retreat cap's job, and the two must not fight.
+        self._spd_vmax = declare_float(self, 'link_speed_max',
+                                       p.get('link_speed_max', 0.8),
+                                       positive=True, maximum=5.0)
+        # [s] worst-case BLIND time: perception period + QP period + actuation
+        # lag, not the QP period alone. Raise it to make the geometric term bite
+        # earlier (a point 10 cm from something may then move at 0.5 m/s at
+        # 0.2 s, 0.33 m/s at 0.3 s).
+        self._spd_react = declare_float(self, 'link_speed_reaction_s',
+                                        p.get('link_speed_reaction_s', 0.20),
+                                        positive=True, maximum=2.0)
+        # [s] enforcement horizon: v̂ᵀJp(q̇ + q̈·T) ≤ v_allow. Symmetric, same
+        # reasoning as the retreat cap.
+        self._spd_T    = declare_float(self, 'link_speed_horizon_s',
+                                       p.get('link_speed_horizon_s', 0.10),
+                                       positive=True, maximum=2.0)
+        # Emit a row only above this fraction of the point's own cap. Below it
+        # the row is non-binding and would put one row per control point in the
+        # QP at all times — the same n_c-stability tradeoff every other horizon
+        # gate in this file makes.
+        self._spd_frac = declare_float(self, 'link_speed_activate_frac',
+                                       p.get('link_speed_activate_frac', 0.5),
+                                       minimum=0.0, maximum=1.0)
+        self._diag_spd     = 0.0
+        self._diag_spd_cap = 0.0
         self._diag_v_obs = 0.0
         self._h_alpha = declare_float(self, 'cbf_h_recovery_alpha',
                                       p.get('cbf_h_recovery_alpha', 0.8),
@@ -850,6 +1024,15 @@ class CBFSafetyFilter(Node):
         n_weak        = 0           # obstacles dropped this tick for low leverage
         min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
         d_obs_min     = np.inf      # closest obstacle gap, obstacle rows only
+        # Retreat-cap rows are collected here and spliced in as the TRAILING
+        # rows of the snapshot (see the block after the self-collision rows), so
+        # the mask is a contiguous tail slice instead of a per-append flag on
+        # every one of the four row builders.
+        cap_a, cap_val, cap_grp, cap_link = [], [], [], []
+        # (Jp, clearance, label) per kept obstacle control point. The task-space
+        # speed rows are built from these AFTER the self-collision pass, so they
+        # can fold d_sc_min into each point's clearance.
+        spd_pts: list[tuple[np.ndarray, float, str]] = []
         self._diag_h_hold = 0.0     # largest recovery held back this rebuild [m]
         self._diag_v_obs  = 0.0     # fastest approaching obstacle this rebuild
 
@@ -982,6 +1165,25 @@ class CBFSafetyFilter(Node):
                 link_seen[ob.link] = k + 1
                 rows_link.append(f'{ob.link}#{k}')
 
+                # Retreat cap for THIS control point, on the same normal. One
+                # per kept obstacle row, so the cap set follows the barrier set
+                # exactly and adds no activation churn of its own. Stored with
+                # −a: the generic G = [−A | −e] then yields +aᵀq̈, an upper
+                # bound, while every other row keeps its lower one.
+                # One cap row per kept obstacle row, ALWAYS — the distance
+                # dependence lives in the cap VALUE (retreat_cap_speed's relief
+                # term saturates it at max_speed far from the barrier), not in
+                # whether the row exists. Gating the row instead would add
+                # activation churn to n_c and put a step in the bound at
+                # whatever distance the gate sat.
+                if self._rtr_on:
+                    cap_a.append(-a)
+                    cap_val.append(self._retreat_cap(v_o, h))
+                    cap_grp.append(G_CAP)
+                    cap_link.append(f'cap:{ob.link}#{k}')
+                if self._spd_on:
+                    spd_pts.append((Jp, ob.d, f'spd:{ob.link}#{k}'))
+
         # ── Joint-limit rows ────────────────────────────────────────────────
         # Same HOCBF convention: aᵀq̈ + s ≥ −k1(aᵀq̇) − k0·h − ċ, with ċ ≡ 0
         # because ḧ = ∓q̈ carries no drift term.
@@ -1065,6 +1267,41 @@ class CBFSafetyFilter(Node):
             elif lbl_ in self._qlim_stuck:
                 del self._qlim_stuck[lbl_]
 
+        # ── Task-space speed rows ───────────────────────────────────────────
+        # Built here, after the self-collision pass, because each point's
+        # clearance is min(its own obstacle gap, the closest self-collision
+        # gap): a near self-collision is a whole-arm geometric event and must
+        # slow every control point, not only the pair that reported it.
+        for Jp_i, clear_i, lbl_i in spd_pts:
+            row = link_speed_row(
+                Jp_i, js.qdot,
+                link_speed_cap(min(clear_i, d_sc_min),
+                               v_max=self._spd_vmax,
+                               reaction_s=self._spd_react),
+                self._spd_frac, lbl_i)
+            if row is not None:
+                a_s, v_s, lbl_s = row
+                cap_a.append(a_s)
+                cap_val.append(v_s)
+                cap_grp.append(G_SPD)
+                cap_link.append(lbl_s)
+
+        # ── Rate-cap rows (TRAILING, so the QP addresses them by slice) ─────
+        # Retreat caps and task-space speed caps share one tail block: both are
+        # UPPER bounds of the form aᵀq̇ ≤ v, stored with a negated row and given
+        # their RHS by the same retreat_cap_rhs. Only the slack family differs,
+        # and rows_group already carries that.
+        # Appended after the stuck-joint-limit bookkeeping above on purpose:
+        # that loop keys off the label prefix, and these carry 'cap:'/'spd:'.
+        n_cap = len(cap_a)
+        if n_cap:
+            rows_a.extend(cap_a)
+            rows_h.extend([CAP_H_SENTINEL] * n_cap)   # not a barrier — see const
+            rows_jdq.extend([0.0] * n_cap)            # RHS is overwritten in the QP
+            rows_group.extend(cap_grp)
+            rows_vobs.extend([0.0] * n_cap)           # v_obs is folded into cap_v
+            rows_link.extend(cap_link)
+
         if not rows_a:
             self._con = None
             return
@@ -1083,7 +1320,23 @@ class CBFSafetyFilter(Node):
         self._con = _ConstraintSnap(A, h_bar, jdq_v, G, obs.stamp,
                                     tuple(rows_link), float(d_obs_min),
                                     grp, float(d_sc_min),
-                                    np.asarray(rows_vobs, dtype=np.float64))
+                                    np.asarray(rows_vobs, dtype=np.float64),
+                                    np.asarray(cap_val, dtype=np.float64),
+                                    int(n_cap),
+                                    int(sum(1 for g in cap_grp if g == G_CAP)))
+
+    def _retreat_cap(self, v_obs: float, h_bar: float) -> float:
+        """[m/s] fastest separation rate this control point may be given.
+
+        Thin binding of this node's parameters onto
+        :func:`~franka_experiments.utils.cbf_state_rows.retreat_cap_speed`,
+        which owns the formula and is where it is tested.
+        """
+        return retreat_cap_speed(
+            v_obs, h_bar,
+            base=self._rtr_base, obs_gain=self._rtr_gobs,
+            depth_gain=self._rtr_gdep, depth_speed_ref=self._rtr_dref,
+            engage_gap=self._rtr_gap, max_speed=self._rtr_vmax)
 
     def _obstacle_speed(self, lbl: str, d_now: float, stamp: float,
                         adotq: float) -> float:
@@ -1193,9 +1446,25 @@ class CBFSafetyFilter(Node):
         now = self._now()
 
         if now - js.stamp > self._js_to:
-            self.get_logger().error('joint state stale → zero output',
-                                    throttle_duration_sec=0.5)
-            self._publish(np.zeros(NV))
+            # BRAKE, not zeros. q̈ = 0 reads as "hold this velocity" all the way
+            # down this chain: rt_torque_controller stops integrating q̇_des and
+            # keeps applying Kd·(q̇_des − q̇) to maintain it, and qddot_to_torque
+            # still emits τ_ff = C·q̇. So the old "zero output" degradation left
+            # the arm COASTING at whatever it was doing for the whole outage —
+            # measured: a 100 ms gap in the 1 kHz feed, then zeros, then
+            # joint_velocity_violation.
+            #
+            # The last known q̇ is stale, but it points the right way and has
+            # roughly the right magnitude, and it is the same fallback the
+            # distance-stale, qddot_nom-stale and frozen-state paths already
+            # use. Clipped to the STATIC accel box: the state-dependent box
+            # below cannot be trusted on a stale q.
+            self.get_logger().error(
+                'joint state stale → braking on last known q̇',
+                throttle_duration_sec=0.5)
+            self._publish(np.clip(-self._k_brake * js.qdot, self._lb, self._ub))
+            self._status_msg.data[2] = 1.0          # safety-chain fault
+            self._status_pub.publish(self._status_msg)
             return
         qdot = js.qdot
 
@@ -1295,6 +1564,46 @@ class CBFSafetyFilter(Node):
             h_qp = (self._k1 * hdot
                     + self._k0 * con.h_bar
                     + con.jdot_qdot)
+
+            # ── Rate-cap rows: their own RHS, not the barrier's ────────────
+            # Two families, one shape. Both are stored with a negated row, so
+            # G x ≤ h_qp reads  +aᵀq̈ − s ≤ h_qp,  and the one-step bound
+            #     aᵀ(q̇ + q̈·T) ≤ v_cap
+            # is exactly  h_qp = (v_cap − aᵀq̇)/T,  with aᵀq̇ = −(A q̇) here.
+            # They differ only in what `a` and `v_cap` mean and in the horizon:
+            #   retreat caps  a = n̂ᵀJ   (separation rate along the obstacle
+            #                            normal),          horizon _rtr_T;
+            #   speed caps    a = v̂ᵀJp  (the point's own speed along its
+            #                            direction of travel), horizon _spd_T.
+            # RAW q̇ in both, not the EMA one the barrier uses: _qdot_cbf exists
+            # to tame a NOISY DERIVATIVE (ḣ feeding k1), while this is the
+            # measured velocity itself — the same signal, and the same
+            # reasoning, as the joint velocity box. Filtering it would only add
+            # lag to bounds whose whole job is to be smooth.
+            self._diag_rtr = self._diag_rtr_cap = 0.0
+            self._diag_spd = self._diag_spd_cap = 0.0
+            if con.n_cap:
+                # POSITIVE indices throughout: the tail runs [t0, n_c), retreat
+                # caps first then task-space speed caps. Negative-index slices
+                # read more naturally here but have a trap — with no speed rows
+                # the retreat slice would end at index 0 and silently select
+                # nothing, leaving those rows on the barrier's RHS.
+                k, r = con.n_cap, con.n_rtr
+                t0 = n_c - k
+                rate = -(con.A[t0:] @ qdot)   # aᵀq̇ on these rows, >0 = the
+                                              # bounded direction, whichever
+                                              # family: away from the obstacle,
+                                              # or along the point's own travel
+                if r:
+                    h_qp[t0:t0 + r] = retreat_cap_rhs(
+                        con.A[t0:t0 + r], qdot, con.cap_v[:r], self._rtr_T)
+                    self._diag_rtr     = float(np.max(rate[:r]))
+                    self._diag_rtr_cap = float(np.min(con.cap_v[:r]))
+                if k > r:
+                    h_qp[t0 + r:] = retreat_cap_rhs(
+                        con.A[t0 + r:], qdot, con.cap_v[r:], self._spd_T)
+                    self._diag_spd     = float(np.max(rate[r:]))
+                    self._diag_spd_cap = float(np.min(con.cap_v[r:]))
         elif obs is not None and (now - obs.stamp) > self._dist_to:
             # Genuine perception staleness: distance data WAS received but the
             # latest sample is older than distance_timeout (camera frozen,
@@ -1451,8 +1760,20 @@ class CBFSafetyFilter(Node):
         #   rows (metres) and joint-limit rows (RADIANS), so its argmin is not a
         #   distance at all. Should agree with real_time_distance's `dist=`;
         #   d_sc [m] closest self-collision capsule gap;
-        #   s[obs/sc/qlim/sing] the four per-family slacks — one exploding while
-        #   the others stay small is exactly what a shared slack used to hide;
+        #   s[obs/sc/qlim/sing/cap] the five per-family slacks — one exploding
+        #   while the others stay small is exactly what a shared slack used to
+        #   hide. s[cap] > 0 is NORMAL and expected: it means the barrier is
+        #   overruling the retreat cap because the obstacle is closing faster
+        #   than the cap allows — the priority order working, not a fault;
+        #   retreat=<rate>/<cap> [m/s] fastest current separation rate of any
+        #   capped control point, over the tightest cap applied — rate > cap
+        #   means the cap is being paid for, not enforced;
+        #   vlink=<speed>/<cap> [m/s] fastest control point currently in the
+        #   task-space speed rows, over the tightest cap applied to one. A cap
+        #   well under link_speed_max is the GEOMETRIC term biting: that point
+        #   is close enough to something that its own clearance, not the flat
+        #   ceiling, is what limits it. 0/0 means no point was fast enough to
+        #   earn a row this tick;
         #   sigma = σ_min(J̃) [m/rad] at the last rebuild, the singularity
         #   barrier's argument — approaching singularity_sigma_floor while
         #   s[sing] > 0 means the QP is paying to cross a singularity;
@@ -1493,10 +1814,13 @@ class CBFSafetyFilter(Node):
                 f'(raw{float(a_i @ qdot):+.3f}) h_qp={float(h_qp[i]):+.3f} '
                 f'hhold={self._diag_h_hold:.4f} vobs={self._diag_v_obs:+.3f} '
                 f'dnorm={float(np.linalg.norm(dq)):.3f} '
-                f's[obs/sc/qlim/sing]={self._diag_slack[G_OBS]:.3f}/'
+                f's[obs/sc/qlim/sing/cap/spd]={self._diag_slack[G_OBS]:.3f}/'
                 f'{self._diag_slack[G_SC]:.3f}/{self._diag_slack[G_QLIM]:.3f}/'
-                f'{self._diag_slack[G_SING]:.3f} '
+                f'{self._diag_slack[G_SING]:.3f}/{self._diag_slack[G_CAP]:.3f}/'
+                f'{self._diag_slack[G_SPD]:.3f} '
                 f'd_sc={con.d_sc_min:.3f} sigma={self._diag_sigma:.3f} '
+                f'retreat={self._diag_rtr:+.3f}/{self._diag_rtr_cap:.3f} '
+                f'vlink={self._diag_spd:+.3f}/{self._diag_spd_cap:.3f} '
                 f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} cart_rad={float(a_i @ dq):+.3f} '
                 f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f} '
                 f'slew={"".join("X" if b else "." for b in self._diag_slew_bite)} '

@@ -121,6 +121,9 @@ def generate_rt_controllers_yaml(
     e_max: float = 1.0,
     accel_topic: str = '/NS_1/qddot_safe',
     qdot_margin: float = 0.95,
+    p_gains: Optional[Sequence[float]] = None,
+    p_max: float = 0.15,
+    command_timeout: float = 0.1,
 ) -> str:
     """Build a complete, self-contained controllers YAML.
 
@@ -146,6 +149,9 @@ def generate_rt_controllers_yaml(
             e_max=e_max,
             accel_topic=accel_topic,
             qdot_margin=qdot_margin,
+            p_gains=p_gains,
+            p_max=p_max,
+            command_timeout=command_timeout,
         )
 
     lines = [
@@ -231,7 +237,8 @@ def _ensure_urdf_cached(arm_id: str) -> str:
 
 def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
                           tau_max_scale, d_gains=None, e_max=1.0,
-                          accel_topic='/NS_1/qddot_safe', qdot_margin=0.95):
+                          accel_topic='/NS_1/qddot_safe', qdot_margin=0.95,
+                          p_gains=None, p_max=0.15, command_timeout=0.1):
     """Build controllers YAML for rt_torque_controller.
 
     d_gains / e_max / accel_topic parametrizzano il feedback di velocità a 1 kHz
@@ -246,13 +253,21 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
         # Per-giunto, decrescente verso il polso (inerzie minori, attrito
         # relativo maggiore → si tara indipendentemente). INITIAL estimate.
         d_gains = [30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0]
+    if p_gains is None:
+        # Kp ≈ Kd·ω con ω ≈ 4 rad/s: smorzamento ~critico con le inerzie di
+        # link dell'FR3 stimate grossolanamente. INITIAL — da validare in
+        # hardware, e la direzione sicura in cui sbagliare è VERSO IL BASSO
+        # (correzione più lenta, mai oscillazione).
+        p_gains = [120.0, 120.0, 120.0, 100.0, 40.0, 40.0, 20.0]
     if not is_real:
         # Fake hardware: il mock non simula la dinamica di coppia (un comando di
-        # effort non viene integrato in velocità), quindi il feedback Kd·(q̇_des−q̇)
-        # sarebbe privo di significato fisico. Lo si disattiva via configurazione
-        # (gain a zero → il controller resta puro pass-through del feedforward),
-        # NON con un ramo condizionale nel C++.
+        # effort non viene integrato in velocità), quindi il feedback
+        # Kp·(q_des−q) + Kd·(q̇_des−q̇) sarebbe privo di significato fisico. Lo
+        # si disattiva via configurazione (gain a zero → il controller resta
+        # puro pass-through del feedforward), NON con un ramo condizionale nel
+        # C++.
         d_gains = [0.0] * 7
+        p_gains = [0.0] * 7
     lines = [
         '# Auto-generated at launch time by the launch system',
         '# Controller: rt_torque_controller  —  DO NOT EDIT (regenerated every launch)',
@@ -308,6 +323,7 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
         lines.append(f'        - {arm_id}_joint{i}')
     urdf_path = _ensure_urdf_cached(arm_id)
     d_gains_str = '[' + ', '.join(f'{g}' for g in d_gains) + ']'
+    p_gains_str = '[' + ', '.join(f'{g}' for g in p_gains) + ']'
     lines += [
         f'      command_topic: {command_topic}',
         f'      accel_topic: {accel_topic}',
@@ -317,6 +333,18 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
         # clamp ma è privo di significato fisico (vedi note di design).
         f'      d_gains: {d_gains_str}',
         f'      e_max: {e_max}',
+        # Anello di POSIZIONE. Senza di esso la catena non ha alcun feedback di
+        # posizione — τ_ff è feedforward puro e Kd agisce solo sulla velocità —
+        # quindi ogni deficit di coppia (attrito, errore di modello) si integra
+        # in una deriva NON limitata: misurato, 0.52 m di errore EE senza alcun
+        # ostacolo vicino. q_des integra q̈_SAFE, quindi corregge l'ESECUZIONE e
+        # non combatte l'avoidance. p_gains a zero = legge precedente esatta.
+        f'      p_gains: {p_gains_str}',
+        f'      p_max: {p_max}',
+        # Freschezza di τ_ff. Senza, l'ultima coppia ricevuta restava applicata
+        # per sempre se qddot_to_torque smetteva di pubblicare (accel_timeout
+        # copriva solo q̈_safe). Scaduto → hold di posizione sulla posa corrente.
+        f'      command_timeout: {command_timeout}',
         # Backstop a 1 kHz contro `joint_velocity_violation`: q̇_des è un
         # integratore libero di q̈_safe e il box di velocità del CBF vive a
         # 100 Hz sul solo COMANDO q̈, quindi senza questo tetto nessuno fra i

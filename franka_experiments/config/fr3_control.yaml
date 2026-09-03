@@ -69,6 +69,16 @@ params:
   rho_slack_self_collision: 20000.0  # self-collision rows
   rho_slack_joint_limit: 200.0       # joint-limit rows
   rho_slack_singularity: 2000.0      # singularity row (sigma_min of J)
+  # Retreat-cap rows. CHEAPEST family on purpose: the cap and the obstacle
+  # barrier bound the SAME quantity from opposite sides, and when a human closes
+  # faster than the cap allows no command satisfies both. The cap must yield —
+  # keep this well below rho_slack or a comfort bound outranks the barrier.
+  rho_slack_retreat: 100.0
+  # Task-space speed rows. Between the retreat cap and the barrier: dearer than
+  # a comfort bound (this is what stops a link from jumping its own clearance
+  # between two perception frames) but still cheaper than the barrier, so a
+  # genuine emergency retreat can buy its way past.
+  rho_slack_link_speed: 500.0
   qp_solver: osqp
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: qp_rate_hz | flagged: 2026-09-01
   control_rate_hz: 100.0
@@ -272,6 +282,133 @@ params:
   # Frame whose Jacobian defines the barrier. fr3_link8 is the flange in the
   # hand-less model the filter carries (build_urdf_no_hand).
   singularity_frame: fr3_link8
+
+  # ── Retreat cap (cbf_safety_filter) ────────────────────────────────────────
+  # The HOCBF row is one-sided: it puts a FLOOR under the separation rate and
+  # nothing above it, so once the barrier is violated the floor grows with
+  # k0*|h| and the QP accelerates the arm away for as long as that lasts. Fast
+  # retreat next to a person is its own hazard, and nothing in the filter ever
+  # said how fast is fast ENOUGH.
+  #
+  # These rows say it, per obstacle control point, on the same normal:
+  #
+  #   ramp   = clip(v_obs / depth_speed_ref, 0, 1)
+  #   relief = max_speed * clip(h / engage_gap, 0, 1)
+  #   n^T J qdot  <=  v_cap
+  #   v_cap = min(max_speed, base_speed + obstacle_gain*v_obs
+  #                                     + depth_gain*max(-h, 0)*ramp
+  #                                     + relief)
+  #
+  # The governing idea is PROPORTIONALITY: how fast the arm may back away is set
+  # by how fast the obstacle is coming in, not by how alarming the geometry
+  # looks. A person stepping slowly toward the arm gets the arm stepping slowly
+  # away. depth_gain*max(-h,0)*ramp is exactly 0 while the obstacle is OUTSIDE
+  # d_safe, and v_obs is clamped to the approaching half only, so the moment the
+  # obstacle leaves d_safe and stops closing the cap collapses back to
+  # base_speed. The escalation is temporary by construction.
+  retreat_cap_enabled: true
+
+  # [m/s] the CREEP, not a retreat speed. This is what remains when the obstacle
+  # is stationary, and its only job is to let the arm walk out of a violation
+  # that nothing is making worse. Keep it small — it is the one term that is NOT
+  # proportional to anything, so it sets the floor on "too fast for a slow
+  # obstacle". Was 0.15 before the engage gap below existed; at that value it
+  # also throttled ordinary task motion.
+  retreat_cap_base_speed: 0.05
+
+  # [-] THE proportional term, and the one that should dominate. 1.0 = the arm
+  # may back off exactly as fast as the obstacle comes in, which holds the gap
+  # without ever outrunning it — the constraint is then simply
+  # h_dot = n^T J qdot - v_obs <= base_speed. Above 1.0 it gains ground.
+  retreat_cap_obstacle_gain: 1.0
+
+  # [1/s] escalation per metre of barrier violation, active ONLY inside d_safe
+  # and ONLY scaled by the ramp below. At 2.0, being 5 cm inside d_safe buys
+  # 0.10 m/s of extra retreat at full ramp.
+  retreat_cap_depth_gain: 2.0
+
+  # [m/s] closing speed at which the depth escalation reaches full strength.
+  # This is the hole the ramp plugs: without it, a SLOW obstacle that ends up
+  # deep inside d_safe authorises a FAST retreat purely because the geometry
+  # looks bad — depth is not proportional to anything the obstacle is doing.
+  # With it, depth can only amplify an approach that is actually happening.
+  # 0 disables the ramp and restores the older speed-independent behaviour.
+  retreat_cap_depth_speed_ref: 0.30
+
+  # [m] distance over which the cap ramps from free (at h = gap, where relief
+  # saturates it at max_speed) to fully proportional (at h = 0). The cap shapes
+  # AVOIDANCE, not ordinary task motion: applied at full strength over the whole
+  # 1.2 m cbf_obstacle_horizon it throttled the arm any time a person stood
+  # anywhere nearby — logged as retreat=+0.161/0.150 with d_min=0.389 m and no
+  # avoidance happening at all. With d_safe = 0.15 the default engages the
+  # shaping from a 0.30 m surface gap inward.
+  #
+  # A RAMP and not an on/off gate on purpose: a gate would have to sit either
+  # above the distance where a fast approach first engages the barrier (and
+  # then it does nothing) or below it (and then the cap steps in at the worst
+  # possible moment). Raise it to start shaping earlier, lower it to leave the
+  # task alone for longer; 0 disables the relief entirely, so the cap applies at
+  # full strength at every distance (the pre-ramp behaviour).
+  retreat_cap_engage_gap: 0.15
+
+  # [m/s] absolute ceiling regardless of the terms above. The number to lower
+  # first if the arm still feels violent; the number to raise if a fast
+  # approach ends in contact with s[cap] pinned at 0.
+  retreat_cap_max_speed: 0.6
+
+  # [s] enforcement horizon: n^T J (qdot + qddot*T) <= v_cap. SYMMETRIC, unlike
+  # the joint velocity box's asymmetric relax/dt pair: there, "past the cap"
+  # needs one-step braking authority because it is a safety guarantee. Here
+  # "past the cap" only means retreating too eagerly, and answering that with a
+  # one-step deceleration demand replaces one abrupt motion with another.
+  # Smoothness is the feature. Lower it for a firmer cap, raise it for a softer.
+  retreat_cap_horizon_s: 0.15
+
+  # ── Task-space speed rows (cbf_safety_filter) ──────────────────────────────
+  # "Velocita feasible": a bound on how fast any CONTROL POINT travels, which
+  # nothing in the filter had. The joint velocity box bounds qdot per joint, and
+  # a folded or near-singular arm decouples that from task speed in BOTH
+  # directions — the logged failure had every joint under 0.31 of its limit
+  # while link5 and the hand closed to a 2.9 cm gap.
+  #
+  #   ||p_dot_i|| <= v_allow_i,   v_allow_i = min(link_speed_max,
+  #                                               clearance_i / reaction_s)
+  #
+  # The second term is the GEOMETRIC one and the reason the row exists. The
+  # barrier is rebuilt at 50 Hz from ~30 Hz perception, so a point travels
+  # v*dt BLIND between evaluations; let it move faster than its own remaining
+  # gap over that blind time and it crosses the barrier BETWEEN samples —
+  # violating no constraint the QP ever looked at, and interpenetrating anyway.
+  # That is plain discretisation tunnelling: no k0/k1 tuning fixes it, only
+  # forbidding the speed that makes the gap jumpable.
+  #
+  # clearance_i is min(this point's obstacle gap, the closest self-collision
+  # gap): a near self-collision is a whole-arm geometric event, so it slows
+  # every control point, not just the pair that reported it.
+  link_speed_rows_enabled: true
+
+  # [m/s] flat ceiling on any control point's speed. Deliberately ABOVE
+  # retreat_cap_max_speed (0.6): this row is the outer bound that catches a
+  # whip, not the shaper of the retreat — that is the retreat cap's job, and
+  # the two must not fight over the same motion.
+  link_speed_max: 0.8
+
+  # [s] worst-case BLIND time between barrier evaluations: perception period +
+  # QP period + actuation lag, NOT the QP period alone. Raise it to make the
+  # geometric term bite earlier — a point 10 cm from something may move at
+  # 0.5 m/s at 0.20 s, 0.33 m/s at 0.30 s.
+  link_speed_reaction_s: 0.20
+
+  # [s] enforcement horizon: v_hat^T Jp (qdot + qddot*T) <= v_allow. Symmetric,
+  # same reasoning as retreat_cap_horizon_s.
+  link_speed_horizon_s: 0.10
+
+  # Emit a row only when the point already exceeds this fraction of its own cap.
+  # Below it the row is non-binding and would put one row per control point in
+  # the QP at all times: same n_c-stability tradeoff as every other horizon gate
+  # here. Watch `vlink=` in CBFDIAG — 0/0 means nothing was fast enough to earn
+  # a row.
+  link_speed_activate_frac: 0.5
 
   self_collision_rows_enabled: true
 

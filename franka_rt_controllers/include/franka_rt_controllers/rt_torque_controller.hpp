@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -37,7 +38,11 @@ class RtTorqueController : public controller_interface::ControllerInterface {
  private:
   struct TorqueInput {
     std::array<double, kNumJoints> tau{};
-    bool received{false};
+    bool   received{false};
+    double stamp{0.0};   // istante di ricezione [s] (node clock). Senza questo
+                         // l'ULTIMA coppia ricevuta restava applicata per
+                         // sempre se qddot_to_torque smetteva di pubblicare:
+                         // accel_timeout copriva solo q̈_safe. Vedi update().
   };
 
   // q̈_safe transport — parallel, lock-free, gemello di TorqueInput. Porta il
@@ -71,6 +76,25 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   std::array<double, kNumJoints> d_gains_{};   // Kd per giunto [N·m/(rad/s)]
   double e_max_{1.0};                           // clamp errore velocità [rad/s]
   double accel_timeout_{0.1};                   // finestra freschezza q̈_safe [s]
+  double command_timeout_{0.1};                 // finestra freschezza τ_ff [s]
+
+  // ── Anello di POSIZIONE (vedi update) ───────────────────────────────────
+  // Senza di questo la catena non ha alcun feedback di posizione: τ_ff è
+  // feedforward puro e Kd agisce solo sulla velocità, quindi ogni deficit di
+  // coppia (attrito, errore di modello) si integra in una deriva di posizione
+  // NON limitata — misurato: 0.52 m di errore EE senza alcun ostacolo vicino.
+  // Il riferimento q_des_ integra q̇_des_, cioè q̈_SAFE: segue la traiettoria
+  // filtrata dal CBF, quindi corregge l'esecuzione e non combatte l'avoidance.
+  std::array<double, kNumJoints> p_gains_{};    // Kp per giunto [N·m/rad]
+  double p_max_{0.15};                          // clamp errore posizione [rad]
+  std::array<double, kNumJoints> q_des_{};      // riferimento posizione integrato
+
+  // ── Hold su perdita di τ_ff ─────────────────────────────────────────────
+  std::array<double, kNumJoints> q_hold_{};     // posa catturata all'inizio del hold
+  bool hold_latched_{false};                    // RT-only: hold già catturato
+  std::atomic<bool> in_hold_{false};            // letto dal timer non-RT che logga
+  bool hold_logged_{false};                     // stato del logger (thread del timer)
+  rclcpp::TimerBase::SharedPtr fault_timer_;    // logga i fronti di in_hold_
 
   // ── Tetto di velocità sul riferimento integrato (backstop del reflex) ────
   // q̇_des è un integratore libero di q̈_safe: senza questi limiti nulla, tra
