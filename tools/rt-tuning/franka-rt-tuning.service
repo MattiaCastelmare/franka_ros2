@@ -1,0 +1,20 @@
+[Unit]
+Description=Franka FR3 real-time tuning (NIC IRQ affinity, CPU governor, irqbalance)
+Documentation=file:///home/mattia/Git/franka_ros2/tools/rt-tuning/README.md
+# The NIC must exist before its IRQ can be found, and irqbalance must have had
+# its chance to start before we stop it -- otherwise it starts afterwards and
+# scatters the affinity we just set.
+After=network-online.target irqbalance.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/franka-rt-tuning.sh
+# A missing NIC or an unwritable sysfs knob must not mark the boot as failed:
+# the script reports what it could not do and exits non-zero, and the log is
+# the place to look for it.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

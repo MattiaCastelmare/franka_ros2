@@ -69,11 +69,26 @@ _LAUNCH_DEFAULTS, _ = load_launch_defaults()
 _BRINGUP_DEFAULTS, _ = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
 
+# NumPy ships its own OpenBLAS, whose worker pool BUSY-WAITS instead of
+# sleeping: on this 24-core box pentagon_qddot_commander was measured at 588%
+# CPU with six threads pegged at ~95% while the node's own thread used 10.7%.
+# Every matrix in this stack is 7x7 or smaller, where a thread pool is pure
+# overhead, and the spinners sit on the P-cores next to the SCHED_FIFO thread
+# of ros2_control_node -- cache thrash and thermal throttling on the one core
+# that must not miss a 1 ms deadline.  One thread per node is both faster here
+# and quieter for the RT loop.
+_SINGLE_THREAD_BLAS = {
+    'OPENBLAS_NUM_THREADS': '1',
+    'OMP_NUM_THREADS': '1',
+    'MKL_NUM_THREADS': '1',
+    'NUMEXPR_NUM_THREADS': '1',
+}
+
 _ALL_PARAMS = [
     'namespace', 'use_fake_hardware', 'robot_ip', 'arm_id',
     'fake_sensor_commands', 'load_gripper', 'controllers_yaml',
     'gazebo', 'lpf_alpha', 'tau_max_scale',
-    'control_spawner_delay_s',
+    'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance',
     'start_experiment_logger', 'experiment_logger_delay_s',
@@ -141,6 +156,25 @@ def _launch_all(context):
         output='screen',
     )
 
+    # ── [RT] pin the control loop onto the isolated core ─────────────────────
+    # isolcpus=2,3 only EMPTIES those cores; nothing lands on them until asked.
+    # Without this the SCHED_FIFO thread of ros2_control_node was measured on
+    # CPU5, sharing a P-core with the OpenBLAS spinners and free to migrate onto
+    # CPU4, whose iwlwifi/nvme IRQs produce 6 ms stalls -- six missed FCI
+    # deadlines in a row, i.e. communication_constraints_violation.
+    # Only the one FF thread is moved; see scripts/pin_rt_thread.sh for why.
+    # Set rt_pin_cpu:='' to disable (e.g. on a machine without isolcpus).
+    rt_pin_cpu = str(p['rt_pin_cpu']).strip()
+    pin_rt_thread = ExecuteProcess(
+        # 'bash <script>' rather than executing it directly: setuptools
+        # data_files does not preserve the executable bit on install.
+        cmd=['bash', PathJoinSubstitution([
+            FindPackageShare('franka_experiments'), 'scripts', 'pin_rt_thread.sh',
+        ]), rt_pin_cpu, '60'],
+        output='screen',
+        shell=False,
+    )
+
     # world → base static TF (identity).  robot_state_publisher already
     # publishes base → fr3_link0 (identity); publishing world → fr3_link0
     # here would give fr3_link0 two parents, orphaning 'base' and splitting
@@ -171,6 +205,17 @@ def _launch_all(context):
                     actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
+    if rt_pin_cpu:
+        # +1 s so the spawner has issued the activation that creates the FF
+        # thread; the script then polls for up to 60 s anyway.
+        actions.append(TimerAction(period=control_delay + 1.0,
+                                   actions=[pin_rt_thread]))
+        actions.append(LogInfo(msg=['[torque_stack] [RT pinning]     '
+                                    'ros2_control_node FF thread -> CPU',
+                                    rt_pin_cpu]))
+    else:
+        actions.append(LogInfo(
+            msg='[torque_stack] [RT pinning]     DISABLED (rt_pin_cpu empty)'))
 
     # ── [MoveIt] move_group — planning services for the commander ────────────
     # pentagon_qddot_commander generates its pentagon via MoveIt's compute_fk /
@@ -285,6 +330,7 @@ def _launch_all(context):
             executable='real_time_distance',
             name='real_time_distance',
             output='log',
+            additional_env=_SINGLE_THREAD_BLAS,
             parameters=[{
                 'robot_config_path':      rtd_config,
                 'camera_extrinsics_path': p['camera_extrinsics_yaml'],
@@ -304,6 +350,7 @@ def _launch_all(context):
         executable='cbf_safety_filter',
         name='cbf_safety_filter',
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
     # acceleration) and converts it to torque — no remap needed.
@@ -312,6 +359,7 @@ def _launch_all(context):
         executable='qddot_to_torque',
         name='qddot_to_torque',
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
     )
     actions.append(TimerAction(period=dynamics_delay,
                                actions=[cbf_node, qddot_to_torque_node]))
@@ -328,6 +376,7 @@ def _launch_all(context):
         name='pentagon_qddot_commander',
         namespace=p['namespace'],
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
         # Path geometry (centre / shape / radius) is NOT set here: the node
         # reads it from config/fr3_control.yaml (params: path_center_xyz,
         # path_type, path_radius) as its declare_parameter defaults. Launch
@@ -457,6 +506,12 @@ def generate_launch_description():
                 'torque_finger_pub_rate_hz',
                 default_value=str(_DEFAULTS.get('torque_finger_pub_rate_hz', '10.0')),
                 description='[Hz] MoveIt finger joint-state publisher rate'),
+
+            DeclareLaunchArgument(
+                'rt_pin_cpu',
+                default_value=str(_DEFAULTS.get('rt_pin_cpu', '3')),
+                description="CPU for the ros2_control_node SCHED_FIFO thread; "
+                            "must be one of the isolcpus cores. '' disables pinning"),
 
             OpaqueFunction(function=_launch_all),
         ]

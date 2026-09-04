@@ -15,7 +15,8 @@ setup(
          glob.glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'),
          glob.glob('config/*.yaml') + glob.glob('config/*.rviz')),
-        (os.path.join('share', package_name, 'scripts'), glob.glob('scripts/*.py')),
+        (os.path.join('share', package_name, 'scripts'),
+         glob.glob('scripts/*.py') + glob.glob('scripts/*.sh')),
         # Test infrastructure
         (os.path.join('share', package_name, 'test', 'launch'),
          glob.glob('test/launch/*.launch.py')),
