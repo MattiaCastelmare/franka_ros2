@@ -170,6 +170,40 @@ params:
                            # the healthy O(0.3-0.8) scale) — validate empirically
                            # on FR3 (fr3_cond_probe.py) before trusting it.
 
+  # Tangential steering: amplifies whatever sideways component qddot_nom (or,
+  # failing that, the current qdot) already has orthogonal to a close
+  # obstacle/self-collision row's normal, so the QP has an actual incentive to
+  # go AROUND rather than just clip the blocked normal component to zero. Pure
+  # bias on the QP's cost target — every hard barrier constraint (G/h) is
+  # untouched, so this cannot weaken the safety guarantee, only change which
+  # feasible q̈ the solver prefers. See cbf_qp_assembly.tangential_bias.
+  #
+  # v1 (gain=1.0, no temporal filter, no clamp) measured as visibly
+  # oscillatory on hardware: a hard branch switch between "amplify qddot_nom's
+  # own sideways part" and "fall back to qdot's" flipped direction on 100 Hz
+  # noise straddling the switch point, and an unfiltered per-tick bias rotates
+  # with âᵢ as the arm moves. v2 fixes both: tangential_bias() blends the two
+  # sources continuously instead of switching (see its docstring), and the
+  # gain is halved and low-pass filtered ACROSS ticks below, plus norm-capped.
+  cbf_tangential_gain: 0.5          # [-] 0 disables. Halved from the v1
+                                    # default alongside the smoothing changes
+                                    # below — still UNTUNED, re-validate.
+  cbf_tangential_engage_margin: 0.30  # [m] surface gap below which a row
+                                    # contributes; 2x d_safe so steering starts
+                                    # before the barrier itself gets tight.
+  cbf_tangential_filter_alpha: 0.90  # [-] EMA on the bias vector ACROSS QP
+                                    # ticks (100 Hz), same shape as
+                                    # cbf_hdot_filter_alpha. 0 = unfiltered (the
+                                    # oscillatory v1 behaviour); time constant
+                                    # dt/(1-a) ~= 67 ms at 0.85 — smooths
+                                    # tick-to-tick chatter while still tracking
+                                    # genuine sideways motion within a step or
+                                    # two of an obstacle.
+  cbf_tangential_max_bias: 2.0     # [rad/s^2] cap on ||bias||, independent of
+                                    # how large qddot_nom gets during a
+                                    # tracking-error spike (the exact scenario
+                                    # that preceded the hardware oscillation).
+
   # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: none | flagged: 2026-09-01
   qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
@@ -471,7 +505,39 @@ params:
 
   # Cap on simultaneous self-collision rows (closest pairs win), so n_c stays
   # bounded and OSQP does not re-setup() every tick.
-  self_collision_max_rows: 3
+  #
+  # RAISED 3 -> 8. At 3 out of 24 pairs the top-N set SWAPS as the arm moves:
+  # a pair drops out the instant a fourth becomes marginally closer, and its
+  # constraint disappears in one tick. Solve time is 0.05 ms at n_c ~ 37, so
+  # the cap was costing continuity to save headroom that was never scarce.
+  self_collision_max_rows: 8
+
+  # [s] anticipation: the engagement horizon is widened by lead_s * (closing
+  # speed of the pair), so a fast approach gets its row EARLY — while h is
+  # still large and the HOCBF row is still slack — and the constraint then
+  # tightens continuously instead of stepping.
+  #
+  # THIS IS THE FIX for "the arm stops with joint_velocity_violation in poses
+  # where it would self-collide". At the fixed 0.08 m horizon a pair closing
+  # at 0.5 m/s got 160 ms of warning, and the row it produced demanded a large
+  # deceleration in a single tick: a step in q̈_safe, a torque spike through
+  # M·q̈, measured velocity overshooting, firmware reflex. At 0.35 s the same
+  # approach engages at 0.26 m and is spread over ~350 ms.
+  #
+  # Costs nothing in a normal pose: the speed is clamped to the approaching
+  # half, so a pair that is not closing keeps exactly the 0.08 m horizon.
+  self_collision_row_lead_s: 0.35
+
+  # [-] hysteresis. An engaged pair keeps its row until the gap opens past
+  # release * horizon_eff. Without it a pair sitting on the boundary adds and
+  # removes its row on alternate rebuilds — a discontinuity in the constraint
+  # set every 20 ms, each one an OSQP setup() with the warm start discarded.
+  self_collision_row_release: 1.6
+
+  # [-] EMA on the per-pair closing speed (finite difference of the gap at the
+  # 50 Hz rebuild). Same role as obstacle_velocity_alpha one family over: the
+  # anticipation must not chatter on the differentiation noise.
+  self_collision_gap_vel_alpha: 0.6
 
   # Pairs to drop, "bodyA-bodyB", order-insensitive, matched on the trailing
   # part of the link names. THIS IS NOT A GUESS: it is every pair marked
@@ -750,6 +816,18 @@ params:
   # OSQP's own default max_iter (4000) can be hit on ill-scaled instances; at
   # this problem size 20k iterations still complete in < 1.5 ms.
   osqp_max_iter: 20000
+
+  # [rows] quantisation of the QP's row count. OSQP's sparsity pattern depends
+  # on n_c, so every change forces a fresh osqp.OSQP() + factorization — and
+  # n_c changes almost every rebuild as control points and rows engage
+  # (22 -> 29 -> 30 -> 34 -> 36 -> 37 across a few hundred ms of one hardware
+  # log). Rounding up to a block of 16 makes all of 33..48 one pattern: one
+  # setup(), update() thereafter, warm start preserved, and no per-tick
+  # allocate-and-factorize spike to starve the executor's IO thread (which is
+  # how "joint state stale -> braking" appeared right before a reflex). The
+  # padding rows are inert; see cbf_qp_assembly.pad_rows_to_block. 1 disables
+  # the quantisation and restores the exact previous behaviour.
+  qp_row_block: 16
 
   # ── cbf_status contract (/NS_1/cbf_status, Float64MultiArray) ─────────────
   # data[0] n_active_constraints — HOCBF rows present in the QP this tick, i.e.

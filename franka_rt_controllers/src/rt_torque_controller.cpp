@@ -174,11 +174,28 @@ controller_interface::return_type RtTorqueController::update(
       p = 0.0;
     }
 
-    // 4. Legge di controllo: τ = τ_ff + Kp·p + Kd·e   (errori post-clamp).
-    // Con Kp = 0 questa è esattamente la legge precedente, quindi disattivare
-    // l'anello di posizione è una questione di configurazione, non di codice.
+    // 4. Legge di controllo: τ = s·τ_ff + Kp·p + Kd·e   (errori post-clamp).
+    // Con Kp = 0 e ff_fade_band <= 0 questa è esattamente la legge
+    // precedente, quindi disattivare l'anello di posizione o il gate è una
+    // questione di configurazione, non di codice.
+    //
+    // s = ffScale(): il TERZO e ultimo anello di protezione sulla velocità,
+    // e l'unico che agisce sul termine che davvero accelera il giunto.
+    //   1. box di accelerazione del CBF — 100 Hz, sul COMANDO q̈, e assume che
+    //      il braccio segua q̈_safe (in hardware non lo fa: q̈ reale fino a 2×);
+    //   2. tetto su qdot_des_ (sopra) — limita il RIFERIMENTO, non τ_ff;
+    //   3. questo — 1 kHz, sulla velocità MISURATA, sul feedforward stesso.
+    // Senza (3), un q̈_safe grande e sostenuto (ritirata violenta da una
+    // auto-collisione imminente) applica M·q̈_safe per intero mentre qdot_des_
+    // sta già saturo al tetto: il solo Kd·e vi si oppone, e se non basta il
+    // primo a reagire è il firmware con `joint_velocity_violation` — le luci
+    // rosse. Il gate può solo RIDURRE |τ| verso zero, mai aggiungere coppia,
+    // quindi non può introdurre di per sé una violazione (e la gravità è
+    // compensata dal firmware: τ_ff = 0 significa "non accelerare", non
+    // "cadi"). Il freno resta interamente disponibile: la dissolvenza è
+    // DIREZIONALE, τ_ff che decelera passa sempre per intero.
     command_interfaces_[i].set_value(
-        input.tau[i] + p_gains_[i] * p + d_gains_[i] * e);
+        ffScale(i, input.tau[i]) * input.tau[i] + p_gains_[i] * p + d_gains_[i] * e);
   }
 
   return controller_interface::return_type::OK;
@@ -209,6 +226,42 @@ double RtTorqueController::qdotFloor(size_t i, double q) const {
   const double h = std::max(0.0, q - q_min_[i]);
   return -qdot_margin_ * std::min(qdot_max_[i],
                                   v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ffScale  (RT thread) — dissolvenza DIREZIONALE del feedforward
+// ═══════════════════════════════════════════════════════════════════════════
+//  Margine di velocità residuo NELLA DIREZIONE in cui τ_ff spinge, riportato
+//  a [0,1] sulla banda ff_fade_band_:
+//
+//      τ_ff > 0 → margine = ceiling(q) − q̇      (quanto spazio verso l'alto)
+//      τ_ff < 0 → margine = q̇ − floor(q)        (quanto spazio verso il basso)
+//
+//  margine ≥ banda → 1 (nessun effetto, il caso normale);
+//  margine ≤ 0     → 0 (giunto già sull'inviluppo: nessuna coppia che lo
+//                       spinga oltre viene applicata).
+//  Fra i due una smoothstep, non una rampa lineare: la derivata è nulla a
+//  entrambi gli estremi, quindi la coppia non ha spigoli né quando il gate
+//  inizia a mordere né quando lascia la presa — è la stessa ragione per cui
+//  tangential_bias usa una smoothstep, e qui conta di più perché siamo su
+//  un comando di coppia a 1 kHz.
+//
+//  Approssimazione, dichiarata: usa il segno di τ_ff sul giunto i come proxy
+//  della direzione in cui quel giunto accelererà, mentre M è accoppiata e
+//  τ_i muove anche gli altri. È accettabile perché il gate è MONOTONO verso
+//  lo zero — non può che ridurre |τ|, quindi un'attribuzione imperfetta della
+//  direzione costa prestazioni (un filo di feedforward in meno vicino
+//  all'inviluppo), mai sicurezza.
+//
+//  RT-safe: nessuna allocazione, due sqrt per giunto per tick.
+double RtTorqueController::ffScale(size_t i, double tau_ff) const {
+  if (ff_fade_band_ <= 0.0 || qdot_margin_ <= 0.0 || tau_ff == 0.0) {
+    return 1.0;
+  }
+  const double margin = (tau_ff > 0.0) ? (qdotCeiling(i, q_[i]) - dq_[i])
+                                       : (dq_[i] - qdotFloor(i, q_[i]));
+  const double x = std::clamp(margin / ff_fade_band_, 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);          // smoothstep(x)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -249,6 +302,11 @@ CallbackReturn RtTorqueController::on_init() {
         "deceleration_limit", std::vector<double>{6.0, 2.585, 3.5, 4.0,
                                                   17.0, 5.5, 17.0});
     auto_declare<double>("qdot_margin", 0.95);
+    // [rad/s] banda di dissolvenza di τ_ff contro l'inviluppo di velocità.
+    // 0.25 ≈ 10% del q̇_max dei giunti del braccio: il gate resta inattivo in
+    // tutto il moto normale e morde solo nell'ultimo decimo prima del reflex.
+    // 0 disattiva il gate. Vedi ffScale().
+    auto_declare<double>("ff_fade_band", 0.25);
     // ── Anello di posizione + freschezza di τ_ff ──────────────────────────
     // p_gains INITIAL: derivati da d_gains per uno smorzamento ~critico a
     // ω ≈ 4 rad/s con le inerzie di link dell'FR3 stimate grossolanamente
@@ -305,6 +363,7 @@ CallbackReturn RtTorqueController::on_configure(
   std::copy_n(p_gains.begin(), kNumJoints, p_gains_.begin());
 
   qdot_margin_ = get_node()->get_parameter("qdot_margin").as_double();
+  ff_fade_band_ = get_node()->get_parameter("ff_fade_band").as_double();
   const std::array<std::pair<const char*, std::array<double, kNumJoints>*>, 5> limit_params{{
       {"qdot_max", &qdot_max_},
       {"q_min", &q_min_},
@@ -325,6 +384,14 @@ CallbackReturn RtTorqueController::on_configure(
         "qdot_margin=%.3f <= 0 — tetto di velocità DISATTIVATO: q̇_des integra "
         "q̈_safe senza limite e solo il reflex del firmware ferma il giunto.",
         qdot_margin_);
+  }
+  if (ff_fade_band_ <= 0.0) {
+    RCLCPP_WARN(logger,
+        "ff_fade_band=%.3f <= 0 — gate sul feedforward DISATTIVATO: τ_ff = "
+        "M·q̈_safe è applicato per intero anche a q̇ già sull'inviluppo, e "
+        "nulla sotto il CBF impedisce a un q̈_safe grande di far scattare "
+        "`joint_velocity_violation`.",
+        ff_fade_band_);
   }
 
   const auto joints_param = get_node()->get_parameter("joints").as_string_array();
@@ -409,9 +476,10 @@ CallbackReturn RtTorqueController::on_configure(
   RCLCPP_INFO(logger,
       "RtTorqueController configured (τ_ff + Kp·(q_des−q) + Kd·(q̇_des−q̇), "
       "clamp e_max=%.3f rad/s, "
-      "qdot_margin=%.3f, accel_timeout=%.3f s, command_timeout=%.3f s, "
+      "qdot_margin=%.3f, ff_fade_band=%.3f rad/s, accel_timeout=%.3f s, "
+      "command_timeout=%.3f s, "
       "p_max=%.3f rad)  arm=%s  τ_topic=%s  q̈_topic=%s  gazebo=%s",
-      e_max_, qdot_margin_, accel_timeout_, command_timeout_, p_max_,
+      e_max_, qdot_margin_, ff_fade_band_, accel_timeout_, command_timeout_, p_max_,
       arm_id_.c_str(), command_topic_.c_str(),
       accel_topic_.c_str(), is_gazebo_ ? "true" : "false");
 

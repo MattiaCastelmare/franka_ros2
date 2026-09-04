@@ -7,6 +7,8 @@ native OSQP interface expects:
 
 * :func:`build_osqp_A`      — the constraint matrix ``A = [ G ; I ]``
 * :func:`build_osqp_bounds` — the matching ``(l, u)`` bound vectors
+* :func:`tangential_bias`   — nudges the QP's target sideways around a close
+  obstacle/self-collision row instead of only backing straight off it
 
 DOES NOT OWN
 ------------
@@ -30,7 +32,7 @@ from typing import Optional, Tuple
 import numpy as np
 import scipy.sparse as sparse
 
-from franka_experiments.utils.cbf_state_rows import retreat_cap_rhs
+from franka_experiments.utils.cbf_state_rows import G_OBS, G_SC, retreat_cap_rhs
 
 
 def build_osqp_A(G: Optional[np.ndarray], nv: int,
@@ -175,3 +177,188 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
                                             con.cap_v[r:], speed_horizon)
             spd, spd_cap = float(np.max(rate[r:])), float(np.min(con.cap_v[r:]))
     return h_qp, (rtr, rtr_cap, spd, spd_cap)
+
+
+# Shape constants for tangential_bias's two internal blends. Not exposed as
+# ROS parameters: they set the WIDTH of a smoothing transition, not a gain —
+# retuning them changes how far into "nominal has no sideways intent" the
+# blend starts, not how hard the steering pushes. cbf_tangential_gain and
+# cbf_tangential_filter_alpha are the knobs meant for hardware tuning.
+_TB_BLEND_FRAC = 0.15   # q̈_nom's orthogonal part must reach this fraction of
+                        # ‖q̈_nom‖ before it alone drives the bias direction —
+                        # below it the qdot fallback is blended in smoothly.
+_TB_DRIFT_REF  = 0.05   # [rad/s] orthogonal q̇ magnitude at which the qdot
+                        # fallback reaches full confidence. Below it the
+                        # fallback is faded toward zero rather than normalised
+                        # to a full-scale, noise-driven direction.
+
+
+def pad_rows_to_block(G: Optional[np.ndarray], h_qp: Optional[np.ndarray],
+                      block: int) -> Tuple[Optional[np.ndarray],
+                                           Optional[np.ndarray]]:
+    """Round the CBF row block up to a multiple of ``block`` with inert rows.
+
+    OSQP's sparsity pattern is a function of the ROW COUNT, so every change in
+    ``n_c`` forces the node to build a new ``osqp.OSQP()`` and factorize from
+    scratch — and n_c changes constantly: perception publishes a varying number
+    of control points, and rows engage and disengage as the arm moves (22 → 29
+    → 30 → 34 → 36 → 37 across a few hundred ms of one hardware log). At 100 Hz
+    in a Python node that is a per-tick allocation plus factorization spike and
+    the GC pressure that comes with it, which is how the QP thread ends up
+    starving the executor's IO thread — the "joint state stale → braking on
+    last known q̇" that immediately preceded a ``joint_velocity_violation`` on
+    hardware.
+
+    Quantising the row count to a block absorbs that churn: n_c anywhere in
+    33..48 becomes 48, one pattern, one ``setup()``, ``update()`` thereafter,
+    and the warm start survives. Only crossing a block boundary re-setups.
+
+    The padding rows are INERT by construction: all-zero on the joint columns
+    with a single ``−1`` in the LAST slack column and ``+inf`` on the right,
+    i.e. ``−s <= +inf`` for a slack that is already constrained ``>= 0``.
+    Always satisfied, never active, contributes nothing to the KKT system —
+    and non-zero, so it raises no zero-row question in OSQP's scaling. Which
+    slack it leans on is arbitrary precisely because the row is never active.
+    It cannot change the solution, only the shape of the problem the solver is
+    handed.
+
+    Args:
+        G: ``(n_c, nv + n_slack)`` row block, or ``None`` when ``n_c == 0``.
+        h_qp: ``(n_c,)`` right-hand side, or ``None``.
+        block: quantisation step. ``<= 1`` disables padding and returns the
+            caller's own arrays unchanged.
+
+    Returns:
+        ``(G, h_qp)`` — the caller's arrays by reference when no padding is
+        needed (already a multiple, ``block <= 1``, or ``n_c == 0``), so the
+        common case allocates nothing.
+    """
+    if G is None or h_qp is None or block <= 1:
+        return G, h_qp
+    n_c = G.shape[0]
+    n_pad = -(-n_c // block) * block         # ceil(n_c / block) * block
+    if n_pad == n_c:
+        return G, h_qp
+    G_out = np.zeros((n_pad, G.shape[1]), dtype=np.float64)
+    G_out[:n_c] = G
+    G_out[n_c:, -1] = -1.0
+    h_out = np.empty(n_pad, dtype=np.float64)
+    h_out[:n_c] = h_qp
+    h_out[n_c:] = np.inf
+    return G_out, h_out
+
+
+def tangential_bias(qddot_nom: np.ndarray, qdot: np.ndarray, con, *,
+                    gain: float, engage_margin: float,
+                    max_bias: float = None) -> np.ndarray:
+    """The sideways nudge to ADD to q̈_nom, so the QP steers AROUND a close
+    obstacle/self-collision instead of only backing straight off it.
+
+    The QP itself already guarantees safety: every row's hard inequality
+    ``aᵢᵀq̈ >= h_qpᵢ`` is untouched by this function. What it does not
+    guarantee is that the FREE part of q̈ — the part orthogonal to every active
+    ``aᵢ``, which the barrier has no opinion about — actually gets used to go
+    AROUND the obstacle rather than sitting at zero while the normal component
+    is clipped to the barrier. That reads as "the arm only ever backs
+    straight off", because ``argmin ‖q̈ − q̈_nom‖`` under a single active
+    constraint is exactly the projection of ``q̈_nom`` onto the constraint
+    hyperplane — no tangential term in the objective, no tangential motion in
+    the solution, however open the sideways direction is.
+
+    For each OBSTACLE/SELF-COLLISION row inside ``engage_margin`` this blends
+    two sources of "which way is sideways", both built as ``v − (v·â)â`` so
+    BOTH are orthogonal to ``â`` BY CONSTRUCTION (up to float rounding): the
+    result can only ever ADD tangential motion, never reduce the
+    normal-direction retreat the barrier demands.
+
+    * q̈_nom's OWN component orthogonal to â — amplifying the sideways intent
+      the nominal command already has near that obstacle, not inventing one.
+    * q̇'s (filtered) component orthogonal to â, as a fallback for when q̈_nom
+      has none — "keep curving the way the arm is already drifting" rather
+      than inventing an arbitrary left/right choice.
+
+    Both blends are SMOOTHSTEPS, not hard switches, on purpose — a hard
+    ``if perp_norm < eps`` branch measured as the dominant source of the
+    "oscillates too much" report: 100 Hz noise straddling the threshold made
+    the bias FLIP between two unrelated directions tick to tick, and
+    normalising a near-zero, mostly-noise ``qdot`` component to a full-scale
+    direction turned tiny drift into a full-strength kick in a near-random
+    direction. Here:
+
+    * the q̈_nom-vs-qdot blend ramps over ``_TB_BLEND_FRAC · ‖q̈_nom‖`` instead
+      of snapping at one point;
+    * the qdot fallback carries its own CONFIDENCE, ``‖q̇_perp‖ / _TB_DRIFT_REF``
+      clamped to ``[0, 1]`` — a barely-moving arm contributes a barely-there
+      bias instead of a full-scale one in whatever direction rounding error
+      happens to point.
+
+    Rows accumulate additively (a row's tangent plane may have a nonzero
+    component along a DIFFERENT row's â when two obstacles are close
+    together), and the total is norm-clamped to ``max_bias`` — bounding the
+    worst case where several rows reinforce each other, independent of how
+    large ``q̈_nom`` itself gets during a tracking-error spike.
+
+    This function is STATELESS and re-evaluated fresh every call: it does not
+    smooth across ticks. Tick-to-tick smoothing (the other half of "too
+    oscillatory") is the CALLER's job — see the EMA in
+    ``CBFSafetyFilter._qp_tick`` / ``cbf_tangential_filter_alpha`` — kept out
+    of this function so it stays a pure, unit-testable map from one snapshot
+    to one bias vector.
+
+    Args:
+        qddot_nom: (nv,) the tracking command this bias will be added to.
+        qdot: (nv,) joint velocity — pass the FILTERED copy
+            (``CBFSafetyFilter._qdot_cbf``), not the raw measurement: this
+            function normalises it to extract a direction, which amplifies
+            noise even more than the k1 term ``_qdot_cbf`` already exists for.
+        con: the :class:`~franka_experiments.utils.cbf_state_rows.ConstraintSnap`.
+        gain: dimensionless multiplier on the accumulated tangential term.
+            0.0 (or no engaged row) returns an exact zero vector.
+        engage_margin: [m] a row only contributes once its barrier value
+            ``h̄ᵢ`` is below this — far rows add no bias and no cost.
+        max_bias: [rad/s²] cap on ``‖bias‖``, or ``None``/``<= 0`` for no cap.
+
+    Returns:
+        (nv,) the bias to ADD to ``q̈_nom`` — NOT ``q̈_nom`` itself. Exactly
+        ``np.zeros_like(qddot_nom)`` whenever nothing is engaged, so a caller
+        EMA-ing this return value decays cleanly to zero on disengagement.
+    """
+    if gain <= 0.0 or con is None or con.A.shape[0] == 0:
+        return np.zeros_like(qddot_nom)
+    mask = ((con.group == G_OBS) | (con.group == G_SC)) & (con.h_bar < engage_margin)
+    idx = np.flatnonzero(mask)
+    if idx.size == 0:
+        return np.zeros_like(qddot_nom)
+    nom_norm = float(np.linalg.norm(qddot_nom))
+    if nom_norm < 1e-9:
+        return np.zeros_like(qddot_nom)   # no direction to amplify or scale to
+    bias = np.zeros_like(qddot_nom)
+    for i in idx:
+        a = con.A[i]
+        a2 = float(a @ a)
+        if a2 < 1e-12:
+            continue
+        a_hat = a / np.sqrt(a2)
+
+        qn_perp = qddot_nom - float(qddot_nom @ a_hat) * a_hat
+        qn_perp_norm = float(np.linalg.norm(qn_perp))
+        s = float(np.clip(qn_perp_norm / (_TB_BLEND_FRAC * nom_norm), 0.0, 1.0))
+        s = s * s * (3.0 - 2.0 * s)                       # smoothstep(s)
+
+        v_perp = qdot - float(qdot @ a_hat) * a_hat
+        v_perp_norm = float(np.linalg.norm(v_perp))
+        if v_perp_norm > 1e-9:
+            conf = float(np.clip(v_perp_norm / _TB_DRIFT_REF, 0.0, 1.0))
+            fallback = (v_perp / v_perp_norm) * (conf * nom_norm)
+        else:
+            fallback = np.zeros_like(qddot_nom)
+
+        perp = s * qn_perp + (1.0 - s) * fallback
+        w = float(np.clip((engage_margin - con.h_bar[i]) / engage_margin, 0.0, 1.0))
+        bias += w * perp
+    bias *= gain
+    if max_bias is not None and max_bias > 0.0:
+        bias_norm = float(np.linalg.norm(bias))
+        if bias_norm > max_bias:
+            bias *= max_bias / bias_norm
+    return bias

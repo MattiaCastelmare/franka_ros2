@@ -63,6 +63,14 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   // qdot_margin_ così il tetto morde PRIMA del reflex. Vedi update().
   double qdotCeiling(size_t i, double q) const;   // bound superiore (> 0)
   double qdotFloor(size_t i, double q) const;     // bound inferiore (< 0)
+
+  // Fattore [0,1] con cui scalare τ_ff sul giunto i, in dissolvenza a zero
+  // quando q̇ MISURATA si avvicina all'inviluppo NELLA DIREZIONE in cui τ_ff
+  // spinge. Il tetto su qdot_des_ limita il solo RIFERIMENTO: τ_ff = M·q̈_safe
+  // lo scavalca e resta l'unico termine capace di accelerare il giunto oltre
+  // q̇_max (misurato in hardware: q̈ reale fino a 2× il comandato, poi
+  // "joint_velocity_violation"). Vedi update().
+  double ffScale(size_t i, double tau_ff) const;
   void commandCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void accelCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
@@ -108,6 +116,10 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   std::array<double, kNumJoints> v_offset_{};   // offset inviluppo firmware [rad/s]
   std::array<double, kNumJoints> decel_{};      // autorità di frenata [rad/s²]
   double qdot_margin_{0.95};                    // frazione di q̇_max concessa
+  // [rad/s] ampiezza della banda entro cui τ_ff sfuma a zero contro
+  // l'inviluppo di velocità. <= 0 disattiva il gate (comportamento
+  // precedente: τ_ff applicato per intero a qualsiasi velocità).
+  double ff_fade_band_{0.25};
 
   // ── Stato RT-only (aggiornato dentro update(); mai condiviso tra thread) ──
   std::array<double, kNumJoints> q_{};          // posizione misurata

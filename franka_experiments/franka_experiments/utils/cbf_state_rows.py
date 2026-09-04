@@ -538,6 +538,9 @@ class SelfCollisionRowBuilder:
         margin: float = 0.0,
         horizon: float = 0.15,
         max_rows: int = 4,
+        lead_s: float = 0.0,
+        release: float = 1.0,
+        gap_vel_alpha: float = 0.6,
     ):
         if not capsules:
             raise ValueError(
@@ -554,6 +557,16 @@ class SelfCollisionRowBuilder:
         self._margin = float(margin)
         self._horizon = float(horizon)
         self._max_rows = int(max_rows)
+        self._lead_s = float(lead_s)
+        self._release = float(release)
+        self._gap_vel_alpha = float(gap_vel_alpha)
+        # Per-pair closing-speed tracking and engaged set, both keyed by the
+        # pair's index in self._pairs — a fixed, finite key set (24 pairs), so
+        # neither dict can grow without bound.
+        self._gap_prev: dict = {}    # k -> (gap, stamp) at the last rebuild
+        self._gap_vel: dict = {}     # k -> EMA'd closing speed [m/s], >0 = closing
+        self._engaged: set = set()   # k of the pairs that produced a row last time
+        self.last_lead = 0.0         # DIAGNOSTIC: largest anticipation used [m]
 
         n_cap = len(self._caps)
         self._loc_p1 = np.array([c.p1 for c in self._caps], dtype=np.float64)
@@ -586,8 +599,37 @@ class SelfCollisionRowBuilder:
             self._w1[c] = R @ self._loc_p1[c] + t
             self._w2[c] = R @ self._loc_p2[c] + t
 
-    def build(self, kin, v_full: np.ndarray) -> List[Row]:
-        """Rows for the pairs currently inside the horizon.
+    def _closing_speed(self, k: int, gap: float, stamp) -> float:
+        """EMA'd rate at which pair *k*'s gap is shrinking [m/s], >0 = closing.
+
+        Finite difference of the gap between rebuilds, exactly the shape
+        ``ConstraintBuilder._obstacle_speed`` already uses for the perceived
+        obstacle — and for the same reason: the quantity that decides how early
+        a row must engage is a RATE, and the Jacobian-based ``ḣ`` is only
+        available for pairs whose Jacobians we have already paid for, which is
+        the very set this is deciding. At the 50 Hz rebuild a 0.5 m/s closure
+        moves the gap 10 mm per step, three orders of magnitude above the
+        geometry's numerical noise, so the difference is well conditioned.
+
+        Returns 0.0 (no anticipation, i.e. the pre-existing fixed horizon)
+        whenever the timing is unusable: first sight of the pair, no stamp, or
+        a Δt outside a sane window.
+        """
+        prev = self._gap_prev.get(k)
+        self._gap_prev[k] = (gap, stamp)
+        if prev is None or stamp is None or prev[1] is None:
+            return 0.0
+        dt = stamp - prev[1]
+        if not (1e-4 < dt < 0.5):
+            return 0.0                      # duplicate frame, or a clock jump
+        v_raw = (prev[0] - gap) / dt        # >0 when the surfaces approach
+        v = (self._gap_vel_alpha * self._gap_vel.get(k, 0.0)
+             + (1.0 - self._gap_vel_alpha) * v_raw)
+        self._gap_vel[k] = v
+        return v
+
+    def build(self, kin, v_full: np.ndarray, stamp=None) -> List[Row]:
+        """Rows for the pairs currently inside the (velocity-aware) horizon.
 
         *kin* must be a CBFKinematics already updated at the current q, q̇ with
         ``with_jdot=True`` — the caller owns that call so FK is paid once per
@@ -596,10 +638,39 @@ class SelfCollisionRowBuilder:
         *v_full* is the FULL-width velocity of that model (nv, including any
         finger joints), not the 7-vector: the J̇ product needs every column.
         Returned rows are 7-wide, projected onto ``arm_v_ids``.
+
+        *stamp* is the joint state's timestamp [s], used only to differentiate
+        the gap for the anticipation term. ``None`` disables anticipation and
+        restores the fixed-horizon behaviour exactly.
+
+        ENGAGEMENT, and why it is not just ``gap < horizon``
+        ---------------------------------------------------
+        A fixed 0.08 m horizon gives a pair closing at 0.5 m/s about 160 ms of
+        warning. The HOCBF row it then produces demands
+        ``aᵀq̈ >= −k1·(aᵀq̇) − k0·h̄``, which at that speed and that gap is a
+        large deceleration appearing in ONE tick — a step in q̈_safe, a torque
+        spike through M·q̈, and the measured velocity overshooting into
+        ``joint_velocity_violation``. The arm stopping "because of a pose where
+        it would self-collide" is that step, not the collision.
+
+        So the horizon is widened by how fast the pair is actually closing,
+        ``horizon + lead_s · v_close``: at 0.5 m/s and lead_s = 0.35 the row
+        appears at 0.26 m instead of 0.08 m, while h̄ is still large and
+        ``−k0·h̄`` still leaves the row slack. The constraint then tightens
+        CONTINUOUSLY over ~350 ms instead of stepping. A pair that is not
+        closing keeps exactly the old horizon, so a normal pose still produces
+        no rows.
+
+        Strictly conservative in both directions: ``v_close`` is clamped to the
+        approaching half, so the effective horizon is never SMALLER than the
+        configured one, and the hysteresis below only ever keeps a row alive
+        longer. Neither can remove a constraint that the old code would have
+        emitted.
         """
         self._world_endpoints(kin)
         self.last_min_gap = float('inf')
         self.last_pair = ''
+        self.last_lead = 0.0
 
         # Cheap scan first: distance only, no Jacobians. Jacobians cost a
         # Pinocchio call each and are paid solely for the pairs that make a row.
@@ -611,14 +682,27 @@ class SelfCollisionRowBuilder:
             if gap < self.last_min_gap:
                 self.last_min_gap = gap
                 self.last_pair = f'{self._caps[i].body[-6:]}/{self._caps[j].body[-6:]}'
-            if gap - self._margin < self._horizon:
+
+            lead = self._lead_s * max(self._closing_speed(k, gap, stamp), 0.0)
+            if lead > self.last_lead:
+                self.last_lead = lead
+            horizon_eff = self._horizon + lead
+            # Hysteresis: a pair that already has a row keeps it until the gap
+            # opens past release·horizon_eff. Without it a pair sitting near
+            # the boundary adds and removes its row on alternate rebuilds —
+            # each time a discontinuity in the constraint set, and (because
+            # n_c changes) an OSQP setup() with the warm start thrown away.
+            limit = horizon_eff * self._release if k in self._engaged else horizon_eff
+            if gap - self._margin < limit:
                 near.append((gap, k, pa, pb))
 
         if not near:
+            self._engaged.clear()
             return []
         # Cap the row count: the closest pairs are the ones that matter, and an
         # unbounded n_c would churn OSQP's factorization.
         near.sort(key=lambda t: t[0])
+        self._engaged = {k for _, k, _, _ in near[: self._max_rows]}
         rows: List[Row] = []
         for gap, k, pa, pb in near[: self._max_rows]:
             i, j = self._pairs[k]
@@ -653,6 +737,9 @@ def build_self_collision_builder(
     margin: float = 0.0,
     horizon: float = 0.15,
     max_rows: int = 4,
+    lead_s: float = 0.0,
+    release: float = 1.0,
+    gap_vel_alpha: float = 0.6,
 ) -> SelfCollisionRowBuilder:
     """Parse the ``*_sc`` capsules from *urdf_path* and wire up a builder.
 
@@ -683,7 +770,8 @@ def build_self_collision_builder(
 
     return SelfCollisionRowBuilder(capsules, pairs, fids, arm_v_ids,
                                    margin=margin, horizon=horizon,
-                                   max_rows=max_rows)
+                                   max_rows=max_rows, lead_s=lead_s,
+                                   release=release, gap_vel_alpha=gap_vel_alpha)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -849,7 +937,10 @@ def build_optional_row_builders(P, kin, log):
                 sc_urdf, sc_kin.resolve_frame_id,
                 arm_v_ids=sc_vi,
                 exclude_pairs=_sc_exclude, margin=P.self_collision_row_margin,
-                horizon=P.self_collision_row_horizon, max_rows=P.self_collision_max_rows)
+                horizon=P.self_collision_row_horizon, max_rows=P.self_collision_max_rows,
+                lead_s=P.self_collision_row_lead_s,
+                release=P.self_collision_row_release,
+                gap_vel_alpha=P.self_collision_gap_vel_alpha)
             log.info(
                 f'self-collision rows: {sc_rows.describe()}')
         except Exception as exc:
@@ -1217,7 +1308,8 @@ class ConstraintBuilder:
                     self._sc_q[iq] = js.q[k_]
                     self._sc_v[iv] = js.qdot[k_]
                 self._sc_kin.update(self._sc_q, self._sc_v, with_jdot=True)
-                for a, h, jdq, lbl in self._sc_rows.build(self._sc_kin, self._sc_v):
+                for a, h, jdq, lbl in self._sc_rows.build(self._sc_kin, self._sc_v,
+                                                          stamp=js.stamp):
                     rows_a.append(a)
                     rows_h.append(h)
                     rows_jdq.append(jdq)

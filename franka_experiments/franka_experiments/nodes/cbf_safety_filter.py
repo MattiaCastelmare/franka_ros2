@@ -62,6 +62,8 @@ from franka_experiments.utils.cbf_qp_assembly import (
     build_osqp_A,
     build_osqp_bounds,
     build_row_rhs,
+    pad_rows_to_block,
+    tangential_bias,
 )
 from franka_experiments.utils.cbf_state_rows import (
     FR3_JOINT_KEYS,
@@ -160,6 +162,7 @@ class CBFSafetyFilter(Node):
         self._js_frozen_since = None
         self._qdot_cbf = np.zeros(NV)
         self._qddot_prev = np.zeros(NV)
+        self._tan_bias = np.zeros(NV)   # EMA state for tangential_bias, below
 
         # ── 6. Diagnostics ──────────────────────────────────────────────
         self._diag_slack = np.zeros(N_SLACK)
@@ -529,6 +532,39 @@ class CBFSafetyFilter(Node):
             self.get_logger().warn('distance stale → braking fallback (CBF inactive)',
                                    throttle_duration_sec=2.0)
 
+        # ── STEP 3b: steer around, not just away from, a close obstacle ─
+        # Bias only, on the QP's TARGET — every G/h row above is untouched, so
+        # this cannot loosen the safety guarantee, only shift which feasible
+        # q̈ the solver prefers. See cbf_qp_assembly.tangential_bias.
+        #
+        # Two smoothing layers, deliberately at two different rates:
+        # tangential_bias() itself already blends its two direction sources
+        # continuously (no per-tick hard switch); THIS EMA additionally
+        # smooths the resulting vector ACROSS ticks, because even a smoothly
+        # blended bias still rotates with âᵢ as the arm moves and with which
+        # rows are engaged — unfiltered, that showed up on hardware as visible
+        # oscillation.
+        #
+        # Gated on n_c > 0, which is set ONLY on the branch that actually built
+        # rows from a fresh snapshot. That gate is load-bearing: on every
+        # braking path above (state frozen, perception stale) n_c stays 0 while
+        # `con` still holds the LAST snapshot, so an ungated call would steer
+        # sideways off stale geometry at exactly the moment the filter has
+        # decided it is blind. Braking stays pure. The EMA still runs on those
+        # ticks, so the bias FADES OUT instead of freezing at whatever it was
+        # when the feed died.
+        a_tan = P.cbf_tangential_filter_alpha
+        if n_c > 0:
+            raw_bias = tangential_bias(
+                qddot_nom, self._qdot_cbf, con, gain=P.cbf_tangential_gain,
+                engage_margin=P.cbf_tangential_engage_margin,
+                max_bias=P.cbf_tangential_max_bias)
+            self._tan_bias *= a_tan
+            self._tan_bias += (1.0 - a_tan) * raw_bias
+            qddot_nom = qddot_nom + self._tan_bias
+        else:
+            self._tan_bias *= a_tan
+
         # ── STEP 4: the hard state box ──────────────────────────────────
         # Underneath every row, and NOT relaxable: one integration step must not
         # push |q̇| past the limit, and the position braking curve must keep the
@@ -602,13 +638,18 @@ class CBFSafetyFilter(Node):
         return True
 
     def _smooth_qdot(self, qdot) -> None:
-        """EMA on the q̇ used by the k1 anticipation term, and by nothing else.
+        """EMA on the q̇ used by the k1 anticipation term and by
+        ``tangential_bias``'s qdot-fallback direction — nothing else.
 
         ḣ is a DERIVATIVE of a measured signal and k1 multiplies it straight
         into the bound: unfiltered it was 159 % of h_qp's whole swing on
-        hardware and the command flipped sign nine times in 28 intervals. The
-        barrier value, the row direction, the accel box, the braking fallback
-        and every diagnostic keep the raw q̇.
+        hardware and the command flipped sign nine times in 28 intervals.
+        ``tangential_bias`` NORMALISES q̇'s orthogonal component to get a
+        direction, which amplifies raw-signal noise even more than a linear
+        term does — the same failure mode, one derivative worse — so it reuses
+        this filtered copy rather than opening a second one. The barrier
+        value, the row direction, the accel box, the braking fallback and
+        every diagnostic keep the raw q̇.
         """
         a = self.P.cbf_hdot_filter_alpha
         if a > 0.0:
@@ -620,20 +661,28 @@ class CBFSafetyFilter(Node):
     def _solve(self, G, h_qp, n_c):
         """Push the moving parts into OSQP and solve. Returns (q̈, slack, ms, res).
 
-        ``setup()`` only when n_c changes the sparsity pattern; otherwise
-        ``update()`` the vectors that move. q̈ is ``None`` when the solve failed,
-        which the caller turns into braking — and the warm-start iterate is
-        discarded so a bad solve cannot seed the next one.
+        ``setup()`` only when the row count changes the sparsity pattern;
+        otherwise ``update()`` the vectors that move. q̈ is ``None`` when the
+        solve failed, which the caller turns into braking — and the warm-start
+        iterate is discarded so a bad solve cannot seed the next one.
+
+        The row count is QUANTISED to ``qp_row_block`` first (see
+        ``pad_rows_to_block``): the real n_c changes almost every rebuild, and
+        re-``setup()``ing on each change was a per-tick allocate-and-factorize
+        spike in a 100 Hz Python node. The caller's ``n_c`` is still the real
+        one — padding is invisible to every diagnostic.
         """
+        G, h_qp = pad_rows_to_block(G, h_qp, self.P.qp_row_block)
+        n_rows = 0 if G is None else G.shape[0]
         l, u = build_osqp_bounds(G, h_qp, self._box_lb, self._box_ub)
-        if n_c != self._prev_nc or self._osqp_prob is None:
-            self._prev_nc = n_c
+        if n_rows != self._prev_nc or self._osqp_prob is None:
+            self._prev_nc = n_rows
             self._osqp_prob = osqp.OSQP()
             self._osqp_prob.setup(
                 P=self._P_csc, q=self._qvec, A=build_osqp_A(G, NV, N_SLACK),
                 l=l, u=u, warm_start=True,
                 max_iter=self.P.osqp_max_iter, verbose=False)
-        elif n_c > 0:
+        elif n_rows > 0:
             self._osqp_prob.update(q=self._qvec, l=l, u=u,
                                    Ax=build_osqp_A(G, NV, N_SLACK).data)
         else:
