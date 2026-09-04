@@ -30,9 +30,11 @@ class HumanDistance(Node):
         self.latest_arm_state = None
         self.latest_joint_state = None
 
+        # Load YAML params
         self.config = load_robot_config('complete')
         self.robot_cfg = self.config['robot']
         self.zones_cfg = self.config['zones']
+        self.dist_cfg = self.config['distance']
 
         self.declare_parameter('mode', 'capsules')
         self.mode = self.get_parameter('mode').value
@@ -49,20 +51,6 @@ class HumanDistance(Node):
             forearm_radius=0.065, 
             hand_radius=0.075
         )
-        
-        # --- Build Robot Capsules dynamically ---
-        robot_defs = []
-        for seg in self.robot_cfg.get('segments', []):
-            if seg.get('control_points', 0) > 0:
-                robot_defs.append({
-                    "name": f"{seg['start_link']}_to_{seg['end_link']}",
-                    "start": seg['start_link'],
-                    "end": seg['end_link'],
-                    "radius": seg['radius'],
-                    "num_points": seg.get('control_points', 3)
-                })
-        
-        self.robot_geometry = RobotGeometry(definitions=robot_defs)
 
         # --- Subscribers ---
         self.joint_states_sub = self.create_subscription(
@@ -114,49 +102,87 @@ class HumanDistance(Node):
         if not self.latest_arm_state.keypoint_valid[0]: 
             return
 
-        # Human Capsules
+        # 1. HUMAN CAPSULES
         human_kpts, human_vels, human_valid = extract_human_keypoints(self.latest_arm_state)
         human_capsules = self.human_geometry.build_capsules(human_kpts, valid=human_valid)
 
-        # Robot Kinematics
+        # 2. ROBOT KINEMATICS (Pinocchio FK)
         q = np.array(self.latest_joint_state.position[:7])
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
 
-        # Extract cartesian positions of the frames specified in the robot configuration
-        frame_points = {}
+        # Extract Transforms (Rotation and Translation) for all relevant frames
+        transforms = {}
         for frame in self.model.frames:
             if frame.name.startswith("fr3_link"):
-                frame_points[frame.name] = self.data.oMf[frame.parent].translation
+                frame_id = self.model.getFrameId(frame.name)
+                oMf = self.data.oMf[frame_id]
+                transforms[frame.name] = (oMf.rotation.copy(), oMf.translation.copy())
 
-        # Robot Control Points
-        robot_capsules = self.robot_geometry.build_capsules(frame_points)
-        robot_cps = self.robot_geometry.build_control_points(robot_capsules, points_per_capsule=3)
+        # 3. ROBOT CONTROL POINTS
+        ee_link = self.robot_cfg.get('ee_link', 'fr3_link8')
+        ee_tip_axis = self.dist_cfg['ee_tip_axis']
+        ee_tip_offset = self.dist_cfg['ee_tip_offset']
 
+        robot_cps = []
+        for seg in self.robot_cfg.get('segments', []):
+            n_cp = int(seg.get('control_points', 0))
+            if n_cp <= 0:
+                continue
+
+            start_link = seg['start_link']
+            end_link = seg['end_link']
+            if start_link not in transforms or end_link not in transforms:
+                continue
+
+            _, p0 = transforms[start_link]
+            R_end, p1 = transforms[end_link]
+            radius = float(seg.get('radius', 0.05))
+
+            # Distribute points strictly inside the link segment
+            ts = [(k + 1) / (n_cp + 1) for k in range(n_cp)]
+            
+            # Special case for End-Effector: distribute towards the tip
+            if end_link == ee_link:
+                ts = [1.0] if n_cp == 1 else [(k + 1) / n_cp for k in range(n_cp)]
+
+            for k, t in enumerate(ts):
+                p = p0 + t * (p1 - p0)
+                
+                # Apply physical tip offset to the final point
+                if end_link == ee_link and np.isclose(t, 1.0):
+                    p = p1 + ee_tip_offset * R_end[:, ee_tip_axis]
+
+                robot_cps.append({
+                    'name': f"{start_link}_cp_{k}",
+                    'position': p,
+                    'radius': radius,
+                    'source_capsule': start_link  # Used directly as robot_link_name
+                })
+
+        # 4. CALCULATE MINIMUM DISTANCE
         msg = MultiLinkDistance()
         links_dict = {}
         
-        # Group control points by link to find the absolute minimum distance for each robot segment
+        # We reuse the internal geometry logic of RobotGeometry for point-to-capsule math
+        robot_geom = RobotGeometry(definitions=[])
+        
         for cp in robot_cps:
-            best_dist_info = self.robot_geometry.minimum_distance_to_human([cp], human_capsules)
+            best_dist_info = robot_geom.minimum_distance_to_human([cp], human_capsules)
             
             if best_dist_info is not None:
                 link_name = cp['source_capsule']
-                # Store it if it's the first measurement or the closest one found so far
                 if link_name not in links_dict or best_dist_info['distance'] < links_dict[link_name]['distance']:
                     links_dict[link_name] = best_dist_info
         
-        # Translate the dictionary into the CBF compatible ROS array
         global_min_dist = float('inf')
 
         for link_name, info in links_dict.items():
             ld = LinkDistance()
             
-            # The start_link acts as the main reference for the Jacobian in the CBF filter
-            ld.robot_link_name = link_name.split('_to_')[0] 
+            ld.robot_link_name = link_name
             ld.distance = float(info['distance'])
             
-            # Track global minimum for visualization/logging
             if ld.distance < global_min_dist:
                 global_min_dist = ld.distance
 

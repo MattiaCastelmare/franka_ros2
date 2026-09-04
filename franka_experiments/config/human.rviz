@@ -48,10 +48,7 @@ Visualization Manager:
     - Class: rviz_default_plugins/Image
       Name: Human Arm Overlay
       Enabled: true
-      Normalize Range: true
-      Min Value: 0
-      Max Value: 1
-      Median window: 5
+      Keep Aspect Ratio: true
       Topic:
         Value: /human/arm_overlay
         Depth: 1

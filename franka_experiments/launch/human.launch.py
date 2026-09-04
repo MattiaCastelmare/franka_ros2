@@ -97,6 +97,13 @@ def generate_launch_description():
         output='screen',
     )
 
+    distance = Node(
+        package='franka_experiments',
+        executable='human_distance',
+        name='human_distance',
+        output='screen',
+    )
+
     human_logger_node = Node(
         package='franka_experiments',
         executable='human_logging',
@@ -136,6 +143,7 @@ def generate_launch_description():
         DeclareLaunchArgument('publish_camera_tf', default_value='true'),
         camera_tf_delayed,
         tracker,
+        distance,
         human_logger_node,
         visualizer,
         rviz,
