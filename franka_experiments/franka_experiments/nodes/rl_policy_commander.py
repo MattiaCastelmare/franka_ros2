@@ -136,8 +136,12 @@ class RLPolicyCommander(Node):
         self.declare_parameter('status_topic', '/NS_1/rl_status')
         self.declare_parameter('target_topic', '')
         # Kinematics.  The sim observation's EE slot is MuJoCo's
-        # `attachment_site` = link7 + 0.107 m in z = the FR3 flange = fr3_link8.
-        self.declare_parameter('ee_frame', 'fr3_link8')
+        # `hand_tcp_site` = hand + 0.1034 m in z = the Franka Hand grasp centre
+        # = fr3_hand_tcp.  This node's URDF is generated with `hand:=true`, so
+        # the frame exists; MuJoCo and Pinocchio agree on it to 7e-16 m.
+        # Must match `env.ee_site` in the training config.yaml — a policy
+        # trained on the bare flange needs ee_frame:=fr3_link8 instead.
+        self.declare_parameter('ee_frame', 'fr3_hand_tcp')
         # Rates / timeouts (defaults follow fr3_control.yaml).
         self.declare_parameter('rate_hz', 0.0)          # 0 = take sim control rate
         self.declare_parameter('warmup_s', 3.0)

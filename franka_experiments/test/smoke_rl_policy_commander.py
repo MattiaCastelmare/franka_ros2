@@ -187,7 +187,9 @@ def main():
 
     # Rebuild the observation independently and re-run the policy.
     model, data = load_pinocchio_model(generate_urdf_from_xacro())
-    fid = resolve_frame_id(model, 'fr3_link8')
+    # Must be the frame the node is actually running with, not a literal: the
+    # replay is only a contract check if both sides observe the same point.
+    fid = resolve_frame_id(model, node.get_parameter('ee_frame').value)
     jids = resolve_arm_joint_ids(model)
     import pinocchio as pin
     q_full = pin.neutral(model)

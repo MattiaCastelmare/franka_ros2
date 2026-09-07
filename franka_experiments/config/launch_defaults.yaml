@@ -69,6 +69,17 @@ start_move_group: true                    # MoveIt planning services used by pen
 start_experiment_logger: true             # CSV/plot run logger
 experiment_logger_delay_s: 2.0            # [s] experiment_logger start
 
+# ── Motion source (torque_control_stack) ──────────────────────────────
+# Exactly one node may publish q̈_nom; motion_source picks it.
+#   pentagon — analytic path + avoidance-first shaping (needs move_group)
+#   rl       — ONNX Safe-RL policy from franka_sim (no move_group needed)
+motion_source: pentagon
+rl_onnx_model: ""              # empty = newest model under franka_sim/models
+rl_sim_config: ""              # empty = the config.yaml frozen next to the model
+rl_target_xyz: "[0.45, 0.0, 0.45]"   # [m] reach target in fr3_link0
+rl_target_sequence: ""         # "x,y,z, x,y,z, …" — overrides rl_target_xyz
+rl_action_scale: 1.0           # derate in (0,1]; use 0.3 for a first real run
+
 # ── Rosbag recording ──────────────────────────────────────────────────
 start_rosbag: false
 rosbag_output_dir: ""          # empty = ~/ros2_bags/rosbag_YYYYMMDD_HHMMSS

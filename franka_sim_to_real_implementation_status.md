@@ -4,7 +4,7 @@ Companion to `franka_sim_to_real_roadmap.md`: what is actually implemented in
 this repository, where it lives, and how it was validated. The roadmap is the
 specification; this file is the audit against the code.
 
-Last updated: **2026-08-31**.
+Last updated: **2026-09-04**.
 
 ---
 
@@ -76,8 +76,11 @@ Everything else is *mirrored*, and the mirrors are checked mechanically:
 
 `[ q(7), q̇(7), ee_pos(3), target(3), obstacle(3), d_min(1) ]`
 
-* `ee_pos` — MuJoCo `attachment_site` (link7 + 0.107 m) ≡ URDF `fr3_link8`
-  (node parameter `ee_frame`).
+* `ee_pos` — MuJoCo `hand_tcp_site` ≡ URDF `fr3_hand_tcp`, the Franka Hand
+  grasp centre (node parameter `ee_frame`). MuJoCo and Pinocchio agree on it to
+  7e-16 m. Was the bare flange (`attachment_site` ≡ `fr3_link8`) until the hand
+  was added to the MJCF on 2026-09-04; `test_ee_frame_matches_sim_ee_site`
+  fails if the two sides ever name different points again.
 * `obstacle` — in sim the sphere **centre**; on the robot reconstructed from
   `MultiLinkDistance` as `p_human − n̂·r_obs`, which restores
   `‖p_cp − p_obs‖ − r_obs − r_cp = d` exactly.
@@ -111,7 +114,7 @@ Environment: the repository's own container (`docker compose` service
 | Check | Command | Result |
 |---|---|---|
 | Env self-check + random rollout | `python3 -m franka_sim.envs.franka_cbf_env` | PASS (`check_env: OK`) |
-| CBF guarantee (reduced model) | `python3 -m franka_sim.scripts.validate_cbf` | PASS (shield holds at `d_safe=0.200`, passthrough penetrates) |
+| CBF guarantee (reduced model) | `python3 -m franka_sim.scripts.validate_cbf` | PASS (shield holds at `d_safe=0.150`, passthrough penetrates) |
 | Training smoke + full run | `python3 -m franka_sim.train` | PASS, ~100 fps with gradient steps on RTX 4070 |
 | ONNX export validation | `python3 -m franka_sim.export_onnx` | PASS (`max|onnx − sb3| = 1.9e-07`) |
 | Actuation guard | `python3 -m franka_sim.scripts.validate_actuation` | PASS (see §5) |
@@ -171,7 +174,7 @@ benchmark.
 |---|---|
 | Command interface | Publishes `Float64MultiArray(7)` on `/NS_1/qddot_nom` — the topic `cbf_safety_filter` already consumes. No new hardware interface. |
 | Joint ordering | `FR3_JOINT_NAMES` index map built from `JointState.name`, never positional. Same helper as the rest of the stack. |
-| Frame names | `ee_frame` parameter, default `fr3_link8` (= MuJoCo `attachment_site`). Resolved through `resolve_frame_id`, which raises with the available-frame list if wrong. |
+| Frame names | `ee_frame` parameter, default `fr3_hand_tcp` (= MuJoCo `hand_tcp_site`; the node's URDF is generated with `hand:=true`, so the frame exists). Resolved through `resolve_frame_id`, which raises with the available-frame list if wrong. |
 | Namespaces | Topics come from `fr3_control.yaml`; `joint_state_topic` defaults to `__auto__` → namespace from `franka.config.yaml`. Node runs inside `p['namespace']` in the launch file. |
 | Rates | Timer at `env.control_rate_hz` from the *training* config (100 Hz) so the deployed loop matches the trained one; overridable with `rate_hz`. |
 | Limits | q̈ clamp from the **robot** config; the training config is compared against it and every difference is logged as a `SIM-TO-REAL joint_limits drift` warning. |
@@ -262,6 +265,90 @@ Fixed by pinning `qpsolvers[osqp]==4.3.3` + `osqp<1.0` in the `Dockerfile`
 `assert 'osqp' in qpsolvers.available_solvers` to the image's smoke test so the
 build fails instead of shipping a silently broken solver. The container was
 updated in place; `test/` went 62 passed / 6 failed → **68 passed**.
+
+---
+
+## 6b. Re-sync and gripper pass (2026-09-04)
+
+The CBF filter was heavily reworked between 09-02 and 09-04 while `franka_sim/`
+stood still. Four things came out of closing that gap.
+
+**The RL node had become unreachable.** Commit `4d4d450` removed the
+`motion_source:=rl` branch from `torque_control_stack.launch.py`, so nothing
+could start `rl_policy_commander` — the node, its tests and all of `franka_sim`
+were intact. Restored onto the current launch structure (which had since gained
+`_SINGLE_THREAD_BLAS` and `rt_pin_cpu`), with defaults moved into
+`config/launch_defaults.yaml`. Verified by building the launch's node graph with
+default arguments before and after: **9 nodes, identical**, so the pentagon
+pipeline is untouched.
+
+**The config mirror was broken, and the test hid it.** `d_safe` had drifted
+(sim 0.20 vs robot 0.15) and three keys had been renamed on the robot
+(`hard_v_margin`→`velocity_box_margin`, `hard_q_margin`→`position_margin_rad`,
+`hard_brake_eta`→`position_brake_eta`, the last also 0.7→0.6).
+`test_real_configs_are_in_sync` did not fail — it raised `KeyError`, because a
+renamed key is indistinguishable from a deleted one. It now asserts `key in`
+**both** files before comparing. The robot's values won everywhere: the policy
+must train under the shield it will meet.
+
+**The EE workspace box is sim-only.** `workspace_face_rows` has had no live
+importer on the robot since `4d4d450`; hardware enforces no Cartesian box.
+Keeping it in sim is conservative (the policy learns a region *smaller* than the
+robot allows) and is now pinned by `test_workspace_box_is_sim_only`.
+
+**The obstacle was too fast to learn against.** At 0.6 Hz / 0.30 m (~1.13 m/s)
+the sphere swept into an arm that could not clear it; worst penetration was an
+identical −0.1323 m for the trained policy, a random policy and a motionless
+arm. Now 0.30 Hz / 0.20 m (~0.38 m/s). First rollouts under the new setting
+report `collision_rate 0`. Raising it back reproduces the harder benchmark —
+**always say which regime a number came from.**
+
+### The gripper
+
+`fr3.xml` was arm-only, ending at `fr3_link7` with a site at the bare flange.
+The Franka Hand is now in the MJCF, converted from
+`franka_description/meshes/robot_ee/franka_hand_white` (DAE → OBJ via trimesh;
+MuJoCo cannot read DAE). Transforms were **read from the real URDF through
+Pinocchio, not guessed**, and cross-checked: sim and robot FK agree to
+**7e-16 m** at both the flange and the TCP over random configurations.
+
+* **Fingers are rigid, parked fully open.** Slide joints would push `nv` past 7,
+  which the entire actuation chain assumes (`mj_inverse` over all DOFs, the
+  7-vector q̈ action, `data.ctrl` indexing, the QP width). The task reaches, it
+  never grasps. Open is also the widest, most conservative footprint.
+* **The EE moved to the hand TCP.** `env.ee_site: hand_tcp_site` and the node's
+  `ee_frame` default `fr3_hand_tcp` (its URDF is already generated with
+  `hand:=true`). `test_ee_frame_matches_sim_ee_site` pins the pair, and the
+  smoke test now reads the frame off the node instead of hardcoding it — that
+  hardcoded literal is exactly what caught the change, replay error going
+  1.30 → 0.00 rad/s² once aligned.
+* **The hand is a CBF control point** (`fr3_hand`, radius 0.13). This mirrors
+  the robot, where `fr3_complete.yaml` maps `fr3_link8` to the hand collision
+  mesh and segment 7 carries 3 control points — the gripper *is* covered by the
+  real perception pipeline, so omitting it would have trained a policy blind to
+  its own end effector. The MuJoCo body origin of `fr3_hand` sits exactly on
+  `fr3_link8`. 0.13 is the measured bounding sphere of hand + fingers (0.1283).
+* **Consequence:** the hand's 0.65 kg now enters `M(q)` and `C(q,q̇)`, so the
+  inverse-dynamics torque includes it as `qddot_to_torque` does on the robot.
+  Zero-action gravity drift over 0.5 s grew 0.026 → 0.094 rad, still the
+  conservative direction (sim sags more than hardware, which adds `Kd` feedback).
+
+### Episode checkpoints
+
+`CheckpointCallback` counts *steps*, which is the wrong axis for watching a
+policy come up: episodes end early on success and on collision, so step-spaced
+snapshots hold very different amounts of task experience (measured: 1502–2500
+steps per 5 episodes in one smoke run). `EpisodeCheckpointCallback` snapshots
+every `rl.checkpoint_freq_episodes` completed episodes and exports each one to
+ONNX through the same validated `export()` path — a checkpoint you cannot hand
+to `rl_policy_commander` is one you cannot actually test.
+`scripts/compare_checkpoints.py` scores every snapshot in a run through the same
+rollout loop as `evaluate_policy` (extracted, not copied) and prints one table
+with the zero/random baselines in it.
+
+**Every policy trained before this date is void** — `sac_v2` learned against
+`d_safe=0.20`, a different obstacle regime, no gripper mass and the flange as
+its EE.
 
 ---
 
