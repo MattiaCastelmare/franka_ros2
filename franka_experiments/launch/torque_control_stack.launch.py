@@ -206,9 +206,13 @@ def _launch_all(context):
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
     if rt_pin_cpu:
-        # +1 s so the spawner has issued the activation that creates the FF
-        # thread; the script then polls for up to 60 s anyway.
-        actions.append(TimerAction(period=control_delay + 1.0,
+        # Start alongside the spawner, not after it: the script polls for the
+        # FF thread anyway (up to 60 s), so starting early costs nothing. An
+        # added delay here left the RT thread unpinned for 1+ s right as it
+        # begins the 1 kHz FCI loop -- exactly the window that produced
+        # communication_constraints_violation (thread free to land on a busy
+        # core before ever being pinned).
+        actions.append(TimerAction(period=control_delay,
                                    actions=[pin_rt_thread]))
         actions.append(LogInfo(msg=['[torque_stack] [RT pinning]     '
                                     'ros2_control_node FF thread -> CPU',

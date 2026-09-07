@@ -60,7 +60,11 @@ while (( SECONDS < deadline )); do
         echo "[pin_rt_thread] taskset failed on tid=$tid (permissions? cpuset?)" >&2
         exit 1
     fi
-    sleep 1
+    # 50 ms, not 1 s: the FF thread starts the 1 kHz FCI loop the moment it
+    # exists, and every millisecond it spends unpinned is a millisecond it
+    # can drift onto a busy core -- which is what trips libfranka's
+    # communication_constraints_violation reflex right after activation.
+    sleep 0.05
 done
 
 echo "[pin_rt_thread] no SCHED_FIFO thread found within ${TIMEOUT}s -- not pinned." >&2

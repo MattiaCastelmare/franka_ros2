@@ -6,7 +6,16 @@
 #      are serviced away from iwlwifi/nvme (CPU4 was measured at 6.2 ms stalls);
 #   2. the CPU governor goes to 'performance' -- 'powersave' lets an idle core
 #      sit at a low P-state, and the ramp-up costs more than a 1 ms deadline;
-#   3. irqbalance is stopped, otherwise it undoes step 1 within seconds.
+#   3. irqbalance is stopped, otherwise it undoes step 1 within seconds;
+#   4. the RT bandwidth throttle is disabled -- the default 95%/1s quota
+#      (sched_rt_runtime_us) exists to stop a runaway SCHED_FIFO task from
+#      starving the whole box, but on a core reserved for exactly one RT
+#      thread it is pure downside: any *other* SCHED_FIFO thread that drifts
+#      onto the isolated core (e.g. cbf_safety_filter's unpinned _qp_tick,
+#      elevated to FIFO prio 50) can exhaust the shared per-CPU quota and
+#      throttle the whole RT class there -- including the FCI thread at
+#      prio 85 -- for up to 50 ms. That is more than enough to trip
+#      libfranka's communication_constraints_violation.
 #
 # The kernel-cmdline half (isolcpus / nohz_full / rcu_nocbs / irqaffinity /
 # max_cstate) is permanent and lives in /etc/default/grub -- not here.
@@ -56,6 +65,18 @@ if systemctl is-active --quiet irqbalance; then
     systemctl stop irqbalance && log "irqbalance stopped"
 else
     log "irqbalance already inactive"
+fi
+
+# ── 4. RT bandwidth throttle → disabled ─────────────────────────────────────
+# -1 means "unlimited": SCHED_FIFO/RR threads on the isolated cores can never
+# be forced off the CPU by this quota. Safe here specifically because those
+# cores run nothing but the FCI thread (and whatever RT thread drifts onto
+# them) -- there is no non-RT workload on CPU2/3 for a runaway task to starve.
+if echo -1 > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null; then
+    log "sched_rt_runtime_us -> -1 (RT throttle disabled)"
+else
+    log "WARNING: could not write sched_rt_runtime_us"
+    rc=1
 fi
 
 exit $rc

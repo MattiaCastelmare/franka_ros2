@@ -48,6 +48,7 @@ it. Without step 3 the RT thread was measured on CPU5, free to migrate onto CPU4
 cat /proc/cmdline                                    # isolcpus present
 grep enp129s0 /proc/interrupts                       # counters on CPU2
 cat /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor   # performance
+cat /proc/sys/kernel/sched_rt_runtime_us             # -1 (unlimited)
 cyclictest -m -p 90 -i 200 -d 0 -D 45 -a 3 -t 1 -q   # Max < 50 us (was 6230)
 ps -L -o tid,psr,cls,rtprio -p $(pgrep -f controller_manager/ros2_control_node) | grep FF
 ```
