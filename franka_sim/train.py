@@ -87,6 +87,63 @@ class SafetyMetricsCallback(BaseCallback):
         return True
 
 
+class EpisodeCheckpointCallback(BaseCallback):
+    """Snapshot the model every `every` COMPLETED EPISODES.
+
+    SB3's own CheckpointCallback counts environment STEPS, which is the wrong
+    axis for watching a policy come up: episodes end early on success and on
+    collision, so the number of steps per episode changes by 5x over a run and
+    step-spaced snapshots land at wildly different amounts of task experience.
+    Episode-spaced ones are directly comparable, and they are what
+    `compare_checkpoints.py` plots against.
+
+    Episodes are counted from the Monitor wrapper's `episode` key rather than
+    from `dones`, so a truncated episode counts exactly once and a vectorised
+    env with several sub-envs still totals correctly.
+
+    Each snapshot is also exported to ONNX when `export` is set, because the
+    ONNX graph — not the .zip — is what the robot runs; a checkpoint you cannot
+    hand to `rl_policy_commander` is a checkpoint you cannot actually test.
+    """
+
+    def __init__(self, every: int, save_path: str, export: bool = True,
+                 name_prefix: str = 'sac_ep', verbose: int = 1):
+        super().__init__(verbose)
+        self.every = int(every)
+        self.save_path = save_path
+        self.export = export
+        self.name_prefix = name_prefix
+        self.n_episodes = 0
+        self._next_at = self.every
+
+    def _on_step(self) -> bool:
+        for info in self.locals.get('infos', []):
+            if 'episode' in info:
+                self.n_episodes += 1
+        self.logger.record('time/episodes_completed', self.n_episodes)
+
+        if self.every > 0 and self.n_episodes >= self._next_at:
+            self._next_at += self.every
+            base = os.path.join(self.save_path,
+                                f'{self.name_prefix}{self.n_episodes:06d}')
+            self.model.save(base)
+            if self.verbose:
+                print(f'\n[episode-ckpt] {self.n_episodes} episodes '
+                      f'({self.num_timesteps} steps) -> {base}.zip')
+            if self.export:
+                self._export_onnx(base + '.zip')
+        return True
+
+    def _export_onnx(self, zip_path: str):
+        """Best-effort ONNX export; a failure must never kill a training run."""
+        try:
+            from franka_sim.export_onnx import export
+            export(zip_path, zip_path.replace('.zip', '.onnx'), verbose=False)
+        except Exception as exc:                      # noqa: BLE001
+            if self.verbose:
+                print(f'[episode-ckpt] ONNX export skipped: {exc}')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default=_DEFAULT_CONFIG)
@@ -95,6 +152,11 @@ def main():
     ap.add_argument('--seed', type=int, default=None)
     ap.add_argument('--device', default=None, help='cuda | cpu (default: config)')
     ap.add_argument('--resume', default=None, help='path to a .zip to continue')
+    ap.add_argument('--checkpoint-every-episodes', type=int, default=None,
+                    help='snapshot every N completed episodes (0 disables); '
+                         'default: rl.checkpoint_freq_episodes in the config')
+    ap.add_argument('--no-episode-onnx', action='store_true',
+                    help='skip the ONNX export of each episode checkpoint')
     args = ap.parse_args()
 
     with open(args.config) as f:
@@ -141,6 +203,10 @@ def main():
 
     print(f'device={model.device}  total_timesteps={total}  exp={exp}')
 
+    ep_every = (args.checkpoint_every_episodes
+                if args.checkpoint_every_episodes is not None
+                else int(rl.get('checkpoint_freq_episodes', 0)))
+
     callbacks = [
         CheckpointCallback(
             save_freq=int(rl.get('checkpoint_freq', 50_000)),
@@ -151,6 +217,11 @@ def main():
             n_eval_episodes=10, deterministic=True, render=False),
         SafetyMetricsCallback(log_freq=2000),
     ]
+    if ep_every > 0:
+        callbacks.append(EpisodeCheckpointCallback(
+            every=ep_every, save_path=ckpt_dir,
+            export=not args.no_episode_onnx))
+        print(f'episode checkpoints: every {ep_every} episodes → {ckpt_dir}')
 
     model.learn(total_timesteps=total, callback=callbacks, tb_log_name=exp,
                 progress_bar=True, reset_num_timesteps=not bool(args.resume))

@@ -20,6 +20,7 @@ penetration (surface distance < 0) is a safety violation handled by the reward.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 import numpy as np
@@ -71,6 +72,10 @@ class FrankaCBFEnv(gym.Env):
         # Obstacle-avoidance rows on/off (hard state-limit + workspace box always
         # stay on). False = ablation baseline: shield without obstacle CBF.
         self.cbf_obstacle_enabled = bool(env_c.get('cbf_obstacle_enabled', True))
+        # Viewer playback rate: 1.0 = wall-clock real time, 0.5 = half speed for
+        # a closer look, 2.0 = fast-forward. Visualisation only.
+        self.render_speed = float(env_c.get('render_speed', 1.0))
+        self._frame_due = 0.0
 
         # ── MuJoCo model ─────────────────────────────────────────────────────
         scene = env_c.get('scene_xml')
@@ -162,11 +167,14 @@ class FrankaCBFEnv(gym.Env):
         self.qddot_max = np.array([lim_c[k][3] for k in keys])
 
         # ── Control points for the CBF (body + link radius) ───────────────────
+        # Fallback only — config.yaml is the source of truth. Kept in step with
+        # it so a config without the block still shields the gripper.
         default_cps = [
             {'body': 'fr3_link4', 'radius': 0.09},
             {'body': 'fr3_link5', 'radius': 0.09},
             {'body': 'fr3_link6', 'radius': 0.08},
             {'body': 'fr3_link7', 'radius': 0.07},
+            {'body': 'fr3_hand',  'radius': 0.13},   # ≡ robot fr3_link8
         ]
         cps = cbf_c.get('control_points', default_cps)
         self._cp_body = [mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, c['body'])
@@ -430,6 +438,20 @@ class FrankaCBFEnv(gym.Env):
             if self._viewer is None:
                 import mujoco.viewer
                 self._viewer = mujoco.viewer.launch_passive(self.model, self.data)
+                self._frame_due = time.perf_counter()
+            # Pace the viewer to wall-clock time. Without this the loop runs as
+            # fast as the CPU allows — measured 2.4x real time — so everything,
+            # the obstacle most visibly, looks far faster than it is and you
+            # cannot judge speeds by eye. Training and headless evaluation are
+            # unaffected: this branch only runs with render_mode='human'.
+            self._frame_due += self.dt / self.render_speed
+            lag = self._frame_due - time.perf_counter()
+            if lag > 0:
+                time.sleep(lag)
+            else:
+                # Behind schedule (a slow machine, or a paused viewer): drop the
+                # debt instead of sprinting to catch up, which would burst.
+                self._frame_due = time.perf_counter()
             self._viewer.sync()
             return None
         if self.render_mode == 'rgb_array':

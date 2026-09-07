@@ -210,13 +210,46 @@ def test_real_configs_are_in_sync():
     assert joint_limits_mismatch(sim['joint_limits'],
                                  robot['joint_limits']) == []
     # The CBF gains the policy trained against must be the ones on the robot.
+    # Same spelling on both sides — a key missing from either file is a failure,
+    # not a skip: the robot renamed three of these once already (hard_v_margin →
+    # velocity_box_margin, …) and a .get()-with-default here would have hidden it.
     for key in ('d_safe', 'k0_cbf', 'k1_cbf', 'rho_slack', 'k_brake',
                 'cbf_obstacle_horizon', 'cbf_min_leverage', 'max_qddot_delta',
-                'hard_v_margin', 'hard_q_margin', 'hard_brake_eta',
-                'ws_margin', 'ws_horizon'):
+                'velocity_box_margin', 'position_margin_rad',
+                'position_brake_eta'):
+        assert key in sim['cbf'], f'cbf.{key} missing from franka_sim/config.yaml'
+        assert key in robot['params'], f'params.{key} missing from fr3_control.yaml'
         assert sim['cbf'][key] == robot['params'][key], f'cbf.{key} drift'
-    assert sim['cbf']['ws_min'] == robot['params']['ws_min']
-    assert sim['cbf']['ws_max'] == robot['params']['ws_max']
+
+
+def test_workspace_box_is_sim_only():
+    """The EE workspace box exists in sim and has NO robot counterpart.
+
+    ``workspace_face_rows`` lost its last live importer in commit 4d4d450, so
+    the robot enforces no Cartesian box.  Training inside one is deliberate and
+    conservative (the policy learns a region smaller than the robot allows), but
+    it must stay a documented asymmetry rather than a silent one: if workspace
+    rows ever come back on the robot, this test fails and the two must be
+    re-synchronised like every other key above.
+    """
+    import os
+    import yaml
+    from franka_experiments.utils.rl_policy import find_sim_root
+
+    sim_root = find_sim_root(__file__)
+    ctrl = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        '..', 'config', 'fr3_control.yaml')
+    if not sim_root or not os.path.isfile(ctrl):
+        pytest.skip('franka_sim / fr3_control.yaml not available in this layout')
+    with open(os.path.join(sim_root, 'config.yaml')) as fh:
+        sim = yaml.safe_load(fh)
+    with open(ctrl) as fh:
+        robot = yaml.safe_load(fh)
+    for key in ('ws_enable', 'ws_min', 'ws_max', 'ws_margin', 'ws_horizon'):
+        assert key in sim['cbf'], f'cbf.{key} missing from franka_sim/config.yaml'
+        assert key not in robot['params'], (
+            f'params.{key} appeared in fr3_control.yaml — the workspace box is '
+            f'no longer sim-only; add it to test_real_configs_are_in_sync')
 
 
 # ── Path resolution ──────────────────────────────────────────────────────────
@@ -249,6 +282,45 @@ def test_resolve_sim_config_prefers_frozen_config(tmp_path):
         str(root / 'config.yaml')
     assert resolve_sim_config_path('/explicit.yaml', str(model), str(root)) == \
         '/explicit.yaml'
+
+
+def test_ee_frame_matches_sim_ee_site():
+    """The node's EE frame must be the same physical point as the sim's site.
+
+    The observation's `ee_pos` slot is whatever this point is; if MuJoCo tracks
+    the hand TCP and Pinocchio the bare flange, every observation is offset by
+    0.1034 m and the policy silently drives to the wrong place.  Parsed from the
+    node's source rather than imported: this module is pure numpy/YAML on
+    purpose and must stay importable with no ROS installed.
+    """
+    import os
+    import re
+    import yaml
+    from franka_experiments.utils.rl_policy import find_sim_root
+
+    # MuJoCo site  ->  the URDF frame naming the same point.
+    EQUIVALENT = {
+        'hand_tcp_site': 'fr3_hand_tcp',    # Franka Hand grasp centre
+        'attachment_site': 'fr3_link8',     # bare flange (hand-less robot)
+    }
+
+    sim_root = find_sim_root(__file__)
+    node = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..',
+                        'franka_experiments', 'nodes', 'rl_policy_commander.py')
+    if not sim_root or not os.path.isfile(node):
+        pytest.skip('franka_sim / rl_policy_commander not available in this layout')
+
+    with open(os.path.join(sim_root, 'config.yaml')) as fh:
+        ee_site = yaml.safe_load(fh)['env']['ee_site']
+    m = re.search(r"declare_parameter\(\s*'ee_frame'\s*,\s*'([^']+)'", open(node).read())
+    assert m, "could not find the ee_frame declare_parameter default"
+    ee_frame = m.group(1)
+
+    assert ee_site in EQUIVALENT, (
+        f'unknown ee_site {ee_site!r} — add its URDF frame to EQUIVALENT')
+    assert ee_frame == EQUIVALENT[ee_site], (
+        f'sim observes {ee_site!r} but the node defaults to ee_frame='
+        f'{ee_frame!r}; expected {EQUIVALENT[ee_site]!r}')
 
 
 if __name__ == '__main__':

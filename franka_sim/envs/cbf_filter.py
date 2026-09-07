@@ -117,7 +117,7 @@ class AccelCBFFilter:
     def __init__(self, cbf_cfg: dict, qddot_max, qdot_max, q_min, q_max,
                  dt: float):
         p = cbf_cfg
-        self.d_safe   = float(p.get('d_safe', 0.20))
+        self.d_safe   = float(p.get('d_safe', 0.15))
         self.k0       = float(p.get('k0_cbf', 25.0))
         self.k1       = float(p.get('k1_cbf', 10.5))
         self.rho      = float(p.get('rho_slack', 1000.0))
@@ -126,10 +126,18 @@ class AccelCBFFilter:
         self.k_brake  = float(p.get('k_brake', 3.0))
         self.max_iter = int(p.get('osqp_max_iter', 20000))
 
-        # Hard state-limit box + slew continuity.
-        self.hard_v_margin  = float(p.get('hard_v_margin', 0.9))
-        self.hard_q_margin  = float(p.get('hard_q_margin', 0.05))
-        self.hard_brake_eta = float(p.get('hard_brake_eta', 0.7))
+        # Hard state-limit box + slew continuity.  The robot renamed these three
+        # (hard_v_margin → velocity_box_margin, hard_q_margin →
+        # position_margin_rad, hard_brake_eta → position_brake_eta); the old
+        # spelling is still read so a config.yaml frozen next to an older model
+        # keeps reproducing the shield it was trained under instead of silently
+        # falling back to the default.
+        self.hard_v_margin  = float(p.get('velocity_box_margin',
+                                          p.get('hard_v_margin', 0.9)))
+        self.hard_q_margin  = float(p.get('position_margin_rad',
+                                          p.get('hard_q_margin', 0.05)))
+        self.hard_brake_eta = float(p.get('position_brake_eta',
+                                          p.get('hard_brake_eta', 0.6)))
         self.slew_delta     = float(p.get('max_qddot_delta', 5.0))
         self.dt = float(dt)
 

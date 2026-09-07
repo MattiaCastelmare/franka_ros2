@@ -64,6 +64,13 @@
     <mesh name="link5_coll" file="link5.stl"/>
     <mesh name="link6_coll" file="link6.stl"/>
     <mesh name="link7_coll" file="link7.stl"/>
+
+    <!-- Franka Hand — converted from franka_description/meshes/robot_ee/
+         franka_hand_white (DAE → OBJ via trimesh; MuJoCo cannot read DAE).
+         hand_coll.stl is the vendor's own simplified collision hull. -->
+    <mesh file="hand.obj"/>
+    <mesh file="finger.obj"/>
+    <mesh name="hand_coll" file="hand_coll.stl"/>
   </asset>
 
   <worldbody>
@@ -137,6 +144,51 @@
                       <geom mesh="link7_3" material="black" class="visual"/>
                       <geom name="fr3_link7_collision" class="collision" mesh="link7_coll"/>
                       <site name="attachment_site" pos="0 0 0.107"/>
+
+                      <!-- ── Franka Hand ────────────────────────────────────
+                           Transforms taken from the REAL URDF, not guessed:
+                           built with build_urdf_with_sc(hand=True) and read
+                           back through Pinocchio.
+                             link7 → hand      xyz (0, 0, 0.107)  rpy (0,0,-45°)
+                             hand  → hand_tcp  xyz (0, 0, 0.1034)
+                             hand  → finger    xyz (0, 0, 0.0584)
+                           The -45° about z is the flange keying; quat below is
+                           (cos(-22.5°), 0, 0, sin(-22.5°)).
+
+                           The fingers are RIGID bodies at a fixed aperture, not
+                           slide joints: this task reaches, it never grasps, and
+                           two extra DOFs would push nv past 7 — which the whole
+                           actuation chain assumes (mj_inverse over all DOFs, the
+                           7-vector q̈ action, data.ctrl indexing, the CBF QP
+                           width). They are parked fully OPEN (0.04 m each side),
+                           the widest and therefore most conservative footprint
+                           for obstacle distance.
+
+                           Masses/inertias are the vendor's (hand 0.6544 kg,
+                           finger 0.0291 kg): they enter M(q) and C(q,q̇), so the
+                           inverse-dynamics torque now includes the hand exactly
+                           as qddot_to_torque does on the robot. -->
+                      <body name="fr3_hand" pos="0 0 0.107" quat="0.9238795 0 0 -0.3826834">
+                        <inertial pos="-0.0000376 0.0119128 0.0207260" mass="0.6544"
+                          fullinertia="0.00186 0.0003 0.00174 0 0 -2e-05"/>
+                        <geom mesh="hand" material="white" class="visual"/>
+                        <geom name="fr3_hand_collision" class="collision" mesh="hand_coll"/>
+                        <site name="hand_tcp_site" pos="0 0 0.1034"/>
+                        <body name="fr3_leftfinger" pos="0 0.04 0.0584">
+                          <inertial pos="0 0.0152850 0.0219675" mass="0.0291"
+                            fullinertia="8.49e-06 8.53e-06 1.77e-06 0 0 -1.06e-06"/>
+                          <geom mesh="finger" material="white" class="visual"/>
+                          <geom name="fr3_leftfinger_collision" class="collision"
+                                type="box" size="0.0105 0.0095 0.0275" pos="0 0.0095 0.0275"/>
+                        </body>
+                        <body name="fr3_rightfinger" pos="0 -0.04 0.0584" quat="0 0 0 1">
+                          <inertial pos="0 0.0152850 0.0219675" mass="0.0291"
+                            fullinertia="8.49e-06 8.53e-06 1.77e-06 0 0 -1.06e-06"/>
+                          <geom mesh="finger" material="white" class="visual"/>
+                          <geom name="fr3_rightfinger_collision" class="collision"
+                                type="box" size="0.0105 0.0095 0.0275" pos="0 0.0095 0.0275"/>
+                        </body>
+                      </body>
                     </body>
                   </body>
                 </body>
@@ -160,6 +212,14 @@
 
   <contact>
     <exclude body1="fr3_link0" body2="fr3_link1"/>
+    <!-- Mirrors the SRDF's "Adjacent"/"Never" pairs for the hand. -->
+    <exclude body1="fr3_link7" body2="fr3_hand"/>
+    <exclude body1="fr3_link6" body2="fr3_hand"/>
+    <exclude body1="fr3_link7" body2="fr3_leftfinger"/>
+    <exclude body1="fr3_link7" body2="fr3_rightfinger"/>
+    <exclude body1="fr3_hand" body2="fr3_leftfinger"/>
+    <exclude body1="fr3_hand" body2="fr3_rightfinger"/>
+    <exclude body1="fr3_leftfinger" body2="fr3_rightfinger"/>
   </contact>
 
   <keyframe>

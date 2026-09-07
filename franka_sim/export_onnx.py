@@ -35,27 +35,30 @@ class OnnxableSAC(th.nn.Module):
         return self.actor(observation, deterministic=True)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--model', required=True, help='path to a SAC .zip')
-    ap.add_argument('--output', default=None, help='.onnx path (default: alongside model)')
-    ap.add_argument('--opset', type=int, default=17)
-    args = ap.parse_args()
+def export(model_path: str, out: str = None, opset: int = 17,
+           verbose: bool = True) -> str:
+    """Export a SAC ``.zip`` actor to ONNX and validate it. Returns the path.
 
-    out = args.output or os.path.splitext(args.model)[0] + '.onnx'
+    Importable so `train.py`'s episode checkpointer can export each snapshot
+    through this exact code path — the validation below is the only thing
+    standing between a silently broken graph and the robot, so a second export
+    implementation that skipped it would defeat the check.
+    """
+    out = out or os.path.splitext(model_path)[0] + '.onnx'
 
     # CPU load: the exported graph must be device-agnostic for the robot.
-    model = SAC.load(args.model, device='cpu')
+    model = SAC.load(model_path, device='cpu')
     obs_dim = int(np.prod(model.observation_space.shape))
     act_dim = int(np.prod(model.action_space.shape))
-    print(f'loaded {args.model}  obs_dim={obs_dim}  act_dim={act_dim}')
+    if verbose:
+        print(f'loaded {model_path}  obs_dim={obs_dim}  act_dim={act_dim}')
 
     onnxable = OnnxableSAC(model.policy).eval()
     dummy = th.zeros(1, obs_dim, dtype=th.float32)
     export_kwargs = dict(
         input_names=['observation'], output_names=['action'],
         dynamic_axes={'observation': {0: 'batch'}, 'action': {0: 'batch'}},
-        opset_version=args.opset,
+        opset_version=opset,
     )
     try:
         # Legacy TorchScript exporter: honors names/dynamic_axes exactly and
@@ -63,7 +66,8 @@ def main():
         th.onnx.export(onnxable, dummy, out, dynamo=False, **export_kwargs)
     except TypeError:
         th.onnx.export(onnxable, dummy, out, **export_kwargs)  # older torch
-    print(f'exported → {out}')
+    if verbose:
+        print(f'exported → {out}')
 
     # ── Validate: onnxruntime output must match SB3 predict(deterministic) ───
     import onnxruntime as ort
@@ -75,9 +79,21 @@ def main():
         onnx_a = sess.run(None, {'observation': obs[None]})[0][0]
         sb3_a, _ = model.predict(obs, deterministic=True)
         max_err = max(max_err, float(np.max(np.abs(onnx_a - sb3_a))))
-    print(f'validation: max |onnx − sb3| over 100 obs = {max_err:.2e}')
+    if verbose:
+        print(f'validation: max |onnx − sb3| over 100 obs = {max_err:.2e}')
     assert max_err < 1e-4, 'ONNX output diverges from SB3 policy!'
-    print('ONNX export VALID — action within 1e-4 of the SB3 deterministic policy')
+    if verbose:
+        print('ONNX export VALID — action within 1e-4 of the SB3 deterministic policy')
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--model', required=True, help='path to a SAC .zip')
+    ap.add_argument('--output', default=None, help='.onnx path (default: alongside model)')
+    ap.add_argument('--opset', type=int, default=17)
+    args = ap.parse_args()
+    export(args.model, args.output, opset=args.opset, verbose=True)
 
 
 if __name__ == '__main__':
