@@ -22,4 +22,16 @@
             added here. No heap allocations, no locks, no logging in the RT path.
         </description>
     </class>
+    <class name="franka_rt_controllers/GripperController"
+           type="franka_rt_controllers::GripperController"
+           base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Minimal gripper controller: open / close only.
+            Claims no hardware interface and does nothing in update(); it just
+            drives the franka_gripper move/grasp actions of its own namespace.
+            Commanded through the service ~/set_gripper (std_srvs/SetBool:
+            true = close, false = open), or directly via openGripper() /
+            closeGripper() from C++.
+        </description>
+    </class>
 </library>
