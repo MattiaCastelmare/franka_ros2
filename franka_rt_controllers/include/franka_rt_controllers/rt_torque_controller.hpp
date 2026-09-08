@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -37,7 +38,11 @@ class RtTorqueController : public controller_interface::ControllerInterface {
  private:
   struct TorqueInput {
     std::array<double, kNumJoints> tau{};
-    bool received{false};
+    bool   received{false};
+    double stamp{0.0};   // istante di ricezione [s] (node clock). Senza questo
+                         // l'ULTIMA coppia ricevuta restava applicata per
+                         // sempre se qddot_to_torque smetteva di pubblicare:
+                         // accel_timeout copriva solo q̈_safe. Vedi update().
   };
 
   // q̈_safe transport — parallel, lock-free, gemello di TorqueInput. Porta il
@@ -51,6 +56,21 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   };
 
   void updateJointStates();
+
+  // Tetto/pavimento di velocità ammessi per il riferimento integrato sul
+  // giunto i alla posizione q. Riproduce l'inviluppo del firmware FR3
+  // (position_based_velocity_limits in franka_description), scalato da
+  // qdot_margin_ così il tetto morde PRIMA del reflex. Vedi update().
+  double qdotCeiling(size_t i, double q) const;   // bound superiore (> 0)
+  double qdotFloor(size_t i, double q) const;     // bound inferiore (< 0)
+
+  // Fattore [0,1] con cui scalare τ_ff sul giunto i, in dissolvenza a zero
+  // quando q̇ MISURATA si avvicina all'inviluppo NELLA DIREZIONE in cui τ_ff
+  // spinge. Il tetto su qdot_des_ limita il solo RIFERIMENTO: τ_ff = M·q̈_safe
+  // lo scavalca e resta l'unico termine capace di accelerare il giunto oltre
+  // q̇_max (misurato in hardware: q̈ reale fino a 2× il comandato, poi
+  // "joint_velocity_violation"). Vedi update().
+  double ffScale(size_t i, double tau_ff) const;
   void commandCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void accelCb(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
 
@@ -64,6 +84,42 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   std::array<double, kNumJoints> d_gains_{};   // Kd per giunto [N·m/(rad/s)]
   double e_max_{1.0};                           // clamp errore velocità [rad/s]
   double accel_timeout_{0.1};                   // finestra freschezza q̈_safe [s]
+  double command_timeout_{0.1};                 // finestra freschezza τ_ff [s]
+
+  // ── Anello di POSIZIONE (vedi update) ───────────────────────────────────
+  // Senza di questo la catena non ha alcun feedback di posizione: τ_ff è
+  // feedforward puro e Kd agisce solo sulla velocità, quindi ogni deficit di
+  // coppia (attrito, errore di modello) si integra in una deriva di posizione
+  // NON limitata — misurato: 0.52 m di errore EE senza alcun ostacolo vicino.
+  // Il riferimento q_des_ integra q̇_des_, cioè q̈_SAFE: segue la traiettoria
+  // filtrata dal CBF, quindi corregge l'esecuzione e non combatte l'avoidance.
+  std::array<double, kNumJoints> p_gains_{};    // Kp per giunto [N·m/rad]
+  double p_max_{0.15};                          // clamp errore posizione [rad]
+  std::array<double, kNumJoints> q_des_{};      // riferimento posizione integrato
+
+  // ── Hold su perdita di τ_ff ─────────────────────────────────────────────
+  std::array<double, kNumJoints> q_hold_{};     // posa catturata all'inizio del hold
+  bool hold_latched_{false};                    // RT-only: hold già catturato
+  std::atomic<bool> in_hold_{false};            // letto dal timer non-RT che logga
+  bool hold_logged_{false};                     // stato del logger (thread del timer)
+  rclcpp::TimerBase::SharedPtr fault_timer_;    // logga i fronti di in_hold_
+
+  // ── Tetto di velocità sul riferimento integrato (backstop del reflex) ────
+  // q̇_des è un integratore libero di q̈_safe: senza questi limiti nulla, tra
+  // il CBF a 100 Hz e il firmware, impedisce a Kd·(q̇_des−q̇) di spingere il
+  // giunto oltre q̇_max → "Move command aborted: joint_velocity_violation".
+  // I valori di default sono quelli di franka_description/robots/fr3/
+  // joint_limits.yaml. qdot_margin_ <= 0 disattiva il tetto.
+  std::array<double, kNumJoints> qdot_max_{};   // |q̇| ufficiale [rad/s]
+  std::array<double, kNumJoints> q_min_{};      // limite posizione inferiore [rad]
+  std::array<double, kNumJoints> q_max_{};      // limite posizione superiore [rad]
+  std::array<double, kNumJoints> v_offset_{};   // offset inviluppo firmware [rad/s]
+  std::array<double, kNumJoints> decel_{};      // autorità di frenata [rad/s²]
+  double qdot_margin_{0.95};                    // frazione di q̇_max concessa
+  // [rad/s] ampiezza della banda entro cui τ_ff sfuma a zero contro
+  // l'inviluppo di velocità. <= 0 disattiva il gate (comportamento
+  // precedente: τ_ff applicato per intero a qualsiasi velocità).
+  double ff_fade_band_{0.25};
 
   // ── Stato RT-only (aggiornato dentro update(); mai condiviso tra thread) ──
   std::array<double, kNumJoints> q_{};          // posizione misurata

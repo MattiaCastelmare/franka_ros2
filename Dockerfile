@@ -141,6 +141,17 @@ ENV PATH=/home/${USERNAME}/.local/bin:$PATH
 # /home/${USERNAME}/.local and does not collide with system site-packages.
 # Pinned versions reproduce the working MediaPipe stack.
 # --no-cache-dir keeps the layer small.
+#
+# VERSION LOCK — qpsolvers 4.3.3 + osqp 0.6.x, do not float either:
+#   * osqp must stay on 0.6.x because cbf_safety_filter.py and
+#     franka_sim/envs/cbf_filter.py drive the RAW OSQP object
+#     (`OSQP().setup()/.update()`, `res.info.status_val`); osqp 1.x rewrote
+#     that API and would break the safety filter.
+#   * qpsolvers ≥ 4.4 imports `from osqp import OSQP, SolverStatus`, which only
+#     exists in osqp 1.x. With an unpinned qpsolvers the osqp backend silently
+#     fails to load (`available_solvers == []`) and cbf_velocity_filter /
+#     cbf_OSCBF_filter raise SolverNotFound at their first QP.
+# 4.3.3 is the last release that speaks the osqp 0.6 API.
 # ============================================================================
 USER ${USERNAME}
 
@@ -160,7 +171,34 @@ RUN python3 -m pip install --user --no-cache-dir --upgrade \
  && python3 -m pip install --user --no-cache-dir \
         mediapipe==0.10.20 \
  && python3 -m pip install --user --no-cache-dir \
-        "qpsolvers[osqp]"
+        "qpsolvers[osqp]==4.3.3" \
+        "osqp>=0.6.2,<1.0"
+
+# ============================================================================
+# Safe-RL + CBF Sim-to-Real training stack (franka_sim/).
+#
+# MuJoCo physics + Gymnasium + Stable-Baselines3 (SAC) on CUDA, plus the ONNX
+# export/inference runtime used by the deployment node. Pinned to the versions
+# validated for the RTX 4070 (torch bundles its own CUDA runtime → GPU comes
+# from the container's `gpus: all` + NVIDIA driver, no system CUDA needed).
+#
+# IMPORTANT: onnx pulls a protobuf 7.x that BREAKS the mediapipe stack above
+# (mediapipe needs protobuf <5). protobuf is therefore re-pinned to 4.25.x as
+# the LAST step of this layer so both stacks coexist. The CBF QP uses raw osqp
+# (already provided by qpsolvers[osqp]), exactly like cbf_safety_filter.py.
+# ============================================================================
+RUN python3 -m pip install --user --no-cache-dir \
+        torch==2.13.0 \
+        mujoco==3.4.0 \
+        gymnasium==0.29.1 \
+        stable-baselines3==2.9.0 \
+        tensorboard==2.16.2 \
+        onnx==1.22.0 \
+        onnxruntime==1.23.2 \
+        tqdm \
+        rich \
+ && python3 -m pip install --user --no-cache-dir \
+        "protobuf>=4.25.3,<5"
 
 # ============================================================================
 # Python environment smoke test.
@@ -175,7 +213,21 @@ import pinocchio, cv2, mediapipe, qpsolvers; \
 print('pinocchio', pinocchio.__version__); \
 print('cv2      ', cv2.__version__, '<-', cv2.__file__); \
 print('mediapipe OK'); \
-print('qpsolvers OK')"
+assert 'osqp' in qpsolvers.available_solvers, \
+    'qpsolvers cannot load its osqp backend (version skew) — the velocity/OSCBF ' \
+    'filters would raise SolverNotFound at runtime'; \
+print('qpsolvers', qpsolvers.__version__, qpsolvers.available_solvers)" \
+ && python3 -c "\
+import torch, mujoco, gymnasium, stable_baselines3, onnx, onnxruntime, osqp; \
+from torch.utils.tensorboard import SummaryWriter; \
+import mediapipe, google.protobuf as pb; \
+print('torch    ', torch.__version__, 'cuda-build', torch.version.cuda); \
+print('mujoco   ', mujoco.__version__); \
+print('gymnasium', gymnasium.__version__); \
+print('sb3      ', stable_baselines3.__version__); \
+print('onnxrt   ', onnxruntime.__version__); \
+print('protobuf ', pb.__version__, '(tensorboard SummaryWriter + mediapipe coexist)'); \
+print('osqp OK — franka_sim training stack ready')"
 
 # ============================================================================
 # Entrypoint script (root-owned, executable)

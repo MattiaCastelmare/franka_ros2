@@ -21,6 +21,8 @@ reverse quintic over 1.0 s, publishes true zeros for 0.5 s, then sets
 ``self.done = True`` so the executor loop in ``main()`` exits cleanly.
 """
 
+# TODO[LEGACY]: velocity-space control mode; the stack is torque/acceleration-based | confidence: high | superseded-by: nodes/pentagon_qddot_commander.py | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import math

@@ -1,21 +1,86 @@
 topics:
   joint_states_topic: /NS_1/joint_states
+
+  # SAFETY PATH ONLY — cbf_safety_filter and qddot_to_torque read THIS one.
+  #
+  # /NS_1/joint_states is NOT the robot's state feed: franka.launch.py remaps
+  # the controller_manager's own output to franka/joint_states and puts a
+  # `joint_state_publisher` (a PYTHON node, joint_state_rate = 30 Hz) in
+  # between, which REPUBLISHES ITS CACHED VALUES at a fixed rate with a FRESH
+  # header stamp on every message. Two consequences, both measured on hardware:
+  #
+  #   1. the 100 Hz QP and the velocity box ran on a 30 Hz state — ~33 ms of
+  #      pure feedback latency in the loop that is supposed to keep |qdot|
+  #      under the limit;
+  #   2. when that Python node stalls, the messages KEEP ARRIVING with fresh
+  #      timestamps and identical content, so every staleness check downstream
+  #      (joint_state_timeout included) stays happy while the filter is flying
+  #      blind. Signature in the logs: vrat identical on every line, hdot equal
+  #      to its own raw value to 3 decimals (an alpha=0.7 EMA cannot match the
+  #      raw signal unless qdot has been constant), qdd_real decaying to zero.
+  #      Both joint_velocity_violation aborts look exactly like that for the
+  #      ~400 ms preceding the reflex.
+  #
+  # franka/joint_states is the joint_state_broadcaster's own output: 1 kHz, no
+  # Python in the path, and it stops publishing outright if the RT loop dies —
+  # which is what makes joint_state_timeout meaningful again.
+  joint_states_fast: /NS_1/franka/joint_states
   qddot_nom:          /NS_1/qddot_nom
   velocity_topic:     /NS_1/qdot_cmd
   qdot_nom:           /NS_1/tracking_qdot
   qddot_safe:         /NS_1/qddot_safe
+  torque_cmd:         /NS_1/torque_cmd
   cbf_status:         /NS_1/cbf_status
   multi_distance:     /human_robot/multi_distance
   per_link_distances: /cbf/per_link_distances
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
-  d_safe: 0.20          # minimum safe distance from obstacles [m]
+  d_safe: 0.15          # minimum safe distance from obstacles [m]
+                        # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
+                        # h = LinkDistance.distance - d_safe, i.e. measured from
+                        # the capsule SURFACE. It used to be rebuilt as
+                        # ||closest_point_robot - closest_point_human|| - d_safe,
+                        # which is the distance from the segment AXIS and so
+                        # silently added back the capsule radius (0.05 m) plus
+                        # the dilation margin (0.014 m at Z=0.5 m, ~0.11 m at
+                        # Z=2 m). The effective standoff therefore GREW by
+                        # 6-16 cm at the same numeric value. Re-tune against
+                        # hardware before assuming 0.20 still behaves as before;
+                        # it is now honest, not equivalent.
+  # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
   d_safe_default: 0.1  # alias kept for backward compatibility
 
-  # QP solver
-  rho_slack: 1000.0
+  # ── QP solver: one slack per constraint FAMILY ─────────────────────────────
+  # A single shared slack couples families that are not even in the same units.
+  # Measured: a joint-limit row (radians) drove the shared slack to 3.37, and
+  # that same 3.37 relaxed every self-collision row (metres) until the firmware
+  # fired self_collision_avoidance_violation itself. Separate slacks let one
+  # family yield without disarming the others.
+  #
+  # Prices reflect what a violation actually costs:
+  #   obstacle  - the human. Expensive.
+  #   self-col  - the only violation the robot cannot undo, and only the
+  #               firmware reflex sits behind it. Dearest, so these rows yield
+  #               LAST even though their horizon is the narrowest.
+  #   joint-lim - the hard box underneath is the real guarantee; the row only
+  #               shapes the approach, so letting it yield costs little.
+  rho_slack: 1000.0                  # obstacle rows
+  rho_slack_self_collision: 20000.0  # self-collision rows
+  rho_slack_joint_limit: 200.0       # joint-limit rows
+  rho_slack_singularity: 2000.0      # singularity row (sigma_min of J)
+  # Retreat-cap rows. CHEAPEST family on purpose: the cap and the obstacle
+  # barrier bound the SAME quantity from opposite sides, and when a human closes
+  # faster than the cap allows no command satisfies both. The cap must yield —
+  # keep this well below rho_slack or a comfort bound outranks the barrier.
+  rho_slack_retreat: 100.0
+  # Task-space speed rows. Between the retreat cap and the barrier: dearer than
+  # a comfort bound (this is what stops a link from jumping its own clearance
+  # between two perception frames) but still cheaper than the barrier, so a
+  # genuine emergency retreat can buy its way past.
+  rho_slack_link_speed: 500.0
   qp_solver: osqp
+  # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: qp_rate_hz | flagged: 2026-09-01
   control_rate_hz: 100.0
   distance_timeout: 0.5   # [s] stale distance data → passthrough
 
@@ -23,16 +88,42 @@ params:
   qp_rate_hz: 100.0           # QP loop: solve + publish only (no Pinocchio); aligned to pentagon rate_hz (100 Hz) — upstream is camera-limited ~30 Hz, so >100 Hz adds no real safety info and only worsens GIL contention with the 50 Hz constraint rebuild
   cbf_update_rate_hz: 50.0    # constraint geometry rebuild (A, h̄) from 30 Hz input
   nom_timeout: 0.5            # [s] stale qddot_nom → braking -k_brake*qdot
-  joint_state_timeout: 0.1    # [s] stale joint state → zero output
-  min_confidence: 0.2         # per-link distance confidence threshold
+  joint_state_timeout: 0.1    # [s] stale joint state → braking on last known qdot
+
+  # ── Content freshness, behind joint_state_timeout ──────────────────────────
+  # The timeout above only knows WHEN a message arrived. A republisher that
+  # re-stamps its cached values keeps it happy forever while the filter
+  # integrates a state that stopped moving -- the shape of two logged
+  # joint_velocity_violation aborts. So also watch the CONTENT: a bit-identical
+  # (q, qdot) for longer than this, while the arm is measurably moving, is a
+  # dead feed and not a still robot.
+  joint_state_freeze_timeout: 0.1     # [s] identical (q, qdot) for longer -> fault
+  # [rad/s] below this a genuinely constant state is plausible (arm parked,
+  # every qdot rounded to the same zero), so the check must not fire.
+  joint_state_freeze_min_speed: 0.05
+  min_confidence: 0.2         # per-link distance confidence threshold.
+                              # INERT on the per-CP path: build_cp_messages sets
+                              # LinkDistance.confidence = 1.0 unconditionally, so
+                              # `ob.conf < min_confidence` never drops a row.
+                              # Only the legacy MultiDistance topic carries a
+                              # real find_pt_confidence() score. Left in place —
+                              # it is the intended hook if per-CP confidence is
+                              # ever populated — but do not tune it expecting an
+                              # effect today.
 
   # DEPRECATED: ema_alpha was used to smooth the QP output in cbf_velocity_filter.
   # Post-QP smoothing invalidates CBF safety guarantees — do not re-introduce.
+  # TODO[LEGACY]: read by no active node; post-QP smoothing was removed | confidence: high | superseded-by: none | flagged: 2026-09-01
   ema_alpha: 0.4
 
   # ── HOCBF acceleration-space safety filter (cbf_safety_filter) ─────────────
-  # Barrier:    h = d - d_safe
+  # Barrier:    h = d - d_safe, where d = LinkDistance.distance, the SURFACE gap
+  #             (capsule radius and mask-dilation margin already removed
+  #             upstream) — NOT ||closest_point_robot - closest_point_human||,
+  #             which is the segment-AXIS distance.
   # HOCBF:      n^T J qddot >= -c_i - k1*hdot - k0*h
+  # One row per CONTROL POINT (11 max), all solved simultaneously.
+  # TODO[LEGACY]: read by no active node; velocity-era ZCBF gain | confidence: high | superseded-by: k0_cbf + k1_cbf | flagged: 2026-09-01
   gamma: 1.0               # kept for backward compat (unused by HOCBF path)
   k0_cbf: 25.0             # HOCBF position gain  (class-K alpha_0)
   k1_cbf: 10.5             # HOCBF velocity gain  (class-K alpha_1)
@@ -49,15 +140,26 @@ params:
   # computational cbf_obstacle_horizon. They are KEPT here only because
   # cbf_velocity_filter.py still reads them as live params (and a test refs
   # them); do NOT delete them while that node depends on them.
+  # TODO[LEGACY]: read only by cbf_velocity_filter, itself flagged legacy | confidence: high | superseded-by: continuous HOCBF activation + cbf_obstacle_horizon | flagged: 2026-09-01
   cbf_activation_margin: 0.10  # [m] (cbf_velocity_filter only) activation gate
+  # TODO[LEGACY]: read only by cbf_velocity_filter, itself flagged legacy | confidence: high | superseded-by: continuous HOCBF activation | flagged: 2026-09-01
   cbf_hysteresis: 0.05     # [m] (cbf_velocity_filter only) deactivation hysteresis
   cbf_obstacle_horizon: 1.2  # [m] COMPUTATIONAL cutoff for cbf_safety_filter, NOT
                            # a safety gate: the linear HOCBF self-deactivates at
                            # large d, so far obstacles add slack (non-binding)
-                           # rows. n_c is already hard-bounded ~8-9 by the robot
-                           # geometry (one LinkDistance per segment link), so this
-                           # mainly avoids OSQP setup() churn from obstacles
-                           # flickering near a tight boundary. Initial estimate.
+                           # rows. This mainly avoids OSQP setup() churn from
+                           # obstacles flickering near a tight boundary.
+                           # n_c is bounded by the CONTROL POINT count, not the
+                           # link count: perception emits one LinkDistance per
+                           # CP, so the ceiling is 11 (fr3_complete.yaml
+                           # segments: 2+2+2+2+3), not the ~8-9 this comment
+                           # claimed while entries were pooled per link.
+                           # Feasibility is unaffected — one shared slack
+                           # relaxes every row at once, so widening the row set
+                           # cannot empty the feasible set (see
+                           # test/test_cbf_multi_cp_qp.py). Solve time and
+                           # setup() churn are what to watch; lower this to trim
+                           # n_c if either bites. Initial estimate.
   cbf_min_leverage: 0.05   # [m/rad] min CBF leverage ‖a‖=‖n̂ᵀJp‖ to keep a
                            # constraint. REPLACES the old cond(Jp)>1e5 test:
                            # cond(Jp) measured conditioning of the whole 3×7
@@ -68,24 +170,709 @@ params:
                            # the healthy O(0.3-0.8) scale) — validate empirically
                            # on FR3 (fr3_cond_probe.py) before trusting it.
 
+  # Tangential steering: amplifies whatever sideways component qddot_nom (or,
+  # failing that, the current qdot) already has orthogonal to a close
+  # obstacle/self-collision row's normal, so the QP has an actual incentive to
+  # go AROUND rather than just clip the blocked normal component to zero. Pure
+  # bias on the QP's cost target — every hard barrier constraint (G/h) is
+  # untouched, so this cannot weaken the safety guarantee, only change which
+  # feasible q̈ the solver prefers. See cbf_qp_assembly.tangential_bias.
+  #
+  # v1 (gain=1.0, no temporal filter, no clamp) measured as visibly
+  # oscillatory on hardware: a hard branch switch between "amplify qddot_nom's
+  # own sideways part" and "fall back to qdot's" flipped direction on 100 Hz
+  # noise straddling the switch point, and an unfiltered per-tick bias rotates
+  # with âᵢ as the arm moves. v2 fixes both: tangential_bias() blends the two
+  # sources continuously instead of switching (see its docstring), and the
+  # gain is halved and low-pass filtered ACROSS ticks below, plus norm-capped.
+  cbf_tangential_gain: 0.5          # [-] 0 disables. Halved from the v1
+                                    # default alongside the smoothing changes
+                                    # below — still UNTUNED, re-validate.
+  cbf_tangential_engage_margin: 0.30  # [m] surface gap below which a row
+                                    # contributes; 2x d_safe so steering starts
+                                    # before the barrier itself gets tight.
+  cbf_tangential_filter_alpha: 0.90  # [-] EMA on the bias vector ACROSS QP
+                                    # ticks (100 Hz), same shape as
+                                    # cbf_hdot_filter_alpha. 0 = unfiltered (the
+                                    # oscillatory v1 behaviour); time constant
+                                    # dt/(1-a) ~= 67 ms at 0.85 — smooths
+                                    # tick-to-tick chatter while still tracking
+                                    # genuine sideways motion within a step or
+                                    # two of an obstacle.
+  cbf_tangential_max_bias: 2.0     # [rad/s^2] cap on ||bias||, independent of
+                                    # how large qddot_nom gets during a
+                                    # tracking-error spike (the exact scenario
+                                    # that preceded the hardware oscillation).
+
   # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
+  # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: none | flagged: 2026-09-01
   qp_smooth_weight: 0.2    # kept for compat; unused in CBF-active mode
 
-  # Slew-rate: encoded as QP box constraint — NOT post-QP clip [rad/s²/tick]
+  # ── Slew-rate box on qddot (cbf_safety_filter) ─────────────────────────────
+  # RE-ARMED. This key and utils.cbf_hard_limits.apply_slew_limit both existed
+  # and were both dead (the box was a WIP feature reverted in 4d4d450).
+  #
+  # Nothing else in the QP bounds how fast the COMMAND may change. When the
+  # obstacle becomes hard to avoid, the 50 Hz geometry snapshot can move the
+  # rows enough to jump the solution in a single tick: measured on hardware,
+  # dnorm went 5.278 -> 12.742 and the projected command flipped -0.569 ->
+  # +3.818 rad/s^2 inside one 60 ms window. trk_err then sat at ~9.5 and never
+  # recovered — the arm cannot follow a step that size, rt_torque_controller's
+  # e_max clamp saturates, and the resulting bang-bang torque is what the
+  # firmware sees as joint_velocity_violation.
+  #
+  # Encoded as a BOX intersected with the state box, not a post-QP clip: the
+  # solver knows about it, so it optimises within the reachable set rather than
+  # having its answer truncated afterwards. Where the slew and state boxes are
+  # disjoint the result is pinned to the slew edge nearest the safety box, so a
+  # temporarily unreachable safety bound is approached at the maximum admissible
+  # rate — the barrier keeps its authority, it just cannot be met in one step.
+  slew_box_enabled: true
+
+  # [rad/s^2 per tick] At qp_rate_hz=100 this is 500 rad/s^3. Braking is not
+  # impeded: joint4 goes 0 -> -4 (its full authority) in one tick. The wrist
+  # joints, whose bound is 17, need 4 ticks (40 ms) to saturate. LOWER it if
+  # trk_err stays high; RAISE it if the CBF reacts visibly late to a fast
+  # approach. Watch the `slew=` field in CBFDIAG to see which joints it binds.
   max_qddot_delta: 5.0
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
+  # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: none | flagged: 2026-09-01
   max_tau_delta: 15.0
 
   # Braking gain for QP-fail fallback: qddot = -k_brake * qdot
   k_brake: 3.0
 
+  # ── Extra HOCBF rows: joint limits + self-collision ────────────────────────
+  # Both used to live OUTSIDE the QP and both failed the same way: as a hard
+  # box / a post-solve veto they act at the last moment, on one joint, with no
+  # way for the QP to compromise. Measured on hardware: joint4 on its braking
+  # curve had its box collapse to lb=0 while the commander asked for -4 rad/s²,
+  # giving dnorm=10.989 with dq_ort=10.941 (the entire correction dumped
+  # orthogonally to the CBF), a command the arm could not track (trk_err=8.428),
+  # ending in a joint_velocity_violation reflex.
+  #
+  # As rows they engage early and the QP spreads the correction across joints.
+  # The state-limit BOX below stays as the hard floor: a row can be relaxed by
+  # the slack, a box cannot.
+
+  joint_limit_rows_enabled: true
+
+  # [rad] where the row's barrier sits, measured INWARD from the official limit.
+  #
+  # MUST STAY 0 UNLESS YOU KNOW THE TRAJECTORY DOES NOT NEED THAT BAND.
+  # This was 0.10 and it broke the robot: joint6 works at ~4.51 rad, which is
+  # 0.11 rad from its official 4.6216 limit and perfectly legal, but with a
+  # 0.10 barrier the row saw h=+0.011 — the joint parked ON the artificial
+  # barrier — and demanded qddot6 <= -0.357 on EVERY tick. Result: dnorm~10
+  # sustained, slack permanently on, tracking lost (trk_err up to 16.7),
+  # pentagon_qddot_commander HARD reset at 0.587 m of EE error, then a
+  # joint_velocity_violation abort.
+  #
+  # 0.0 puts the barrier at the official limit, so the row shapes the APPROACH
+  # and never removes usable range. position_margin_rad (0.05) in the box below
+  # remains the hard stop.
+  joint_limit_row_margin: 0.0
+
+  # [rad] emit a row only within this distance of the barrier. Narrower than the
+  # old 0.60: with the FR3's tight ranges (joint4 spans only 2.96 rad) a wide
+  # horizon keeps several rows permanently in the QP — n_c hit 18 on hardware,
+  # against 7 DOF plus one shared slack, and the active set chattered tick to
+  # tick. Widen only if a joint reaches its limit faster than the row reacts.
+  joint_limit_row_horizon: 0.30
+
+  # Velocity-aware row horizon. The fixed horizon above has a MEASURED failure
+  # mode: the position braking curve in hard_accel_box starts clipping a joint
+  # from h < qdot^2/(2*a_auth), which for joint2 at 1.02 rad/s is 0.337 rad --
+  # BEYOND the 0.30 rad horizon. So the hard, non-negotiable box bit while the
+  # soft, negotiable row did not yet exist: the QP could not trade that joint
+  # against the others and dumped the correction orthogonally instead
+  # (logged: dq_ort = 19.5 rad/s^2, vbite stuck on j2, s[qlim] = 0.000 -- the
+  # row was never even asked). Same shape as the joint4 incident that motivated
+  # these rows in the first place.
+  #
+  # With this on, the horizon becomes max(horizon, lead * qdot^2/(2*a_auth)) in
+  # the DIRECTION OF TRAVEL only, so a joint moving away from a limit gets no
+  # inflation and n_c does not grow for nothing. The row still self-deactivates
+  # through -k0*h; this only decides when it exists at all.
+  #
+  # OFF by default: it changes n_c, hence OSQP setup() churn, so it wants a
+  # deliberate A/B rather than arriving silently.
+  joint_limit_row_velocity_horizon: false
+
+  # How far ahead of the box the row must exist. 1.0 = exactly when the braking
+  # curve starts; 1.5 gives the QP half a stopping distance of warning.
+  joint_limit_row_horizon_lead: 1.5
+
+  # ── Singularity row (cbf_safety_filter) ────────────────────────────────────
+  # Barrier h = sigma_min(J~) - singularity_sigma_floor, with sigma_min the
+  # SMALLEST singular value of the 6x7 EE Jacobian (rotational rows scaled by
+  # singularity_rot_scale so all six rows are in metres).
+  #
+  # WHY sigma_min and not Yoshikawa's w = sqrt(det(J J^T)): w is the PRODUCT of
+  # the singular values and stays healthy while one direction is already
+  # degenerate. sigma_min is the amplification bound itself — for the worst task
+  # direction ||qdot|| = ||xdot|| / sigma_min — so a floor on it is literally a
+  # ceiling on how much the avoidance can amplify joint speed. That is the
+  # observed failure: n_act=0, d_min=0.30 m, j4/j5 both at 0.54 of their
+  # velocity limit and the QP still asking for more, ending in a
+  # joint_velocity_violation reflex.
+  singularity_rows_enabled: true
+
+  # [m/rad] barrier zero. NOT YET MEASURED ON THIS ROBOT — tune it from the
+  # `sigma=` field CBFDIAG now prints: run a normal task, read the typical
+  # sigma, then set the floor well below it and the horizon so the row is armed
+  # only on the approach. Too LOW is the safe failure (the row simply never
+  # activates and nothing changes); too HIGH makes it fight legitimate poses —
+  # watch s[sing] in CBFDIAG, a persistently nonzero singularity slack means
+  # the QP is paying every tick to hold a pose the row forbids.
+  singularity_sigma_floor: 0.05
+
+  # [m/rad] emit the row only while h < horizon. Same n_c-stability argument as
+  # the joint-limit horizon: a wide horizon keeps the row permanently in the QP
+  # and churns OSQP setup().
+  singularity_row_horizon: 0.08
+
+  # [m/rad] weight on the three ROTATIONAL Jacobian rows before the SVD, so the
+  # singular values are not mixing metres with radians. A characteristic arm
+  # length: at 0.3 a 1 rad/s spin counts like a 0.3 m/s translation.
+  singularity_rot_scale: 0.3
+
+  # [rad] forward finite-difference step for grad(sigma). Small enough that the
+  # truncation error is far below the horizon, large enough to stay clear of
+  # the SVD's own numerical noise.
+  singularity_grad_eps: 0.0001
+
+  # Drop the row when ||grad(sigma)|| falls below this. sigma_min is non-smooth
+  # where the two smallest singular values cross, and there the finite
+  # difference is meaningless — better no row than a noisy one.
+  singularity_min_leverage: 0.001
+
+  # Frame whose Jacobian defines the barrier. fr3_link8 is the flange in the
+  # hand-less model the filter carries (build_urdf_no_hand).
+  singularity_frame: fr3_link8
+
+  # ── Retreat cap (cbf_safety_filter) ────────────────────────────────────────
+  # The HOCBF row is one-sided: it puts a FLOOR under the separation rate and
+  # nothing above it, so once the barrier is violated the floor grows with
+  # k0*|h| and the QP accelerates the arm away for as long as that lasts. Fast
+  # retreat next to a person is its own hazard, and nothing in the filter ever
+  # said how fast is fast ENOUGH.
+  #
+  # These rows say it, per obstacle control point, on the same normal:
+  #
+  #   ramp   = clip(v_obs / depth_speed_ref, 0, 1)
+  #   relief = max_speed * clip(h / engage_gap, 0, 1)
+  #   n^T J qdot  <=  v_cap
+  #   v_cap = min(max_speed, base_speed + obstacle_gain*v_obs
+  #                                     + depth_gain*max(-h, 0)*ramp
+  #                                     + relief)
+  #
+  # The governing idea is PROPORTIONALITY: how fast the arm may back away is set
+  # by how fast the obstacle is coming in, not by how alarming the geometry
+  # looks. A person stepping slowly toward the arm gets the arm stepping slowly
+  # away. depth_gain*max(-h,0)*ramp is exactly 0 while the obstacle is OUTSIDE
+  # d_safe, and v_obs is clamped to the approaching half only, so the moment the
+  # obstacle leaves d_safe and stops closing the cap collapses back to
+  # base_speed. The escalation is temporary by construction.
+  retreat_cap_enabled: true
+
+  # [m/s] the CREEP, not a retreat speed. This is what remains when the obstacle
+  # is stationary, and its only job is to let the arm walk out of a violation
+  # that nothing is making worse. Keep it small — it is the one term that is NOT
+  # proportional to anything, so it sets the floor on "too fast for a slow
+  # obstacle". Was 0.15 before the engage gap below existed; at that value it
+  # also throttled ordinary task motion.
+  retreat_cap_base_speed: 0.05
+
+  # [-] THE proportional term, and the one that should dominate. 1.0 = the arm
+  # may back off exactly as fast as the obstacle comes in, which holds the gap
+  # without ever outrunning it — the constraint is then simply
+  # h_dot = n^T J qdot - v_obs <= base_speed. Above 1.0 it gains ground.
+  retreat_cap_obstacle_gain: 1.0
+
+  # [1/s] escalation per metre of barrier violation, active ONLY inside d_safe
+  # and ONLY scaled by the ramp below. At 2.0, being 5 cm inside d_safe buys
+  # 0.10 m/s of extra retreat at full ramp.
+  retreat_cap_depth_gain: 2.0
+
+  # [m/s] closing speed at which the depth escalation reaches full strength.
+  # This is the hole the ramp plugs: without it, a SLOW obstacle that ends up
+  # deep inside d_safe authorises a FAST retreat purely because the geometry
+  # looks bad — depth is not proportional to anything the obstacle is doing.
+  # With it, depth can only amplify an approach that is actually happening.
+  # 0 disables the ramp and restores the older speed-independent behaviour.
+  retreat_cap_depth_speed_ref: 0.30
+
+  # [m] distance over which the cap ramps from free (at h = gap, where relief
+  # saturates it at max_speed) to fully proportional (at h = 0). The cap shapes
+  # AVOIDANCE, not ordinary task motion: applied at full strength over the whole
+  # 1.2 m cbf_obstacle_horizon it throttled the arm any time a person stood
+  # anywhere nearby — logged as retreat=+0.161/0.150 with d_min=0.389 m and no
+  # avoidance happening at all. With d_safe = 0.15 the default engages the
+  # shaping from a 0.30 m surface gap inward.
+  #
+  # A RAMP and not an on/off gate on purpose: a gate would have to sit either
+  # above the distance where a fast approach first engages the barrier (and
+  # then it does nothing) or below it (and then the cap steps in at the worst
+  # possible moment). Raise it to start shaping earlier, lower it to leave the
+  # task alone for longer; 0 disables the relief entirely, so the cap applies at
+  # full strength at every distance (the pre-ramp behaviour).
+  retreat_cap_engage_gap: 0.15
+
+  # [m/s] absolute ceiling regardless of the terms above. The number to lower
+  # first if the arm still feels violent; the number to raise if a fast
+  # approach ends in contact with s[cap] pinned at 0.
+  retreat_cap_max_speed: 0.6
+
+  # [s] enforcement horizon: n^T J (qdot + qddot*T) <= v_cap. SYMMETRIC, unlike
+  # the joint velocity box's asymmetric relax/dt pair: there, "past the cap"
+  # needs one-step braking authority because it is a safety guarantee. Here
+  # "past the cap" only means retreating too eagerly, and answering that with a
+  # one-step deceleration demand replaces one abrupt motion with another.
+  # Smoothness is the feature. Lower it for a firmer cap, raise it for a softer.
+  retreat_cap_horizon_s: 0.15
+
+  # ── Task-space speed rows (cbf_safety_filter) ──────────────────────────────
+  # "Velocita feasible": a bound on how fast any CONTROL POINT travels, which
+  # nothing in the filter had. The joint velocity box bounds qdot per joint, and
+  # a folded or near-singular arm decouples that from task speed in BOTH
+  # directions — the logged failure had every joint under 0.31 of its limit
+  # while link5 and the hand closed to a 2.9 cm gap.
+  #
+  #   ||p_dot_i|| <= v_allow_i,   v_allow_i = min(link_speed_max,
+  #                                               clearance_i / reaction_s)
+  #
+  # The second term is the GEOMETRIC one and the reason the row exists. The
+  # barrier is rebuilt at 50 Hz from ~30 Hz perception, so a point travels
+  # v*dt BLIND between evaluations; let it move faster than its own remaining
+  # gap over that blind time and it crosses the barrier BETWEEN samples —
+  # violating no constraint the QP ever looked at, and interpenetrating anyway.
+  # That is plain discretisation tunnelling: no k0/k1 tuning fixes it, only
+  # forbidding the speed that makes the gap jumpable.
+  #
+  # clearance_i is min(this point's obstacle gap, the closest self-collision
+  # gap): a near self-collision is a whole-arm geometric event, so it slows
+  # every control point, not just the pair that reported it.
+  link_speed_rows_enabled: true
+
+  # [m/s] flat ceiling on any control point's speed. Deliberately ABOVE
+  # retreat_cap_max_speed (0.6): this row is the outer bound that catches a
+  # whip, not the shaper of the retreat — that is the retreat cap's job, and
+  # the two must not fight over the same motion.
+  link_speed_max: 0.8
+
+  # [s] worst-case BLIND time between barrier evaluations: perception period +
+  # QP period + actuation lag, NOT the QP period alone. Raise it to make the
+  # geometric term bite earlier — a point 10 cm from something may move at
+  # 0.5 m/s at 0.20 s, 0.33 m/s at 0.30 s.
+  link_speed_reaction_s: 0.20
+
+  # [s] enforcement horizon: v_hat^T Jp (qdot + qddot*T) <= v_allow. Symmetric,
+  # same reasoning as retreat_cap_horizon_s.
+  link_speed_horizon_s: 0.10
+
+  # Emit a row only when the point already exceeds this fraction of its own cap.
+  # Below it the row is non-binding and would put one row per control point in
+  # the QP at all times: same n_c-stability tradeoff as every other horizon gate
+  # here. Watch `vlink=` in CBFDIAG — 0/0 means nothing was fast enough to earn
+  # a row.
+  link_speed_activate_frac: 0.5
+
+  self_collision_rows_enabled: true
+
+  # DELIBERATELY PERMISSIVE. These rows must not be what stops the robot; they
+  # are the last geometric guard before the firmware's own
+  # self_collision_avoidance_violation reflex. Restrictive settings here, plus
+  # the obstacle rows, plus the joint-limit rows over-constrain a 7-DOF QP and
+  # it starts fighting itself (measured: n_act swinging 2..9 tick to tick).
+  #
+  # ONE inflation, not two. xacro adds safety_distance to EVERY radius, so at
+  # its 0.03 default a PAIR already carries 0.06 m before anything below
+  # applies. Building the capsules at 0.0 and declaring the clearance once, in
+  # self_collision_row_margin, keeps the number meaningful.
+  self_collision_safety_distance: 0.0
+
+  # [m] required clearance between two capsule surfaces. This IS the whole
+  # margin now.
+  self_collision_row_margin: 0.02
+
+  # [m] gap below which a pair produces a row at all. 0.08 means the rows are
+  # silent in every normal pose and appear only on a genuine approach — the old
+  # 0.15 on top of 0.06 of capsule inflation demanded 0.21 m of real clearance
+  # and was essentially always on.
+  self_collision_row_horizon: 0.08
+
+  # Cap on simultaneous self-collision rows (closest pairs win), so n_c stays
+  # bounded and OSQP does not re-setup() every tick.
+  #
+  # RAISED 3 -> 8. At 3 out of 24 pairs the top-N set SWAPS as the arm moves:
+  # a pair drops out the instant a fourth becomes marginally closer, and its
+  # constraint disappears in one tick. Solve time is 0.05 ms at n_c ~ 37, so
+  # the cap was costing continuity to save headroom that was never scarce.
+  self_collision_max_rows: 8
+
+  # [s] anticipation: the engagement horizon is widened by lead_s * (closing
+  # speed of the pair), so a fast approach gets its row EARLY — while h is
+  # still large and the HOCBF row is still slack — and the constraint then
+  # tightens continuously instead of stepping.
+  #
+  # THIS IS THE FIX for "the arm stops with joint_velocity_violation in poses
+  # where it would self-collide". At the fixed 0.08 m horizon a pair closing
+  # at 0.5 m/s got 160 ms of warning, and the row it produced demanded a large
+  # deceleration in a single tick: a step in q̈_safe, a torque spike through
+  # M·q̈, measured velocity overshooting, firmware reflex. At 0.35 s the same
+  # approach engages at 0.26 m and is spread over ~350 ms.
+  #
+  # Costs nothing in a normal pose: the speed is clamped to the approaching
+  # half, so a pair that is not closing keeps exactly the 0.08 m horizon.
+  self_collision_row_lead_s: 0.35
+
+  # [-] hysteresis. An engaged pair keeps its row until the gap opens past
+  # release * horizon_eff. Without it a pair sitting on the boundary adds and
+  # removes its row on alternate rebuilds — a discontinuity in the constraint
+  # set every 20 ms, each one an OSQP setup() with the warm start discarded.
+  self_collision_row_release: 1.6
+
+  # [-] EMA on the per-pair closing speed (finite difference of the gap at the
+  # 50 Hz rebuild). Same role as obstacle_velocity_alpha one family over: the
+  # anticipation must not chatter on the differentiation noise.
+  self_collision_gap_vel_alpha: 0.6
+
+  # Pairs to drop, "bodyA-bodyB", order-insensitive, matched on the trailing
+  # part of the link names. THIS IS NOT A GUESS: it is every pair marked
+  # reason="Never" in Franka's own SRDF
+  # (franka_description/robots/common/franka_arm.srdf.xacro and
+  # end_effectors/franka_hand/franka_hand.srdf.xacro) — combinations the
+  # manufacturer states cannot collide at any configuration. MoveIt uses the
+  # same list. build_capsule_pairs() only drops CHAIN-ADJACENT bodies on its
+  # own, which is far weaker: without this, 47 pairs are checked, 23 of them
+  # impossible, and link1/link3 interpenetrates by 4.2 cm at the home pose
+  # purely from the capsule inflation.
+  self_collision_exclude_pairs:
+    - "link0-link2"     # SRDF: Never
+    - "link0-link3"     # SRDF: Never
+    - "link0-link4"     # SRDF: Never
+    - "link1-link3"     # SRDF: Never
+    - "link1-link4"     # SRDF: Never
+    - "link2-link4"     # SRDF: Never
+    - "link2-link6"     # SRDF: Never
+    - "link3-link5"     # SRDF: Never
+    - "link3-link6"     # SRDF: Never
+    - "link3-link7"     # SRDF: Never
+    - "link4-link6"     # SRDF: Never
+    - "link4-link7"     # SRDF: Never
+    - "link5-link7"     # SRDF: Never
+    - "hand-link3"      # SRDF: Never
+    - "hand-link4"      # SRDF: Never
+    - "hand-link6"      # SRDF: Never
+
+  # ── State-limit box (cbf_safety_filter) ────────────────────────────────────
+  # cbf_safety_filter reads its q / qdot / qddot limits from
+  #   franka_description/robots/fr3/joint_limits.yaml
+  # NOT from the joint_limits: block at the bottom of this file. That block is
+  # still read by cbf_OSCBF_filter, cbf_velocity_filter, pentagon_qddot_commander
+  # and rl_policy_commander, so it stays — but it is no longer this node's
+  # source of truth, and the two can now drift without the filter caring.
+  #
+  # The box enforces, per joint, in one shot (utils.cbf_hard_limits.
+  # position_velocity_accel_box -> hard_accel_box):
+  #   qddot :  +-deceleration_limit                            (static)
+  #   qdot  :  |qdot + qddot*dt| <= velocity_box_margin*qdot_max
+  #   q     :  velocity toward a limit capped by the braking curve
+  #            sqrt(2 * brake_eta * qddot_max * distance_to_limit)
+  # with a feasibility guard collapsing the box onto lb (hardest legal braking)
+  # if the demands conflict.
+
+  velocity_box_margin: 0.9   # fraction of the official qdot_max actually allowed
+
+  # [s] Approach horizon for the velocity and position caps in the box.
+  #
+  # The one-step form (relax = dt = 0.01) only engages in the last q̈_max·dt
+  # before a cap — 0.17 rad/s on joint5. Measured: joint5 ramped from 39% to
+  # 70% of its velocity limit with `vbite` empty on every single log line, and
+  # the firmware aborted on joint_velocity_violation before the box ever bit.
+  # A one-step guarantee is exact for an ideal discrete system and useless
+  # against 1 kHz firmware checks plus IPC latency.
+  #
+  # 0.10 s makes the bound act ~10x earlier and proportionally. Braking past a
+  # cap still uses the one-step dt, so authority away from a limit is untouched.
+  # Lower it toward dt for a looser (later, harder) box.
+  state_box_relax_s: 0.10
+
+  # ── Anticipation-term filter (cbf_safety_filter) ───────────────────────────
+  # EMA weight on the qdot used by the k1*(a^T qdot) term of h_qp, and by
+  # NOTHING else. hdot is a derivative of a measured signal and k1 = 10.5
+  # multiplies it straight into the constraint's right-hand side. Measured on
+  # hardware: that single term accounted for 159% of h_qp's whole swing (hdot
+  # ranged 0.035..0.323, so +-3.0 of h_qp against a total range of 1.9), the
+  # commanded acceleration flipped sign 9 times in 28 intervals, and the arm
+  # visibly oscillated on approach.
+  #
+  # The barrier value h and the direction a are NOT filtered, nor is the qdot
+  # used by the acceleration box, the braking fallback or any diagnostic. This
+  # smooths a noisy derivative estimate, not the safety state.
+  #
+  # Cost: the anticipation lags by about one time constant (~15 ms at 0.6,
+  # 100 Hz) — roughly 1.5 cm of extra closure at 1 m/s, against d_safe = 0.20.
+  # 0.0 restores the raw, unfiltered legacy behaviour.
+  cbf_hdot_filter_alpha: 0.6
+
+  # ── Barrier smoothing (obstacle rows only) ─────────────────────────────────
+  # EMA weight on the obstacle barrier h, applied to its RECOVERY only. Closing
+  # is ALWAYS instant, so the value the QP sees is never more optimistic than
+  # the measurement.
+  #
+  # Why: obstacle h comes from the camera at ~30 Hz while the QP runs at 100 Hz,
+  # so it sits frozen for a tick or two and then jumps. Measured on hardware,
+  # d_min repeated its exact value on 7 of 26 consecutive diagnostic lines and
+  # then moved 24 mm, which k0 = 25 turns into a 0.60 rad/s^2 step in the
+  # constraint - 31% of h_qp's entire range in one tick.
+  #
+  # This smooths the moving-away half only. The approach half is REAL motion
+  # (12 mm per 33 ms frame is 0.36 m/s of genuine closing) and reacting to it
+  # immediately is the point of the filter - see k0_cbf for the lever on how
+  # violently a perception step shakes the constraint.
+  #
+  # Self-collision and joint-limit rows are NOT smoothed: their h comes from
+  # joint states, which arrive far faster than the QP and never staircase.
+  #
+  # 0.8 at the 50 Hz rebuild rate is a ~80 ms time constant: a 9 mm recovery
+  # moves 1.8 mm on the first tick instead of all at once. 0.0 restores the raw
+  # staircase. Watch `hhold=` in CBFDIAG for how much recovery is being held.
+  cbf_h_recovery_alpha: 0.8
+
+  # ── Obstacle velocity in hdot (cbf_safety_filter) ──────────────────────────
+  # The gap closes at  ddot = n^T(p_robot_dot - p_obs_dot) = a^T qdot - v_obs.
+  # Only the first half was modelled, so with the ROBOT STILL and a human
+  # closing at 0.3 m/s the filter saw hdot = 0 and its k1 anticipation - half
+  # the barrier's machinery - did nothing in exactly the case it exists for.
+  # At d = 0.25 the demand went from -1.25 (constraint inactive) to +1.90
+  # rad/s^2 once the term is included.
+  #
+  # v_obs is estimated as the RESIDUAL  a^T qdot - ddot_measured, not by
+  # differentiating closest_point_human: that point is an argmin over depth
+  # pixels and is memoryless (see distance_engine's own docstring), so it jumps
+  # between surface patches and its derivative is mostly artefact. `d` is the
+  # signal the engine already conditions with an asymmetric LPF and spike
+  # rejection. Splitting it this way also keeps a^T qdot fresh at the QP rate
+  # while filtering only the noisy 30 Hz half.
+  #
+  # ONLY THE APPROACHING HALF IS USED (v_obs is clamped at >= 0). A positive
+  # v_obs makes hdot more negative, so the constraint demands more retreat: this
+  # term can only ever TIGHTEN the QP, never loosen it. Trusting the receding
+  # half would mean relaxing a safety barrier on a 30 Hz vision estimate.
+  obstacle_velocity_enabled: true
+
+  # EMA on the estimate. It is a derivative of a 30 Hz signal, and k1 = 10.5
+  # multiplies it straight into the constraint - the same amplification that
+  # made the arm oscillate before cbf_hdot_filter_alpha was added. 0.7 at the
+  # 30 Hz update is a ~75 ms constant. 0.0 = raw.
+  obstacle_velocity_alpha: 0.7
+
+  # [m/s] Cap on the estimate, same scale as distance_engine's own
+  # lpf_v_max_approach. One bad depth frame can otherwise fabricate metres per
+  # second of apparent approach.
+  obstacle_velocity_max: 2.0
+
+  # ── Obstacle-velocity feedforward (cbf_safety_filter, Phase 1) ─────────────
+  # A SECOND, separately tunable use of the v_obs estimate the k1 term already
+  # consumes:
+  #   (a) h_eff = h - min(v_app^2 / (2*obstacle_decel_assumed), brake_max)
+  #       the barrier is measured not to where the obstacle IS but to where it
+  #       could still be after decelerating. NOTE this is the OBSTACLE's
+  #       stopping distance under an ASSUMED decel, not the robot's braking
+  #       authority (that is the joint acceleration box).
+  #   (b) h_qp += -velocity_feedforward_gain * v_app
+  #       a direct feedforward on the row RHS, with its own gain so the
+  #       "how hard do I react to a closing obstacle" lever is no longer welded
+  #       to k1_cbf — which also sets the barrier damping and cannot be raised
+  #       for reactivity without the row oscillating (measured at k1 = 10.5,
+  #       that one term was 159% of h_qp's whole swing).
+  # Sign note: this file's QP is assembled as G x <= h_qp, so a LARGER h_qp is a
+  # LOOSER row; the feedforward is therefore negative. In the a^T qdd + s >= b
+  # convention of the source implementation the same term reads b += k_ff*v_app.
+  #
+  # OFF by default. With the flag off no term is evaluated and the QP rows are
+  # bit-identical to the pre-Phase-1 build (regression-tested).
+  enable_velocity_feedforward: false
+
+  # [m/s^2] deceleration ASSUMED for the obstacle. Lower = more conservative
+  # (a slower assumed stop means a longer stopping distance means a tighter
+  # barrier). 4.0 is roughly a human arm decelerating briskly.
+  obstacle_decel_assumed: 4.0
+
+  # [-] gain k_ff on the RHS feedforward.
+  velocity_feedforward_gain: 1.0
+
+  # [m] clamp on the braking-distance tightening. NOT optional hygiene: v_app is
+  # capped at obstacle_velocity_max = 2.0 m/s upstream, so unclamped this term
+  # reaches 2^2/(2*4) = 0.5 m, over three times d_safe. One depth artefact would
+  # then drive the barrier deeply negative and the QP would answer with a
+  # maximal retreat -- the exact failure mode this filter has already hit twice.
+  velocity_braking_margin_max: 0.25
+
+  # Perception frames a track must be seen for before its v_app is trusted by
+  # these two terms. The existing v_obs path already returns 0 until the 2nd
+  # frame; this is a stricter, independent gate that applies ONLY here, so a
+  # newly appeared obstacle cannot have its first noisy estimate SQUARED into
+  # the barrier.
+  velocity_feedforward_min_frames: 3
+
+  # ── Risk-weighted slack (cbf_safety_filter, Phase 2) ───────────────────────
+  # One slack per FAMILY is shared by every row in it, so when rows conflict the
+  # QP buys the same relief for all of them: a row 3 cm from contact and a row
+  # 40 cm away are relaxed by exactly the same amount. Weighting the slack
+  # COLUMN makes the relief inversely proportional to criticality:
+  #
+  #   a_i^T qdd + s_g / w_i  >=  b_i          (instead of  ... + s_g >= b_i)
+  #
+  # so a critical row gets little relief per unit of paid slack and a distant
+  # one gets a lot, and the QP's cheapest escape from a conflict is to bend the
+  # distant row and hold the near one. The slack stays SHARED: this is weighted
+  # sharing, not independent per-row slack (which would need one variable per
+  # row, i.e. a decision vector that resizes with n_c).
+  #
+  # Implementation is exactly G[i, NV+g] = -1/w_i instead of -1.0. NX, P,
+  # N_SLACK, build_osqp_A and setup() are untouched.
+  #
+  # Weight (see utils/cbf_state_rows.risk_slack_weight):
+  #   sigma(h) = 1 / (1 + exp( alpha*(2h/rho - 1) ))
+  #   w(h)     = 1 + (slack_weight_max - 1) * sigma(h)
+  # This is the logistic Flacco, Kroger, De Luca & Khatib use for the
+  # repulsive-vector magnitude in the depth-space collision-avoidance work
+  # (ICRA 2012; JIRS 2015), V(d) = V_max / (1 + exp(alpha*(2d/rho - 1))),
+  # reused here as a criticality score rather than a repulsion magnitude. It is
+  # borrowed for its shape: continuous, so the active set does not chatter as a
+  # control point drifts across a threshold, and bounded at both ends, so no
+  # single measurement can drive the weight to 0 or infinity.
+  #
+  # NORMALISATION: the column is written -slack_weight_max/w_i, NOT -1/w_i.
+  # The -1/w_i form tightens critical rows but inflates the shared slack -- and
+  # its 0.5*rho*s^2 cost -- by up to w_max^2, so the obstacle family starts
+  # out-pricing the tracking objective (measured on a 4-row replay with the
+  # accel box saturated: s_obs 3.0 -> 15.0 for the same conflict). With
+  # -w_max/w_i the ratio between rows is identical, the MOST critical row keeps
+  # exactly today's column of -1.0, and the shared slack keeps today's
+  # magnitude -- so rho_slack does not need retuning. The distant rows are what
+  # move, yielding up to w_max times further. That is the mechanism, not a side
+  # effect: relaxation is what a distant row is for.
+  #
+  # OBSTACLE ROWS ONLY. Joint-limit rows are radians, the singularity row is
+  # m/rad, rate-cap rows carry a sentinel h; a rho in metres is meaningless for
+  # them. Same units argument that produced the per-family slack split.
+  #
+  # OFF by default; with the flag off the slack column keeps its literal -1.0
+  # and G is bit-identical.
+  enable_weighted_slack: false
+
+  # Weight at h <= 0 (fully violated). 1.0 disables the weighting even with the
+  # flag on. Higher = the QP protects near rows harder, at the cost of pushing
+  # more of the relaxation onto the distant ones.
+  slack_weight_max: 5.0
+
+  # [m] distance of influence: the sigmoid knee sits at h = rho/2, w ~ 1 beyond
+  # rho. 0.30 puts the knee at 15 cm of surface gap, i.e. right where d_safe is.
+  slack_weight_rho: 0.30
+
+  # [rad] distance of influence for the JOINT-LIMIT family. Its own parameter
+  # because that barrier is in RADIANS -- reusing the metres one would be
+  # exactly the units confusion the per-family slack split exists to prevent.
+  # 0.40 rad puts the knee at 0.20 rad from the (margin-shrunk) limit, which is
+  # inside the distance at which the braking curve starts biting at typical
+  # speeds, so a joint being clipped by the box is already weighted as critical.
+  # 0 leaves the joint-limit rows unweighted (obstacle-only, as in Phase 2).
+  slack_weight_rho_qlim: 0.40
+
+  # Sigmoid shape. Larger = sharper transition around the knee. Very large
+  # values approach a step and reintroduce the active-set chatter the sigmoid
+  # exists to avoid.
+  slack_weight_alpha: 6.0
+
+  # ── Capture-stamp plausibility window (cbf_safety_filter) ──────────────────
+  # _obstacle_speed differentiates d against MultiLinkDistance.header.stamp (the
+  # depth frame's CAPTURE time) instead of the receipt time it used before:
+  # receipt time carries transport and executor-scheduling jitter, and dividing
+  # dd by a jittered dt put that jitter straight into v_obs -- which now drives
+  # the k1 term, the retreat cap, and a Phase-1 term that SQUARES it.
+  # These two bound what is accepted as a capture stamp; outside the window the
+  # node falls back to receipt time (i.e. exactly the previous behaviour) and
+  # warns. Staleness checks are UNCHANGED and still use receipt time.
+  distance_capture_age_max: 1.0    # [s] max sensing age accepted
+  distance_capture_skew_tol: 0.05  # [s] tolerance for a stamp slightly ahead
+
+  # [rad] keep the position barrier this far inside the mechanical stop, so the
+  # braking curve reaches zero velocity BEFORE the hard limit rather than at it.
+  position_margin_rad: 0.05
+
+  # Fraction of the decel authority the braking curve is allowed to assume.
+  # < 1 on purpose: riding the curve at eta=1 would demand exactly qddot_max and
+  # leave the QP no room for the obstacle rows, so any CBF push would need slack.
+  # 0.6 keeps 40% of the authority free. Raise it to approach limits faster,
+  # lower it if the box and the obstacle rows fight near a joint limit.
+  position_brake_eta: 0.6
+
+  # ── OSQP solver limits (cbf_safety_filter) ─────────────────────────────────
+  # OSQP's own default max_iter (4000) can be hit on ill-scaled instances; at
+  # this problem size 20k iterations still complete in < 1.5 ms.
+  osqp_max_iter: 20000
+
+  # [rows] quantisation of the QP's row count. OSQP's sparsity pattern depends
+  # on n_c, so every change forces a fresh osqp.OSQP() + factorization — and
+  # n_c changes almost every rebuild as control points and rows engage
+  # (22 -> 29 -> 30 -> 34 -> 36 -> 37 across a few hundred ms of one hardware
+  # log). Rounding up to a block of 16 makes all of 33..48 one pattern: one
+  # setup(), update() thereafter, warm start preserved, and no per-tick
+  # allocate-and-factorize spike to starve the executor's IO thread (which is
+  # how "joint state stale -> braking" appeared right before a reflex). The
+  # padding rows are inert; see cbf_qp_assembly.pad_rows_to_block. 1 disables
+  # the quantisation and restores the exact previous behaviour.
+  qp_row_block: 16
+
+  # ── cbf_status contract (/NS_1/cbf_status, Float64MultiArray) ─────────────
+  # data[0] n_active_constraints — HOCBF rows present in the QP this tick, i.e.
+  #         every control point inside cbf_obstacle_horizon. Most are
+  #         non-binding; this is NOT a count of triggered CPs.
+  # data[1] slack — QP slack s. One slack is shared by ALL rows, so a single
+  #         deeply-violated CP relaxes every other row by the same amount.
+  #         Worth watching now that ~11 rows are active instead of ~5.
+  # data[2] fault_braking — safety-chain fault (distance stale, or QP failure)
+  #         forced braking with no geometric rows. Distinct from data[0]==0.
+  # data[3] n_active_cps — rows whose barrier is actually VIOLATED (h < 0, i.e.
+  #         the CP is inside d_safe). This is the honest "how many control
+  #         points triggered". > 1 is expected on an angled approach and is the
+  #         signal that multi-CP activation is working.
+  # Consumers (frame_grabber, rl_policy_commander) index positionally behind a
+  # len() guard, so appending further elements stays backward compatible.
+
+  # ── Diagnostics (cbf_safety_filter) — logging only, never read by the QP ───
+  diag_period_s: 0.05          # [s] min interval between CBFDIAG lines
+  # Diagnostic ONLY: disable the garbage collector, to test whether _qp_tick
+  # gaps coincide with GC pauses. Memory can grow unbounded — never leave on.
+  diag_disable_gc: false
+
+  diag_qddot_alpha: 0.7        # EMA on the realized-qddot estimate [0=raw, 1=frozen]
+  tick_gap_warn_factor: 3.0    # warn when a QP tick gap exceeds N x the nominal period
+  diag_vel_ratio_thr: 0.85     # emit VELHI when worst |qdot|/qdot_max exceeds this (>1 disables)
+
+  # ── Path geometry (pentagon_qddot_commander) ───────────────────────────────
+  # Moved out of torque_control_stack.launch.py: launch files carry wiring, not
+  # tunables. The node reads these as its declare_parameter defaults.
+  path_center_xyz: [0.4, 0.0, 0.45]  # [m] circle/lissajous centre, plane_frame
+  path_type: circle                  # circle | lissajous | pentagon
+  path_radius: 0.25                  # [m] circle radius in the selected plane
+
   # DEPRECATED/UNUSED: not read by any code. DistanceEngine reads its EMA weight
   # from `lpf_alpha` in fr3_complete.yaml (the `distance:` section), NOT from this
   # key or this file. Kept only for historical reference — do not tune expecting
   # an effect. Candidate for removal in a future cleanup.
+  # TODO[LEGACY]: read by no code; DistanceEngine reads lpf_alpha from fr3_complete.yaml instead | confidence: high | superseded-by: fr3_complete.yaml distance.lpf_alpha | flagged: 2026-09-01
   distance_ema_alpha: 0.5
 
+# NOTE: read by cbf_OSCBF_filter, cbf_velocity_filter, pentagon_qddot_commander
+# and rl_policy_commander. NOT by cbf_safety_filter any more — that node reads
+# franka_description/robots/fr3/joint_limits.yaml directly (see the state-limit
+# box above). Columns: [q_min, q_max, qdot_max, deceleration_limit, effort].
 joint_limits:
   joint1: [-2.9007,  2.9007, 2.62,  6.0,   500.0]
   joint2: [-1.8361,  1.8361, 2.62,  2.585, 500.0]

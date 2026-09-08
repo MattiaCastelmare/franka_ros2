@@ -49,7 +49,8 @@ from franka_experiments.utils.kinematics import (
     load_pinocchio_model,
     resolve_arm_joint_ids,
 )
-from franka_experiments.utils.ros import run_node_main
+from franka_experiments.utils.params import declare_str
+from franka_experiments.utils.node_runtime import run_node_main
 
 
 class QddotToTorqueNode(Node):
@@ -63,8 +64,9 @@ class QddotToTorqueNode(Node):
         cfg    = load_robot_config('control')
         topics = cfg['topics']
 
-        self.declare_parameter('torque_out_topic', '/NS_1/torque_cmd')
-        torque_out_topic = self.get_parameter('torque_out_topic').value
+        torque_out_topic = declare_str(
+            self, 'torque_out_topic',
+            topics.get('torque_cmd', '/NS_1/torque_cmd'))
 
         # ── Pinocchio dynamics model (hand:=true — matches rt_torque_controller) ─
         self.get_logger().info('Building dynamics model via xacro …')
@@ -99,11 +101,19 @@ class QddotToTorqueNode(Node):
         # ── Publisher / subscribers ───────────────────────────────────────
         self._pub = self.create_publisher(Float64MultiArray, torque_out_topic, 10)
 
+        # joint_states_fast (the joint_state_broadcaster's own 1 kHz output),
+        # not the 30 Hz Python republisher on joint_states: M(q) and C(q,qdot)
+        # are evaluated at this state, so a 33 ms lag here biases every torque
+        # the CBF asks for. See the topics block in fr3_control.yaml.
+        # depth=1: this callback only CACHES the state (the torque is computed
+        # in the qddot_safe callback), so with a 1 kHz publisher a deeper queue
+        # would only build a backlog of states that are stale by the time they
+        # are read. Always consume the latest.
         self.create_subscription(
             JointState,
-            topics['joint_states_topic'],
+            topics.get('joint_states_fast', topics['joint_states_topic']),
             self._on_joint_state,
-            10,
+            1,
         )
         self.create_subscription(
             Float64MultiArray,
@@ -146,6 +156,7 @@ class QddotToTorqueNode(Node):
 
     # ── Acceleration callback → compute and publish torque ────────────────────
 
+    # TODO[LEGACY]: name is now a misnomer — this callback carries qddot_SAFE (the CBF-filtered acceleration), not qddot_nom. Not renamed: ground rule 3 forbids renaming | confidence: high | superseded-by: none | flagged: 2026-09-01
     def _on_qddot_nom(self, msg: Float64MultiArray) -> None:
         with self._lock:
             if not self._has_js:

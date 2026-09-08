@@ -1,0 +1,178 @@
+# ============================================================================
+# franka_sim — central configuration (Safe RL + CBF, Sim-to-Real)
+#
+# One file for the whole training experiment so runs are reproducible for the
+# paper. The `cbf:` and `joint_limits:` blocks MIRROR the on-robot
+# franka_experiments/config/fr3_control.yaml — keep them in sync so the policy
+# is trained under exactly the safety filter it meets on hardware.
+# ============================================================================
+
+# ── Simulation / episode ─────────────────────────────────────────────────────
+env:
+  scene_xml: assets/franka_fr3/scene_cbf.xml   # relative to franka_sim/
+  # The point the policy observes and drives. `hand_tcp_site` is the Franka Hand
+  # grasp centre ≡ URDF `fr3_hand_tcp` (link7 + 0.107 → hand, then + 0.1034 z);
+  # verified equal to the real URDF's FK to 7e-16 m. It MUST match the
+  # `ee_frame` parameter of rl_policy_commander — that node builds its URDF with
+  # `hand:=true`, so the frame resolves there too.
+  # Use `attachment_site` (the bare flange ≡ fr3_link8) only for a hand-less
+  # robot, and then set ee_frame:=fr3_link8 to match.
+  ee_site: hand_tcp_site          # Franka Hand TCP ≡ fr3_hand_tcp
+  control_rate_hz: 100.0          # policy + CBF tick rate (matches real qp_rate)
+  sim_timestep: 0.002             # MuJoCo integration step (→ 5 substeps/tick)
+  max_episode_steps: 500          # 5 s episodes at 100 Hz
+  # Viewer playback rate (--render only; ignored while training and headless).
+  # 1.0 = wall-clock real time. Lower it to inspect a motion in slow motion.
+  render_speed: 1.0
+
+# ── Reaching task ─────────────────────────────────────────────────────────────
+task:
+  target_box_min: [0.30, -0.35, 0.25]   # [m] target sampled uniformly in this box
+  target_box_max: [0.60,  0.35, 0.65]
+  target_tol: 0.05                # [m] EE within this of target ⇒ success
+  q_init_noise: 0.05              # [rad] uniform joint noise around `home`
+
+# ── Human-proxy obstacle (moving sphere) ─────────────────────────────────────
+obstacle:
+  radius: 0.08                    # [m] sphere radius — MUST match obstacle_geom
+                                  # in scene_cbf.xml (the env asserts it). Read
+                                  # on the robot by rl_policy_commander to
+                                  # rebuild the observation's obstacle slot from
+                                  # the point-cloud surface distance.
+  mode: sinusoidal                # static | linear | sinusoidal | random_walk
+  box_min: [0.30, -0.40, 0.30]    # [m] obstacle base sampled + motion clipped here
+  box_max: [0.65,  0.40, 0.70]
+  # Peak obstacle speed is 2π·speed·amplitude. At the previous 0.6 Hz / 0.30 m
+  # that was ~1.13 m/s: the sphere swept INTO an arm that could not clear it, so
+  # a share of every collision rate was structural — identical (−0.1323 m worst
+  # penetration) for the trained policy, a random policy and an arm that never
+  # moved. The barrier can only bound the ROBOT's motion, so no controller and
+  # no CBF can fix that; it only added reward noise and slowed learning.
+  # 0.30 Hz / 0.20 m → ~0.38 m/s, where avoidance is genuinely possible and the
+  # collision metric measures the controller. Raise both back to 0.6 / 0.30 to
+  # reproduce the harder (partly unavoidable) benchmark.
+  # 0.20 Hz x 0.20 m -> ~0.25 m/s, which is also roughly the reduced-speed
+  # figure used for collaborative operation in ISO/TS 15066 — a defensible
+  # number to quote rather than an arbitrary one. The amplitude is deliberately
+  # NOT reduced further: it sets how much of the workspace the obstacle sweeps,
+  # i.e. the diversity of situations the policy sees, and that is worth keeping.
+  amplitude: 0.20                 # [m] oscillation amplitude along a random axis
+  speed: 0.20                     # oscillation frequency [Hz]
+  random_walk_std: 0.01           # [m/tick] step size for random_walk mode
+
+# ── Reward weights (task reward + safety/effort penalties) ───────────────────
+reward:
+  w_dist: 1.0                     # dense: −‖ee − target‖
+  w_success: 5.0                  # bonus when within target_tol
+  w_action: 0.001                 # effort penalty ‖a‖²  (normalized action)
+  w_intervention: 0.02            # penalize how hard the CBF bends q̈_nom
+  w_slack: 0.5                    # penalize CBF slack (infeasibility / relaxation)
+  w_smooth: 0.001                 # jerk penalty ‖q̈ − q̈_prev‖
+  w_qdot: 0.001                   # joint-velocity penalty ‖q̇‖²
+  collision_dist: 0.0             # [m] surface distance below this ⇒ collision
+  collision_penalty: 10.0         # one-off penalty on collision (then terminate)
+  terminate_on_success: true
+
+# ── CBF safety filter (MIRROR of fr3_control.yaml `params`) ──────────────────
+cbf:
+  # NOTE: every key down to `control_points` mirrors `params:` in
+  # franka_experiments/config/fr3_control.yaml, and test_real_configs_are_in_sync
+  # enforces it. Change a value HERE only together with the robot, or the policy
+  # trains against a shield the robot will not reproduce. The exceptions are
+  # marked SIM-ONLY below.
+  d_safe: 0.15                    # [m] minimum safe surface distance
+  k0_cbf: 25.0                    # HOCBF position gain (class-K α₀)
+  k1_cbf: 10.5                    # HOCBF velocity gain (class-K α₁)
+  rho_slack: 1000.0               # quadratic slack penalty ½ρs²
+  cbf_obstacle_horizon: 1.2       # [m] computational cutoff (not a safety gate)
+  cbf_min_leverage: 0.05          # [m/rad] min ‖a‖=‖n̂ᵀJp‖ to keep a row
+  k_brake: 3.0                    # QP-fail fallback: q̈ = −k_brake·q̇
+  osqp_max_iter: 20000
+  include_jdot: true              # add ċ = n̂ᵀ(J̇p q̇) via finite-diff Jacobian
+
+  # Hard state-limit shielding (velocity/position braking + slew continuity).
+  # Key names follow fr3_control.yaml; they were hard_v_margin / hard_q_margin /
+  # hard_brake_eta until the robot-side rename, and cbf_filter.py still accepts
+  # the old spellings so configs frozen next to older models keep loading.
+  velocity_box_margin: 0.9        # fraction of qdot_max the box allows
+  position_margin_rad: 0.05       # [rad] barrier kept inside the mechanical stop
+  position_brake_eta: 0.6         # fraction of decel authority the curve assumes
+  max_qddot_delta: 5.0            # [rad/s² per tick] slew-continuity bound
+
+  # Workspace box on the EE (hard HOCBF rows; slack cannot relax them).
+  #
+  # SIM-ONLY — the robot has NO Cartesian workspace rows: `workspace_face_rows`
+  # in utils/cbf_hard_limits.py has no live importer since commit 4d4d450 (see
+  # franka_experiments/LEGACY.md). Keeping the box here is deliberate and
+  # conservative in the right direction: the policy learns to stay inside a
+  # region SMALLER than anything the robot enforces, so deployment relaxes the
+  # constraint rather than tightening it. On hardware the only Cartesian bound
+  # is whatever the joint-limit / self-collision / singularity rows imply —
+  # do not read this box as a guarantee that survives sim-to-real.
+  ws_enable: true
+  ws_min: [0.05, -0.60, 0.05]
+  ws_max: [0.75,  0.60, 0.95]
+  ws_margin: 0.02
+  ws_horizon: 0.25
+
+  # Control points (robot body + capsule-approx radius) for per-link distance.
+  #
+  # `fr3_hand` mirrors the robot's `fr3_link8`: on hardware `fr3_complete.yaml`
+  # maps fr3_link8 to the Franka Hand collision mesh and segment 7 carries 3
+  # control points, so the gripper IS covered by the real perception pipeline —
+  # leaving it out here would have trained a policy blind to its own EE.
+  # The MuJoCo body origin of fr3_hand sits exactly on fr3_link8 (both are
+  # link7 + 0.107 z; the hand is only rotated -45° about z).
+  #
+  # radius 0.13 is the measured bounding sphere of hand + both fingers from that
+  # origin (0.1283 m), rounded up. One coarse sphere instead of three rows: the
+  # fingers reach 0.119 m from the same origin, so a separate row would buy
+  # almost nothing. The robot samples the actual mesh, so its gap is tighter
+  # than this sphere — the sim shield is the more restrictive of the two, which
+  # is the safe direction for sim-to-real.
+  control_points:
+    - {body: fr3_link4, radius: 0.09}
+    - {body: fr3_link5, radius: 0.09}
+    - {body: fr3_link6, radius: 0.08}
+    - {body: fr3_link7, radius: 0.07}
+    - {body: fr3_hand,  radius: 0.13}   # ≡ robot fr3_link8 (hand + fingers)
+
+# ── Per-joint limits [q_min, q_max, qdot_max, qddot_max, tau_max] ─────────────
+# Copied verbatim from fr3_control.yaml so sim and robot clamp identically.
+joint_limits:
+  joint1: [-2.9007,  2.9007, 2.62,  6.0,   500.0]
+  joint2: [-1.8361,  1.8361, 2.62,  2.585, 500.0]
+  joint3: [-2.9007,  2.9007, 2.62,  3.5,   500.0]
+  joint4: [-3.0770, -0.1169, 2.62,  4.0,   500.0]
+  joint5: [-2.8763,  2.8763, 5.26, 17.0,   500.0]
+  joint6: [ 0.4398,  4.6216, 4.18,  5.5,   500.0]
+  joint7: [-3.0508,  3.0508, 5.26, 17.0,   500.0]
+
+# ── RL hyperparameters (SAC, tuned for an 8 GB RTX 4070 Laptop) ──────────────
+rl:
+  algo: SAC                       # continuous-control off-policy (safe-exploration)
+  total_timesteps: 2_000_000
+  n_envs: 1                       # SAC is off-policy; 1 env keeps the shield exact
+  seed: 0
+  policy: MlpPolicy
+  learning_rate: 0.0003
+  buffer_size: 1_000_000          # ~fits in RAM; lower to 500_000 if tight
+  batch_size: 512
+  gamma: 0.99
+  tau: 0.005
+  train_freq: 1
+  gradient_steps: 1
+  learning_starts: 10_000
+  ent_coef: auto
+  net_arch: [256, 256]
+  device: cuda
+  # Logging / checkpointing (train.py).
+  tensorboard_log: runs/
+  checkpoint_freq: 50_000         # [steps] SB3 CheckpointCallback
+  # [episodes] snapshot + ONNX export on the episode axis, which is the one
+  # worth comparing along: episodes end early on success and on collision, so
+  # step-spaced snapshots hold very different amounts of task experience.
+  # 0 disables. Feeds scripts/compare_checkpoints.py.
+  checkpoint_freq_episodes: 200
+  eval_freq: 25_000
+  save_path: models/

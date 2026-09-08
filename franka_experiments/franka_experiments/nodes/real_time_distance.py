@@ -51,10 +51,9 @@ from franka_experiments.utils.distance_utils import (
 )
 from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
-from franka_experiments.utils.node_utils import (
-    PerfTimer,
-    build_cp_messages,
-)
+from franka_experiments.utils.params import declare_bool, declare_str
+from franka_experiments.utils.logging_utils import PerfTimer
+from franka_experiments.utils.perception_msgs import build_cp_messages
 from franka_experiments.utils.tf_manager import TFManager
 from franka_experiments.utils.visualization import VisFrame, draw_overlay
 
@@ -65,17 +64,14 @@ class RealTimeDistance(Node):
         super().__init__('real_time_distance')
 
         # ── Parameters ──────────────────────────────────────────────────
-        self.declare_parameter('robot_config_path', '')
-        self.declare_parameter('camera_extrinsics_path', '')
-        self.declare_parameter('publish_overlay_image', False)
-
-        robot_config_path      = self.get_parameter('robot_config_path').value
-        camera_extrinsics_path = self.get_parameter('camera_extrinsics_path').value
-
-        if not robot_config_path:
-            raise RuntimeError('Parameter robot_config_path must be set.')
-        if not camera_extrinsics_path:
-            raise RuntimeError('Parameter camera_extrinsics_path must be set.')
+        # declare_str(allow_empty=False) logs at ERROR naming the parameter and
+        # the received value, then raises — replacing the two bare RuntimeErrors
+        # that used to be raised below without any log line.
+        robot_config_path      = declare_str(self, 'robot_config_path', '')
+        camera_extrinsics_path = declare_str(self, 'camera_extrinsics_path', '')
+        _publish_overlay_param = declare_bool(self, 'publish_overlay_image', False)
+        # publish_empty_per_link (liveness heartbeat) is declared further down,
+        # once distance_cfg is loaded, so its default can come from the YAML.
 
         # ── Load configs ─────────────────────────────────────────────────
         self.config       = load_robot_config(robot_config_path)
@@ -98,9 +94,12 @@ class RealTimeDistance(Node):
         self.visualize_only_raw_video    = booleans.get('raw_video', False)
         self.visual_ROI                  = booleans.get('visual_ROI', False)
         self.publish_overlay_image       = (
-            self.get_parameter('publish_overlay_image').value
+            _publish_overlay_param
             or booleans.get('publish_overlay_image', False)
         )
+        self._publish_empty_per_link     = declare_bool(
+            self, 'publish_empty_per_link',
+            self.distance_cfg.get('publish_empty_per_link', True))
 
         # ── Camera intrinsics (populated by camera_info_callback) ────────
         self.bridge    = CvBridge()
@@ -165,6 +164,9 @@ class RealTimeDistance(Node):
         self._process_skip_count = 0
         self._vis_skip_count     = 0
         self._perf               = PerfTimer()
+        # True while the per-link topic carries empty heartbeats; cleared on every
+        # real publish so the DEBUG line fires per transition, never per frame.
+        self._hb_active = False
 
         # ── Subscriptions ────────────────────────────────────────────────
         topics_cfg  = self.config.get('topics', {})
@@ -295,6 +297,7 @@ class RealTimeDistance(Node):
         control_points = define_control_points(
             transforms, self.robot_cfg, self.distance_cfg)
         if not control_points:
+            self._publish_per_link_heartbeat(stamp)
             return
 
         # ── Mask + ROI ────────────────────────────────────────────────────
@@ -331,6 +334,7 @@ class RealTimeDistance(Node):
                 frame_stamp=stamp.sec + stamp.nanosec * 1e-9,  # REAL dt for approach rate-limit
             )
         if cp_results is None:
+            self._publish_per_link_heartbeat(stamp)
             return
 
         valid = [
@@ -344,6 +348,7 @@ class RealTimeDistance(Node):
                 self._tlog_no_obs.debug(
                     f'No near obstacle (CP mode). Fallback={fallback_distance} m')
             self._publish_fallback(fallback_distance, stamp)
+            self._publish_per_link_heartbeat(stamp)
             return
 
         best_cp          = min(valid, key=lambda r: r.distance)
@@ -373,6 +378,7 @@ class RealTimeDistance(Node):
         )
         self.multi_dist_pub.publish(multi_msg)
         self.per_link_dist_pub.publish(mld_msg)
+        self._hb_active = False   # re-arm the heartbeat transition log
 
         # ── Visualisation snapshot ────────────────────────────────────────
         with self._vis_lock:
@@ -443,6 +449,22 @@ class RealTimeDistance(Node):
         msg.header.stamp = stamp
         msg.distance     = float(distance)
         self.dist_pub.publish(msg)
+
+    def _publish_per_link_heartbeat(self, stamp) -> None:
+        """Publish an empty MultiLinkDistance so downstream nodes can tell
+        'no obstacle in range' apart from 'perception is dead'."""
+        if not self._publish_empty_per_link:
+            return
+        if not self._hb_active:
+            self._hb_active = True
+            self.get_logger().debug(
+                'no CP in range - publishing empty per-link heartbeat',
+                throttle_duration_sec=5.0)
+        msg = MultiLinkDistance()
+        msg.header.stamp    = stamp
+        msg.header.frame_id = self.robot_cfg['base_frame']
+        msg.links           = []
+        self.per_link_dist_pub.publish(msg)
 
 
 def main(args=None):

@@ -32,3 +32,4 @@ metadata.yaml
 # Temporary files
 *.tmp
 *.bak
+rosbag/
