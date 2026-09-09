@@ -62,6 +62,39 @@ class ControlPointResult:
     closest_pixel: Optional[Tuple[int, int]] = None
 
 
+@dataclass
+class ObstacleCloud:
+    """The obstacle pixels of ONE frame, exactly as the distance pass selected them.
+
+    Not used by the distance computation at all — this is a read-only export so
+    a second consumer (``utils.obstacle_clusters``, and through it the obstacle
+    tracker) can group the SAME pixels into objects without re-reading the depth
+    image, re-applying the exclusion mask or re-running the depth-range filter.
+    Sharing the selection is the point: a tracker built on a slightly different
+    pixel set would report velocities for obstacles the barrier never saw.
+
+    ``p_cam`` / ``u`` / ``v`` are index-aligned views of the engine's own
+    arrays, so populating this costs three reference assignments and no copy.
+
+    Attributes:
+        p_cam: (N, 3) float32 obstacle points in CAMERA frame [m].
+        u: (N,) int32 full-resolution pixel column of each point.
+        v: (N,) int32 full-resolution pixel row of each point.
+        step: ROI subsampling stride the pixels were drawn with. Consecutive
+            samples are ``step`` apart in full-resolution coordinates, which any
+            connectivity analysis downstream has to know about.
+        stamp: [s] capture time of the depth frame, or None when the caller did
+            not supply one. A tracker differentiates positions, so it needs the
+            CAPTURE clock, not the receipt clock.
+    """
+
+    p_cam: np.ndarray
+    u:     np.ndarray
+    v:     np.ndarray
+    step:  int
+    stamp: Optional[float] = None
+
+
 class DistanceEngine:
     """Depth-space per-CP distance engine with conservative LPF output."""
 
@@ -96,6 +129,12 @@ class DistanceEngine:
         self._pending: Dict[Tuple[int, int], Tuple[float, float]] = {}
         # Timestamp [s] of the previous processed frame, for the REAL dt.
         self._prev_stamp: Optional[float] = None
+
+        # Obstacle point-cloud export for the tracker pipeline. OFF by default:
+        # with the flag off nothing is stored and this class behaves exactly as
+        # before, which is what keeps the CBF rows bit-identical.
+        self._export_cloud = bool(distance_cfg.get('export_obstacle_cloud', False))
+        self.last_obstacle_cloud: Optional[ObstacleCloud] = None
 
     def compute(
         self,
@@ -166,6 +205,14 @@ class DistanceEngine:
             ee_src = ee_src[valid]   # same boolean filter as Z/ug/vg
 
         if ug.size == 0:
+            # No obstacle pixel survived: publish an EMPTY cloud rather than
+            # leaving the previous frame's in place. A stale cloud would let the
+            # tracker keep feeding a vanished obstacle to its filters.
+            if self._export_cloud:
+                self.last_obstacle_cloud = ObstacleCloud(
+                    p_cam=np.empty((0, 3), dtype=np.float32),
+                    u=np.empty(0, dtype=np.int32), v=np.empty(0, dtype=np.int32),
+                    step=int(step), stamp=frame_stamp)
             return self._lpf_pass(self._empty_results(control_points), dt), 0
 
         # ── Step 4: unproject obstacle pixels to CAMERA frame ─────────────
@@ -174,6 +221,15 @@ class DistanceEngine:
         p_cam[:, 0] = (ug.astype(np.float32) - cx_f32) * (Z * fx_inv_f32)
         p_cam[:, 1] = (vg.astype(np.float32) - cy_f32) * (Z * fy_inv_f32)
         p_cam[:, 2] = Z
+
+        # ── Step 4a: export the selection (opt-in, no copy) ───────────────
+        # p_cam/ug/vg here are the obstacle mask in its sparse form: every pixel
+        # that survived the exclusion mask AND the depth-range filter, already
+        # unprojected. Handed to the tracker as-is so both pipelines reason
+        # about the identical pixel set.
+        if self._export_cloud:
+            self.last_obstacle_cloud = ObstacleCloud(
+                p_cam=p_cam, u=ug, v=vg, step=int(step), stamp=frame_stamp)
 
         # ── Step 4b: dilation-margin → metres, per obstacle pixel ─────────
         # Convert the pixel-space exclusion-mask dilation back to metres at the
