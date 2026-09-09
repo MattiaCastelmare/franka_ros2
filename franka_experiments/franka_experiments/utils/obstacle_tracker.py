@@ -334,6 +334,12 @@ class KalmanTrack:
 # they overlap the positions are identical but the predictions are not.
 
 
+def _measurement(c) -> np.ndarray:
+    """(3,) measurement from a Cluster, a centroid-carrying object, or a point."""
+    p = getattr(c, 'centroid_cam', c)
+    return np.asarray(p, dtype=np.float64).ravel()
+
+
 class TrackManager:
     """Nearest-neighbour tracker over :class:`KalmanTrack` instances.
 
@@ -392,6 +398,13 @@ class TrackManager:
         self._next_id = 1        # ids start at 1: 0 is the message's "no track"
         self._hits: dict = {}    # track_id → recent hit/miss history (deque-ish)
         self._confirmed: set = set()
+        #: cluster index (of the LAST :meth:`step` call) → the track it fed.
+        #: Published so a consumer can go from a POINT to a track: it finds the
+        #: cluster the point falls in, then this map names the track. Without it
+        #: the only route back is "nearest track position", which is wrong
+        #: exactly when it matters — one large cluster's far edge can be nearer
+        #: to a different track's centre than to its own.
+        self.last_assoc: dict = {}
 
     # ── Query ───────────────────────────────────────────────────────────────
 
@@ -415,10 +428,15 @@ class TrackManager:
         CONFIRMED tracks.
 
         Args:
-            clusters: sequence of :class:`~franka_experiments.utils.obstacle_clusters.Cluster`
-                for this frame, or of anything exposing ``centroid_cam``. May be
-                empty — every track then coasts, which is the correct response
-                to a frame where perception saw nothing.
+            clusters: this frame's measurements — a sequence of
+                :class:`~franka_experiments.utils.obstacle_clusters.Cluster`,
+                of anything exposing ``centroid_cam``, or of bare (3,) points.
+                The bare-point form is what ``ObstacleTrackPipeline`` uses: it
+                transforms the centroids into the BASE frame before handing them
+                over, because a Kalman filter differentiates its input and a
+                velocity only rotates cleanly between frames whose transform is
+                constant. May be empty — every track then coasts, which is the
+                correct response to a frame where perception saw nothing.
             dt: [s] since the previous frame, from the CAPTURE clock.
 
         Returns:
@@ -427,12 +445,14 @@ class TrackManager:
         for t in self.tracks:
             t.predict(dt)
 
-        z = [np.asarray(c.centroid_cam, dtype=np.float64).ravel() for c in clusters]
+        z = [_measurement(c) for c in clusters]
         pairs = self._associate(z)
 
+        self.last_assoc = {}
         used_c = set()
         for ti, ci in pairs:
             self.tracks[ti].update(z[ci])
+            self.last_assoc[ci] = self.tracks[ti]
             used_c.add(ci)
         hit_t = {ti for ti, _ in pairs}
 
@@ -446,10 +466,12 @@ class TrackManager:
         for ci, zc in enumerate(z):
             if ci in used_c or len(self.tracks) >= self.max_tracks:
                 continue
-            self.tracks.append(KalmanTrack(
+            born = KalmanTrack(
                 zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
                 sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
-                track_id=self._next_id))
+                track_id=self._next_id)
+            self.tracks.append(born)
+            self.last_assoc[ci] = born
             self._record(self._next_id, True)
             self._next_id += 1
 
@@ -513,3 +535,4 @@ class TrackManager:
         self.tracks = []
         self._hits.clear()
         self._confirmed.clear()
+        self.last_assoc = {}
