@@ -80,6 +80,40 @@ rl_target_xyz: "[0.45, 0.0, 0.45]"   # [m] reach target in fr3_link0
 rl_target_sequence: ""         # "x,y,z, x,y,z, …" — overrides rl_target_xyz
 rl_action_scale: 1.0           # derate in (0,1]; use 0.3 for a first real run
 
+# ── Obstacle prediction & evasion (torque_control_stack) ──────────────
+# The cluster -> track -> Kalman pipeline and the three CBF terms that consume
+# it. ON by default here, so a bare `ros2 launch torque_control_stack...` runs
+# with obstacle-velocity prediction; set any of them false on the command line
+# to fall back.
+#
+# The first two go TOGETHER and neither does anything alone: obstacle_tracking
+# only publishes fields, obstacle_velocity_source only reads them. With
+# tracking off and source:=tracker the CBF finds zeros on the wire and falls
+# back to v_obs = 0 -- safe, but with no velocity anticipation at all, which is
+# strictly worse than the residual estimator it replaced.
+obstacle_tracking: true          # cluster + Kalman-track obstacles in real_time_distance
+obstacle_velocity_source: tracker  # 'residual' = the old scalar a^T qdot - ddot
+
+# Barrier tightened by the tracker's own admitted velocity uncertainty,
+# k_sigma * sqrt(n^T P_vv n) * t_latency. Inert without a track.
+uncertainty_margin: true
+
+# Step SIDEWAYS out of the swept volume when the acceleration box says the
+# closing rate cannot be nulled before the gap reaches zero. A bias on the QP's
+# target, never a constraint, so it cannot loosen a barrier or make the problem
+# infeasible. Inert without a track.
+lateral_evasion: true
+
+# DANGER, and it stays off. Renders a synthetic sphere into the depth stream so
+# the whole chain can be exercised end to end -- the arm WILL move away from
+# something that is not there. Command line only, never a default.
+sim_obstacle: false
+
+# Replay a bag as the DEPTH SOURCE instead of a live camera (only the depth
+# image and camera_info; TF and joint states still come from the running robot).
+# Empty = off.
+depth_bag: ""
+
 # ── Rosbag recording ──────────────────────────────────────────────────
 start_rosbag: false
 rosbag_output_dir: ""          # empty = ~/ros2_bags/rosbag_YYYYMMDD_HHMMSS
