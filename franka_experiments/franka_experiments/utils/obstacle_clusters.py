@@ -56,12 +56,12 @@ mapping is exact and injective.
 
 ORDER OF OPERATIONS
 -------------------
-Connected components runs on the FULL pixel set; the 2 cm voxel downsample is
-applied afterwards, INSIDE each label. The two are independent — voxelisation
-changes which points contribute to a centroid, labelling decides which points
-belong together — so the order is free, and doing it this way keeps
-connectivity intact. (Voxelising first and then labelling the surviving pixels
-would puncture every blob into a lattice of isolated cells and fragment it.)
+Labelling runs on the FULL pixel set; the 2 cm voxel downsample is applied
+afterwards, INSIDE each label. The two are independent — voxelisation changes
+which points contribute to a centroid, labelling decides which points belong
+together — so the order is free, and doing it this way keeps connectivity
+intact. (Voxelising first and then labelling the surviving pixels would
+puncture every blob into a lattice of isolated cells and fragment it.)
 
 The downsample is not a speed trick. A depth camera samples a near surface far
 more densely than a far one — pixel density falls as 1/Z² — so the raw mean of
@@ -72,9 +72,33 @@ than of the sampling pattern, and it does not drift with range. A tracker
 differentiates this quantity; a range-dependent bias in it would come out as a
 fabricated velocity.
 
-``cv2`` is used for the labelling only, exactly as ``mask_builder`` one layer
-up does for its dilations — it is already a hard dependency of this perception
-path. No ROS anywhere here, so the module is unit-testable headless.
+CONNECTIVITY IS DEPTH-AWARE, AND THAT IS NOT A REFINEMENT
+---------------------------------------------------------
+Plain 2D connected components is wrong here, and wrong in the common case
+rather than in an edge case. The image is a projection: two pixels can be
+neighbours on the sensor while being metres apart in the world. A hand at 1.4 m
+held in front of a wall at 2.5 m touches that wall in the image along its whole
+silhouette, so 8-connectivity fuses the two into a single blob — whose centroid
+is somewhere in the empty air between them, and whose velocity is therefore
+nobody's.
+
+Measured, twice. On ``rosbag/arm_complex`` the whole room comes back as ONE
+cluster of radius 2.2–2.6 m whose centroid flickers between z = 2.28 m and
+z = 2.57 m as the far patch connects and disconnects, which differentiates to
+metres per second. And in the first end-to-end run with a synthetic obstacle
+rendered into the depth stream, the distance engine reported the sphere
+correctly at 1.455 m while the clusterer produced ZERO clusters — the sphere had
+been absorbed into the background blob and then dropped by the size guard.
+
+So two pixels are linked only when they are adjacent AND their depths differ by
+less than ``depth_jump``. Sub-pixel-accurate segmentation this is not; it is the
+minimum needed for a cluster to be one physical thing, which is the only
+property the velocity estimate downstream depends on.
+
+The graph is built vectorised (four neighbour offsets, one boolean mask each)
+and labelled with ``scipy.sparse.csgraph.connected_components`` — already a
+runtime dependency of this package via the QP assembly. No ROS anywhere here,
+so the module is unit-testable headless.
 """
 
 from __future__ import annotations
@@ -82,7 +106,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
-import cv2
 import numpy as np
 
 
@@ -155,6 +178,63 @@ def voxel_downsample(points: np.ndarray, voxel_m: float) -> np.ndarray:
     return cent
 
 
+def _neighbour_edges(idx: np.ndarray, Zg: np.ndarray, dv: int, du: int,
+                     depth_jump: float):
+    """Index pairs of occupied, adjacent cells whose depths are compatible.
+
+    One vectorised pass per offset: slice the index image against a shifted copy
+    of itself and keep the positions where BOTH cells hold a point and the two
+    depths differ by less than ``depth_jump``. No Python loop over pixels.
+    """
+    H, W = idx.shape
+    v0, v1 = (dv, H) if dv >= 0 else (0, H + dv)
+    u0, u1 = (du, W) if du >= 0 else (0, W + du)
+    if v1 <= v0 or u1 <= u0:
+        return np.empty(0, np.int64), np.empty(0, np.int64)
+    a = idx[v0 - dv:v1 - dv, u0 - du:u1 - du]
+    b = idx[v0:v1, u0:u1]
+    za = Zg[v0 - dv:v1 - dv, u0 - du:u1 - du]
+    zb = Zg[v0:v1, u0:u1]
+    m = (a >= 0) & (b >= 0) & (np.abs(za - zb) <= depth_jump)
+    return a[m].astype(np.int64), b[m].astype(np.int64)
+
+
+def label_points(u: np.ndarray, v: np.ndarray, z: np.ndarray, *, step: int = 1,
+                 connectivity: int = 8, depth_jump: float = 0.10):
+    """``(n_labels, labels)`` — depth-aware connected components over the points.
+
+    Returns one label per input point. Exposed separately from
+    :func:`cluster_obstacles` because it is the piece with the interesting
+    failure mode (see the module docstring) and deserves to be tested on its
+    own, without the voxel/centroid machinery on top.
+    """
+    n = u.size
+    if n == 0:
+        return 0, np.empty(0, np.int64)
+    st = max(1, int(step))
+    uu = (u.astype(np.int64) - int(u.min())) // st
+    vv = (v.astype(np.int64) - int(v.min())) // st
+    idx = np.full((int(vv.max()) + 1, int(uu.max()) + 1), -1, dtype=np.int64)
+    idx[vv, uu] = np.arange(n, dtype=np.int64)
+    Zg = np.zeros(idx.shape, dtype=np.float64)
+    Zg[vv, uu] = z
+
+    # Each unordered neighbour pair is generated exactly once: right and down
+    # for 4-connectivity, plus the two diagonals for 8.
+    offsets = [(0, 1), (1, 0)]
+    if int(connectivity) == 8:
+        offsets += [(1, 1), (1, -1)]
+    pairs = [_neighbour_edges(idx, Zg, dv, du, float(depth_jump))
+             for dv, du in offsets]
+    src = np.concatenate([p[0] for p in pairs]) if pairs else np.empty(0, np.int64)
+    dst = np.concatenate([p[1] for p in pairs]) if pairs else np.empty(0, np.int64)
+
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    g = coo_matrix((np.ones(src.size, dtype=np.int8), (src, dst)), shape=(n, n))
+    return connected_components(g, directed=False, return_labels=True)
+
+
 def cluster_obstacles(
     p_cam: np.ndarray,
     u: np.ndarray,
@@ -163,6 +243,7 @@ def cluster_obstacles(
     step: int = 1,
     voxel_m: float = 0.02,
     connectivity: int = 8,
+    depth_jump: float = 0.10,
     min_points: int = 10,
     max_clusters: int = 16,
     max_radius: Optional[float] = None,
@@ -181,9 +262,20 @@ def cluster_obstacles(
             anything that has to be tracked (a forearm is ~8 cm across) and
             comfortably above the depth noise of a D405/D455 at working range,
             so it averages sensor noise without averaging away the object.
-        connectivity: 4 or 8, passed to ``cv2.connectedComponents``. 8 by
-            default: a limb crossing the image diagonally is one object, and
-            4-connectivity would cut it into a staircase of fragments.
+        connectivity: 4 or 8. 8 by default: a limb crossing the image
+            diagonally is one object, and 4-connectivity would cut it into a
+            staircase of fragments.
+        depth_jump: [m] two adjacent pixels belong to the same object only if
+            their depths differ by less than this. THE parameter that keeps a
+            foreground obstacle from fusing with the background it is silhouetted
+            against — see the module docstring for the two measurements behind
+            it. 0.10 m sits above the depth noise of a D405/D455 at working range
+            and above the depth step between two ROI-grid samples on a slanted
+            surface (at ``pixel_step`` 10 and 1.5 m, one grid step is ~4 cm
+            laterally, so a 60-degree slant gives ~7 cm), and far below the gap
+            between a person and the wall behind them. Raise it and the
+            background fuses back on; lower it and a steeply slanted limb
+            fragments into depth slices.
         min_points: blobs with fewer RAW pixels than this are dropped. This is
             the speckle filter — an isolated depth artefact is a handful of
             pixels, and promoting one to a cluster would give the tracker a
@@ -233,25 +325,18 @@ def cluster_obstacles(
             f'pixel coordinates — they must be index-aligned')
 
     pts = p_cam.astype(np.float64, copy=False)
-    st = max(1, int(step))
 
-    # ── Sparse obstacle pixels → dense GRID mask (see module docstring) ──────
-    uu = (u.astype(np.int64) - int(u.min())) // st
-    vv = (v.astype(np.int64) - int(v.min())) // st
-    mask = np.zeros((int(vv.max()) + 1, int(uu.max()) + 1), dtype=np.uint8)
-    mask[vv, uu] = 255
-
-    n_labels, label_img = cv2.connectedComponents(mask, connectivity=int(connectivity))
-    if n_labels <= 1:
+    n_labels, lab = label_points(u, v, pts[:, 2], step=step,
+                                 connectivity=connectivity,
+                                 depth_jump=depth_jump)
+    if n_labels == 0:
         return []
-
-    lab = label_img[vv, uu]                       # (N,) label per obstacle point
 
     clusters: List[Cluster] = []
     # bincount over labels first: one pass to find which labels are even worth
     # gathering, instead of a boolean scan of the whole point set per label.
     sizes = np.bincount(lab, minlength=n_labels)
-    for lb in range(1, n_labels):
+    for lb in range(n_labels):
         if sizes[lb] < min_points:
             continue
         blob = pts[lab == lb]

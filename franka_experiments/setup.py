@@ -53,7 +53,6 @@ setup(
             'cbf_oscbf_filter = franka_experiments.nodes.cbf_OSCBF_filter:main',
             # === Shared nodes ===
             'real_time_distance = franka_experiments.nodes.real_time_distance:main',
-            'obstacle_tracker_node = franka_experiments.nodes.obstacle_tracker_node:main',
             'experiment_logger = franka_experiments.nodes.experiment_logger:main',
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',

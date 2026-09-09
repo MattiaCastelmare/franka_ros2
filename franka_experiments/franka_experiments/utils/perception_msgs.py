@@ -7,6 +7,7 @@ ROS messages the CBF chain consumes, and the scalar classifications that go
 inside them:
 
 * :func:`build_cp_messages`  — (MultiDistance, MultiLinkDistance) pair
+* :func:`annotate_track_fields` — fills the obstacle-track fields in place
 * :func:`get_safety_zone`    — distance → zone label
 * :func:`find_pt_confidence` — distance + pixel count → confidence scalar
 * :func:`no_obs_warn`        — throttled "no obstacle" debug log
@@ -227,6 +228,58 @@ def build_cp_messages(
     mld_msg.links           = link_entries
 
     return multi_msg, mld_msg
+
+def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
+    """Fill the track fields of every entry of ``msg`` IN PLACE.
+
+    Kept as a free function, and taking only the message and the pipeline, so
+    the annotation rule is unit-testable without a node, a camera or a clock.
+
+    Args:
+        msg: the ``MultiLinkDistance`` about to be published.
+        pipeline: an ``ObstacleTrackPipeline`` that has seen this frame.
+        skip_keys: control-point labels (``'fr3_link5#0'``, same ``link#k``
+            convention the CBF uses) whose track fields must be left at the
+            all-zero "no track" defaults. This is where
+            :class:`~franka_experiments.utils.self_detection.SelfDetectionMonitor`
+            takes effect: a control point whose "obstacle" is moving rigidly
+            with the arm gets no VELOCITY, while its DISTANCE goes out
+            untouched. Suppressing an estimate degrades to today's behaviour;
+            suppressing a distance would delete a barrier.
+
+    Returns:
+        How many entries were matched to a confirmed track.
+    """
+    skip = set(skip_keys or ())
+    link_seen: dict = {}
+    n = 0
+    for ld in msg.links:
+        # link#k in arrival order — the same label cbf_safety_filter builds, so
+        # a key means the same control point on both sides of the wire. NOTE
+        # the counter must advance for EVERY entry, skipped or not, or the
+        # labels would shift and a skip would land on the wrong control point.
+        k = link_seen.get(ld.robot_link_name, 0)
+        link_seen[ld.robot_link_name] = k + 1
+        if f'{ld.robot_link_name}#{k}' in skip:
+            continue
+        if not ld.valid:
+            # An invalid entry has no meaningful closest_point_human — annotating
+            # it would attach a velocity to a point that was never measured.
+            continue
+        p_base = np.array([ld.closest_point_human.x,
+                           ld.closest_point_human.y,
+                           ld.closest_point_human.z])
+        tid, seen, v, P = pipeline.velocity_for_point(p_base)
+        ld.track_id = int(tid)
+        ld.frames_seen = int(seen)
+        ld.obstacle_velocity.x = float(v[0])
+        ld.obstacle_velocity.y = float(v[1])
+        ld.obstacle_velocity.z = float(v[2])
+        ld.velocity_covariance = np.asarray(P, dtype=np.float64).ravel()
+        if tid:
+            n += 1
+    return n
+
 
 def no_obs_warn(
     logger: Any,

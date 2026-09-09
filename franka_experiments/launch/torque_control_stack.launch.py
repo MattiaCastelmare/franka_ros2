@@ -41,6 +41,30 @@ Examples
     # A cautious first run on real hardware: derate the policy to 30% authority.
     ros2 launch franka_experiments torque_control_stack.launch.py \\
         motion_source:=rl start_move_group:=false rl_action_scale:=0.3
+
+    # ── Obstacle PREDICTION: avoid proportionally to the obstacle's speed ──
+    # Tracking publishes the 3D velocity; the CBF consumes it instead of the
+    # scalar residual. Each switch alone is a no-op, so both are needed.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        obstacle_tracking:=true obstacle_velocity_source:=tracker
+
+    # ── Everything on: prediction + uncertainty margin + lateral evasion ──
+    # With lateral_evasion the arm steps SIDEWAYS out of the swept volume when
+    # its own acceleration box says it cannot null the closing rate in time.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        obstacle_tracking:=true obstacle_velocity_source:=tracker \\
+        lateral_evasion:=true uncertainty_margin:=true
+
+    # ── END-TO-END SIMULATION, no robot and no camera ──────────────────────
+    # Fake hardware, depth replayed from a bag, and a synthetic sphere shuttled
+    # through the workspace so the whole avoidance chain actually fires. The
+    # arm moves away from something that is not there -- never run this with a
+    # person nearby.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        use_fake_hardware:=true enable_camera:=false \\
+        depth_bag:=$(ros2 pkg prefix franka_experiments)/../../src/franka_experiments/rosbag/arm_complex \\
+        sim_obstacle:=true obstacle_tracking:=true \\
+        obstacle_velocity_source:=tracker lateral_evasion:=true
 """
 
 import yaml
@@ -97,6 +121,8 @@ _ALL_PARAMS = [
     'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance',
+    'obstacle_tracking', 'obstacle_velocity_source', 'lateral_evasion',
+    'uncertainty_margin', 'sim_obstacle', 'depth_bag',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
@@ -119,6 +145,64 @@ def _as_float_list(x: str):
     if not s:
         return []
     return [float(v) for v in s.replace(';', ',').split(',') if v.strip()]
+
+
+def _rtd_config_with_overrides(path: str, *, tracking: bool,
+                               sim_obstacle: bool) -> str:
+    """Return ``path``, or a copy of it with the two perception switches forced.
+
+    ``real_time_distance`` reads its perception configuration from a YAML rather
+    than from ROS parameters — the blocks are nested dictionaries that
+    ``utils.params`` cannot express. That is the right shape for the file and
+    the wrong shape for a launch argument, so this bridges the two.
+
+    Returns the ORIGINAL path when neither switch is set, so the common case
+    touches no filesystem and the node reads exactly the installed file.
+    """
+    if not (tracking or sim_obstacle):
+        return path
+    import os
+    import tempfile
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    if tracking:
+        cfg.setdefault('tracking', {})['enabled'] = True
+    if sim_obstacle:
+        cfg.setdefault('sim_obstacle', {})['enabled'] = True
+    out = os.path.join(tempfile.gettempdir(),
+                       f'fr3_complete_launch_{os.getpid()}.yaml')
+    with open(out, 'w') as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    return out
+
+
+def _depth_bag_player(bag: str, cfg_path: str):
+    """``ros2 bag play`` restricted to the DEPTH stream, or ``None``.
+
+    Only the depth image and its camera_info are played, and both are remapped
+    onto the topics the config names. TF and joint states are deliberately NOT
+    replayed: they must come from the robot that is actually running, or the
+    mask would be built for one pose while the arm is in another — which is not
+    a degraded measurement, it is a wrong one, and it is wrong in the direction
+    of thinking the workspace is emptier than it is.
+
+    ``--loop`` because the point is to keep the depth stream alive for as long
+    as the stack runs, not to reproduce one recording end to end.
+    """
+    if not bag:
+        return None
+    with open(cfg_path) as f:
+        topics = (yaml.safe_load(f) or {}).get('topics', {}) or {}
+    depth = topics.get('depth_image', '/camera/camera/depth/image_rect_raw')
+    info = topics.get('depth_camera_info', '/camera/camera/depth/camera_info')
+    # The bags in this repo carry the ALIGNED depth stream under its own name.
+    src_depth = '/camera/camera/aligned_depth_to_color/image_raw'
+    src_info = '/camera/camera/aligned_depth_to_color/camera_info'
+    return ExecuteProcess(
+        cmd=['ros2', 'bag', 'play', bag, '--loop',
+             '--topics', src_depth, src_info,
+             '--remap', f'{src_depth}:={depth}', f'{src_info}:={info}'],
+        output='screen')
 
 
 def _launch_all(context):
@@ -351,7 +435,20 @@ def _launch_all(context):
 
     # ── [Distance estimation] real_time_distance ──────────────────────────────
     if start_rtd:
-        rtd_config = p['robot_config_yaml']
+        # The tracking / sim switches live in the ROBOT CONFIG (one file for
+        # every perception knob), but a launch argument has to be able to flip
+        # them without editing an installed YAML. So when either is asked for,
+        # the config is rewritten ONCE into the log directory with those two
+        # keys overridden and the node is pointed at the copy.
+        #
+        # A copy rather than an in-place edit, and only when a switch is
+        # actually set: the shipped file must stay the thing that describes the
+        # default behaviour, and `git diff` after a launch must be empty.
+        rtd_config = _rtd_config_with_overrides(
+            p['robot_config_yaml'],
+            tracking=_as_bool(p['obstacle_tracking']),
+            sim_obstacle=_as_bool(p['sim_obstacle']),
+        )
         real_time_distance_node = Node(
             package='franka_experiments',
             executable='real_time_distance',
@@ -364,6 +461,14 @@ def _launch_all(context):
             }],
         )
         actions.append(TimerAction(period=rtd_delay, actions=[real_time_distance_node]))
+        bag_player = _depth_bag_player(p['depth_bag'], p['robot_config_yaml'])
+        if bag_player is not None:
+            # After the node, so no frame is published into the void while
+            # trimesh is still loading.
+            actions.append(TimerAction(period=rtd_delay + 3.0,
+                                       actions=[bag_player]))
+            actions.append(LogInfo(msg=['[torque_stack] [Perception]      '
+                                        'DEPTH FROM BAG: ', p['depth_bag']]))
         actions.append(LogInfo(msg=['[torque_stack] [Distance est.]   real_time_distance ENABLED '
                                     '(delay=', str(rtd_delay), 's)']))
     else:
@@ -378,6 +483,14 @@ def _launch_all(context):
         name='cbf_safety_filter',
         output='screen',
         additional_env=_SINGLE_THREAD_BLAS,
+        # These three are ordinary ROS parameters, so they override the YAML
+        # without rewriting it — declare_from_spec reads the parameter back
+        # after declaring it with the YAML value as the default.
+        parameters=[{
+            'obstacle_velocity_source': p['obstacle_velocity_source'],
+            'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
+            'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
+        }],
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
     # acceleration) and converts it to torque — no remap needed.
@@ -564,6 +677,52 @@ def generate_launch_description():
                 ]),
                 description='Path to fr3_complete.yaml (robot/mesh/distance config '
                             'loaded by real_time_distance)'),
+            # ── Obstacle tracking / prediction / evasion ──────────
+            # One switch each, all defaulting to today's behaviour, so a run
+            # that names none of them is byte-for-byte the pre-tracker stack.
+            DeclareLaunchArgument(
+                'obstacle_tracking',
+                default_value=str(_DEFAULTS.get('obstacle_tracking', 'false')),
+                description='Cluster + Kalman-track obstacles in '
+                            'real_time_distance and publish their 3D velocity '
+                            'on LinkDistance. On its own it only adds fields '
+                            'nobody reads - pair it with '
+                            'obstacle_velocity_source:=tracker'),
+            DeclareLaunchArgument(
+                'obstacle_velocity_source',
+                default_value=str(_DEFAULTS.get('obstacle_velocity_source',
+                                                'residual')),
+                description='Where the CBF v_obs comes from: residual (the '
+                            'scalar a^T qdot - ddot, EMA at 0.7) or tracker '
+                            '(n_hat^T v from the Kalman track). tracker '
+                            'REQUIRES obstacle_tracking:=true'),
+            DeclareLaunchArgument(
+                'lateral_evasion',
+                default_value=str(_DEFAULTS.get('lateral_evasion', 'false')),
+                description='Step SIDEWAYS out of the swept volume when the '
+                            'acceleration box says the closing rate cannot be '
+                            'nulled before the gap reaches zero. Needs a '
+                            'tracked velocity to have a direction at all'),
+            DeclareLaunchArgument(
+                'uncertainty_margin',
+                default_value=str(_DEFAULTS.get('uncertainty_margin', 'false')),
+                description='Tighten the barrier by the tracker own admitted '
+                            'velocity uncertainty. Inert without a track'),
+            DeclareLaunchArgument(
+                'sim_obstacle',
+                default_value=str(_DEFAULTS.get('sim_obstacle', 'false')),
+                description='DANGER: render a synthetic sphere into the depth '
+                            'stream so the whole avoidance chain can be '
+                            'exercised end to end. The arm WILL move away from '
+                            'something that is not there - never with a person '
+                            'nearby'),
+            DeclareLaunchArgument(
+                'depth_bag',
+                default_value=str(_DEFAULTS.get('depth_bag', '')),
+                description='Path to a rosbag to replay as the DEPTH SOURCE '
+                            'instead of a live camera (only the depth image and '
+                            'camera_info are played, so TF and joint states '
+                            'still come from the running robot). Empty = off'),
             DeclareLaunchArgument(
                 'torque_command_topic',
                 default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd')),

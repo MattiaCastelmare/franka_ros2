@@ -190,126 +190,9 @@ class JointTrace:
         return self.q[i], self.v[i]
 
 
-# ── Synthetic obstacle injection ─────────────────────────────────────────────
-#
-# WHY THIS IS HERE, AND WHY IT IS NOT CHEATING
-#
-# The four bags in this repo were recorded to exercise the ARM, not the
-# avoidance: their only obstacle pixels are the static room at 2-4 m. Replaying
-# them compares two estimators on a scene where the true obstacle velocity is
-# zero everywhere, which measures noise and nothing else — no approach, no lag,
-# no ground truth.
-#
-# So a sphere with a KNOWN trajectory is rendered into each depth frame before
-# the pipeline sees it. Everything downstream is untouched and real: the same
-# exclusion mask, the same ROI stride, the same depth quantisation, the same
-# clustering, the same association, the same Jacobians from the same recorded
-# joint states. Only the obstacle's existence is synthetic — and because its
-# velocity is known exactly, both estimators can be scored against TRUTH rather
-# than merely against each other.
-#
-# The sphere's FRONT SURFACE is rendered, not a flat disc, because that is what
-# a depth camera returns and because the surface centroid then translates at
-# exactly the sphere's velocity (a flat disc's would too, but its apparent size
-# would not shrink with range, and the cluster's radius feeds the association
-# gate).
-
-
-class InjectedSphere:
-    """A sphere SHUTTLING along a line in CAMERA frame, rendered into depth frames.
-
-    A shuttle (approach, then recede, then approach again) rather than a
-    one-way pass, for two reasons that both matter to the measurement:
-
-    * the true ``v_obs`` is then a SQUARE WAVE, with a genuine sign change twice
-      per period. A one-way pass gives a nearly constant truth, against which
-      any lag measurement is meaningless — a constant signal correlates equally
-      well at every shift. The sign flips are the edges the lag is read from.
-    * the sphere stays in the near field the whole time, so it remains the
-      nearest obstacle for the control points in front of it instead of
-      disappearing for most of each cycle.
-
-    Args:
-        c0: (3,) near end of the shuttle, camera frame [m].
-        vel: (3,) velocity while APPROACHING, camera frame [m/s]. Its direction
-            sets the travel axis and its magnitude the speed; the amplitude
-            comes from ``amplitude``.
-        radius: [m] sphere radius. 0.15 m is a forearm in a sleeve, and — at the
-            shipped ``pixel_step`` of 10 — it is also the smallest object that
-            still lands 30+ samples on the ROI grid at 1.8 m. A 0.08 m sphere
-            gives 8 samples there, below ``min_cluster_points``, so it is
-            invisible to the clusterer: a real limitation of the stride, not of
-            the tracker.
-        amplitude: [m] half-stroke.
-        period: [s] full out-and-back cycle.
-    """
-
-    def __init__(self, c0, vel, radius=0.15, period=2.0, amplitude=0.5):
-        self.c0 = np.asarray(c0, dtype=np.float64)
-        self.vel = np.asarray(vel, dtype=np.float64)
-        self.speed = float(np.linalg.norm(self.vel))
-        self.dir = (self.vel / self.speed if self.speed > 0
-                    else np.array([0.0, 0.0, -1.0]))
-        self.radius = float(radius)
-        self.period = float(period)
-        self.amplitude = float(amplitude)
-        self.t0 = None
-
-    def _phase(self, t):
-        if self.t0 is None:
-            self.t0 = t
-        return ((t - self.t0) % self.period) / self.period
-
-    def centre(self, t):
-        s = self._phase(t)
-        tri = 2.0 * s if s < 0.5 else 2.0 * (1.0 - s)   # 0 -> 1 -> 0
-        return self.c0 + self.dir * (self.amplitude * tri)
-
-    def velocity(self, t):
-        """(3,) camera-frame velocity now — the SIGNED square wave."""
-        v = 2.0 * self.amplitude / self.period
-        return self.dir * (v if self._phase(t) < 0.5 else -v)
-
-    def render(self, depth, t, K):
-        """Paint the sphere's front surface into ``depth`` (uint16, mm). In place.
-
-        Written with ``np.minimum`` so the sphere OCCLUDES what is behind it and
-        is itself occluded by anything in front — the same visibility rule the
-        real sensor obeys, and the reason the robot arm correctly hides it when
-        it passes between the two.
-        """
-        c = self.centre(t)
-        if c[2] <= self.radius:
-            return
-        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-        # Bounding box of the projected sphere, padded by one pixel.
-        ang = self.radius / c[2]
-        du, dv = int(abs(fx) * ang * 1.4) + 2, int(abs(fy) * ang * 1.4) + 2
-        u0 = int(cx + fx * c[0] / c[2])
-        v0 = int(cy + fy * c[1] / c[2])
-        H, W = depth.shape
-        us = np.arange(max(0, u0 - du), min(W, u0 + du + 1))
-        vs = np.arange(max(0, v0 - dv), min(H, v0 + dv + 1))
-        if us.size == 0 or vs.size == 0:
-            return
-        uu, vv = np.meshgrid(us, vs)
-        d = np.stack([(uu - cx) / fx, (vv - cy) / fy, np.ones_like(uu, float)], -1)
-        # |s*d - c|^2 = r^2  ->  (d.d)s^2 - 2(d.c)s + (c.c - r^2) = 0
-        A = (d * d).sum(-1)
-        B = -2.0 * (d @ c)
-        C = float(c @ c) - self.radius ** 2
-        disc = B * B - 4.0 * A * C
-        hit = disc >= 0.0
-        if not hit.any():
-            return
-        s = np.zeros_like(A)
-        s[hit] = (-B[hit] - np.sqrt(disc[hit])) / (2.0 * A[hit])
-        z_mm = (s * 1000.0).astype(depth.dtype)
-        patch = depth[vs[0]:vs[-1] + 1, us[0]:us[-1] + 1]
-        # depth==0 means "no return"; the sphere must overwrite those, and must
-        # otherwise win only where it is nearer.
-        take = hit & (s > 0) & ((patch == 0) | (z_mm < patch))
-        patch[take] = z_mm[take]
+# The injected sphere lives in utils/obstacle_sim so the live pipeline can
+# render the SAME obstacle — see that module for why it exists at all.
+from franka_experiments.utils.obstacle_sim import InjectedSphere
 
 
 # ── The two estimators ───────────────────────────────────────────────────────
@@ -417,6 +300,7 @@ def replay(args):
     from franka_experiments.utils.kinematics import CBFKinematics, build_urdf_no_hand
     from franka_experiments.utils.mask_builder import MaskBuilder
     from franka_experiments.utils.obstacle_track_pipeline import ObstacleTrackPipeline
+    from franka_experiments.utils.self_detection import SelfDetectionMonitor
     from franka_experiments.utils.tf_manager import TFManager
 
     log = _Log(args.verbose)
@@ -453,9 +337,16 @@ def replay(args):
     pipeline = ObstacleTrackPipeline(
         voxel_m=args.voxel_m, min_cluster_points=args.min_cluster_points,
         max_cluster_radius=args.max_cluster_radius,
+        depth_jump=args.depth_jump,
         contains_tol=args.contains_tol, q_jerk=args.q_jerk,
         sigma_meas=args.sigma_meas)
     residual = make_residual_estimator(args.alpha, args.vmax)
+    # Runs unconditionally: on a bag whose extrinsics no longer match the
+    # recording, a large share of what the pipeline calls 'obstacle' is the
+    # arm itself, and every number below would be about the robot rather
+    # than about an obstacle. Better to measure that than to discover it
+    # afterwards.
+    self_detect = SelfDetectionMonitor()
 
     from cv_bridge import CvBridge
     bridge = CvBridge()
@@ -610,7 +501,15 @@ def replay(args):
                 on_sphere = bool(np.linalg.norm(obs_cam - sphere.centre(t_cap))
                                  < sphere.radius + 0.05)
 
+            is_self = self_detect.update(
+                lbl, np.asarray(r.point, dtype=np.float64),
+                np.asarray(r.closest_obstacle_point, dtype=np.float64))
+
             s = series[lbl]
+            s['self'].append(1.0 if is_self else 0.0)
+            for _k, _v in (('pr', r.point), ('ph', r.closest_obstacle_point)):
+                for _a in range(3):
+                    s[f'{_k}{_a}'].append(float(np.asarray(_v)[_a]))
             s['v_true'].append(v_true)
             s['on_sphere'].append(1.0 if on_sphere else 0.0)
             s['t'].append(t_cap)
@@ -628,6 +527,9 @@ def replay(args):
     print(f'\n{n_frames} depth messages, {n_used} processed, '
           f'{n_no_tf} skipped for missing TF, '
           f'{n_tracked} control-point samples matched to a track')
+    rep = self_detect.report()
+    if rep:
+        print('\n*** ' + rep + ' ***')
     return series
 
 
@@ -641,13 +543,14 @@ def report(series, out_dir, dt_nominal, args_d_gate=0.6):
     print('=' * 96)
     hdr = (f'{"cp":<14}{"N":>6}{"tracked%":>10}{"RMS diff":>10}'
            f'{"RMS diff+":>11}{"lag ms":>9}{"peak r":>8}'
-           f'{"noise res":>11}{"noise trk":>11}{"N static":>9}')
+           f'{"noise res":>11}{"noise trk":>11}{"N static":>9}{"SELF%":>7}')
     print(hdr)
     print('-' * 96)
 
     for lbl in sorted(series):
         s = {k: np.asarray(v, dtype=np.float64) for k, v in series[lbl].items()}
         s.setdefault('on_sphere', np.zeros_like(s['t']))
+        s.setdefault('self', np.zeros_like(s['t']))
         n = s['t'].size
         if n < 30:
             continue
@@ -672,7 +575,8 @@ def report(series, out_dir, dt_nominal, args_d_gate=0.6):
 
         print(f'{lbl:<14}{n:>6}{100 * frac:>9.1f}%{rms(diff):>10.3f}'
               f'{rms(pos):>11.3f}{1000 * lag:>9.1f}{r:>8.2f}'
-              f'{nf_res:>11.4f}{nf_trk:>11.4f}{int(stat.sum()):>9}')
+              f'{nf_res:>11.4f}{nf_trk:>11.4f}{int(stat.sum()):>9}'
+              f'{100 * float(s["self"].mean()):>6.0f}%')
         rows.append((lbl, s, stat))
 
     # ── Against ground truth, when an obstacle was injected ──────────────
@@ -792,6 +696,8 @@ def main():
     # Estimator (b)
     p.add_argument('--voxel-m', type=float, default=0.02)
     p.add_argument('--min-cluster-points', type=int, default=10)
+    p.add_argument('--depth-jump', type=float, default=0.10,
+                   help='[m] depth discontinuity that separates two objects')
     p.add_argument('--max-cluster-radius', type=float, default=None,
                    help='[m] drop clusters bigger than this (scene guard); '
                         'omit for no limit')

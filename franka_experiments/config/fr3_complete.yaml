@@ -184,3 +184,247 @@ booleans:
   use_segment_distance: false # true = capsule-segment mode, false = control-point mode
   visual_ROI: true            # draw ROI bounding box on visualization
   publish_overlay_image: false
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Obstacle tracking (real_time_distance)
+# ═══════════════════════════════════════════════════════════════════════════
+# Clusters the obstacle pixels this node has ALREADY selected, tracks each
+# cluster with a constant-acceleration Kalman filter, and stamps the resulting
+# 3D velocity (with covariance) onto every LinkDistance it publishes.
+#
+# WHY IT EXISTS. Without it the CBF's only estimate of obstacle motion is the
+# scalar residual a^T qdot - ddot: no identity, so it restarts whenever n_hat
+# turns; per control point, so 11 control points looking at one person pool no
+# evidence; and it differences an argmin that hops between objects, where a hop
+# is a discontinuity and not a velocity. The 0.7 EMA that makes it usable costs
+# ~75 ms of lag, which at 1 m/s is 7.5 cm against a d_safe of 0.15.
+#
+# OFF by default. With it off the four track fields are the all-zero "no track"
+# state every consumer already treats as "contribute nothing", so the published
+# topic is unchanged for anyone who does not ask for it. Turn it on TOGETHER
+# with obstacle_velocity_source: tracker in fr3_control.yaml — on its own it
+# only adds fields nobody reads.
+tracking:
+  enabled: false
+
+  # [m] voxel downsample before the centroid. Below anything that has to be
+  # tracked (a forearm is ~8 cm across) and above the depth noise of a D405/D455
+  # at working range, so it averages sensor noise without averaging away the
+  # object. It is not a speed trick: pixel density falls as 1/Z^2, so a raw
+  # point mean is pulled toward whatever part of the object is nearest the
+  # camera — and that bias MOVES with range, which a differentiator reads as a
+  # fabricated velocity.
+  cluster_voxel_m: 0.02
+
+  # Blobs with fewer raw obstacle pixels than this are dropped. This is the
+  # speckle filter: an isolated depth artefact is a handful of pixels, and
+  # promoting one to a cluster eventually gives the barrier a velocity measured
+  # on noise. NOTE it interacts with distance.pixel_step (10): a 0.15 m object
+  # at 1.5 m lands only ~10-25 samples on that grid, so raising pixel_step
+  # without lowering this makes small obstacles invisible to the tracker.
+  cluster_min_points: 10
+
+  # [m] DEPTH DISCONTINUITY that separates two objects. THE parameter that
+  # keeps a foreground obstacle from fusing with the background it is
+  # silhouetted against.
+  #
+  # Connected components on the image alone is wrong here, and wrong in the
+  # COMMON case: the image is a projection, so two pixels can be neighbours on
+  # the sensor while being metres apart in the world. A hand at 1.4 m in front
+  # of a wall at 2.5 m touches that wall in the image along its whole
+  # silhouette; 8-connectivity fuses them, and the resulting centroid sits in
+  # the empty air between them. Measured twice: the whole room came back as one
+  # 2.2-2.6 m cluster on rosbag/arm_complex, and in the first end-to-end run
+  # with a synthetic obstacle the distance engine reported the sphere correctly
+  # at 1.455 m while the clusterer produced ZERO clusters -- absorbed into the
+  # background and then dropped by the size guard below.
+  #
+  # 0.10 m sits above the depth noise of a D405/D455 at working range and above
+  # the depth step between two ROI-grid samples on a slanted surface (at
+  # pixel_step 10 and 1.5 m one grid step is ~4 cm laterally, so a 60-degree
+  # slant gives ~7 cm), and far below the gap between a person and the wall
+  # behind them. Raise it and the background fuses back on; lower it and a
+  # steeply slanted limb fragments into depth slices.
+  cluster_depth_jump_m: 0.10
+
+  # [m] SCENE GUARD — drop clusters bigger than this. 0 or absent = no limit.
+  #
+  # A depth camera pointed at a room returns the room: with max_depth_m = 4 the
+  # far wall, the table and the floor are all obstacle pixels, and connected
+  # components is 2D and knows nothing about depth, so it links them into one
+  # blob spanning the whole frustum. Measured on rosbag/arm_complex: a single
+  # cluster of radius 2.2-2.6 m whose centroid alternates between z = 2.28 and
+  # z = 2.57 m as the far patch connects and disconnects across frames. A 0.29 m
+  # step at 30 Hz differentiates to metres per second, and it gave the tracked
+  # estimate a 0.198 m/s noise floor on a scene where nothing was moving.
+  #
+  # 0.6 m is "wider than a person is not a person". Dropping such a cluster is
+  # the SAFE failure: no cluster -> no track -> zero defaults -> the barrier
+  # falls back to exactly the behaviour it has today.
+  cluster_max_radius_m: 0.6
+
+  # Bounds the association cost, which is O(tracks x clusters). A degenerate
+  # frame (the exclusion mask failing, the whole scene reading as obstacle)
+  # would otherwise produce hundreds of both.
+  max_clusters: 16
+  max_tracks: 12
+
+  # [m] slack added to a cluster's radius when deciding whether a control
+  # point's closest_point_human belongs to it. Needed because the radius is
+  # measured over VOXEL CENTROIDS while the query is a RAW surface point, so a
+  # legitimate point on the object's rim sits slightly outside the sphere.
+  cluster_contains_tol_m: 0.05
+
+  # [m^2/s^5] jerk PSD, and [m] centroid measurement noise. Only their RATIO
+  # matters: together they set the filter's bandwidth. Measured on a synthetic
+  # reach (rest -> 1 m/s in 0.2 s, 30 Hz, 1 cm noise):
+  #     q_jerk    spurious speed on a STATIC target    lag to 90% of the reach
+  #       0.2          0.059 / 0.122 m/s                     153 ms
+  #       2.0          0.098 / 0.241 m/s                      87 ms
+  #      20.0          0.165 / 0.423 m/s                      53 ms
+  # 2.0 sits deliberately on the RESPONSIVE side of the knee, because the
+  # consumer takes max(n_hat^T v, 0): noise can only ever TIGHTEN a barrier (and
+  # only its half-normal mean, ~0.4 sigma, survives the clamp) while lag
+  # UNDER-estimates a real approach. Lower it if a fast reversal makes the arm
+  # overshoot.
+  q_jerk: 2.0
+  sigma_meas_m: 0.01
+
+  # Association gate, in units of the filter's OWN uncertainty (chi^2 with 3
+  # DoF: 3.0 admits ~97% of true associations). Mahalanobis and not Euclidean
+  # because a coasting track's covariance grows, so its gate opens by itself and
+  # a re-appearing obstacle is re-associated instead of spawning a duplicate id.
+  # A fixed radius cannot do both jobs: sized for the occlusion case it would
+  # swap ids between two close obstacles every frame.
+  gate_mahalanobis: 3.0
+
+  # [m] hard Euclidean ceiling on top of that gate. The Mahalanobis gate widens
+  # WITHOUT BOUND while a track coasts, and after enough missed frames it would
+  # accept a cluster anywhere in the room. 0.5 m is what a limb covers in the
+  # ~0.17 s a 5-frame coast lasts.
+  gate_max_m: 0.5
+
+  # M-of-N birth. M-of-N rather than M CONSECUTIVE because a real obstacle at
+  # the edge of the depth range flickers, and demanding consecutive hits would
+  # keep restarting a track that is genuinely there — while a one-frame artefact
+  # fails both rules anyway.
+  confirm_hits: 3
+  confirm_window: 5
+
+  # ── Self-detection guard (utils/self_detection.py) ───────────────────────
+  # The distance pipeline defines "obstacle" as "not robot", so the moment the
+  # robot is not fully removed from the depth image, the arm becomes its own
+  # obstacle -- and nothing downstream can tell. It happens for two ordinary
+  # reasons: mask leakage (the dilation is finite and depth is noisy, so a rim
+  # of real robot pixels survives every silhouette edge -- distance.min_thresh
+  # already exists to paper over this), and a stale hand-eye calibration, which
+  # projects the mask in the WRONG PLACE and leaves a whole limb reading as an
+  # obstacle a few centimetres away.
+  #
+  # It matters far more with a tracker than it did with the scalar residual.
+  # The residual partly cancelled it (a rigidly attached "obstacle" has
+  # ddot ~ 0, so v_obs ~ a^T qdot); a TRACK gives the arm's own body a real,
+  # large velocity, which is fed back as v_obs -> the barrier tightens because
+  # the arm is moving -> the arm brakes -> v_obs drops -> it accelerates. The
+  # filter chases itself, and with lateral evasion it would step sideways away
+  # from its own elbow.
+  #
+  # The test is KINEMATIC, not geometric, and that is deliberate: geometry is
+  # exactly what is broken in the calibration case. A point that is part of the
+  # robot moves WITH the robot, so the offset (closest_point_human -
+  # closest_point_robot) stays rigid while the control point sweeps the
+  # workspace. A wrong extrinsic displaces both points by the same transform,
+  # so the offset is displaced too -- but it stays CONSTANT, which is the
+  # property being tested.
+  #
+  # A flagged control point loses its VELOCITY, never its DISTANCE. If the
+  # judgement is wrong the barrier falls back to v_obs = 0, i.e. today's
+  # behaviour; suppressing a distance would delete a barrier instead.
+  self_detection:
+    enabled: true
+    # Frames of history. 20 at 30 Hz is 0.67 s, in which a moving arm covers
+    # far more than motion_min_m.
+    window: 20
+    # [m] how far the control point must have travelled before any judgement is
+    # made. Below it the test is vacuous: a stationary arm next to a stationary
+    # obstacle also has a constant offset, and flagging that would condemn every
+    # genuinely static scene.
+    motion_min_m: 0.08
+    # [m] how much the offset may wander and still count as rigid. Above the
+    # noise of a single argmin pixel (which hops between surface patches frame
+    # to frame) and well below the offset change a real obstacle produces while
+    # the arm sweeps motion_min_m.
+    offset_tol_m: 0.02
+    # Consecutive frames to raise the verdict, and to withdraw it. Withdrawal is
+    # slower on purpose: the fault is persistent by nature (a calibration does
+    # not come and go), so the verdict should be sticky, and a real obstacle
+    # that briefly happens to move with the arm must not clear it in one frame.
+    confirm: 5
+    release: 15
+
+  # ── Calibration drift check (utils/calibration_check.py) ─────────────────
+  # Compares the PROJECTED ROBOT MODEL against the MEASURED DEPTH -- the one
+  # comparison this pipeline never makes, and the one whose failure turns the
+  # arm into its own obstacle with no error reported anywhere. Everything
+  # downstream assumes the mask lands on the robot's actual pixels; if the
+  # extrinsic is stale the mask is subtracted from the wrong place and the arm
+  # is simply not removed.
+  #
+  # IT IS A DRIFT DETECTOR, NOT AN ABSOLUTE VERDICT, and that is measured rather
+  # than assumed. The model side of the subtraction is a point cloud of
+  # sample_points_per_link points, so the "model front surface" at a pixel is
+  # biased FARTHER than the true surface by an amount that depends on the
+  # sampling density. On rosbag/arm_complex, one scene, one extrinsic:
+  #     300 samples/link -> median -0.9 cm, spread 10.2 cm
+  #    3000 samples/link -> median +1.4 cm, spread  9.1 cm
+  #   20000 samples/link -> median +6.0 cm, spread  7.2 cm
+  # -- 7 cm of swing from something that has nothing to do with calibration. The
+  # three successive camera_extrinsics.yaml in this repo's history also all
+  # score within 1 cm of each other on the same bag, so the statistic does not
+  # separate them either.
+  #
+  # What it DOES detect reliably is CHANGE: the sampling bias is identical
+  # between two runs and cancels. So run it right after a calibration you trust,
+  # put the reported number in baseline_m, and a later shift means the geometry
+  # moved -- a camera knocked, a mount loosened, a file that no longer matches
+  # the rig. With baseline_m unset it reports and judges nothing.
+  calibration_check:
+    enabled: true
+    period_s: 10.0        # cost is negligible at this rate
+    baseline_m:           # empty = report only, never warn
+    tolerance_m: 0.03     # [m] drift from baseline that raises the warning
+
+  # Frames a track may coast (predict without measurement) before deletion.
+  # Bounded so an obstacle that has left stops contributing a velocity; long
+  # enough that a hand passing behind the arm keeps its identity.
+  max_missed: 5
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Simulated obstacle (real_time_distance)  --  OFF, and it must stay off
+# ═══════════════════════════════════════════════════════════════════════════
+# Renders a sphere with a known trajectory INTO the depth frame before anything
+# else sees it, so the whole avoidance chain — perception, clustering, tracking,
+# CBF, controller — can be exercised end to end without a person in front of a
+# 7-DoF arm. Only the obstacle's EXISTENCE is synthetic; every stage downstream
+# is the shipped code path.
+#
+# A fake obstacle inside a safety pipeline is exactly the thing that must never
+# be on by accident: the arm WILL move away from something that is not there,
+# and on hardware that is a surprise motion. The node logs a WARNING on every
+# startup where this is on. Turn it off before anyone stands near the robot.
+sim_obstacle:
+  enabled: false
+
+  # Shuttle, not a one-way pass: the obstacle approaches, recedes and repeats,
+  # so the avoidance is exercised repeatedly in one run and the true v_obs has
+  # genuine sign changes rather than being nearly constant.
+  start_cam: [0.0, 0.0, 1.6]     # near end of the stroke, CAMERA frame [m]
+  velocity_cam: [0.0, 0.0, -0.5] # travel direction (magnitude ignored)
+  amplitude_m: 0.5               # half-stroke
+  period_s: 2.0                  # full out-and-back -> 0.5 m/s
+  # [m] 0.15 is a forearm in a sleeve — and, at distance.pixel_step = 10, the
+  # smallest object that still lands enough samples on the ROI grid to clear
+  # tracking.cluster_min_points. A 0.08 m sphere gives ~8 samples at 1.8 m and
+  # is invisible to the clusterer: a real limitation of the stride, not of the
+  # tracker.
+  radius_m: 0.15

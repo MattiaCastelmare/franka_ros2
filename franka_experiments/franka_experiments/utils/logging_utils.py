@@ -238,6 +238,15 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'd_sc={con.d_sc_min:.3f} sigma={rows.diag_sigma:.3f} '
         f'capage={cap_age:.3f} '
         f'vapp={rows.diag_vapp:.3f} hbrake={rows.diag_hbrake:.4f} '
+        # Phase-3 / evasion terms. hunc is the barrier tightening bought by
+        # the tracker's admitted uncertainty; esc is the largest evasion
+        # urgency in [0, 1], where 1.0 means the acceleration box says this
+        # closing rate CANNOT be nulled before the gap reaches zero. Both
+        # read 0.0000/0.00 with their flags off, which is the whole point:
+        # the line says whether a term is doing anything without needing the
+        # config open next to it.
+        f'hunc={getattr(rows, "diag_hunc", 0.0):.4f} '
+        f'esc={getattr(rows, "diag_esc_w", 0.0):.2f} '
         f'w=[{w_txt}] wq=[{wq_txt}] '
         f'retreat={rtr:+.3f}/{rtr_cap:.3f} vlink={spd:+.3f}/{spd_cap:.3f} '
         f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} '

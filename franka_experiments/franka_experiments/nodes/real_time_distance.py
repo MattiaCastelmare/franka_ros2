@@ -6,8 +6,28 @@ Architecture
   TFManager      — 3-level TF fallback + critical-link validation
   MaskBuilder    — always-rebuilt robot mask + exclusion mask + contours
   DistanceEngine — depth-space per-CP distances (Flacco) with conservative LPF
+  ObstacleTrackPipeline — cluster → track → 3D obstacle velocity (OPTIONAL)
   VisFrame       — immutable snapshot for lock-free compute/visualize handoff
   draw_overlay() — pure rendering function (no shared state)
+
+Obstacle tracking (``tracking.enabled``, OFF by default)
+--------------------------------------------------------
+When on, the obstacle pixels this node has ALREADY selected are additionally
+clustered and tracked, and each published ``LinkDistance`` carries the 3D
+velocity (with covariance) of the object its nearest obstacle point belongs to.
+
+It lives HERE, rather than in a node of its own, for one reason that is not
+convenience: the clusters must be built from EXACTLY the pixels the distance
+pass selected — same exclusion mask, same depth-range filter, same ROI stride —
+or the tracker would report velocities for obstacles the barrier never saw. A
+separate node has to either re-derive that selection (and drift from it the
+first time either side is touched) or re-run this node's whole pipeline to
+recover it. Here the point cloud is already in hand.
+
+The fields are APPENDED to the existing message on the existing topic. With
+tracking off they are the documented all-zero "no track" state, which every
+consumer already treats as "contribute nothing", so the published topic is
+unchanged for anyone who does not ask for it.
 
 Thread safety
 -------------
@@ -53,7 +73,12 @@ from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
 from franka_experiments.utils.params import declare_bool, declare_str
 from franka_experiments.utils.logging_utils import PerfTimer
-from franka_experiments.utils.perception_msgs import build_cp_messages
+from franka_experiments.utils.obstacle_sim import InjectedSphere
+from franka_experiments.utils.calibration_check import calibration_residual
+from franka_experiments.utils.self_detection import SelfDetectionMonitor
+from franka_experiments.utils.obstacle_track_pipeline import ObstacleTrackPipeline
+from franka_experiments.utils.perception_msgs import (
+    annotate_track_fields, build_cp_messages)
 from franka_experiments.utils.tf_manager import TFManager
 from franka_experiments.utils.visualization import VisFrame, draw_overlay
 
@@ -149,10 +174,100 @@ class RealTimeDistance(Node):
             mask_cfg=self.mask_cfg,
             logger=self.get_logger(),
         )
+        # ── Obstacle tracking (optional) ──────────────────────────────────
+        # Config lives in the `tracking:` block of the robot config, so every
+        # perception knob is in one file. The export flag is set on the COPY
+        # handed to the engine and only when tracking is on, so with tracking
+        # off the engine stores nothing and costs nothing.
+        trk_cfg = self.config.get('tracking', {}) or {}
+        self.tracking_enabled = bool(trk_cfg.get('enabled', False))
+        self.distance_cfg = dict(self.distance_cfg)
+        self.distance_cfg['export_obstacle_cloud'] = self.tracking_enabled
+
         self.distance_engine = DistanceEngine(
             distance_cfg=self.distance_cfg,
             logger=self.get_logger(),
         )
+
+        # Self-detection guard. Runs whenever tracking does, because it is the
+        # tracker that makes self-detection dangerous rather than merely
+        # annoying: the arm's own body becomes a cluster with a real velocity,
+        # that velocity is fed back as v_obs, the barrier tightens because the
+        # arm is moving, the arm brakes, v_obs drops, and the filter chases
+        # itself. See utils/self_detection.py.
+        self.self_detect = None
+        self.track_pipeline = None
+        if self.tracking_enabled:
+            sd = trk_cfg.get('self_detection', {}) or {}
+            if sd.get('enabled', True):
+                self.self_detect = SelfDetectionMonitor(
+                    window=int(sd.get('window', 20)),
+                    motion_min_m=float(sd.get('motion_min_m', 0.08)),
+                    offset_tol_m=float(sd.get('offset_tol_m', 0.02)),
+                    confirm=int(sd.get('confirm', 5)),
+                    release=int(sd.get('release', 15)))
+            self.track_pipeline = ObstacleTrackPipeline(
+                voxel_m=float(trk_cfg.get('cluster_voxel_m', 0.02)),
+                min_cluster_points=int(trk_cfg.get('cluster_min_points', 10)),
+                max_clusters=int(trk_cfg.get('max_clusters', 16)),
+                max_cluster_radius=(float(trk_cfg['cluster_max_radius_m'])
+                                    if trk_cfg.get('cluster_max_radius_m')
+                                    else None),
+                depth_jump=float(trk_cfg.get('cluster_depth_jump_m', 0.10)),
+                contains_tol=float(trk_cfg.get('cluster_contains_tol_m', 0.05)),
+                q_jerk=float(trk_cfg.get('q_jerk', 2.0)),
+                sigma_meas=float(trk_cfg.get('sigma_meas_m', 0.01)),
+                gate_mahalanobis=float(trk_cfg.get('gate_mahalanobis', 3.0)),
+                gate_max_m=float(trk_cfg.get('gate_max_m', 0.5)),
+                confirm_hits=int(trk_cfg.get('confirm_hits', 3)),
+                confirm_window=int(trk_cfg.get('confirm_window', 5)),
+                max_missed=int(trk_cfg.get('max_missed', 5)),
+                max_tracks=int(trk_cfg.get('max_tracks', 12)),
+            )
+
+        # ── Calibration drift check (utils/calibration_check) ─────────────
+        # Runs at most once every `period_s`, so it is free. It compares the
+        # projected robot model against the measured depth — the one comparison
+        # this pipeline never makes, and the one whose failure turns the arm
+        # into its own obstacle with no error anywhere.
+        #
+        # It reports a NUMBER, and only judges it when a baseline is configured:
+        # the absolute value carries several centimetres of mesh-sampling bias
+        # (measured, see the module docstring), so judging it against zero would
+        # fire on a good calibration.
+        cal_cfg = (self.config.get('tracking', {}) or {}).get(
+            'calibration_check', {}) or {}
+        self._cal_enabled = bool(cal_cfg.get('enabled', True))
+        self._cal_period = float(cal_cfg.get('period_s', 10.0))
+        self._cal_baseline = cal_cfg.get('baseline_m')
+        self._cal_tol = float(cal_cfg.get('tolerance_m', 0.03))
+        self._cal_next = 0.0
+        self._link_samples = link_mesh_samples
+
+        # ── Simulated obstacle (utils/obstacle_sim) ───────────────────────
+        # Renders a sphere with a known trajectory INTO the depth frame before
+        # anything else sees it, so the full avoidance chain can be exercised
+        # end to end without a person in front of the arm.
+        #
+        # A fake obstacle inside a safety pipeline is exactly the thing that
+        # must never be on by accident — the arm WILL move away from something
+        # that is not there. Hence: off by default, and a loud warning on every
+        # startup where it is on.
+        sim_cfg = self.config.get('sim_obstacle', {}) or {}
+        self.sim_sphere = None
+        if bool(sim_cfg.get('enabled', False)):
+            self.sim_sphere = InjectedSphere(
+                c0=sim_cfg.get('start_cam', [0.0, 0.0, 1.6]),
+                vel=sim_cfg.get('velocity_cam', [0.0, 0.0, -0.5]),
+                radius=float(sim_cfg.get('radius_m', 0.15)),
+                period=float(sim_cfg.get('period_s', 2.0)),
+                amplitude=float(sim_cfg.get('amplitude_m', 0.5)),
+            )
+            self.get_logger().warn(
+                'SIMULATED OBSTACLE ENABLED — a synthetic sphere is being '
+                'rendered into the depth stream. The arm will react to an '
+                'object that is not there. Set sim_obstacle.enabled=false '
+                'before running with a person nearby.')
 
         self.roi_bounds: Optional[tuple] = None
 
@@ -196,7 +311,9 @@ class RealTimeDistance(Node):
         self.get_logger().info(
             f'RealTimeDistance ready — '
             f'mode=control_point  '
-            f'viz={self.enable_visualization}  ee_link={self.ee_link}')
+            f'viz={self.enable_visualization}  ee_link={self.ee_link}  '
+            f'tracking={self.tracking_enabled}  '
+            f'sim_obstacle={self.sim_sphere is not None}')
 
         self._compute_thread = threading.Thread(
             target=self._compute_loop, name='rtd_compute', daemon=True)
@@ -276,6 +393,15 @@ class RealTimeDistance(Node):
         depth, depth_msg = frame
         stamp = depth_msg.header.stamp
 
+        # Simulated obstacle FIRST, so every stage below — the exclusion mask,
+        # the depth-range filter, the ROI stride, the distances, the clusters —
+        # sees it exactly as it would see a real one. Copy rather than mutate:
+        # the buffer belongs to cv_bridge and the visualiser reads it later.
+        if self.sim_sphere is not None and self.K is not None:
+            depth = depth.copy()
+            self.sim_sphere.render(
+                depth, stamp.sec + stamp.nanosec * 1e-9, self.K)
+
         # ── Depth resolution guard ────────────────────────────────────────
         if self._last_depth_shape != depth.shape:
             self._last_depth_shape = depth.shape
@@ -283,6 +409,13 @@ class RealTimeDistance(Node):
             self.distance_engine.invalidate_grid_cache()
             self.distance_engine.reset_lpf()
             self.roi_bounds = None
+            if self.self_detect is not None:
+                self.self_detect.reset()
+            if self.track_pipeline is not None:
+                # Every track's position is in metres, but its ASSOCIATION was
+                # built from a pixel grid that just changed shape. Keeping them
+                # would carry one geometry's identities into another's.
+                self.track_pipeline.reset()
 
         H, W   = depth.shape
         step   = int(self.distance_cfg['pixel_step'])
@@ -337,6 +470,25 @@ class RealTimeDistance(Node):
             self._publish_per_link_heartbeat(stamp)
             return
 
+        self._check_calibration(depth, transforms)
+
+        # ── Cluster + track the SAME obstacle pixels the distances used ────
+        # Fails soft on purpose: the distances are the primary safety signal and
+        # must go out even if tracking blows up. A consumer that receives
+        # distances with no track falls back to the residual estimator; one that
+        # receives nothing brakes.
+        if self.track_pipeline is not None:
+            try:
+                with self._perf('track'):
+                    self.track_pipeline.update(
+                        self.distance_engine.last_obstacle_cloud,
+                        self.R_base, self.t_base,
+                        stamp=stamp.sec + stamp.nanosec * 1e-9)
+            except Exception as exc:
+                self.get_logger().error(
+                    f'obstacle tracking skipped this frame: {exc}',
+                    throttle_duration_sec=2.0)
+
         valid = [
             r for r in cp_results
             if np.isfinite(r.distance)
@@ -361,9 +513,13 @@ class RealTimeDistance(Node):
 
         # ── Throttled log ─────────────────────────────────────────────────
         if self._tlog_dist.due(now):
+            trk = (f'  | {self.track_pipeline.describe()}'
+                   if self.track_pipeline is not None else '')
+            if self.self_detect is not None and self.self_detect.flagged:
+                trk += f' SELF={len(self.self_detect.flagged)}'
             self._tlog_dist.info(
                 f'dist={min_dist:.3f} m  Z={closest_Z:.3f} m  '
-                f'pix={closest_uv_obs}  | {self._perf.summary()}')
+                f'pix={closest_uv_obs}  | {self._perf.summary()}{trk}')
 
         # ── Publish ───────────────────────────────────────────────────────
         multi_msg, mld_msg = build_cp_messages(
@@ -376,6 +532,20 @@ class RealTimeDistance(Node):
             fallback=fallback_distance,
             zones=self.zones,
         )
+        # Track fields onto the message that is about to go out. Same topic,
+        # same entries, same order — only the four appended fields are written,
+        # and only for control points whose nearest obstacle point falls inside
+        # a CONFIRMED track. Everything else keeps the all-zero "no track"
+        # defaults the consumer already treats as "contribute nothing".
+        if self.track_pipeline is not None:
+            try:
+                annotate_track_fields(mld_msg, self.track_pipeline,
+                                      skip_keys=self._self_detected(cp_results))
+            except Exception as exc:
+                self.get_logger().error(
+                    f'track annotation skipped this frame: {exc}',
+                    throttle_duration_sec=2.0)
+
         self.multi_dist_pub.publish(multi_msg)
         self.per_link_dist_pub.publish(mld_msg)
         self._hb_active = False   # re-arm the heartbeat transition log
@@ -398,6 +568,72 @@ class RealTimeDistance(Node):
                 visual_exclusion_mask=self.visual_robot_exclusion_mask,
                 visualize_only_raw_video=self.visualize_only_raw_video,
             )
+
+    def _check_calibration(self, depth, transforms) -> None:
+        """Throttled model-vs-measurement comparison. Never raises, never blocks.
+
+        The mesh samples are transformed into base frame here rather than being
+        cached, because they move with the arm — but only ``period_s`` apart, so
+        the cost is a few thousand rotations every ten seconds.
+        """
+        if not self._cal_enabled or self.K is None:
+            return
+        now = time.monotonic()
+        if now < self._cal_next:
+            return
+        self._cal_next = now + max(1.0, self._cal_period)
+        try:
+            base_pts = {n: (transforms[n][0] @ p.T).T + transforms[n][1]
+                        for n, p in self._link_samples.items() if n in transforms}
+            if not base_pts:
+                return
+            res = calibration_residual(
+                base_pts, self.R_base, self.t_base, self.K,
+                depth.astype(np.float64) * 0.001,
+                min_depth=self.distance_engine.min_depth,
+                max_depth=self.distance_engine.max_depth)
+            txt = res.describe(self._cal_baseline, self._cal_tol)
+            if res.is_suspicious(self._cal_baseline, self._cal_tol):
+                self.get_logger().warn(txt)
+            else:
+                self.get_logger().info(txt)
+        except Exception as exc:
+            self.get_logger().error(f'calibration check skipped: {exc}',
+                                    throttle_duration_sec=30.0)
+
+    def _self_detected(self, cp_results) -> set:
+        """Control-point labels whose "obstacle" is moving with the arm.
+
+        Keyed ``link#k`` with k counting occurrences of that link in ARRIVAL
+        order — the same convention ``build_cp_messages`` publishes in and
+        ``cbf_safety_filter`` labels rows with, so one key names one control
+        point everywhere.
+
+        Fails soft: on any error it returns the empty set, i.e. no suppression,
+        which is the pre-existing behaviour.
+        """
+        if self.self_detect is None:
+            return set()
+        try:
+            seen: dict = {}
+            for r in cp_results:
+                if r.closest_obstacle_point is None or r.point is None:
+                    continue
+                k = seen.get(r.end_link, 0)
+                seen[r.end_link] = k + 1
+                self.self_detect.update(f'{r.end_link}#{k}', r.point,
+                                        r.closest_obstacle_point)
+            msg = self.self_detect.report()
+            if msg:
+                # Throttled but NOT rate-limited to invisibility: this is a
+                # configuration fault, and the run it is silently corrupting can
+                # be hours long.
+                self.get_logger().warn(msg, throttle_duration_sec=10.0)
+            return self.self_detect.flagged
+        except Exception as exc:
+            self.get_logger().error(f'self-detection check skipped: {exc}',
+                                    throttle_duration_sec=5.0)
+            return set()
 
     # ── Visualisation ─────────────────────────────────────────────────────────
 

@@ -1,11 +1,12 @@
 """End-to-end pipeline: a synthetic depth sequence → tracked velocity on every
 control point of a MultiLinkDistance.
 
-Launch-free by construction. The node itself is a shell around
-``ObstacleTrackPipeline`` and the free function ``annotate_links``; both are
-driven here directly, so the whole decision chain — cluster, associate, track,
-match a control point to a track, write the message fields — is exercised
-without a camera, a clock, TF or a running executor.
+Launch-free by construction. ``real_time_distance`` hosts the tracker but owns
+none of its logic: that is ``ObstacleTrackPipeline`` plus the free function
+``perception_msgs.annotate_track_fields``, and both are driven here directly, so
+the whole decision chain — cluster, associate, track, match a control point to a
+track, write the message fields — is exercised without a camera, a clock, TF or
+a running executor.
 
 The sequence is a blob approaching the robot at a known constant velocity, so
 the assertions are against a number that is known exactly rather than against
@@ -204,7 +205,8 @@ def _mld(points_base, valid=True):
 
 
 def test_annotate_links_fills_the_track_fields_of_a_matched_entry():
-    from franka_experiments.nodes.obstacle_tracker_node import annotate_links
+    from franka_experiments.utils.perception_msgs import (
+        annotate_track_fields as annotate_links)
 
     pipe, centres = _approach()
     msg = _mld([_to_base(centres[-1])])
@@ -218,7 +220,8 @@ def test_annotate_links_fills_the_track_fields_of_a_matched_entry():
 
 
 def test_annotate_links_leaves_an_unmatched_entry_at_the_safe_defaults():
-    from franka_experiments.nodes.obstacle_tracker_node import annotate_links
+    from franka_experiments.utils.perception_msgs import (
+        annotate_track_fields as annotate_links)
 
     pipe, _ = _approach()
     msg = _mld([np.array([-5.0, -5.0, -5.0])])
@@ -231,7 +234,8 @@ def test_annotate_links_leaves_an_unmatched_entry_at_the_safe_defaults():
 def test_annotate_links_skips_invalid_entries():
     """An invalid entry has no meaningful closest_point_human; annotating it
     would attach a velocity to a point that was never measured."""
-    from franka_experiments.nodes.obstacle_tracker_node import annotate_links
+    from franka_experiments.utils.perception_msgs import (
+        annotate_track_fields as annotate_links)
 
     pipe, centres = _approach()
     msg = _mld([_to_base(centres[-1])], valid=False)
@@ -243,7 +247,8 @@ def test_annotation_never_touches_any_pre_existing_field():
     """The node is a PASS-THROUGH with annotation. If it could change a
     distance, a direction or a validity flag it would be inside the safety path,
     which nothing before step 8 is allowed to be."""
-    from franka_experiments.nodes.obstacle_tracker_node import annotate_links
+    from franka_experiments.utils.perception_msgs import (
+        annotate_track_fields as annotate_links)
 
     pipe, centres = _approach()
     msg = _mld([_to_base(centres[-1])])
