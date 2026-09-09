@@ -13,6 +13,24 @@ def generate_launch_description():
     bag_path = LaunchConfiguration('bag_path')
     rate = LaunchConfiguration('rate')
 
+    base_alias_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='fr3_link0_to_hand_base_tf',
+        output='log',
+        arguments=[
+            '--x', '0',
+            '--y', '0',
+            '--z', '0',
+            '--qx', '0',
+            '--qy', '0',
+            '--qz', '0',
+            '--qw', '1',
+            '--frame-id', 'fr3_link0',
+            '--child-frame-id', 'base',
+        ],
+    )
+
     rviz_config = PathJoinSubstitution([
         FindPackageShare('franka_experiments'),
         'config',
@@ -40,6 +58,16 @@ def generate_launch_description():
         package='franka_experiments',
         executable='hand_state_estimator',
         output='screen',
+    )
+
+    handover_distance = Node(
+        package='franka_experiments',
+        executable='distance_handover_estimator',
+        name='distance_handover_estimator',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+        }],
     )
 
     compare_visualizer = Node(
@@ -83,7 +111,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'bag_path',
-            default_value='/ros2_ws/rosbags/datasets-001/arm_repeated', 
+            default_value='/ros2_ws/rosbags/handratacker_objecy', 
             # or  /ros2_ws/rosbags/handratacker_objecy /ros2_ws/rosbags/datasets-001/handtracker_poses
             # /ros2_ws/rosbags/datasets-001/arm_complex /ros2_ws/rosbags/datasets-001/arm_repeated
         ),
@@ -93,10 +121,12 @@ def generate_launch_description():
             default_value='1.0',
         ),
 
+        base_alias_tf,
         tracker,
         kalman,
         estimator,
         compare_visualizer,
+        handover_distance,
         logger,
         rviz,
 

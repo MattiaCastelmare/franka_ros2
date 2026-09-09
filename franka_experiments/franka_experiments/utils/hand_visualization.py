@@ -58,8 +58,6 @@ def draw_hand_state_overlay(image, state):
         else 'v = --'
     )
 
-    # Tiny box + one text draw.
-    # No image.copy(), alpha blending, bars or extra data.
     cv2.rectangle(
         image,
         (8, 8),
@@ -81,11 +79,6 @@ def draw_hand_state_overlay(image, state):
 
 def draw_palm_outline(image, hand_landmarks):
     """
-    Optional ultra-light palm outline.
-
-    Zero runtime cost unless human_hand_tracker explicitly
-    calls this function.
-
     Uses only landmarks:
         0  = wrist
         5  = index MCP

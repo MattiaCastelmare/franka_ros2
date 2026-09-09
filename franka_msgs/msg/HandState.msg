@@ -7,6 +7,8 @@ uint8 filter_state
 geometry_msgs/Point palm_position
 geometry_msgs/Vector3 palm_velocity
 geometry_msgs/Vector3 palm_normal
+geometry_msgs/Vector3 palm_longitudinal
+geometry_msgs/Vector3 palm_position_variance
 
 float32 palm_speed
 float32 tracking_confidence

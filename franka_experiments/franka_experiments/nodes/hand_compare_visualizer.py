@@ -7,7 +7,11 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from franka_msgs.msg import HandState, HandTrackingFiltered
+from franka_msgs.msg import (
+    HandState,
+    HandTrackingFiltered,
+    HandoverDistance,
+)
 from message_filters import Subscriber, TimeSynchronizer
 from rclpy.node import Node
 from rclpy.qos import (
@@ -22,25 +26,17 @@ from franka_experiments.utils.camera_yaml import load_camera_info_yaml
 
 
 class HandCompareVisualizer(Node):
-    """
-    Visualize the hand tracking output and the hand state on top of the RGB image.
-    """
 
     def __init__(self):
-        super().__init__(
-            'hand_compare_visualizer'
-        )
+        super().__init__('hand_compare_visualizer')
 
         config_dir = (
-            get_package_share_directory(
-                'franka_experiments'
-            )
+            get_package_share_directory('franka_experiments')
             + '/config/'
         )
 
         intrinsics = load_camera_info_yaml(
-            config_dir
-            + 'camera_intrinsics.yaml'
+            config_dir + 'camera_intrinsics.yaml'
         )
 
         if intrinsics is None:
@@ -49,93 +45,55 @@ class HandCompareVisualizer(Node):
             )
 
         k = intrinsics['k']
-
         self.fx = float(k[0])
         self.fy = float(k[4])
         self.cx = float(k[2])
         self.cy = float(k[5])
 
         with open(
-            config_dir
-            + 'camera_extrinsics.yaml',
+            config_dir + 'camera_extrinsics.yaml',
             'r',
             encoding='utf-8',
         ) as file:
-            extrinsics = yaml.safe_load(
-                file
-            )
+            extrinsics = yaml.safe_load(file)
 
-        translation = (
-            extrinsics['translation']
-        )
-
-        rotation = (
-            extrinsics['rotation']
-        )
+        t = extrinsics['translation']
+        q = extrinsics['rotation']
 
         self.t_camera_base = np.array(
-            [
-                translation['x'],
-                translation['y'],
-                translation['z'],
-            ],
+            [t['x'], t['y'], t['z']],
             dtype=float,
         )
 
-        self.r_camera_base = (
-            Rotation.from_quat(
-                [
-                    rotation['x'],
-                    rotation['y'],
-                    rotation['z'],
-                    rotation['w'],
-                ]
-            ).as_matrix()
-        )
-        self.r_base_camera = (
-            self.r_camera_base.T
-        )
+        self.r_camera_base = Rotation.from_quat(
+            [q['x'], q['y'], q['z'], q['w']]
+        ).as_matrix()
+
+        self.r_base_camera = self.r_camera_base.T
 
         self.bridge = CvBridge()
 
-        self.camera_info_subscription = (
-            self.create_subscription(
-                CameraInfo,
-                (
-                    '/camera/camera/'
-                    'aligned_depth_to_color/'
-                    'camera_info'
-                ),
-                self.camera_info_callback,
-                qos_profile_sensor_data,
-            )
+        self.create_subscription(
+            CameraInfo,
+            (
+                '/camera/camera/'
+                'aligned_depth_to_color/'
+                'camera_info'
+            ),
+            self.camera_info_callback,
+            qos_profile_sensor_data,
         )
 
-        # -------------------------------------------------
-        # Output RViz
-        # -------------------------------------------------
-
-        self.publisher = (
-            self.create_publisher(
-                Image,
-                (
-                    '/handover/'
-                    'hand_state_debug_image'
-                ),
-                2,
-            )
+        self.publisher = self.create_publisher(
+            Image,
+            '/handover/hand_state_debug_image',
+            2,
         )
 
         qos = QoSProfile(
             depth=2,
-            reliability=(
-                ReliabilityPolicy.RELIABLE
-            ),
+            reliability=ReliabilityPolicy.RELIABLE,
         )
-
-        # -------------------------------------------------
-        # Synchronized input: RGB + filtered + hand state
-        # -------------------------------------------------
 
         self.image_sub = Subscriber(
             self,
@@ -147,10 +105,7 @@ class HandCompareVisualizer(Node):
         self.filtered_sub = Subscriber(
             self,
             HandTrackingFiltered,
-            (
-                '/handover/'
-                'hand_tracking_filtered'
-            ),
+            '/handover/hand_tracking_filtered',
             qos_profile=qos,
         )
 
@@ -161,194 +116,107 @@ class HandCompareVisualizer(Node):
             qos_profile=qos,
         )
 
+        self.distance_sub = Subscriber(
+            self,
+            HandoverDistance,
+            '/handover/distance',
+            qos_profile=qos,
+        )
+
         self.sync = TimeSynchronizer(
             [
                 self.image_sub,
                 self.filtered_sub,
                 self.state_sub,
+                self.distance_sub,
             ],
-            queue_size=2,
+            queue_size=3,
         )
 
-        self.sync.registerCallback(
-            self.callback
-        )
+        self.sync.registerCallback(self.callback)
 
         self.get_logger().info(
             'Hand compare visualizer node started'
         )
 
-    # -----------------------------------------------------
-    # Camera intrinsics
-    # -----------------------------------------------------
-
-    def camera_info_callback(
-        self,
-        msg,
-    ):
-        """
-        Use the camera info message to update the intrinsics.
-        """
-
-        if (
-            msg.k[0] <= 0.0
-            or
-            msg.k[4] <= 0.0
-        ):
+    def camera_info_callback(self, msg):
+        if msg.k[0] <= 0.0 or msg.k[4] <= 0.0:
             return
 
-        self.fx = float(
-            msg.k[0]
-        )
+        self.fx = float(msg.k[0])
+        self.fy = float(msg.k[4])
+        self.cx = float(msg.k[2])
+        self.cy = float(msg.k[5])
 
-        self.fy = float(
-            msg.k[4]
-        )
-
-        self.cx = float(
-            msg.k[2]
-        )
-
-        self.cy = float(
-            msg.k[5]
-        )
-
-    def project(
-        self,
-        point,
-        width,
-        height,
-    ):
+    def project(self, point, width, height):
         p_base = np.array(
-            [
-                point.x,
-                point.y,
-                point.z,
-            ],
+            [point.x, point.y, point.z],
             dtype=float,
         )
 
-        if not np.all(
-            np.isfinite(
-                p_base
-            )
-        ):
+        if not np.all(np.isfinite(p_base)):
             return None
 
         p_camera = (
             self.r_base_camera
-            @ (
-                p_base
-                - self.t_camera_base
-            )
+            @ (p_base - self.t_camera_base)
         )
 
-        x = float(
-            p_camera[0]
-        )
-
-        y = float(
-            p_camera[1]
-        )
-
-        z = float(
-            p_camera[2]
-        )
+        x, y, z = p_camera
 
         if z <= 1e-6:
             return None
 
-        u = int(
-            round(
-                self.fx
-                * x
-                / z
-                + self.cx
-            )
-        )
-
-        v = int(
-            round(
-                self.fy
-                * y
-                / z
-                + self.cy
-            )
-        )
+        u = int(round(self.fx * x / z + self.cx))
+        v = int(round(self.fy * y / z + self.cy))
 
         if (
             u < 0
-            or
-            u >= width
-            or
-            v < 0
-            or
-            v >= height
+            or u >= width
+            or v < 0
+            or v >= height
         ):
             return None
 
-        return (
-            u,
-            v,
-        )
-
-    # -----------------------------------------------------
-    # Main synchronized callback
-    # -----------------------------------------------------
+        return u, v
 
     def callback(
         self,
         image_msg,
         filtered_msg,
         state_msg,
+        distance_msg,
     ):
-        image = (
-            self.bridge.imgmsg_to_cv2(
-                image_msg,
-                desired_encoding='bgr8',
-            )
+        image = self.bridge.imgmsg_to_cv2(
+            image_msg,
+            desired_encoding='bgr8',
         )
 
-        height, width = (
-            image.shape[:2]
-        )
+        height, width = image.shape[:2]
+
+        # -----------------------------------------
+        # Filtered hand polygon
+        # -----------------------------------------
 
         usable = all(
             state in (
                 HandTrackingFiltered.TRACKING,
                 HandTrackingFiltered.PREDICT_ONLY,
             )
-            for state
-            in filtered_msg.landmark_state
+            for state in filtered_msg.landmark_state
         )
 
         if usable:
-            pixels = []
+            pixels = [
+                self.project(point, width, height)
+                for point in filtered_msg.positions
+            ]
 
-            for point in (
-                filtered_msg.positions
-            ):
-                pixel = self.project(
-                    point,
-                    width,
-                    height,
-                )
-
-                pixels.append(
-                    pixel
-                )
-
-            if all(
-                pixel is not None
-                for pixel in pixels
-            ):
-
+            if all(pixel is not None for pixel in pixels):
                 polygon = np.array(
                     pixels,
                     dtype=np.int32,
-                ).reshape(
-                    (-1, 1, 2)
-                )
+                ).reshape((-1, 1, 2))
 
                 cv2.polylines(
                     image,
@@ -359,17 +227,23 @@ class HandCompareVisualizer(Node):
                     cv2.LINE_8,
                 )
 
+        # -----------------------------------------
+        # Palm center
+        # -----------------------------------------
+
+        palm_pixel = None
+
         if state_msg.valid:
-            center = self.project(
+            palm_pixel = self.project(
                 state_msg.palm_position,
                 width,
                 height,
             )
 
-            if center is not None:
+            if palm_pixel is not None:
                 cv2.drawMarker(
                     image,
-                    center,
+                    palm_pixel,
                     (0, 255, 255),
                     cv2.MARKER_CROSS,
                     12,
@@ -377,32 +251,103 @@ class HandCompareVisualizer(Node):
                     cv2.LINE_8,
                 )
 
-        if state_msg.valid:
-            text = (
-                f'v = '
-                f'{state_msg.palm_speed:.2f} '
-                f'm/s'
+        if distance_msg.valid:
+            ee_pixel = self.project(
+                distance_msg.ee_control_point,
+                width,
+                height,
             )
 
-            text_color = (
-                0,
-                255,
-                0,
+            distance_palm_pixel = self.project(
+                distance_msg.palm_position,
+                width,
+                height,
             )
 
-        else:
-            text = 'v = --'
+            if (
+                ee_pixel is not None
+                and distance_palm_pixel is not None
+            ):
+                cv2.line(
+                    image,
+                    ee_pixel,
+                    distance_palm_pixel,
+                    (255, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
 
-            text_color = (
-                0,
-                0,
-                255,
+                cv2.circle(
+                    image,
+                    ee_pixel,
+                    5,
+                    (255, 255, 0),
+                    -1,
+                )
+
+        # -----------------------------------------
+        # v + d overlay
+        # -----------------------------------------
+
+        timestamp_s = (
+            float(image_msg.header.stamp.sec)
+            + 1e-9
+            * float(image_msg.header.stamp.nanosec)
+        )
+
+        velocity_text = (
+            f'v = {state_msg.palm_speed:.2f} m/s'
+            if state_msg.valid
+            else 'v = --'
+        )
+
+        distance_text = (
+            f'd = {distance_msg.distance:.2f} m'
+            if distance_msg.valid
+            else 'd = --'
+        )
+
+        timestamp_text = (
+            f'timestamp = {timestamp_s:.3f}'
+        )
+
+        text = (
+            f'{velocity_text}   '
+            f'{distance_text}   '
+            f'{timestamp_text}'
+        )
+
+        text_color = (
+            (0, 255, 0)
+            if (
+                state_msg.valid
+                and distance_msg.valid
             )
+            else (0, 0, 255)
+        )
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.40
+        thickness = 1
+
+        (text_width, text_height), baseline = (
+            cv2.getTextSize(
+                text,
+                font,
+                font_scale,
+                thickness,
+            )
+        )
+
+        box_right = min(
+            width - 8,
+            18 + text_width,
+        )
 
         cv2.rectangle(
             image,
             (8, 8),
-            (185, 38),
+            (box_right, 38),
             (0, 0, 0),
             -1,
         )
@@ -410,43 +355,31 @@ class HandCompareVisualizer(Node):
         cv2.putText(
             image,
             text,
-            (14, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            (14, 29),
+            font,
+            font_scale,
             text_color,
-            1,
+            thickness,
             cv2.LINE_8,
         )
 
-        output = (
-            self.bridge.cv2_to_imgmsg(
-                image,
-                encoding='bgr8',
-            )
+        output = self.bridge.cv2_to_imgmsg(
+            image,
+            encoding='bgr8',
         )
 
-        output.header = (
-            image_msg.header
-        )
+        output.header = image_msg.header
 
-        self.publisher.publish(
-            output
-        )
+        self.publisher.publish(output)
 
 
 def main(args=None):
-    rclpy.init(
-        args=args
-    )
+    rclpy.init(args=args)
 
-    node = (
-        HandCompareVisualizer()
-    )
+    node = HandCompareVisualizer()
 
     try:
-        rclpy.spin(
-            node
-        )
+        rclpy.spin(node)
 
     except KeyboardInterrupt:
         pass

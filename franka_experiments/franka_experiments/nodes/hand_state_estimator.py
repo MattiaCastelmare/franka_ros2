@@ -449,7 +449,7 @@ class HandStateEstimator(Node):
 
             return
 
-        _, normal = frame
+        longitudinal, normal = frame
         
         if (
             self.prev_normal
@@ -472,6 +472,30 @@ class HandStateEstimator(Node):
                 [1, 2, 3]
             ],
             axis=0,
+        )
+
+        # Palm-position variance.
+        position_variances = np.array(
+            [
+                [
+                    variance.x,
+                    variance.y,
+                    variance.z,
+                ]
+                for variance
+                in msg.position_variance
+            ],
+            dtype=float,
+        )
+
+        palm_position_variance = (
+            np.sum(
+                position_variances[
+                    [1, 2, 3]
+                ],
+                axis=0,
+            )
+            / 9.0
         )
 
         # C5 causal palm velocity.
@@ -553,6 +577,30 @@ class HandStateEstimator(Node):
             ),
             z=float(
                 normal[2]
+            ),
+        )
+
+        out.palm_longitudinal = Vector3(
+            x=float(
+                longitudinal[0]
+            ),
+            y=float(
+                longitudinal[1]
+            ),
+            z=float(
+                longitudinal[2]
+            ),
+        )
+
+        out.palm_position_variance = Vector3(
+            x=float(
+                palm_position_variance[0]
+            ),
+            y=float(
+                palm_position_variance[1]
+            ),
+            z=float(
+                palm_position_variance[2]
             ),
         )
 
