@@ -578,10 +578,16 @@ def replay(args):
             # (a) the shipped estimator, called on its own code
             v_res = residual._obstacle_speed(lbl, float(r.distance), t_cap, adotq)
             # (b) the tracked estimate, projected onto the same normal.
-            # n_hat points obstacle -> control point, and v_obs is defined
-            # positive when the obstacle CLOSES, so the projection carries a
-            # minus sign: an obstacle velocity along +n_hat is moving toward the
-            # robot's control point.
+            #
+            # THE SIGN, derived rather than guessed, because step 7 inherits it.
+            # n_hat points OBSTACLE -> CONTROL POINT. The gap closes at
+            #     ddot = n_hat^T (p_robot_dot - p_obs_dot)
+            # and the residual estimator defines
+            #     v_obs = a^T qdot - ddot = n_hat^T p_robot_dot - ddot
+            #           = n_hat^T p_obs_dot .
+            # So v_obs is the PLAIN projection, no minus sign: an obstacle
+            # moving along +n_hat is moving toward the control point and yields
+            # a positive (closing) v_obs, exactly as the residual does.
             tid, seen_n, v_trk, _ = pipeline.velocity_for_point(
                 np.asarray(r.closest_obstacle_point, dtype=np.float64))
             v_prj = float(n_hat @ v_trk) if tid else np.nan

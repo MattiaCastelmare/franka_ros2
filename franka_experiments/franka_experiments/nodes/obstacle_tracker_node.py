@@ -57,6 +57,7 @@ from typing import Optional
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 import trimesh
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
@@ -145,6 +146,26 @@ class ObstacleTrackerNode(Node):
                                            minimum=1, maximum=10000),
             max_clusters=declare_int(self, 'max_clusters', 16,
                                      minimum=1, maximum=128),
+            # SCENE GUARD. 0.0 disables it (no limit); the default is ON.
+            #
+            # A depth camera pointed at a room returns the room: with
+            # max_depth_m = 4 m the far wall, the table and the floor are all
+            # obstacle pixels, and 8-connectivity — which is 2D and knows
+            # nothing about depth — links them into one blob spanning the whole
+            # frustum. Measured on rosbag/arm_complex: a single cluster of
+            # radius 2.2-2.6 m whose centroid alternates between z = 2.28 m and
+            # z = 2.57 m as the far patch connects and disconnects across
+            # frames. A 0.29 m step at 30 Hz differentiates to metres per
+            # second, and it gave the tracked estimate a 0.198 m/s noise floor
+            # on segments where the true obstacle speed is zero.
+            #
+            # 0.6 m is "wider than a person is not a person". Dropping such a
+            # cluster is also the SAFE failure: no cluster -> no track -> the
+            # message's zero defaults -> the barrier falls back to exactly the
+            # behaviour it has today. Set 0.0 to reproduce the pre-guard
+            # measurement live.
+            max_cluster_radius=(declare_float(self, 'cluster_max_radius_m', 0.6,
+                                              minimum=0.0, maximum=10.0) or None),
             contains_tol=declare_float(self, 'cluster_contains_tol_m', 0.05,
                                        minimum=0.0, maximum=1.0),
             q_jerk=declare_float(self, 'track_q_jerk', 2.0,
@@ -362,11 +383,17 @@ class ObstacleTrackerNode(Node):
 
 
 def main(args=None):
+    # ExternalShutdownException is what rclpy raises when the process is asked
+    # to stop from outside (Ctrl-C forwarded as SIGINT/SIGTERM, `ros2 launch`
+    # shutting the stack down, a bag replay ending). It is a normal exit, and
+    # letting it escape prints a traceback that reads like a crash — which is
+    # exactly the wrong thing to show someone who is watching this node to
+    # decide whether the pipeline is trustworthy.
     rclpy.init(args=args)
     node = ObstacleTrackerNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
