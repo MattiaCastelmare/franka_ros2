@@ -60,7 +60,8 @@ class ObstacleTrackPipeline:
     """Per-frame: cluster the obstacle cloud, advance the tracks, answer lookups.
 
     Args:
-        voxel_m / min_cluster_points / max_clusters / connectivity: forwarded to
+        voxel_m / min_cluster_points / max_clusters / connectivity /
+        max_cluster_radius: forwarded to
             :func:`~franka_experiments.utils.obstacle_clusters.cluster_obstacles`.
         contains_tol: [m] slack added to a cluster's radius when testing whether
             a control point's nearest obstacle point belongs to it. Needed
@@ -84,6 +85,7 @@ class ObstacleTrackPipeline:
         voxel_m: float = 0.02,
         min_cluster_points: int = 10,
         max_clusters: int = 16,
+        max_cluster_radius: Optional[float] = None,
         connectivity: int = 8,
         contains_tol: float = 0.05,
         default_dt: float = 1.0 / 30.0,
@@ -93,6 +95,8 @@ class ObstacleTrackPipeline:
         self.voxel_m = float(voxel_m)
         self.min_cluster_points = int(min_cluster_points)
         self.max_clusters = int(max_clusters)
+        self.max_cluster_radius = (None if max_cluster_radius is None
+                                   else float(max_cluster_radius))
         self.connectivity = int(connectivity)
         self.contains_tol = float(contains_tol)
         self.default_dt = float(default_dt)
@@ -171,7 +175,8 @@ class ObstacleTrackPipeline:
         return cluster_obstacles(
             p_cam, cloud.u, cloud.v, step=int(getattr(cloud, 'step', 1)),
             voxel_m=self.voxel_m, connectivity=self.connectivity,
-            min_points=self.min_cluster_points, max_clusters=self.max_clusters)
+            min_points=self.min_cluster_points, max_clusters=self.max_clusters,
+            max_radius=self.max_cluster_radius)
 
     # ── Lookup ──────────────────────────────────────────────────────────────
 

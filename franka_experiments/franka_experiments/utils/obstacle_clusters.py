@@ -165,6 +165,7 @@ def cluster_obstacles(
     connectivity: int = 8,
     min_points: int = 10,
     max_clusters: int = 16,
+    max_radius: Optional[float] = None,
 ) -> List[Cluster]:
     """Group obstacle pixels into objects and reduce each to a :class:`Cluster`.
 
@@ -191,6 +192,28 @@ def cluster_obstacles(
             per-frame cost of the association step, which is O(tracks ×
             clusters). Dropping the smallest is the right sacrifice: the largest
             blobs are the ones carrying a real body.
+        max_radius: [m] drop clusters larger than this, or ``None`` for no
+            limit. This is the SCENE guard, and it is the opposite end of the
+            same axis as ``min_points``.
+
+            A depth camera pointed at a room returns the room. With the shipped
+            ``max_depth_m`` of 4 m, the far wall, the table and the floor are
+            all "obstacle pixels", 8-connectivity links them into a single blob
+            spanning the whole frustum, and its centroid is not the position of
+            anything. Worse, such a blob MERGES AND SPLITS between frames as the
+            robot mask carves different holes in it, and each merge steps the
+            centroid by tens of centimetres — which a differentiator reads as
+            metres per second. Measured on rosbag/arm_complex: one cluster of
+            radius 2.2–2.6 m whose centroid alternates between z = 2.28 m and
+            z = 2.57 m, giving the tracked estimate a 0.198 m/s noise floor on
+            segments where the true obstacle speed is zero.
+
+            A cluster wider than a person is not a person, and a velocity
+            estimated for it is meaningless. Dropping it is also the SAFE
+            failure: no cluster means no track, no track means the message's
+            zero defaults, and zero defaults mean the barrier falls back to the
+            behaviour it has today. ``None`` (the default) preserves the
+            pre-guard behaviour exactly.
 
     Returns:
         Clusters ordered by descending ``n_points``, ties broken by centroid
@@ -238,6 +261,8 @@ def cluster_obstacles(
         centroid = cent_v.mean(axis=0)
         radial = np.sqrt(((cent_v - centroid) ** 2).sum(axis=1))
         radius = max(float(radial.max()), 0.5 * float(voxel_m))
+        if max_radius is not None and radius > float(max_radius):
+            continue
         clusters.append(Cluster(centroid_cam=centroid,
                                 n_points=int(sizes[lb]),
                                 radius=radius))
