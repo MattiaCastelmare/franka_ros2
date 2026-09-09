@@ -39,6 +39,7 @@ The goal of this fork is to provide a **reproducible robotics research environme
   - [Local Machine Installation](#local-machine-installation)
   - [Docker Container Installation](#docker-container-installation)
     - [Shared workstation: several accounts on one PC](#shared-workstation-several-accounts-on-one-pc)
+      - [First-time setup on a new account](#first-time-setup-on-a-new-account)
 - [Test the Setup](#test-the-setup)
 - [franka_experiments](#franka_experiments)
 - [franka_rt_controllers](#franka_rt_controllers)
@@ -311,30 +312,51 @@ else's `colcon build` then fails with permission errors inside `src/`.
 
 **Rule: one clone per account, one Compose project per account.**
 
-Each user adds this to their own `~/.bashrc` and opens a new terminal:
+#### First-time setup on a new account
+
+Run these once, in order, from a terminal **on your own graphical session** (the last
+point matters for GUI windows — see
+[GUI windows never appear](#gui-windows-never-appear)).
+
+**1. Declare your identity and your own Compose project** — append to `~/.bashrc`, then
+open a new terminal:
 
 ```bash
+cat >> ~/.bashrc <<'EOF'
 export COMPOSE_PROJECT_NAME=franka_$USER   # your own image tag
 export FRANKA_CONTAINER=franka_$USER       # your own container name
 export USER_UID=$(id -u)
 export USER_GID=$(id -g)
+EOF
 ```
 
-`FRANKA_CONTAINER` defaults to `franka_ros2`, which is the name every command in this
-README uses. Exactly one account on the machine may leave it unset; every other account
-has to set it, or `docker compose up` fails with *container name already in use*.
+`FRANKA_CONTAINER` defaults to `franka_ros2`, the name every other command in this README
+uses. Exactly one account on the machine may leave it unset; every other account has to
+set it, or `docker compose up` fails with *container name already in use*.
 
-Then, from your **own** clone:
+**2. Clone into your own home directory:**
 
 ```bash
 git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git \
   ~/Git/franka_ros2
 cd ~/Git/franka_ros2
-docker compose up -d --build
-docker exec -it "${FRANKA_CONTAINER:-franka_ros2}" /bin/bash
 ```
 
-Then, **inside** the container, pull the two out-of-tree packages and build:
+**3. Build and start your container:**
+
+```bash
+docker compose up -d --build
+```
+
+The first build takes a while; later ones reuse the cached apt layer.
+
+**4. Open a shell inside it:**
+
+```bash
+docker exec -it "$FRANKA_CONTAINER" /bin/bash
+```
+
+**5. Pull the out-of-tree packages and build the workspace** — from inside the container:
 
 ```bash
 vcs import src < src/franka.repos --recursive --skip-existing
@@ -343,9 +365,18 @@ colcon build --symlink-install --executor parallel --parallel-workers 24 \
 source install/setup.bash
 ```
 
-`vcs import` writes into `/ros2_ws/src`, which is your clone on the host — another reason
-the uid inside the container has to match its owner. MoveIt and pymoveit2 come from apt in
-the image, so `extras.repos` is not needed for this flow.
+`--recursive` is what fetches libfranka's own submodules. `vcs import` writes into
+`/ros2_ws/src`, which *is* your clone on the host — one more reason the uid inside the
+container has to match its owner. MoveIt and pymoveit2 come from apt inside the image, so
+`extras.repos` is not needed for this flow.
+
+Afterwards, a normal working session is just:
+
+```bash
+docker start "$FRANKA_CONTAINER"
+docker exec -it "$FRANKA_CONTAINER" /bin/bash
+source install/setup.bash
+```
 
 The clone has to live in your own home directory. Separate Compose projects stop the
 accounts from overwriting each other's image and container, but they do not change file
