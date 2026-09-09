@@ -672,8 +672,59 @@ params:
 
   # [m/s] Cap on the estimate, same scale as distance_engine's own
   # lpf_v_max_approach. One bad depth frame can otherwise fabricate metres per
-  # second of apparent approach.
+  # second of apparent approach. Applies to BOTH sources below.
   obstacle_velocity_max: 2.0
+
+  # ── Where v_obs comes from ────────────────────────────────────────────────
+  # 'residual' | 'tracker'
+  #
+  # 'residual' (default) is the estimator described above: the scalar
+  # a^T qdot - ddot, EMA'd and clamped. Every property it has follows from
+  # having no object identity -- it is scalar (only the component along the
+  # CURRENT n_hat is ever recovered, so it restarts from scratch every time
+  # n_hat turns, which it does continuously as the arm moves), it is per
+  # CONTROL POINT (11 control points looking at one person produce 11
+  # independent estimates of that person's motion, pooling no evidence), and it
+  # differences an argmin that hops between surface patches AND between objects
+  # -- a hop from one object to another is a discontinuity, not a velocity, and
+  # nothing in the residual can tell them apart. The 0.7 EMA exists precisely
+  # because the raw signal cannot be trusted, and 75 ms of lag at 1 m/s is
+  # 7.5 cm of barrier against a d_safe of 0.15.
+  #
+  # 'tracker' takes v_obs = n_hat^T v_track from LinkDistance.obstacle_velocity,
+  # the 3D velocity of the CLUSTER this control point's nearest obstacle point
+  # belongs to, estimated by a constant-acceleration Kalman filter
+  # (utils/obstacle_tracker.py). In this mode the finite difference and the
+  # alpha=0.7 EMA are skipped ENTIRELY: the filter already smooths and
+  # differentiates in one step, and re-filtering a filtered signal pays the lag
+  # twice for none of the benefit. obstacle_velocity_max still applies.
+  #
+  # Requires the tracking pipeline to be publishing (enable_obstacle_tracking in
+  # fr3_complete.yaml). With it off the fields arrive as zeros, which is the
+  # documented "no track" state: v_obs is then 0 and the barrier falls back to
+  # a static-obstacle assumption. That is SAFE but not conservative in the way
+  # 'residual' is -- do not run 'tracker' without the publisher.
+  #
+  # Measured offline (scripts/compare_vobs.py, rosbag/arm_complex with an
+  # injected 0.15 m obstacle shuttling at 0.5 m/s, scored against truth):
+  #   lag   residual -32 ms   tracker -8.6 ms   (3.7x less)
+  #   bias  residual +0.068   tracker +0.025    (2.7x less)
+  #   RMS   residual  0.181   tracker  0.226    (25% WORSE -- the fixture
+  #         reverses instantaneously, i.e. infinite jerk, and a
+  #         constant-acceleration filter overshoots a reversal while the
+  #         residual simply lags through it. Lower track_q_jerk trades some of
+  #         the lag win back if this shows up on hardware.)
+  #   noise on a static scene   residual 0.013   tracker 0.000
+  obstacle_velocity_source: residual
+
+  # Perception frames a TRACK must have been UPDATED on before its velocity is
+  # trusted in 'tracker' mode. Updates only -- a track coasting through an
+  # occlusion does not accumulate evidence it does not have.
+  #
+  # 3 matches the tracker's own M-of-N birth rule, so a confirmed track is
+  # trusted immediately and nothing is trusted before confirmation. Below the
+  # gate v_obs is 0, i.e. the static-obstacle assumption, not a guess.
+  obstacle_velocity_min_frames: 3
 
   # ── Obstacle-velocity feedforward (cbf_safety_filter, Phase 1) ─────────────
   # A SECOND, separately tunable use of the v_obs estimate the k1 term already
@@ -718,6 +769,125 @@ params:
   # newly appeared obstacle cannot have its first noisy estimate SQUARED into
   # the barrier.
   velocity_feedforward_min_frames: 3
+
+  # ── Uncertainty-derived tightening (cbf_safety_filter, Phase 3) ────────────
+  #   h_eff = h - k_sigma * sqrt(n_hat^T P_vv n_hat) * t_latency
+  #
+  # Every other conservative term in this file is a constant guessed offline --
+  # d_safe, obstacle_decel_assumed, velocity_braking_margin_max. Being constant,
+  # each is wrong in both directions at once: too tight when the estimate
+  # happens to be good, too loose when it happens to be bad, and nothing in the
+  # filter can tell which situation it is in.
+  #
+  # The Kalman tracker can. n_hat^T P_vv n_hat is the VARIANCE of the exact
+  # scalar the barrier consumes, reported by the estimator itself, and it MOVES:
+  # it collapses as a track accumulates measurements and inflates while a track
+  # coasts through an occlusion or is fed a wandering centroid. Its square root
+  # times a latency is a DISTANCE -- how far the obstacle could be from where
+  # the filter thinks it is by the time the filter could react -- which is
+  # directly comparable with the barrier it is subtracted from.
+  #
+  # The EMA'd scalar of 'residual' mode cannot support this term at all: it has
+  # no covariance and there is nothing to derive one from. This is the
+  # structural argument for the tracker reduced to one line, and the reason the
+  # flag is meaningless with obstacle_velocity_source: residual (P_vv arrives as
+  # zeros, the term is exactly 0.0).
+  #
+  # OFF by default. With the flag off the term is not evaluated and the QP rows
+  # are bit-identical to the pre-Phase-3 build (regression-tested).
+  enable_uncertainty_margin: false
+
+  # [-] standard deviations of velocity error to reserve. 2.0 covers ~95% of a
+  # Gaussian's one-sided mass. Raising it buys confidence linearly in metres, so
+  # it is bounded by velocity_braking_margin_max below rather than by taste.
+  uncertainty_k_sigma: 2.0
+  #
+  # t_latency is NOT a parameter of its own: the term reuses
+  # link_speed_reaction_s (0.20 s). Both answer the same physical question --
+  # "how long can the world move without the filter noticing" (perception period
+  # + QP period + actuation lag) -- and two independently-tuned constants for
+  # one quantity is how they drift apart. The clamp is shared with the braking
+  # term (velocity_braking_margin_max) for the same reason it exists there: an
+  # unbounded tightening driven by a perception artefact drives the barrier
+  # deeply negative and the QP answers with a maximal retreat.
+
+  # ── Lateral evasion (cbf_safety_filter) ────────────────────────────────────
+  # WHAT IT IS FOR. Every obstacle row demands the same thing: accelerate the
+  # control point ALONG n_hat, away from the obstacle. That is the right answer
+  # while it is achievable, and it is the only answer this filter knows.
+  #
+  # It stops being achievable, and the failure is arithmetic, not tuning. The
+  # barrier closes at hdot = a^T qdot - v_obs, and the acceleration box bounds
+  # how hard the robot can push back along n_hat:
+  #     a_max = sum_j max(a_j*lb_j, a_j*ub_j)      [m/s^2]
+  # so the shortest distance in which it can null a closing rate is
+  # hdot^2/(2*a_max). When that exceeds the remaining gap, NO admissible
+  # acceleration keeps the barrier positive. The QP does not fail loudly there
+  # -- it pays slack and the arm backs off as hard as it can into a collision it
+  # was never able to prevent. A hand at 1.5 m/s covers 5 cm between depth
+  # frames; no k0/k1 retunes the robot's inertia.
+  #
+  # "Cannot stop the gap closing" is not "cannot avoid the obstacle". A person
+  # about to be hit does not push back along the line of approach, they move
+  # SIDEWAYS out of the swept volume -- which is usually far cheaper in
+  # acceleration. Doing that requires knowing WHICH WAY the obstacle is going,
+  # and the scalar residual contains no direction at all. This is what the
+  # tracked 3D velocity buys beyond a better-conditioned v_obs.
+  #
+  # The escape direction is derived, not guessed: with d = p_robot - p_obs and
+  # the obstacle travelling along v_hat, the perpendicular offset
+  # d_perp = d - (d.v_hat)v_hat IS the miss distance, so d_perp normalised is
+  # the direction that grows it fastest. Note it is NOT n_hat -- for a glancing
+  # approach the two are nearly orthogonal and moving along n_hat barely changes
+  # the miss distance. Head-on (d_perp ~ 0) every perpendicular is
+  # geometrically equal, and the tie is broken on the robot's side: the
+  # perpendicular direction the arm can accelerate along hardest.
+  #
+  # It enters as a BIAS on the QP's target, never as a row. A row would be a
+  # hard demand added to a QP that is already paying slack, and the two would be
+  # relaxed by the same shared slack with no way to say which mattered. A bias
+  # moves the objective: every barrier stays exactly as binding, the robot's
+  # limits are untouched, and the free part of qddot -- which today sits at zero
+  # -- is spent getting out of the way. Worst case for a wrong escape direction
+  # is a slightly worse tracking error, never a violated barrier.
+  #
+  # OFF by default, and inert without obstacle_velocity_source: tracker (with no
+  # track there is no velocity, hence no direction, hence no bias).
+  enable_lateral_evasion: false
+
+  # [rad/s^2] bias magnitude at FULL urgency for a single control point. An
+  # acceleration, not a dimensionless factor, so it reads directly against the
+  # joint acceleration box (joint2's is 2.585 rad/s^2). 1.5 is a firm but
+  # sub-saturating sideways push.
+  lateral_evasion_gain: 1.5
+
+  # [rad/s^2] norm cap on the TOTAL bias. Several control points on one link
+  # facing one obstacle all contribute, so without a cap the swerve would scale
+  # with how finely the arm happens to be discretised into control points -- a
+  # modelling detail that must not change how hard the robot moves.
+  lateral_evasion_max_bias: 3.0
+
+  # [-] fraction of the acceleration box credited to braking along n_hat when
+  # deciding whether braking can still succeed. < 1 for two reasons: the same
+  # budget must also serve every other row and the tracking objective, and the
+  # STATIC box is used here (the velocity-tightened one is rebuilt per 100 Hz
+  # tick while this runs at 50 Hz), which overstates what is available. Lower =
+  # evasion engages earlier.
+  lateral_evasion_authority: 0.5
+
+  # [-] where the urgency ramp starts, as a fraction of the braking distance
+  # that would make the situation hopeless. 0.7 engages while there is still
+  # room to work: an evasion started at 1.0 starts at the moment it stops
+  # mattering. The ramp to 1.0 is a smoothstep, not a switch -- a hard threshold
+  # on a 30 Hz vision quantity chatters, and what is being switched is a bias on
+  # qddot_nom, so the arm would jerk sideways and back at the noise rate. That
+  # is the exact failure the tangential bias was rewritten for.
+  lateral_evasion_engage_ratio: 0.7
+
+  # [m/s] below this the obstacle is not meaningfully moving and "perpendicular
+  # to its velocity" is a direction fitted to noise -- no bias is produced and
+  # the normal retreat the barrier already demands is the whole response.
+  lateral_evasion_v_min: 0.15
 
   # ── Risk-weighted slack (cbf_safety_filter, Phase 2) ───────────────────────
   # One slack per FAMILY is shared by every row in it, so when rows conflict the

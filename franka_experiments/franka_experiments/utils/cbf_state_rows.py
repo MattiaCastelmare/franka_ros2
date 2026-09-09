@@ -33,6 +33,12 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
+from franka_experiments.utils.cbf_evasion import (
+    escape_direction,
+    evasion_bias,
+    evasion_urgency,
+    normal_brake_authority,
+)
 from franka_experiments.utils.self_collision import (
     Capsule,
     segment_segment_closest,
@@ -371,6 +377,77 @@ def velocity_feedforward_terms(
     v = max(float(v_app), 0.0)
     h_brake = min(v * v / (2.0 * float(decel)), float(brake_max))
     return h_brake, -float(gain) * v
+
+
+def uncertainty_margin(
+    n_hat: np.ndarray,
+    vel_cov: Optional[np.ndarray],
+    *,
+    k_sigma: float,
+    t_latency: float,
+    margin_max: float,
+) -> float:
+    """[m] barrier tightening bought by the tracker's ADMITTED uncertainty.
+
+        h_eff = h − k_sigma · sqrt(n̂ᵀ P_vv n̂) · t_latency
+
+    WHY THIS IS POSSIBLE AT ALL, AND ONLY NOW
+    -----------------------------------------
+    Every other conservative term in this filter is tuned from a worst case
+    guessed offline: ``d_safe``, ``obstacle_decel_assumed``,
+    ``velocity_braking_margin_max``. They are constants, so they are wrong in
+    both directions at once — too tight when the estimate happens to be good,
+    too loose when it happens to be bad, and nothing in the filter can tell
+    which situation it is in.
+
+    A Kalman filter can. ``n̂ᵀP_vv n̂`` is the VARIANCE of the exact scalar the
+    barrier consumes, reported by the estimator itself, and it moves: it
+    collapses as a track accumulates measurements and inflates while a track
+    coasts through an occlusion or is fed a wandering centroid. Multiplying its
+    square root by a latency turns it into a DISTANCE — how far the obstacle
+    could be from where the filter thinks it is, by the time the filter could
+    react — which is directly comparable with the barrier it is subtracted
+    from.
+
+    The EMA'd scalar this replaces cannot support the term at all: it has no
+    covariance, and there is nothing to derive one from. That is the structural
+    argument for the whole pipeline, reduced to one function.
+
+    Args:
+        n_hat: (3,) unit normal, obstacle → control point.
+        vel_cov: (3, 3) velocity covariance in the SAME frame as ``n_hat``, or
+            ``None`` for "no estimate", which yields exactly 0.0.
+        k_sigma: how many standard deviations to reserve. 2.0 ≈ 95 % of a
+            Gaussian's one-sided mass.
+        t_latency: [s] the blind time the uncertainty acts over — perception
+            period + QP period + actuation lag. Deliberately the SAME value
+            ``link_speed_cap`` uses (``link_speed_reaction_s``): both answer
+            "how long can the world move without the filter noticing", and two
+            independently-tuned constants for one physical quantity is how they
+            drift apart.
+        margin_max: [m] clamp, shared with the braking term for the same
+            reason it exists there — an unbounded tightening driven by a
+            perception artefact drives the barrier deeply negative and the QP
+            answers with a maximal retreat.
+
+    Returns:
+        A NON-NEGATIVE tightening to SUBTRACT from the barrier. Never negative,
+        so this term can only ever tighten — the same asymmetry every other
+        estimate in this filter is held to. ``0.0`` exactly when there is no
+        covariance, when the covariance is zero, or when ``k_sigma`` is 0.
+    """
+    if vel_cov is None or k_sigma <= 0.0:
+        return 0.0
+    P = np.asarray(vel_cov, dtype=np.float64)
+    if P.shape != (3, 3) or not np.all(np.isfinite(P)):
+        return 0.0
+    n = np.asarray(n_hat, dtype=np.float64).ravel()
+    # max(..., 0.0): P is positive semi-definite in exact arithmetic, but a
+    # quadratic form can land at -1e-20 after a Joseph update plus a frame
+    # rotation plus a float32 trip through the message, and sqrt of that is NaN
+    # — which would propagate into h and out through the whole QP.
+    var = max(float(n @ P @ n), 0.0)
+    return float(min(k_sigma * np.sqrt(var) * t_latency, margin_max))
 
 
 # ── Risk-weighted slack ──────────────────────────────────────────────────────
@@ -830,6 +907,16 @@ class Obstacle(NamedTuple):
     pr:   np.ndarray    # closest point on robot, world frame
     ph:   np.ndarray    # closest point on human, world frame
     conf: float
+    # ── Obstacle track (LinkDistance.track_id / frames_seen / … ) ───────────
+    # All four DEFAULT to the "no track" state, which is what a publisher that
+    # knows nothing about tracking emits and what every pre-tracker bag
+    # deserialises to. With the defaults every consumer below contributes
+    # exactly zero, so a missing tracker degrades to the residual estimator
+    # rather than to a wrong number.
+    v_vec: Optional[np.ndarray] = None   # (3,) obstacle velocity, BASE frame
+    frames_seen: int = 0                 # perception UPDATES behind v_vec
+    vel_cov: Optional[np.ndarray] = None  # (3, 3) cov of v_vec, BASE frame
+    track_id: int = 0                    # 0 = no track (diagnostic only)
 
 
 class ObstacleSnap(NamedTuple):
@@ -888,6 +975,21 @@ class ConstraintSnap(NamedTuple):
                            # first in the block, so retreat is [-n_cap:][:n_rtr]
                            # and task-space speed is [-n_cap:][n_rtr:]. Keeps
                            # the two diagnostics apart without a per-tick mask.
+    esc_bias:  Optional[np.ndarray] = None
+                           # (NV,) [rad/s²] lateral-evasion bias to ADD to
+                           # q̈_nom, or None when the flag is off or nothing is
+                           # engaged. NOT a row and NOT a constraint: it moves
+                           # the QP's objective, so it cannot loosen a barrier
+                           # or make the problem infeasible — the worst case for
+                           # a wrong escape direction is a worse tracking error.
+                           # Computed at the 50 Hz rebuild, where the obstacle
+                           # velocity and the Jacobians already are; the 100 Hz
+                           # tick only adds it. See utils.cbf_evasion.
+    esc_w_max: float = 0.0
+                           # largest per-row evasion urgency in [0, 1] this
+                           # snapshot. DIAGNOSTIC: it is the honest answer to
+                           # "can the robot still brake out of this?", and 1.0
+                           # means demonstrably not.
 
 
 
@@ -1013,7 +1115,9 @@ class ConstraintBuilder:
         self._qlim_stuck, self._fid_cache = {}, {}
         self.diag_h_hold = self.diag_v_obs = 0.0
         self.diag_vapp = self.diag_hbrake = 0.0
+        self.diag_hunc = 0.0
         self.diag_sigma = float('nan')
+        self.diag_esc_w = 0.0
         self.diag_w = self.diag_wq = None
 
     def build(self, js, obs, now):
@@ -1053,6 +1157,9 @@ class ConstraintBuilder:
         # Phase-2 slack weights, same per-OBSTACLE-row-in-append-order contract
         # as obs_bff and scattered the same way.
         obs_w: list[float] = []
+        # (g, w) per obstacle row for the lateral-evasion bias; empty when the
+        # flag is off, and then evasion_bias() is never called.
+        esc_rows: list = []
         # Same contract for the JOINT-LIMIT family: one weight per emitted row,
         # in append order, scattered by family at the end.
         qlim_w: list[float] = []
@@ -1060,6 +1167,7 @@ class ConstraintBuilder:
         self.diag_v_obs  = 0.0     # fastest approaching obstacle this rebuild
         self.diag_vapp   = 0.0     # largest v_app the feedforward USED
         self.diag_hbrake = 0.0     # largest braking-distance tightening [m]
+        self.diag_hunc   = 0.0     # largest uncertainty tightening [m]
 
         for ob in obs.items:
             # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
@@ -1171,10 +1279,22 @@ class ConstraintBuilder:
             # half would mean relaxing a barrier on a 30 Hz vision estimate.
             v_o = 0.0
             if self._P.obstacle_velocity_enabled:
-                v_o = max(self._obstacle_speed(
-                    lbl, ob.d, obs.t_cap, float(a @ js.qdot)), 0.0)
+                if self._P.obstacle_velocity_source == 'tracker':
+                    # The tracked 3D velocity projected on n̂. The residual's
+                    # per-label state (_obs_vel / _obs_frames) is deliberately
+                    # NOT advanced here: the two estimators must not share a
+                    # filter, or switching source at runtime would hand the new
+                    # one the old one's memory.
+                    v_o = max(self._obstacle_speed_tracked(ob, n_w), 0.0)
+                    n_seen = int(ob.frames_seen)
+                else:
+                    v_o = max(self._obstacle_speed(
+                        lbl, ob.d, obs.t_cap, float(a @ js.qdot)), 0.0)
+                    n_seen = self._obs_frames.get(lbl, 0)
                 if v_o > self.diag_v_obs:
                     self.diag_v_obs = v_o
+            else:
+                n_seen = self._obs_frames.get(lbl, 0)
             rows_vobs.append(v_o)
 
             # ── Phase 1: obstacle-velocity feedforward ──────────────────────
@@ -1191,7 +1311,11 @@ class ConstraintBuilder:
             # start from an already-tightened h and the term would compound
             # frame over frame into an unbounded drift.
             b_ff_i = 0.0
-            if self._P.enable_velocity_feedforward and self._obs_frames.get(lbl, 0) >= self._P.velocity_feedforward_min_frames:
+            # n_seen is the frame count of whichever estimator produced v_o
+            # (see the source switch above), so this gate keeps meaning "this
+            # estimate has enough evidence behind it" in BOTH modes rather than
+            # silently reading the residual's counter while running the tracker.
+            if self._P.enable_velocity_feedforward and n_seen >= self._P.velocity_feedforward_min_frames:
                 h_brake, b_ff_i = velocity_feedforward_terms(
                     v_o, decel=self._P.obstacle_decel_assumed, gain=self._P.velocity_feedforward_gain,
                     brake_max=self._P.velocity_braking_margin_max)
@@ -1200,6 +1324,29 @@ class ConstraintBuilder:
                     self.diag_vapp = v_o
                 if h_brake > self.diag_hbrake:
                     self.diag_hbrake = h_brake
+
+            # ── Phase 3: uncertainty-derived tightening ─────────────────────
+            # Placed here for the SAME reason the braking term is: after
+            # `self._h_smooth[lbl] = h`, so the recovery EMA keeps tracking the
+            # MEASURED barrier. Storing a tightened h would make next frame's
+            # smoothing start from an already-tightened value and the term
+            # would compound frame over frame into an unbounded drift.
+            #
+            # Gated on the same frame count as the velocity itself: a track one
+            # measurement old has an enormous covariance by construction (it
+            # starts at sigma_v0 = 1 m/s), and ungated that would slam the
+            # margin to its clamp every single time a new track appears —
+            # shrinking the workspace on the arrival of an obstacle rather than
+            # on any property of it.
+            if (self._P.enable_uncertainty_margin
+                    and n_seen >= self._P.obstacle_velocity_min_frames):
+                h_unc = uncertainty_margin(
+                    n_w, ob.vel_cov, k_sigma=self._P.uncertainty_k_sigma,
+                    t_latency=self._P.link_speed_reaction_s,
+                    margin_max=self._P.velocity_braking_margin_max)
+                h -= h_unc
+                if h_unc > self.diag_hunc:
+                    self.diag_hunc = h_unc
 
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
@@ -1245,6 +1392,20 @@ class ConstraintBuilder:
                     cap_link.append(f'cap:{ob.link}#{k}')
                 if self._P.link_speed_rows_enabled:
                     spd_pts.append((Jp, ob.d, f'spd:{ob.link}#{k}'))
+
+                # ── Lateral evasion (utils.cbf_evasion) ─────────────────────
+                # "Can this control point still brake out of this?" — answered
+                # from the robot's OWN acceleration box in its CURRENT pose,
+                # which is what makes it a statement about the robot's limits
+                # rather than a tuned threshold. When the answer is no, the
+                # escape direction comes from the obstacle's tracked VELOCITY:
+                # the residual estimator has no direction in it and could never
+                # have supported this.
+                #
+                # Everything here is a bias on the objective, never a row, so a
+                # wrong answer costs tracking error and nothing else.
+                if self._P.enable_lateral_evasion:
+                    esc_rows.append(self._escape_row(ob, a, Jp, h, v_o, js.qdot))
 
         # ── Joint-limit rows ────────────────────────────────────────────────
         # Same HOCBF convention: aᵀq̈ + s ≥ −k1(aᵀq̇) − k0·h − ċ, with ċ ≡ 0
@@ -1452,6 +1613,20 @@ class ConstraintBuilder:
                     f'obstacle rows vs {len(obs_bff)} feedforward terms',
                     throttle_duration_sec=2.0)
                 b_ff = None
+        # ── Lateral-evasion bias ────────────────────────────────────────────
+        # One vector for the whole snapshot, or None. None (not a zeros array)
+        # so the 100 Hz tick can skip the add entirely and stay bit-identical
+        # to the pre-evasion expression when the flag is off.
+        esc_bias_v = None
+        esc_w_max = 0.0
+        if esc_rows:
+            esc_w_max = max(w for _, w in esc_rows)
+            b = evasion_bias(esc_rows, gain=self._P.lateral_evasion_gain,
+                             max_bias=self._P.lateral_evasion_max_bias)
+            if b.size == NV and float(np.linalg.norm(b)) > 0.0:
+                esc_bias_v = b
+        self.diag_esc_w = esc_w_max
+
         return ConstraintSnap(A, h_bar, jdq_v, G, obs.stamp,
                                     tuple(rows_link), float(d_obs_min),
                                     grp, float(d_sc_min),
@@ -1459,7 +1634,45 @@ class ConstraintBuilder:
                                     b_ff,
                                     np.asarray(cap_val, dtype=np.float64),
                                     int(n_cap),
-                                    int(sum(1 for g in cap_grp if g == G_CAP)))
+                                    int(sum(1 for g in cap_grp if g == G_CAP)),
+                                    esc_bias_v,
+                                    float(esc_w_max))
+
+    def _escape_row(self, ob, a: np.ndarray, Jp: np.ndarray, h: float,
+                    v_obs: float, qdot: np.ndarray):
+        """``(g, w)`` for one control point: escape direction in joint space,
+        and how badly the normal direction is losing.
+
+        ``g = êᵀJ_p`` rather than ``ê`` because the bias is added to ``q̈_nom``,
+        which lives in joint space — and because ``‖g‖`` is exactly the leverage
+        test the caller needs: an escape direction the arm cannot move along
+        from this configuration has a small ``‖g‖`` and is dropped, instead of
+        being normalised into a full-strength command built from nothing.
+
+        ``h_dot = aᵀq̇ − v_obs`` is the barrier's true rate, INCLUDING the
+        obstacle's own motion. That is the point: a control point standing still
+        next to an obstacle closing at 1.5 m/s has ``aᵀq̇ = 0`` and is in serious
+        trouble, and only the ``−v_obs`` term says so.
+
+        The braking authority uses the STATIC acceleration box, not the
+        velocity-tightened one the QP is handed — the tightened box is rebuilt
+        per 100 Hz tick and this runs at 50 Hz. The static box OVERSTATES what
+        is available, which under-reports urgency, so ``lateral_evasion_authority``
+        (< 1) covers both that and the fact that the same acceleration budget
+        must also serve every other row and the tracking objective.
+        """
+        w = evasion_urgency(
+            float(h), float(a @ qdot) - float(v_obs),
+            normal_brake_authority(a, self._lb, self._ub,
+                                   eta=self._P.lateral_evasion_authority),
+            engage_ratio=self._P.lateral_evasion_engage_ratio)
+        if w <= 0.0 or ob.v_vec is None:
+            return (np.zeros(NV), 0.0)
+        e = escape_direction(ob.pr - ob.ph, ob.v_vec, Jp,
+                             v_min=self._P.lateral_evasion_v_min)
+        if e is None:
+            return (np.zeros(NV), 0.0)
+        return (e @ Jp, w)
 
     def _retreat_cap(self, v_obs: float, h_bar: float) -> float:
         """[m/s] fastest separation rate this control point may be given.
@@ -1473,6 +1686,49 @@ class ConstraintBuilder:
             base=self._P.retreat_cap_base_speed, obs_gain=self._P.retreat_cap_obstacle_gain,
             depth_gain=self._P.retreat_cap_depth_gain, depth_speed_ref=self._P.retreat_cap_depth_speed_ref,
             engage_gap=self._P.retreat_cap_engage_gap, max_speed=self._P.retreat_cap_max_speed)
+
+    def _obstacle_speed_tracked(self, ob, n_w: np.ndarray) -> float:
+        """Component of the TRACKED obstacle velocity along n̂, in m/s.
+
+        THE SIGN, derived rather than asserted, because it is the one thing that
+        would silently invert the whole feature. ``n_w`` points OBSTACLE →
+        CONTROL POINT. The gap closes at
+
+            ḋ = n̂ᵀ(ṗ_robot − ṗ_obs)
+
+        and the residual estimator this replaces defines
+
+            v_obs = aᵀq̇ − ḋ = n̂ᵀṗ_robot − ḋ = n̂ᵀ ṗ_obs .
+
+        So the tracked estimate is the PLAIN projection, no sign flip: an
+        obstacle moving along +n̂ is moving toward the control point and yields
+        a positive (closing) ``v_obs``, exactly as the residual does. The two
+        estimators are therefore interchangeable at this call site, which is
+        what makes ``obstacle_velocity_source`` a one-line switch rather than a
+        second convention.
+
+        NO FINITE DIFFERENCE AND NO EMA HERE, deliberately. The Kalman filter
+        upstream already smooths and differentiates in one step, with a gain
+        derived from the ratio of process to measurement noise. Running the
+        α = 0.7 EMA on top would re-introduce the ~75 ms of lag this whole
+        pipeline exists to remove — and would do it to a signal that is already
+        smoothed, i.e. pay the cost twice for none of the benefit.
+
+        Returns 0.0 — the safe value, which contributes nothing — whenever the
+        track is absent or too young. ``obstacle_velocity_min_frames`` is a
+        gate on MEASUREMENTS, not on age: a track coasting through an occlusion
+        does not accumulate evidence it does not have.
+        """
+        if ob.v_vec is None or ob.frames_seen < self._P.obstacle_velocity_min_frames:
+            return 0.0
+        v = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
+        if not np.isfinite(v):
+            return 0.0
+        # Same clamp as the residual path, and for the same reason: one bad
+        # depth frame must not be able to fabricate metres per second. The
+        # tracker makes that far less likely, not impossible.
+        return float(np.clip(v, -self._P.obstacle_velocity_max,
+                             self._P.obstacle_velocity_max))
 
     def _obstacle_speed(self, lbl: str, d_now: float, stamp: float,
                         adotq: float) -> float:

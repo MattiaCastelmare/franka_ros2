@@ -163,6 +163,7 @@ class CBFSafetyFilter(Node):
         self._qdot_cbf = np.zeros(NV)
         self._qddot_prev = np.zeros(NV)
         self._tan_bias = np.zeros(NV)   # EMA state for tangential_bias, below
+        self._esc_bias = np.zeros(NV)   # EMA state for the lateral-evasion bias
 
         # ── 6. Diagnostics ──────────────────────────────────────────────
         self._diag_slack = np.zeros(N_SLACK)
@@ -382,6 +383,14 @@ class CBFSafetyFilter(Node):
 
     def _on_distances(self, msg: MultiLinkDistance) -> None:
         P = self.P
+        # The four track fields are read UNCONDITIONALLY, even in 'residual'
+        # mode. They are cheap (one Vector3 and one 9-vector already in the
+        # message) and reading them here rather than behind the mode switch
+        # means the diagnostic line can report what the tracker is saying while
+        # the barrier is still driven by the residual — which is exactly how the
+        # two get compared on hardware before the source is flipped.
+        # A publisher that knows nothing about tracking sends zeros, and zeros
+        # are the documented "no track" state that contributes nothing.
         items = tuple(
             Obstacle(
                 link=ld.robot_link_name,
@@ -393,6 +402,13 @@ class CBFSafetyFilter(Node):
                              ld.closest_point_human.y,
                              ld.closest_point_human.z]),
                 conf=float(ld.confidence),
+                v_vec=np.array([ld.obstacle_velocity.x,
+                                ld.obstacle_velocity.y,
+                                ld.obstacle_velocity.z]),
+                frames_seen=int(ld.frames_seen),
+                vel_cov=np.asarray(ld.velocity_covariance,
+                                   dtype=np.float64).reshape(3, 3),
+                track_id=int(ld.track_id),
             )
             for ld in msg.links if ld.valid
         )
@@ -564,6 +580,29 @@ class CBFSafetyFilter(Node):
             qddot_nom = qddot_nom + self._tan_bias
         else:
             self._tan_bias *= a_tan
+
+        # ── STEP 3c: get OUT OF THE WAY when backing off cannot work ────
+        # The tangential bias above uses the directions the barrier leaves
+        # free, from the arm's own intent. This one answers a different
+        # question: the acceleration box says the robot CANNOT null this
+        # closing rate before the gap reaches zero, so backing off along n̂ is
+        # not a solution however hard it is pushed — and the tracked obstacle
+        # VELOCITY says which way to step aside instead. See utils.cbf_evasion.
+        #
+        # Also a bias on q̈_nom, so every row above stays exactly as binding as
+        # it was and the QP cannot be made infeasible by it.
+        #
+        # Same n_c > 0 gate and same EMA structure as the tangential bias, for
+        # the same two reasons: never steer off stale geometry on a braking
+        # path, and fade out rather than freeze when the feed dies. Its own
+        # accumulator, because the two engage on different triggers and must be
+        # able to decay independently.
+        if n_c > 0 and con is not None and con.esc_bias is not None:
+            self._esc_bias *= a_tan
+            self._esc_bias += (1.0 - a_tan) * con.esc_bias
+            qddot_nom = qddot_nom + self._esc_bias
+        else:
+            self._esc_bias *= a_tan
 
         # ── STEP 4: the hard state box ──────────────────────────────────
         # Underneath every row, and NOT relaxable: one integration step must not
