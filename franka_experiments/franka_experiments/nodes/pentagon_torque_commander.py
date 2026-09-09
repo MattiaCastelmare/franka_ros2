@@ -25,6 +25,8 @@ adds gravity torques on the hardware side.
 Shutdown: on SIGINT the node publishes zero torques for ~0.5 s then exits.
 """
 
+# TODO[LEGACY]: torque-level "pipeline 2"; no launch file starts it | confidence: medium | superseded-by: nodes/pentagon_qddot_commander.py | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import threading

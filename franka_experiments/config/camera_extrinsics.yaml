@@ -1,11 +1,11 @@
 parent_frame: base
 child_frame: camera_color_optical_frame
 translation:
-  x: 1.977299
-  y: 0.121565
-  z: 1.063837
+  x: 1.808212
+  y: 0.086748
+  z: 1.111983
 rotation:
-  x: 0.513266
-  y: 0.595049
-  z: -0.477386
-  w: -0.393164
+  x: 0.510496
+  y: 0.615614
+  z: -0.442613
+  w: -0.405594

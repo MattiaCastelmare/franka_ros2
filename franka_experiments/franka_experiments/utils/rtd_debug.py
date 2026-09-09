@@ -4,6 +4,8 @@ All classes are usable standalone; the node decides which to instantiate
 based on the ``debug_extreme`` parameter.  When the parameter is False none
 of these objects are created, so overhead is exactly zero.
 """
+
+# TODO[LEGACY]: no importer anywhere in the package | confidence: high | superseded-by: none | flagged: 2026-09-01
 from __future__ import annotations
 
 import collections

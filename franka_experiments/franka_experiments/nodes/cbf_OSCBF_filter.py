@@ -31,6 +31,8 @@ Publish:
 
 Parameters: see load_params() docstring.
 """
+
+# TODO[LEGACY]: torque-level "pipeline 2"; no launch file starts it | confidence: medium | superseded-by: nodes/cbf_safety_filter.py | flagged: 2026-09-01
 from __future__ import annotations
 
 import glob

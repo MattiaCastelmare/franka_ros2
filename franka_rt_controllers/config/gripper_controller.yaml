@@ -1,0 +1,38 @@
+# Controller manager configuration for the gripper controller alone.
+# Used by franka_rt_controllers/launch/gripper.launch.py.
+#
+# GripperController claims no hardware interface, so to run it next to an arm
+# controller it is enough to copy its two entries (the type registration under
+# controller_manager and the parameter block below) into that stack's YAML.
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+
+      gripper_controller:
+        type: franka_rt_controllers/GripperController
+
+/**:
+  joint_state_broadcaster:
+    ros__parameters:
+      arm_id: "fr3"
+
+/**:
+  gripper_controller:
+    ros__parameters:
+      # openGripper(): franka_gripper/move
+      open_width: 0.08          # [m] 0.08 = fully open
+      open_speed: 0.1           # [m/s]
+      # closeGripper(): franka_gripper/grasp
+      grasp_width: 0.0          # [m] 0.0 = close all the way on the object
+      grasp_speed: 0.05         # [m/s]
+      grasp_force: 40.0         # [N]
+      grasp_epsilon_inner: 0.005  # [m] final-width tolerance for success
+      grasp_epsilon_outer: 0.08   # [m] 0.08 = accept any object up to 8 cm
+      server_wait_s: 5.0        # [s] wait for franka_gripper on activation
