@@ -293,3 +293,223 @@ class KalmanTrack:
         return (f'KalmanTrack(id={self.track_id} seen={self.frames_seen} '
                 f'missed={self.missed} p={np.round(self.x[IP], 3).tolist()} '
                 f'v={np.round(self.x[IV], 3).tolist()})')
+
+
+# ── Track management ─────────────────────────────────────────────────────────
+#
+# WHY A LIFECYCLE AT ALL
+#
+# A Kalman filter answers "given that these measurements are of the same thing,
+# what is its velocity". Something has to decide which measurements are of the
+# same thing, and that decision is where a tracker earns or loses its keep:
+#
+# * associate too eagerly and two obstacles passing each other SWAP identities.
+#   The velocity attached to each then reverses in one frame, which is the
+#   largest possible error the estimator can make — and it makes it exactly when
+#   two people are close to the robot, i.e. at the worst moment.
+# * associate too reluctantly and every occlusion — a hand passing behind the
+#   arm, the exclusion mask briefly swallowing a blob — kills the track and
+#   spawns a new one. The new track's velocity starts at zero and takes ~5
+#   frames to recover, so a continuously approaching obstacle is reported as
+#   stationary for 150 ms every time it is briefly hidden.
+# * confirm too eagerly and a single-frame depth artefact becomes a track with
+#   a velocity, which the consumer then uses to tighten a barrier.
+#
+# The three defences are, in order: a Mahalanobis GATE (not a Euclidean radius —
+# a coasting track's covariance grows, so its gate opens by itself and the
+# occlusion case is re-associated without also widening the gate of a
+# well-observed track), M-of-N CONFIRMATION before a track is visible to any
+# consumer, and COASTING for K frames before death.
+#
+# ASSOCIATION IS GREEDY NEAREST-NEIGHBOUR, GLOBALLY ORDERED
+#
+# Every (track, cluster) pair inside the gate is scored, the whole set is sorted
+# by Mahalanobis distance, and pairs are consumed best-first with each track and
+# cluster used at most once. That is not optimal in the Hungarian sense, but it
+# is deterministic, O(T·C log(T·C)), dependency-free, and it differs from the
+# optimal assignment only when two gates overlap AND the cost matrix is nearly
+# degenerate — which is precisely the case where the prediction is what
+# disambiguates, not the assignment algorithm. Scoring against the PREDICTED
+# measurement is what makes two crossing obstacles keep their ids: at the moment
+# they overlap the positions are identical but the predictions are not.
+
+
+class TrackManager:
+    """Nearest-neighbour tracker over :class:`KalmanTrack` instances.
+
+    Args:
+        q_jerk / sigma_meas / sigma_v0 / sigma_a0: forwarded to every new
+            :class:`KalmanTrack`.
+        gate_mahalanobis: association gate. A Mahalanobis distance, so it is in
+            units of the filter's OWN uncertainty: 3.0 admits ~97 % of true
+            associations for a 3-DoF innovation (χ²₃ at 9.0). Raising it trades
+            lost tracks for identity swaps.
+        gate_max_m: [m] hard Euclidean ceiling applied on top of the gate. The
+            Mahalanobis gate widens without bound while a track coasts, and
+            after enough missed frames it would accept a cluster anywhere in
+            the room. This is the backstop that keeps a resurrected track
+            physically plausible — 0.5 m is what a human limb can cover in the
+            ~0.17 s a 5-frame coast lasts.
+        confirm_hits / confirm_window: M-of-N birth rule. A track becomes
+            visible to consumers after ``confirm_hits`` updates within the last
+            ``confirm_window`` frames of its life. M-of-N rather than M
+            CONSECUTIVE: a real obstacle at the edge of the depth range flickers,
+            and demanding consecutive hits would keep restarting a track that is
+            genuinely there, while a one-frame artefact fails both rules anyway.
+        max_missed: frames a track may coast before it is deleted.
+        max_tracks: hard ceiling on live tracks. A degenerate frame (the
+            exclusion mask failing, the whole scene reading as obstacle) can
+            otherwise produce hundreds of clusters and hence hundreds of tracks,
+            and the association cost is O(T·C).
+    """
+
+    def __init__(
+        self,
+        *,
+        q_jerk: float = 2.0,
+        sigma_meas: float = 0.01,
+        sigma_v0: float = 1.0,
+        sigma_a0: float = 5.0,
+        gate_mahalanobis: float = 3.0,
+        gate_max_m: float = 0.5,
+        confirm_hits: int = 3,
+        confirm_window: int = 5,
+        max_missed: int = 5,
+        max_tracks: int = 12,
+    ) -> None:
+        self.q_jerk = float(q_jerk)
+        self.sigma_meas = float(sigma_meas)
+        self.sigma_v0 = float(sigma_v0)
+        self.sigma_a0 = float(sigma_a0)
+        self.gate_mahalanobis = float(gate_mahalanobis)
+        self.gate_max_m = float(gate_max_m)
+        self.confirm_hits = int(confirm_hits)
+        self.confirm_window = int(confirm_window)
+        self.max_missed = int(max_missed)
+        self.max_tracks = int(max_tracks)
+
+        self.tracks: list = []
+        self._next_id = 1        # ids start at 1: 0 is the message's "no track"
+        self._hits: dict = {}    # track_id → recent hit/miss history (deque-ish)
+        self._confirmed: set = set()
+
+    # ── Query ───────────────────────────────────────────────────────────────
+
+    def confirmed_tracks(self) -> list:
+        """Tracks a consumer may act on, newest evidence first.
+
+        A TENTATIVE track is deliberately invisible here. It still runs — it has
+        to, or it could never accumulate the hits to be confirmed — but nothing
+        downstream sees a velocity from it, so a speckle that survives two frames
+        cannot reach the barrier.
+        """
+        return [t for t in self.tracks if t.track_id in self._confirmed]
+
+    def is_confirmed(self, track: KalmanTrack) -> bool:
+        return track.track_id in self._confirmed
+
+    # ── Step ────────────────────────────────────────────────────────────────
+
+    def step(self, clusters, dt: float) -> list:
+        """Advance every track by ``dt``, associate ``clusters``, return the
+        CONFIRMED tracks.
+
+        Args:
+            clusters: sequence of :class:`~franka_experiments.utils.obstacle_clusters.Cluster`
+                for this frame, or of anything exposing ``centroid_cam``. May be
+                empty — every track then coasts, which is the correct response
+                to a frame where perception saw nothing.
+            dt: [s] since the previous frame, from the CAPTURE clock.
+
+        Returns:
+            The confirmed tracks, i.e. exactly :meth:`confirmed_tracks`.
+        """
+        for t in self.tracks:
+            t.predict(dt)
+
+        z = [np.asarray(c.centroid_cam, dtype=np.float64).ravel() for c in clusters]
+        pairs = self._associate(z)
+
+        used_c = set()
+        for ti, ci in pairs:
+            self.tracks[ti].update(z[ci])
+            used_c.add(ci)
+        hit_t = {ti for ti, _ in pairs}
+
+        for i, t in enumerate(self.tracks):
+            self._record(t.track_id, i in hit_t)
+
+        # Births from every cluster that matched nothing. Done AFTER the update
+        # pass so a newborn is never itself an association candidate this frame
+        # — otherwise two clusters from one split blob would spawn a track and
+        # then immediately feed it, confirming a fragment.
+        for ci, zc in enumerate(z):
+            if ci in used_c or len(self.tracks) >= self.max_tracks:
+                continue
+            self.tracks.append(KalmanTrack(
+                zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
+                sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
+                track_id=self._next_id))
+            self._record(self._next_id, True)
+            self._next_id += 1
+
+        self._reap()
+        return self.confirmed_tracks()
+
+    # ── Association ─────────────────────────────────────────────────────────
+
+    def _associate(self, z) -> list:
+        """[(track_index, cluster_index)], greedy best-first inside the gate."""
+        if not self.tracks or not z:
+            return []
+        cand = []
+        for ti, t in enumerate(self.tracks):
+            p_pred = t.predicted_measurement()
+            for ci, zc in enumerate(z):
+                if float(np.linalg.norm(zc - p_pred)) > self.gate_max_m:
+                    continue
+                d = t.mahalanobis(zc)
+                if d <= self.gate_mahalanobis:
+                    cand.append((d, ti, ci))
+        # Sorted by distance, then by (track, cluster) index: the tie-break is
+        # what makes the result independent of the order Python happened to
+        # build `cand` in, and hence reproducible frame to frame.
+        cand.sort(key=lambda r: (r[0], r[1], r[2]))
+        taken_t, taken_c, out = set(), set(), []
+        for _, ti, ci in cand:
+            if ti in taken_t or ci in taken_c:
+                continue
+            taken_t.add(ti)
+            taken_c.add(ci)
+            out.append((ti, ci))
+        return out
+
+    # ── Lifecycle ───────────────────────────────────────────────────────────
+
+    def _record(self, track_id: int, hit: bool) -> None:
+        h = self._hits.setdefault(track_id, [])
+        h.append(bool(hit))
+        if len(h) > self.confirm_window:
+            del h[:-self.confirm_window]
+        if track_id not in self._confirmed and sum(h) >= self.confirm_hits:
+            self._confirmed.add(track_id)
+
+    def _reap(self) -> None:
+        keep = []
+        for t in self.tracks:
+            if t.missed > self.max_missed:
+                self._hits.pop(t.track_id, None)
+                self._confirmed.discard(t.track_id)
+            else:
+                keep.append(t)
+        self.tracks = keep
+
+    def reset(self) -> None:
+        """Drop every track and its history (camera restart, resolution change).
+
+        Ids are NOT rewound: a consumer holding an old id must see it disappear,
+        never see it silently refer to a different obstacle.
+        """
+        self.tracks = []
+        self._hits.clear()
+        self._confirmed.clear()
