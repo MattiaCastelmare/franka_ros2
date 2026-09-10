@@ -56,7 +56,6 @@ class HumanArmVisualizer(Node):
         color_topic = str(config['color_topic'])
         landmarks_topic = str(config['landmarks_topic'])
         overlay_topic = str(config['overlay_topic'])
-        # Read camera info from config, default to color camera info if missing
         camera_info_topic = str(config.get('camera_info_topic', '/camera/camera/color/camera_info'))
 
         self.visibility_threshold = float(config['visibility_threshold'])
@@ -77,7 +76,7 @@ class HumanArmVisualizer(Node):
         self.last_valid_landmark_stamp_ns: int | None = None
         self.last_render_monotonic_ns: int | None = None
 
-        # Camera intrinsics
+        # --- Camera Intrinsics ---
         self.fx = self.fy = self.cx = self.cy = None
         self.camera_frame = None
 
@@ -88,7 +87,7 @@ class HumanArmVisualizer(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # --- 3D Subscribers ---
+        # --- Subscriptions ---
         self.arm_state_sub = self.create_subscription(
             HumanArmState, '/human/arm_state', self.arm_state_cb, 10
         )
@@ -99,7 +98,7 @@ class HumanArmVisualizer(Node):
             CameraInfo, camera_info_topic, self.camera_info_cb, 10
         )
 
-        # --- 3D Publisher ---
+        # --- Publishers ---
         self.marker_pub = self.create_publisher(MarkerArray, '/human_robot/markers', 10)
         
         sensor_qos = QoSProfile(
@@ -138,19 +137,16 @@ class HumanArmVisualizer(Node):
             self.camera_frame = msg.header.frame_id
 
     def dist_cb(self, msg: MultiLinkDistance):
-        """Save the latest calculated distances."""
         self.latest_distances = msg
 
     def image_cb(self, msg: Image) -> None:
-        """Store only the newest camera image."""
         self.latest_image_msg = msg
 
     def arm_state_cb(self, msg: HumanArmState) -> None:
-        """Stores the latest 3D human arm state for RViz."""
         self.latest_arm_state = msg
 
     def landmarks_cb(self, msg: PointCloud) -> None:
-        """Accept complete detections."""
+        """Accept complete MediaPipe detections."""
         if len(msg.points) < len(self.LANDMARK_NAMES):
             return
 
@@ -178,8 +174,11 @@ class HumanArmVisualizer(Node):
         if self.display_points is None:
             self.display_points = self.target_points.copy()
 
+    # -------------------------------------------------------------------------
+    # 3D Marker Generation
+    # -------------------------------------------------------------------------
     def publish_3d_markers(self) -> None:
-        """Generates and publishes 3D markers for RViz visualization."""
+        """Generates and publishes human arm and distance arrows for RViz."""
         if self.latest_arm_state is None:
             return
 
@@ -208,9 +207,9 @@ class HumanArmVisualizer(Node):
                 
         marker_array.markers.append(arm_marker)
 
-        # 2. --- ROBOT CONTROL POINTS & DISTANCE ARROWS ---
+        # 2. --- ROBOT CPs & DISTANCE ARROWS ---
         if self.latest_distances is not None and self.latest_distances.links:
-            
+
             # Draw a sphere for each control point on the robot
             for i, link in enumerate(self.latest_distances.links):
                 sphere = Marker()
@@ -230,13 +229,13 @@ class HumanArmVisualizer(Node):
             # Find the absolute minimum distance link to highlight it
             min_link = min(self.latest_distances.links, key=lambda l: l.distance)
             
-            # Draw an arrow for EACH link
+            # Draw an arrow for each link
             for i, link in enumerate(self.latest_distances.links):
                 dist_marker = Marker()
                 dist_marker.header.frame_id = base_frame
                 dist_marker.header.stamp = timestamp
                 dist_marker.ns = "distances"
-                dist_marker.id = i + 100 # Offset to avoid ID conflicts
+                dist_marker.id = i
                 dist_marker.type = Marker.ARROW
                 dist_marker.action = Marker.ADD
                 
@@ -247,7 +246,7 @@ class HumanArmVisualizer(Node):
                 is_min = (link == min_link)
                 
                 if is_min:
-                    # HIGHLIGHTED: Thick arrow for the absolute minimum distance
+                    # Highlight absolute minimum distance
                     dist_marker.scale.x = 0.02  # Shaft
                     dist_marker.scale.y = 0.04  # Head
                     dist_marker.scale.z = 0.04
@@ -258,9 +257,9 @@ class HumanArmVisualizer(Node):
                     else:
                         dist_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
                 else:
-                    # SECONDARY: Thin, semi-transparent grey line for other links
-                    dist_marker.scale.x = 0.005 # Thin shaft
-                    dist_marker.scale.y = 0.010 # Thin head
+                    # Secondary distances
+                    dist_marker.scale.x = 0.005
+                    dist_marker.scale.y = 0.010
                     dist_marker.scale.z = 0.010
                     dist_marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
                     
@@ -268,8 +267,69 @@ class HumanArmVisualizer(Node):
 
         self.marker_pub.publish(marker_array)
 
+    # -------------------------------------------------------------------------
+    # 2D Projection Helpers
+    # -------------------------------------------------------------------------
+    def _project_point(self, point_msg, R: np.ndarray, t: np.ndarray):
+        """Transforms a 3D base point into a 2D camera pixel."""
+        p_base = np.array([point_msg.x, point_msg.y, point_msg.z])
+        p_cam = R @ p_base + t
+        
+        # Check if the point is physically in front of the camera (Z > 0)
+        if p_cam[2] > 0.01:
+            u = int((p_cam[0] / p_cam[2]) * self.fx + self.cx)
+            v = int((p_cam[1] / p_cam[2]) * self.fy + self.cy)
+            return (u, v)
+        return None
+
+    def _draw_distance_line(self, image: np.ndarray, stamp) -> None:
+        """Projects and draws the shortest geometric distance on the 2D overlay."""
+        if not self.latest_distances or self.fx is None or not self.camera_frame:
+            return
+            
+        if not self.latest_distances.links:
+            return
+
+        try:
+            min_link = min(self.latest_distances.links, key=lambda l: l.distance)
+            
+            # Lookup TF from robot base to camera optical frame
+            tf_msg = self.tf_buffer.lookup_transform(
+                self.camera_frame, 
+                'fr3_link0', 
+                stamp,
+                timeout=Duration(seconds=0.05)
+            )
+            
+            q = tf_msg.transform.rotation
+            R = quaternion_to_rotation(q.x, q.y, q.z, q.w)
+            t = np.array([
+                tf_msg.transform.translation.x, 
+                tf_msg.transform.translation.y, 
+                tf_msg.transform.translation.z
+            ])
+            
+            # Project exact geometric centers to 2D
+            uv_robot = self._project_point(min_link.closest_point_robot, R, t)
+            uv_human = self._project_point(min_link.closest_point_human, R, t)
+            
+            if uv_robot and uv_human:
+                if self.scale < 1.0:
+                    uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
+                    uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
+                
+                cv2.line(image, uv_robot, uv_human, (255, 255, 255), 1)
+                cv2.circle(image, uv_robot, 3, (0, 255, 255), -1) 
+                cv2.circle(image, uv_human, 3, (0, 0, 255), -1)   
+        
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------------------
+    # Main Render Loop
+    # -------------------------------------------------------------------------
     def render_latest(self) -> None:
-        """Render the newest image and the most recent valid pose."""
+        """Main rendering pipeline executed at a fixed frequency."""
         if self.overlay_pub.get_subscription_count() == 0:
             return
 
@@ -281,17 +341,20 @@ class HumanArmVisualizer(Node):
         if image_stamp_ns == self.last_rendered_stamp_ns:
             return
 
+        # Convert Image
         try:
             image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8').copy()
         except Exception as exc:
             self.get_logger().warn(f'Image conversion failed: {exc}', throttle_duration_sec=2.0)
             return
 
+        # Resize
         if self.scale < 1.0:
             image = cv2.resize(
                 image, dsize=None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA
             )
 
+        # Draw Human Landmarks
         if landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns, self.landmark_hold_s):
             self.display_points, self.last_render_monotonic_ns = update_display_points(
                 self.target_points, self.display_points, self.smoothing_tau_s, self.max_hz, self.last_render_monotonic_ns
@@ -302,56 +365,16 @@ class HumanArmVisualizer(Node):
                     self.visibility_threshold, self.scale, self.draw_labels
                 )
 
-        # --- DRAW SHORTEST DISTANCE LINE ---
-        if self.latest_distances and self.fx is not None and self.camera_frame:
-            try:
-                if self.latest_distances.links:
-                    min_link = min(self.latest_distances.links, key=lambda l: l.distance)
-                    
-                    # Use the exact timestamp of the image to avoid TF errors with the bag!
-                    tf_msg = self.tf_buffer.lookup_transform(
-                        self.camera_frame, 
-                        'fr3_link0', 
-                        image_msg.header.stamp,
-                        timeout=Duration(seconds=0.05)
-                    )
-                    
-                    q = tf_msg.transform.rotation
-                    R = quaternion_to_rotation(q.x, q.y, q.z, q.w)
-                    t = np.array([tf_msg.transform.translation.x, 
-                                  tf_msg.transform.translation.y, 
-                                  tf_msg.transform.translation.z])
-                    
-                    def project_3d_to_2d(point_msg):
-                        p_base = np.array([point_msg.x, point_msg.y, point_msg.z])
-                        p_cam = R @ p_base + t
-                        if p_cam[2] > 0.01:
-                            u = int((p_cam[0] / p_cam[2]) * self.fx + self.cx)
-                            v = int((p_cam[1] / p_cam[2]) * self.fy + self.cy)
-                            return (u, v)
-                        return None
-
-                    uv_robot = project_3d_to_2d(min_link.closest_point_robot)
-                    uv_human = project_3d_to_2d(min_link.closest_point_human)
-                    
-                    if uv_robot and uv_human:
-                        if self.scale < 1.0:
-                            uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
-                            uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
-                        
-                        cv2.line(image, uv_robot, uv_human, (255, 255, 255), 1)
-                        cv2.circle(image, uv_robot, 3, (0, 255, 255), -1) 
-                        cv2.circle(image, uv_human, 3, (0, 0, 255), -1)   
-            
-            except Exception as e:
-                # This log will tell you if the line jumps due to TF or other issues
-                self.get_logger().warn(f"Could not draw 2D distance line: {e}", throttle_duration_sec=2.0)
-
+        # Draw Shortest Distance Line
+        self._draw_distance_line(image, image_msg.header.stamp)
+        
+        # Publish 2D Overlay
         overlay_msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
         overlay_msg.header = image_msg.header
         self.overlay_pub.publish(overlay_msg)
         self.last_rendered_stamp_ns = image_stamp_ns
 
+        # Generate and Publish 3D Markers
         self.publish_3d_markers()
 
 

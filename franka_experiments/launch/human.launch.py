@@ -46,7 +46,7 @@ def generate_launch_description():
     camera_link_extrinsics_path = os.path.join(
         package_share,
         'config',
-        'camera_link_extrinsics.yaml',
+        'camera_extrinsics.yaml',
     )
     rviz_config_path = os.path.join(
         package_share,
@@ -84,7 +84,7 @@ def generate_launch_description():
             '--qz', str(rotation['z']),
             '--qw', str(rotation['w']),
             '--frame-id', 'fr3_link0',
-            '--child-frame-id', 'camera_link',
+            '--child-frame-id', 'camera_color_optical_frame',
         ],
         parameters=[{'use_sim_time': use_sim_time}],
         output='screen',

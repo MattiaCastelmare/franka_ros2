@@ -15,7 +15,7 @@ import pinocchio as pin
 
 from franka_msgs.msg import HumanArmState, LinkDistance, MultiLinkDistance
 from franka_experiments.utils.cbf_utils import load_robot_config
-from franka_experiments.utils.human_utils import extract_human_keypoints, init_pinocchio_from_xacro
+from franka_experiments.utils.human_utils import extract_human_keypoints, init_pinocchio_from_xacro, define_control_points
 from franka_experiments.utils.capsule_geometry import HumanArmGeometry, RobotGeometry
 
 
@@ -102,11 +102,11 @@ class HumanDistance(Node):
         if not self.latest_arm_state.keypoint_valid[0]: 
             return
 
-        # 1. HUMAN CAPSULES
+        # Human Capsules
         human_kpts, human_vels, human_valid = extract_human_keypoints(self.latest_arm_state)
         human_capsules = self.human_geometry.build_capsules(human_kpts, valid=human_valid)
 
-        # 2. ROBOT KINEMATICS (Pinocchio FK)
+        # Robot Kinematics (Pinocchio FK)
         q = np.array(self.latest_joint_state.position[:7])
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
@@ -119,54 +119,16 @@ class HumanDistance(Node):
                 oMf = self.data.oMf[frame_id]
                 transforms[frame.name] = (oMf.rotation.copy(), oMf.translation.copy())
 
-        # 3. ROBOT CONTROL POINTS
-        ee_link = self.robot_cfg.get('ee_link', 'fr3_link8')
-        ee_tip_axis = self.dist_cfg['ee_tip_axis']
-        ee_tip_offset = self.dist_cfg['ee_tip_offset']
+        # Robot Control Points
+        robot_cps = define_control_points(transforms, self.robot_cfg, self.dist_cfg)
 
-        robot_cps = []
-        for seg in self.robot_cfg.get('segments', []):
-            n_cp = int(seg.get('control_points', 0))
-            if n_cp <= 0:
-                continue
-
-            start_link = seg['start_link']
-            end_link = seg['end_link']
-            if start_link not in transforms or end_link not in transforms:
-                continue
-
-            _, p0 = transforms[start_link]
-            R_end, p1 = transforms[end_link]
-            radius = float(seg.get('radius', 0.05))
-
-            # Distribute points strictly inside the link segment
-            ts = [(k + 1) / (n_cp + 1) for k in range(n_cp)]
-            
-            # Special case for End-Effector: distribute towards the tip
-            if end_link == ee_link:
-                ts = [1.0] if n_cp == 1 else [(k + 1) / n_cp for k in range(n_cp)]
-
-            for k, t in enumerate(ts):
-                p = p0 + t * (p1 - p0)
-                
-                # Apply physical tip offset to the final point
-                if end_link == ee_link and np.isclose(t, 1.0):
-                    p = p1 + ee_tip_offset * R_end[:, ee_tip_axis]
-
-                robot_cps.append({
-                    'name': f"{start_link}_cp_{k}",
-                    'position': p,
-                    'radius': radius,
-                    'source_capsule': start_link  # Used directly as robot_link_name
-                })
-
-        # 4. CALCULATE MINIMUM DISTANCE
         msg = MultiLinkDistance()
         links_dict = {}
         
         # We reuse the internal geometry logic of RobotGeometry for point-to-capsule math
         robot_geom = RobotGeometry(definitions=[])
-        
+
+        # Minimum Distance Computation (Robot Control Points vs Human Capsules)
         for cp in robot_cps:
             best_dist_info = robot_geom.minimum_distance_to_human([cp], human_capsules)
             

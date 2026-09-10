@@ -188,6 +188,46 @@ def extract_human_keypoints(state_msg: HumanArmState):
     return positions, velocities, valid
 
 
+def define_control_points(transforms: dict, robot_cfg: dict, distance_cfg: dict) -> list:
+    """Build the ordered list of control points along the robot kinematic chain."""
+    ee_link = robot_cfg.get('ee_link', 'fr3_link8')
+    ee_tip_axis = distance_cfg['ee_tip_axis']
+    ee_tip_offset = distance_cfg['ee_tip_offset']
+    control_points = []
+
+    for seg in robot_cfg.get('segments', []):
+        n_cp = int(seg.get('control_points', 0))
+        if n_cp <= 0:
+            continue
+
+        start_link = seg['start_link']
+        end_link = seg['end_link']
+        if start_link not in transforms or end_link not in transforms:
+            continue
+
+        _, p0 = transforms[start_link]
+        R_end, p1 = transforms[end_link]
+        radius = float(seg.get('radius', 0.05))
+
+        ts = [(k + 1) / (n_cp + 1) for k in range(n_cp)]
+        if end_link == ee_link:
+            ts = [1.0] if n_cp == 1 else [(k + 1) / n_cp for k in range(n_cp)]
+
+        for k, t in enumerate(ts):
+            p = p0 + t * (p1 - p0)
+            if end_link == ee_link and np.isclose(t, 1.0):
+                p = p1 + ee_tip_offset * R_end[:, ee_tip_axis]
+
+            control_points.append({
+                'name': f"{start_link}_cp_{k}",
+                'position': p,
+                'radius': radius,
+                'source_capsule': start_link
+            })
+
+    return control_points
+
+
 def to_point(values):
     """Convert a 3-vector into geometry_msgs/Point."""
     msg = Point()
