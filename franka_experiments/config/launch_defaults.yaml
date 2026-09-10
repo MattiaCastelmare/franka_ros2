@@ -158,6 +158,23 @@ obstacle_identity_guard: true
 # supervised run has confirmed the extra tightening on hardware.
 latency_compensation: false
 
+# Up to k obstacle rows per control point, one per connected cluster
+# (real_time_distance, perception.multi_obstacle_k): two distinct obstacles
+# near the same control point each get their own HOCBF row. 1 = the single
+# nearest point, as before.
+multi_obstacle_k: 2
+
+# Tracked obstacle velocity inside hdot (cbf_safety_filter enable_vobs_in_hdot):
+# on rows with a confirmed track, hdot = a^T qdot - n_hat^T v_track, SIGNED.
+# Needs obstacle_tracking. Watch vhd= in CBFDIAG.
+vobs_in_hdot: true
+
+# Speed-proportional standoff (cbf_safety_filter enable_velocity_standoff):
+# d_safe_eff = d_safe + 0.20 s * closing speed (max +0.20 m). A fast obstacle
+# is avoided from further away, a static one keeps plain d_safe.
+# Watch hstd= in CBFDIAG. Not yet validated on hardware.
+velocity_standoff: true
+
 # DANGER, and it stays off. Renders a synthetic sphere into the depth stream so
 # the whole chain can be exercised end to end -- the arm WILL move away from
 # something that is not there. Command line only, never a default.

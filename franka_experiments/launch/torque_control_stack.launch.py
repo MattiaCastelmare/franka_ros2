@@ -126,6 +126,7 @@ _ALL_PARAMS = [
     'livelock_escape', 'latency_compensation',
     'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
     'uncertainty_margin', 'sim_obstacle', 'depth_bag',
+    'multi_obstacle_k', 'vobs_in_hdot', 'velocity_standoff',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
@@ -475,6 +476,9 @@ def _launch_all(context):
             parameters=[{
                 'robot_config_path':      rtd_config,
                 'camera_extrinsics_path': p['camera_extrinsics_yaml'],
+                # Obstacle rows per control point, one per cluster; overrides
+                # perception.multi_obstacle_k in fr3_control.yaml (0 = YAML).
+                'multi_obstacle_k':       int(p['multi_obstacle_k']),
             }],
         )
         actions.append(TimerAction(period=rtd_delay, actions=[real_time_distance_node]))
@@ -511,6 +515,8 @@ def _launch_all(context):
             'enable_latency_compensation': _as_bool(p['latency_compensation']),
             'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
             'enable_zone_ladder':       _as_bool(p['zone_ladder']),
+            'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
+            'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
             # A launch BOOL onto a threshold parameter: the guard's "off" state
             # is 0.0 rad, and exposing the angle on the command line would
             # invite tuning a number whose right value is a property of the
@@ -767,6 +773,25 @@ def generate_launch_description():
                             'the nominal becomes a braking command; the barrier '
                             'rows keep full authority, so this is not a freeze '
                             '(cbf_safety_filter enable_zone_ladder)'),
+            DeclareLaunchArgument(
+                'multi_obstacle_k',
+                default_value=str(_DEFAULTS.get('multi_obstacle_k', '0')),
+                description='Obstacle rows per control point, one per cluster '
+                            '(real_time_distance multi_obstacle_k). 1 = single '
+                            'nearest point as before; 0 = use fr3_control.yaml'),
+            DeclareLaunchArgument(
+                'vobs_in_hdot',
+                default_value=str(_DEFAULTS.get('vobs_in_hdot', 'false')),
+                description='Tracked obstacle velocity inside hdot, signed, on '
+                            'rows with a confirmed track (cbf_safety_filter '
+                            'enable_vobs_in_hdot). REQUIRES obstacle_tracking:=true'),
+            DeclareLaunchArgument(
+                'velocity_standoff',
+                default_value=str(_DEFAULTS.get('velocity_standoff', 'false')),
+                description='Move the obstacle barrier out in proportion to the '
+                            'estimated closing speed: d_safe + time_s * v_app '
+                            '(cbf_safety_filter enable_velocity_standoff). '
+                            'Watch hstd= in CBFDIAG'),
             DeclareLaunchArgument(
                 'obstacle_velocity_normal_guard',
                 default_value=str(_DEFAULTS.get(

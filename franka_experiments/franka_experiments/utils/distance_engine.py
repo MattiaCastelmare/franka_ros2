@@ -41,10 +41,20 @@ Approach-spike outlier rejection (rate-limit + 1-frame confirmation):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+
+from franka_experiments.utils.obstacle_clusters import label_points
+
+
+class ObstacleHit(NamedTuple):
+    """One obstacle point seen by one control point (one future HOCBF row)."""
+    distance:   float                 # surface gap [m]
+    point:      Optional[np.ndarray]  # obstacle point, BASE frame
+    direction:  Optional[np.ndarray]  # unit n_hat, obstacle -> control point
+    cluster_id: int                   # label of the connected component; -1 = none
 
 
 @dataclass
@@ -60,6 +70,23 @@ class ControlPointResult:
     direction: Optional[np.ndarray] = None
     closest_obstacle_point: Optional[np.ndarray] = None
     closest_pixel: Optional[Tuple[int, int]] = None
+    # Cluster of the global-argmin point above; -1 unless multi_obstacle_k > 1.
+    cluster_id: int = -1
+    # Nearest point of each OTHER cluster, ascending distance, at most k-1.
+    # Always empty with multi_obstacle_k = 1.
+    extras: List[ObstacleHit] = field(default_factory=list)
+
+    @property
+    def obstacles(self) -> List[ObstacleHit]:
+        """Every obstacle entry of this CP, nearest first, length <= k.
+
+        Rank 0 is built from the fields above, so it is whatever the LPF made
+        of the global argmin — with k = 1 this list is exactly today's result.
+        """
+        if not np.isfinite(self.distance):
+            return []
+        return [ObstacleHit(self.distance, self.closest_obstacle_point,
+                            self.direction, self.cluster_id)] + list(self.extras)
 
 
 @dataclass
@@ -86,6 +113,11 @@ class ObstacleCloud:
         stamp: [s] capture time of the depth frame, or None when the caller did
             not supply one. A tracker differentiates positions, so it needs the
             CAPTURE clock, not the receipt clock.
+        labels: (N,) int64 connected-component label of each point, or None.
+            Set only with multi_obstacle_k > 1, where the engine labels the
+            pixels itself; ``cluster_obstacles`` then reuses them instead of
+            labelling again, so a row's cluster_id and the tracker's cluster
+            name the same object.
     """
 
     p_cam: np.ndarray
@@ -93,6 +125,7 @@ class ObstacleCloud:
     v:     np.ndarray
     step:  int
     stamp: Optional[float] = None
+    labels: Optional[np.ndarray] = None
 
 
 class DistanceEngine:
@@ -135,6 +168,17 @@ class DistanceEngine:
         # before, which is what keeps the CBF rows bit-identical.
         self._export_cloud = bool(distance_cfg.get('export_obstacle_cloud', False))
         self.last_obstacle_cloud: Optional[ObstacleCloud] = None
+
+        # Top-k obstacle points per CP, one per connected cluster
+        # (perception.multi_obstacle_k). 1 = today's single global argmin: no
+        # labelling, no extras, output bit-identical. The horizon and the row
+        # cap prune only the EXTRA rows (rank >= 1); a CP's own nearest point is
+        # never dropped, so k > 1 can add rows but never remove one k = 1 had.
+        self._multi_k        = max(1, int(distance_cfg.get('multi_obstacle_k', 1)))
+        self._multi_max_rows = int(distance_cfg.get('multi_obstacle_max_rows', 24))
+        self._multi_horizon  = float(distance_cfg.get('multi_obstacle_horizon', np.inf))
+        self._multi_connectivity = int(distance_cfg.get('multi_obstacle_connectivity', 8))
+        self._multi_depth_jump   = float(distance_cfg.get('multi_obstacle_depth_jump_m', 0.10))
 
     def compute(
         self,
@@ -222,6 +266,24 @@ class DistanceEngine:
         p_cam[:, 1] = (vg.astype(np.float32) - cy_f32) * (Z * fy_inv_f32)
         p_cam[:, 2] = Z
 
+        # ── Step 4 (multi-obstacle only): connected-component labels ──────
+        # The labelling the tracker clusters with (obstacle_clusters.
+        # label_points, same u/v/z/step), computed ONCE per frame here because
+        # the distances need it first; exported on the cloud below and reused
+        # by cluster_obstacles. k = 1 skips this entirely.
+        labels = order = starts = ends = None
+        if self._multi_k > 1:
+            _, labels = label_points(ug, vg, Z, step=step,
+                                     connectivity=self._multi_connectivity,
+                                     depth_jump=self._multi_depth_jump)
+            labels = np.asarray(labels, dtype=np.int64)
+            # Sorted once; per CP the per-cluster minimum is then one reduceat.
+            # connected_components labels are dense (0..n-1, none empty), so
+            # sorted segment i IS label i.
+            order  = np.argsort(labels, kind='stable')
+            starts = np.flatnonzero(np.r_[True, np.diff(labels[order]) != 0])
+            ends   = np.r_[starts[1:], labels.size]
+
         # ── Step 4a: export the selection (opt-in, no copy) ───────────────
         # p_cam/ug/vg here are the obstacle mask in its sparse form: every pixel
         # that survived the exclusion mask AND the depth-range filter, already
@@ -229,7 +291,8 @@ class DistanceEngine:
         # about the identical pixel set.
         if self._export_cloud:
             self.last_obstacle_cloud = ObstacleCloud(
-                p_cam=p_cam, u=ug, v=vg, step=int(step), stamp=frame_stamp)
+                p_cam=p_cam, u=ug, v=vg, step=int(step), stamp=frame_stamp,
+                labels=labels)
 
         # ── Step 4b: dilation-margin → metres, per obstacle pixel ─────────
         # Convert the pixel-space exclusion-mask dilation back to metres at the
@@ -282,6 +345,13 @@ class DistanceEngine:
                 direction   = None
                 obs_pix     = None
 
+            cid, extras = -1, []
+            if labels is not None and np.isfinite(min_dist):
+                cid    = int(labels[best])
+                extras = self._cluster_extras(
+                    surface, cid, order, starts, ends, p_cam,
+                    R_base_f32, t_base_f32, cp['point'])
+
             results.append(ControlPointResult(
                 point=cp['point'],
                 seg_idx=cp['seg_idx'],
@@ -293,10 +363,61 @@ class DistanceEngine:
                 direction=direction,
                 closest_obstacle_point=obs_pt_base,
                 closest_pixel=obs_pix,
+                cluster_id=cid,
+                extras=extras,
             ))
+
+        if self._multi_k > 1:
+            self._cap_extra_rows(results)
 
         # ── Step 7: apply conservative low-pass filter ────────────────────
         return self._lpf_pass(results, dt), int(ug.size)
+
+    # ── Multi-obstacle rows ───────────────────────────────────────────────
+
+    def _cluster_extras(self, surface, cid0, order, starts, ends, p_cam,
+                        R_base_f32, t_base_f32, cp_point) -> List[ObstacleHit]:
+        """Nearest point of each cluster other than ``cid0``, best k-1.
+
+        One entry per cluster by construction (the per-cluster minimum), so two
+        points of the same object can never become two rows. Entries past the
+        obstacle horizon are dropped here; the global row cap is applied later
+        in :meth:`_cap_extra_rows`, once every CP is known.
+        """
+        mins = np.minimum.reduceat(surface[order], starts)   # (n_labels,)
+        mins[cid0] = np.inf                                   # rank 0's cluster
+        n_take = min(self._multi_k - 1, int(mins.size))
+        out: List[ObstacleHit] = []
+        for lb in np.argsort(mins, kind='stable')[:n_take]:
+            d = float(mins[lb])
+            if not np.isfinite(d) or d > self._multi_horizon:
+                break                                         # ascending: done
+            sl = order[starts[lb]:ends[lb]]
+            j  = int(sl[int(surface[sl].argmin())])
+            obs_pt_base = R_base_f32 @ p_cam[j] + t_base_f32
+            vec  = cp_point.astype(np.float64) - obs_pt_base.astype(np.float64)
+            norm = float(np.linalg.norm(vec))
+            direction = (vec / norm).astype(np.float32) if norm > 1e-9 \
+                        else np.zeros(3, np.float32)
+            out.append(ObstacleHit(d, obs_pt_base, direction, int(lb)))
+        return out
+
+    def _cap_extra_rows(self, results: List[ControlPointResult]) -> None:
+        """Keep at most ``multi_obstacle_max_rows`` rows in total, nearest first.
+
+        Only extras compete for the budget: every CP's own nearest point is a
+        row k = 1 already had, and trading it for another CP's second-nearest
+        would delete a barrier. Ties break on (seg_idx, cp_idx, rank), so the
+        surviving set — and the n_c OSQP sees — is deterministic.
+        """
+        n_primary = sum(1 for r in results if np.isfinite(r.distance))
+        budget = max(self._multi_max_rows - n_primary, 0)
+        ranked = sorted((h.distance, r.seg_idx, r.cp_idx, rank, i)
+                        for i, r in enumerate(results)
+                        for rank, h in enumerate(r.extras))
+        keep = {(i, rank) for _, _, _, rank, i in ranked[:budget]}
+        for i, r in enumerate(results):
+            r.extras = [h for rank, h in enumerate(r.extras) if (i, rank) in keep]
 
     # ── Low-pass filter ───────────────────────────────────────────────────
 
@@ -409,6 +530,7 @@ class DistanceEngine:
             distance=distance, direction=direction,
             closest_obstacle_point=r.closest_obstacle_point,
             closest_pixel=r.closest_pixel,
+            cluster_id=r.cluster_id, extras=r.extras,
         )
 
     def _log_jump(self, outcome, r, d_prev, d_raw, dt, d_new, v_impl=None):

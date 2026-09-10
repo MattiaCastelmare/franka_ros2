@@ -48,7 +48,7 @@ Pure numpy. No ROS.
 
 from __future__ import annotations
 
-from typing import List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -124,6 +124,10 @@ class ObstacleTrackPipeline:
         #: (centroid_base, radius, track_or_None) for the last frame, in the
         #: cluster order :func:`cluster_obstacles` returned.
         self._entries: List[Tuple[np.ndarray, float, Optional[KalmanTrack]]] = []
+        #: cluster label → track_or_None for the last frame. Meaningful for
+        #: lookups by the distance engine's cluster_id only when the cloud
+        #: carried the engine's labels (multi_obstacle_k > 1).
+        self._by_label: Dict[int, Optional[KalmanTrack]] = {}
 
         # Diagnostics, read by the node's status line and by nothing else.
         self.last_clusters: List[Cluster] = []
@@ -182,6 +186,8 @@ class ObstacleTrackPipeline:
             (z_base[i], float(c.radius), assoc.get(i))
             for i, c in enumerate(clusters)
         ]
+        self._by_label = {c.label: assoc.get(i)
+                          for i, c in enumerate(clusters) if c.label >= 0}
         return self.tracker.confirmed_tracks()
 
     def _cluster(self, cloud) -> List[Cluster]:
@@ -195,7 +201,8 @@ class ObstacleTrackPipeline:
             voxel_m=self.voxel_m, connectivity=self.connectivity,
             depth_jump=self.depth_jump,
             min_points=self.min_cluster_points, max_clusters=self.max_clusters,
-            max_radius=self.max_cluster_radius)
+            max_radius=self.max_cluster_radius,
+            labels=getattr(cloud, 'labels', None))
 
     # ── Lookup ──────────────────────────────────────────────────────────────
 
@@ -253,6 +260,29 @@ class ObstacleTrackPipeline:
                          trk.velocity_cov, trk.acceleration, trk.position_cov,
                          trk.pos_vel_cov)
 
+    def track_for_cluster(self, label: int) -> Optional[KalmanTrack]:
+        """The confirmed track of the cluster with engine label ``label``.
+
+        The multi-obstacle lookup: a row already knows which object it was
+        measured on, so it gets THAT object's track — never the track of
+        whichever covering sphere happens to be nearest its point. ``None``
+        when the cluster was dropped (speckle / scene guard / max_clusters) or
+        has no confirmed track.
+        """
+        trk = self._by_label.get(int(label))
+        if trk is None or not self.tracker.is_confirmed(trk):
+            return None
+        return trk
+
+    def track_info_for_cluster(self, label: int) -> TrackInfo:
+        """:class:`TrackInfo` for a cluster label, ``NO_TRACK`` when none."""
+        trk = self.track_for_cluster(label)
+        if trk is None:
+            return NO_TRACK
+        return TrackInfo(int(trk.track_id), int(trk.frames_seen), trk.velocity,
+                         trk.velocity_cov, trk.acceleration, trk.position_cov,
+                         trk.pos_vel_cov)
+
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
     def reset(self) -> None:
@@ -260,6 +290,7 @@ class ObstacleTrackPipeline:
         self.tracker.reset()
         self._prev_stamp = None
         self._entries = []
+        self._by_label = {}
         self.last_clusters = []
         self.last_n_points = 0
 

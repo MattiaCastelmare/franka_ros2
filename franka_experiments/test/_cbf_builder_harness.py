@@ -91,6 +91,11 @@ class P:
     velocity_feedforward_gain = 1.0
     velocity_braking_margin_max = 0.25
     velocity_feedforward_min_frames = 3
+    # speed-proportional standoff
+    enable_velocity_standoff = False
+    velocity_standoff_time_s = 0.20
+    velocity_standoff_max = 0.20
+    velocity_standoff_alpha = 0.8
     # uncertainty
     enable_uncertainty_margin = False
     uncertainty_k_sigma = 2.0

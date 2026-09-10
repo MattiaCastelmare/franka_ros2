@@ -1136,6 +1136,69 @@ params:
   # the barrier.
   velocity_feedforward_min_frames: 3
 
+  # ── Tracked obstacle velocity inside hdot (cbf_safety_filter) ─────────────
+  # With this on, every obstacle row whose track is confirmed (frames_seen >=
+  # obstacle_velocity_min_frames) uses
+  #     hdot = a^T qdot - n_hat^T v_track
+  #     b    = -k1*(a^T qdot - n_hat^T v_track) - k0*h_bar - c
+  # with the track's 3D velocity projected on THAT row's normal, SIGNED: a
+  # receding obstacle relaxes k1*hdot, which is right because it is a term on
+  # hdot, not on h. It REPLACES the scalar v_obs (residual/tracker, clamped to
+  # the approaching half, median, deadband) in hdot for that row, and zeroes
+  # that row's velocity_feedforward RHS term (same speed, counted twice
+  # otherwise). The braking, uncertainty and latency tightenings of h, the
+  # retreat cap and the evasion are unchanged. Rows without a confirmed track
+  # behave exactly as today. `a` is unchanged.
+  #
+  # NOTE: the raw track velocity is noisier than the conditioned v_obs (see
+  # obstacle_velocity_median / _track_deadband: p90 0.19-0.25 m/s on static
+  # scenes), and through k1 that noise now reaches the row in both signs.
+  #
+  # OFF by default: flags-off rows are bit-identical (regression-tested).
+  enable_vobs_in_hdot: false
+
+  # [m/s] clamp on |n_hat^T v_track| inside hdot, so a dirty track cannot blow
+  # up the RHS (k1 * 2.0 = 21 at k1 = 10.5).
+  vobs_hdot_max: 2.0
+
+  # ── Speed-proportional standoff (cbf_safety_filter) ────────────────────────
+  #   d_safe_eff = d_safe + min(velocity_standoff_time_s * v_app, _max)
+  #
+  # Avoidance PROPORTIONAL to the estimated approach speed. Without it the
+  # barrier sits at d_safe whatever the obstacle is doing: a hand closing at
+  # 1 m/s and one resting in place are held at the same distance, and speed
+  # only enters through k1*hdot (which acts late, at the barrier) and the
+  # QUADRATIC braking term above (1 cm at 0.3 m/s, OFF in launch_defaults).
+  # This moves the barrier out LINEARLY: the separation-distance term of
+  # speed-and-separation monitoring (ISO/TS 15066, v_h * T). The row's -k0*h,
+  # the retreat cap's relief ramp and the evasion urgency all read h, so all
+  # of them engage earlier for a fast obstacle and later for a slow one.
+  #
+  # v_app is the conditioned approaching half (median, deadband, residual
+  # floor): a static or receding obstacle adds nothing. Gated on
+  # obstacle_velocity_min_frames like the other track-derived terms. The zone
+  # ladder stays on the MEASURED gap, unchanged. Adds to the braking term if
+  # both are on. Watch hstd= in CBFDIAG.
+  #
+  # OFF here so a flags-off build is bit-identical; launch_defaults.yaml turns
+  # it on (velocity_standoff).
+  enable_velocity_standoff: false
+
+  # [s] metres of extra standoff per m/s of closing speed. 0.20 s ~ the p95
+  # blind time (0.085 s, Phase 0) plus the ~0.1 s the arm needs to build a
+  # retreat speed: +6 cm for a hand at 0.3 m/s, +20 cm at 1 m/s. INITIAL
+  # estimate, not tuned on hardware.
+  velocity_standoff_time_s: 0.20
+
+  # [m] clamp. Reached at 1.0 m/s with the time above, so the term is linear
+  # over the 0-1 m/s a person moves at and flat beyond.
+  velocity_standoff_max: 0.20
+
+  # [-] EMA on the standoff's DECAY only (rise is instant), per control point,
+  # at the 50 Hz rebuild: 0.8 is a ~100 ms constant. Keeps a slowing or
+  # receding obstacle from releasing the barrier as a k0*h_std step. 0 = raw.
+  velocity_standoff_alpha: 0.8
+
   # ── Uncertainty-derived tightening (cbf_safety_filter, Phase 3) ────────────
   #   h_eff = h - k_sigma * sqrt(n_hat^T P_vv n_hat) * t_latency
   #
@@ -1656,6 +1719,24 @@ params:
   # an effect. Candidate for removal in a future cleanup.
   # TODO[LEGACY]: read by no code; DistanceEngine reads lpf_alpha from fr3_complete.yaml instead | confidence: high | superseded-by: fr3_complete.yaml distance.lpf_alpha | flagged: 2026-09-01
   distance_ema_alpha: 0.5
+
+# ── Perception: obstacle rows per control point (real_time_distance) ─────────
+# Read by real_time_distance from THIS file (ROS param control_config_path,
+# default <share>/config/fr3_control.yaml), not from fr3_complete.yaml.
+perception:
+  # Obstacle entries per control point, one per connected CLUSTER, nearest
+  # first. DistanceEngine used to keep only the global argmin, so two distinct
+  # obstacles near the same CP produced ONE HOCBF row, and n_hat could point at
+  # either. With k > 1 each CP also gets the nearest point of up to k-1 OTHER
+  # clusters (never two points of one object), each its own LinkDistance
+  # labelled "<link>#<cp>.<rank>" and annotated with its own cluster's track.
+  # Extras past params.cbf_obstacle_horizon are dropped.
+  # 1 = today's output, bit-identical (regression-tested).
+  multi_obstacle_k: 1
+  # [rows] cap on LinkDistance entries per frame, keeping the nearest, to bound
+  # n_c churn on OSQP. Only EXTRAS compete for it: a CP's own nearest point is
+  # never dropped, so the ceiling is max(this, number of CPs). Inert at k = 1.
+  multi_obstacle_max_rows: 24
 
 # NOTE: read by cbf_OSCBF_filter, cbf_velocity_filter, pentagon_qddot_commander
 # and rl_policy_commander. NOT by cbf_safety_filter any more — that node reads

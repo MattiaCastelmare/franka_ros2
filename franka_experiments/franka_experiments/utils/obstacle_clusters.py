@@ -131,6 +131,10 @@ class Cluster:
     centroid_cam: np.ndarray
     n_points: int
     radius: float
+    #: connected-component label this cluster was built from (-1 = unknown).
+    #: With shared labels (``ObstacleCloud.labels``) it equals the
+    #: ``cluster_id`` the distance engine put on its rows.
+    label: int = -1
 
     def contains(self, p_cam: np.ndarray, *, tol: float = 0.0) -> bool:
         """Is ``p_cam`` inside this cluster's covering sphere?
@@ -247,6 +251,7 @@ def cluster_obstacles(
     min_points: int = 10,
     max_clusters: int = 16,
     max_radius: Optional[float] = None,
+    labels: Optional[np.ndarray] = None,
 ) -> List[Cluster]:
     """Group obstacle pixels into objects and reduce each to a :class:`Cluster`.
 
@@ -306,6 +311,11 @@ def cluster_obstacles(
             zero defaults, and zero defaults mean the barrier falls back to the
             behaviour it has today. ``None`` (the default) preserves the
             pre-guard behaviour exactly.
+        labels: (N,) precomputed :func:`label_points` output for these points
+            (``ObstacleCloud.labels``, set by the distance engine when
+            multi_obstacle_k > 1). Used as-is instead of labelling again, so
+            the engine's per-row ``cluster_id`` and ``Cluster.label`` agree.
+            ``None`` (default) labels here, exactly as before.
 
     Returns:
         Clusters ordered by descending ``n_points``, ties broken by centroid
@@ -326,9 +336,17 @@ def cluster_obstacles(
 
     pts = p_cam.astype(np.float64, copy=False)
 
-    n_labels, lab = label_points(u, v, pts[:, 2], step=step,
-                                 connectivity=connectivity,
-                                 depth_jump=depth_jump)
+    if labels is None:
+        n_labels, lab = label_points(u, v, pts[:, 2], step=step,
+                                     connectivity=connectivity,
+                                     depth_jump=depth_jump)
+    else:
+        lab = np.asarray(labels, dtype=np.int64).ravel()
+        if lab.size != u.size:
+            raise ValueError(
+                f'got {lab.size} labels for {u.size} points — they must be '
+                f'index-aligned')
+        n_labels = int(lab.max()) + 1 if lab.size else 0
     if n_labels == 0:
         return []
 
@@ -350,7 +368,8 @@ def cluster_obstacles(
             continue
         clusters.append(Cluster(centroid_cam=centroid,
                                 n_points=int(sizes[lb]),
-                                radius=radius))
+                                radius=radius,
+                                label=int(lb)))
 
     clusters.sort(key=lambda c: (-c.n_points, c.centroid_cam[0],
                                  c.centroid_cam[1], c.centroid_cam[2]))

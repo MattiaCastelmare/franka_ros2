@@ -352,6 +352,12 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'esc={getattr(rows, "diag_esc_w", 0.0):.2f} '
         f'outr={getattr(rows, "diag_outrun_r", 0.0):.2f}/{getattr(rows, "diag_outrun_w", 0.0):.2f} '
         f'hlat={getattr(rows, "diag_hlat", 0.0):.4f} '
+        # enable_velocity_standoff: largest speed-proportional standoff [m].
+        f'hstd={getattr(rows, "diag_hstand", 0.0):.4f} '
+        # enable_vobs_in_hdot: largest-magnitude n̂ᵀv_track put into ḣ, and on
+        # how many rows. +0.000/0 with the flag off.
+        f'vhd={getattr(rows, "diag_vobs_hdot", 0.0):+.3f}/'
+        f'{int(getattr(rows, "diag_vobs_hdot_n", 0))} '
         + _zone_field(con, i, w_task, getattr(rows, 'diag_rot_reject', 0)) +
         f'w=[{w_txt}] wq=[{wq_txt}] '
         f'retreat={rtr:+.3f}/{rtr_cap:.3f} vlink={spd:+.3f}/{spd_cap:.3f} '

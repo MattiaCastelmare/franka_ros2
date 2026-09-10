@@ -99,6 +99,7 @@ def build_cp_messages(
     thresholds: dict,
     fallback: float,
     zones: dict,
+    return_cluster_ids: bool = False,
 ) -> tuple:
     """Build a (MultiDistance, MultiLinkDistance) pair from CP distance results.
 
@@ -121,11 +122,24 @@ def build_cp_messages(
         Distance value used for invalid / out-of-range entries.
     zones:
         Safety-zone thresholds dict (forwarded to :func:`get_safety_zone`).
+    return_cluster_ids:
+        Also return the cluster id of every ``MultiLinkDistance`` entry
+        (index-aligned with ``links``, -1 = unknown), for
+        :func:`annotate_track_fields`.
 
     Returns
     -------
     (MultiDistance, MultiLinkDistance)
         Both messages are fully populated and ready to publish.
+        ``(MultiDistance, MultiLinkDistance, cluster_ids)`` with
+        ``return_cluster_ids``.
+
+    With ``perception.multi_obstacle_k > 1`` a control point carries up to k
+    obstacle entries (``ControlPointResult.extras``) and gets one LinkDistance
+    PER ENTRY: its own nearest point first, exactly as with k = 1, then the
+    nearest point of each other cluster, right behind it with the same
+    ``closest_point_robot``. :func:`labelled_links` reads the rank back from
+    that adjacency.
     """
     min_thresh = thresholds['min_thresh']
     max_thresh = thresholds['max_thresh']
@@ -189,12 +203,10 @@ def build_cp_messages(
     # arbitrary world point ob.pr rigidly attached to that frame.  Each CP
     # therefore gets its own correct row from its own closest_point_robot.
     link_entries = []
+    link_cluster_ids = []
     for lk in segment_links:
-        for r in sorted(by_link.get(lk, ()), key=lambda x: (x.seg_idx, x.cp_idx)):
-            d   = r.distance
-            di  = r.direction
+        for r, d, di, obs, cid in _cp_rows(by_link.get(lk, ())):
             pt  = r.point
-            obs = r.closest_obstacle_point
             ld  = LinkDistance()
             ld.robot_link_name = lk
             if pt is not None:
@@ -221,20 +233,46 @@ def build_cp_messages(
             ld.confidence = 1.0
             ld.zone       = get_safety_zone(d, zones)
             link_entries.append(ld)
+            link_cluster_ids.append(cid)
 
     mld_msg = MultiLinkDistance()
     mld_msg.header.stamp    = stamp
     mld_msg.header.frame_id = frame_id
     mld_msg.links           = link_entries
 
+    if return_cluster_ids:
+        return multi_msg, mld_msg, link_cluster_ids
     return multi_msg, mld_msg
+
+
+def _cp_rows(results):
+    """``(r, distance, direction, obstacle_point, cluster_id)`` per LinkDistance.
+
+    Control points in ``(seg_idx, cp_idx)`` order — the contractual row order —
+    each one's own result first (rank 0, what was always published), then its
+    ``extras`` (rank >= 1, only with multi_obstacle_k > 1).
+    """
+    for r in sorted(results, key=lambda x: (x.seg_idx, x.cp_idx)):
+        yield (r, r.distance, r.direction, r.closest_obstacle_point,
+               getattr(r, 'cluster_id', -1))
+        for h in getattr(r, 'extras', ()):
+            yield r, h.distance, h.direction, h.point, h.cluster_id
+
 
 def labelled_links(msg):
     """Yield ``(label, ld)`` for every entry of a MultiLinkDistance.
 
-    ``label`` is ``'<robot_link_name>#<k>'`` with k counting the entries of
-    THIS link, and the counter advances for every entry — invalid ones
-    included. That last clause is the whole reason this function exists.
+    ``label`` is ``'<robot_link_name>#<k>'`` with k counting the CONTROL POINTS
+    of THIS link, and the counter advances for every control point — invalid
+    ones included. That last clause is the whole reason this function exists.
+
+    Multi-obstacle rows (multi_obstacle_k > 1): an entry with the same link and
+    ``closest_point_robot`` as the one before it but a DIFFERENT
+    ``closest_point_human`` is another obstacle of the same control point, and
+    is labelled ``'<link>#<k>.<rank>'`` (rank >= 1) without advancing k. Rank 0
+    keeps the bare ``'<link>#<k>'``, so every k = 1 label is unchanged and
+    rank-0 labels never shift when a control point gains or loses extras.
+    ``build_cp_messages`` emits the ranks of one control point adjacently.
 
     The convention is a contract between three places: this module writes the
     track fields of the entry a ``skip_keys`` label names, ``cbf_safety_filter``
@@ -258,13 +296,24 @@ def labelled_links(msg):
     which is the bug.
     """
     seen: dict = {}
+    prev = None          # (robot key, human point) of the previous entry
+    cp, rank = '', 0
     for ld in msg.links:
+        pr, ph = ld.closest_point_robot, ld.closest_point_human
+        robot = (ld.robot_link_name, pr.x, pr.y, pr.z)
+        human = (ph.x, ph.y, ph.z)
+        if prev is not None and robot == prev[0] and human != prev[1]:
+            rank += 1
+            prev = (robot, human)
+            yield f'{cp}.{rank}', ld
+            continue
         k = seen.get(ld.robot_link_name, 0)
         seen[ld.robot_link_name] = k + 1
-        yield f'{ld.robot_link_name}#{k}', ld
+        cp, rank, prev = f'{ld.robot_link_name}#{k}', 0, (robot, human)
+        yield cp, ld
 
 
-def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
+def annotate_track_fields(msg, pipeline, skip_keys=None, cluster_ids=None) -> int:
     """Fill the track fields of every entry of ``msg`` IN PLACE.
 
     Kept as a free function, and taking only the message and the pipeline, so
@@ -281,13 +330,20 @@ def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
             with the arm gets no VELOCITY, while its DISTANCE goes out
             untouched. Suppressing an estimate degrades to today's behaviour;
             suppressing a distance would delete a barrier.
+        cluster_ids: optional list index-aligned with ``msg.links``
+            (``build_cp_messages(..., return_cluster_ids=True)``). An entry
+            >= 0 gets the track of ITS OWN cluster
+            (``pipeline.track_info_for_cluster``) rather than of whichever
+            cluster sphere covers its point — with several rows per control
+            point the nearest sphere is often another obstacle's. ``None``
+            (always with multi_obstacle_k = 1) keeps the point lookup.
 
     Returns:
         How many entries were matched to a confirmed track.
     """
     skip = set(skip_keys or ())
     n = 0
-    for lbl, ld in labelled_links(msg):
+    for i, (lbl, ld) in enumerate(labelled_links(msg)):
         # link#k positionally — the same label cbf_safety_filter builds, from
         # the same function, so a key means the same control point on both
         # sides of the wire.
@@ -300,7 +356,10 @@ def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
         p_base = np.array([ld.closest_point_human.x,
                            ld.closest_point_human.y,
                            ld.closest_point_human.z])
-        if hasattr(pipeline, 'track_info_for_point'):
+        cid = cluster_ids[i] if cluster_ids is not None else -1
+        if cid >= 0 and hasattr(pipeline, 'track_info_for_cluster'):
+            info = pipeline.track_info_for_cluster(cid)
+        elif hasattr(pipeline, 'track_info_for_point'):
             info = pipeline.track_info_for_point(p_base)
         else:
             # A pipeline (or a test double) that predates the latency fields:

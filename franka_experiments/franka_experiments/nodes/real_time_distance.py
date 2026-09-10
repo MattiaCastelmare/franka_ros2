@@ -53,6 +53,7 @@ import cv2
 import numpy as np
 import rclpy
 import trimesh
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from franka_msgs.msg import HumanRobotDistance, MultiDistance, MultiLinkDistance
@@ -183,6 +184,35 @@ class RealTimeDistance(Node):
         self.tracking_enabled = bool(trk_cfg.get('enabled', False))
         self.distance_cfg = dict(self.distance_cfg)
         self.distance_cfg['export_obstacle_cloud'] = self.tracking_enabled
+
+        # ── Multi-obstacle rows (perception.multi_obstacle_k) ─────────────
+        # The flag and the cbf_obstacle_horizon it prunes against live in the
+        # CONTROL config (fr3_control.yaml), not in robot_config_path, so that
+        # file is read here. Unreadable -> k = 1, i.e. today's output.
+        ctrl_path = (self.declare_parameter('control_config_path', '').value
+                     or os.path.join(get_package_share_directory('franka_experiments'),
+                                     'config', 'fr3_control.yaml'))
+        try:
+            with open(ctrl_path) as f:
+                ctrl_cfg = yaml.safe_load(f) or {}
+        except Exception as exc:
+            self.get_logger().warn(
+                f'control config {ctrl_path!r} not read ({exc}); multi_obstacle_k=1')
+            ctrl_cfg = {}
+        perc_cfg = ctrl_cfg.get('perception', {}) or {}
+        # ROS parameter override (launch arg multi_obstacle_k); 0 = use the YAML.
+        k_param = int(self.declare_parameter('multi_obstacle_k', 0).value)
+        self.multi_k = max(1, k_param if k_param > 0
+                           else int(perc_cfg.get('multi_obstacle_k', 1)))
+        self.distance_cfg['multi_obstacle_k'] = self.multi_k
+        self.distance_cfg['multi_obstacle_max_rows'] = int(
+            perc_cfg.get('multi_obstacle_max_rows', 24))
+        self.distance_cfg['multi_obstacle_horizon'] = float(
+            (ctrl_cfg.get('params', {}) or {}).get('cbf_obstacle_horizon', float('inf')))
+        # Same depth_jump as the tracker: with k > 1 the tracker clusters on
+        # the engine's labels, so there is one labelling, not two.
+        self.distance_cfg['multi_obstacle_depth_jump_m'] = float(
+            trk_cfg.get('cluster_depth_jump_m', 0.10))
 
         self.distance_engine = DistanceEngine(
             distance_cfg=self.distance_cfg,
@@ -522,7 +552,7 @@ class RealTimeDistance(Node):
                 f'pix={closest_uv_obs}  | {self._perf.summary()}{trk}')
 
         # ── Publish ───────────────────────────────────────────────────────
-        multi_msg, mld_msg = build_cp_messages(
+        msgs = build_cp_messages(
             cp_results=cp_results,
             n_pts=n_pts,
             stamp=stamp,
@@ -531,7 +561,10 @@ class RealTimeDistance(Node):
             thresholds=thresholds,
             fallback=fallback_distance,
             zones=self.zones,
+            return_cluster_ids=self.multi_k > 1,
         )
+        multi_msg, mld_msg = msgs[0], msgs[1]
+        cluster_ids = msgs[2] if self.multi_k > 1 else None
         # Track fields onto the message that is about to go out. Same topic,
         # same entries, same order — only the four appended fields are written,
         # and only for control points whose nearest obstacle point falls inside
@@ -540,7 +573,8 @@ class RealTimeDistance(Node):
         if self.track_pipeline is not None:
             try:
                 annotate_track_fields(mld_msg, self.track_pipeline,
-                                      skip_keys=self._self_detected(cp_results))
+                                      skip_keys=self._self_detected(cp_results),
+                                      cluster_ids=cluster_ids)
             except Exception as exc:
                 self.get_logger().error(
                     f'track annotation skipped this frame: {exc}',

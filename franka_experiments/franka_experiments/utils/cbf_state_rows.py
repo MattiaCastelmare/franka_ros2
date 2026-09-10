@@ -528,6 +528,32 @@ def velocity_feedforward_terms(
     return h_brake, -float(gain) * v
 
 
+def velocity_standoff(v_app: float, *, time_s: float, max_m: float) -> float:
+    """[m] extra safety distance PROPORTIONAL to the obstacle's closing speed.
+
+        h_std = min( time_s · max(v_app, 0) , max_m )
+        d_safe_eff = d_safe + h_std
+
+    The separation-distance idea of speed-and-separation monitoring (ISO/TS
+    15066: the human's contribution is v_h·(T_r + T_s)): the faster something
+    closes, the further away the barrier sits, LINEARLY in the speed. A static
+    obstacle is kept at exactly ``d_safe``; one closing at 0.5 m/s at
+    ``d_safe + 0.5·time_s``. Everything downstream of ``h`` — the row's
+    ``−k0·h`` term, the retreat cap's relief ramp, the evasion urgency —
+    therefore engages earlier for a fast obstacle and later for a slow one.
+
+    The braking term in :func:`velocity_feedforward_terms` is the same kind of
+    tightening but QUADRATIC (``v²/2a``): negligible at a walking hand's
+    0.3 m/s (1 cm at 4 m/s²), saturated a little above 1 m/s. This one is the
+    proportional lever; the two add when both flags are on.
+
+    Only the approaching half counts (``v_app`` is clamped here too), so the
+    term can only tighten. ``max_m`` bounds what one bad estimate can do to
+    the barrier, for the same reason ``brake_max`` exists.
+    """
+    return min(float(time_s) * max(float(v_app), 0.0), float(max_m))
+
+
 def uncertainty_margin(
     n_hat: np.ndarray,
     vel_cov: Optional[np.ndarray],
@@ -1239,6 +1265,10 @@ class ConstraintSnap(NamedTuple):
     v_obs:     np.ndarray  # (n_c,) obstacle closing speed along n̂ [m/s], >= 0.
                            # Zero for self-collision and joint-limit rows: both
                            # sides of those are the robot's own, already in q̇.
+                           # EXCEPTION, enable_vobs_in_hdot: on an obstacle row
+                           # with a confirmed track this is the SIGNED n̂ᵀv_track
+                           # (clamped to ±vobs_hdot_max), so a receding obstacle
+                           # makes it negative and relaxes k1·ḣ.
     b_ff:      np.ndarray  # (n_c,) additive RHS feedforward, or None when
                            # enable_velocity_feedforward is off. None (not a
                            # zeros array) so the QP tick can skip the add
@@ -1448,6 +1478,8 @@ class ConstraintBuilder:
         self._qlim_stuck, self._fid_cache = {}, {}
         # Per-label smoothing state for the uncertainty margin.
         self._unc_ema: dict = {}
+        # Per-label speed-proportional standoff, for its decay smoothing.
+        self._stand_ema: dict = {}
         # Per-label n̂ of the PREVIOUS perception frame, for the residual's
         # rotation guard (see _obstacle_speed). Same bounded key set as every
         # other per-label dict here: one entry per control point.
@@ -1475,6 +1507,11 @@ class ConstraintBuilder:
         self.diag_vapp = self.diag_hbrake = 0.0
         self.diag_hunc = 0.0
         self.diag_hlat = 0.0        # largest latency-compensation tightening [m]
+        # enable_vobs_in_hdot: the n̂ᵀv_track of largest magnitude that went
+        # into ḣ this rebuild (signed, m/s), and on how many rows.
+        self.diag_vobs_hdot = 0.0
+        self.diag_vobs_hdot_n = 0
+        self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
         self.diag_outrun_r = 0.0    # largest closing/outrunnable ratio this rebuild
@@ -1569,6 +1606,15 @@ class ConstraintBuilder:
         self.diag_hbrake = 0.0     # largest braking-distance tightening [m]
         self.diag_hunc   = 0.0     # largest uncertainty tightening [m]
         self.diag_hlat   = 0.0     # largest latency-compensation tightening [m]
+        self.diag_vobs_hdot   = 0.0
+        self.diag_vobs_hdot_n = 0
+        vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
+        vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
+        self.diag_hstand = 0.0
+        stand_on = bool(getattr(self._P, 'enable_velocity_standoff', False))
+        stand_t = float(getattr(self._P, 'velocity_standoff_time_s', 0.20))
+        stand_max = float(getattr(self._P, 'velocity_standoff_max', 0.20))
+        stand_alpha = float(getattr(self._P, 'velocity_standoff_alpha', 0.8))
 
         for ob in obs.items:
             # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
@@ -1806,6 +1852,23 @@ class ConstraintBuilder:
                 while len(hist) > k_med:
                     hist.pop(0)
                 v_o = float(np.median([x[1] for x in hist]))
+
+            # ── Tracked obstacle velocity INSIDE ḣ (enable_vobs_in_hdot) ─────
+            # ḣ = aᵀq̇ − n̂ᵀv_obs with the track's own 3D velocity, SIGNED: an
+            # obstacle moving away relaxes k1·ḣ, which is correct because this
+            # is a term on ḣ, not on h. `a` is untouched (v_obs does not depend
+            # on q̈), so only the known term of the row changes. Replaces v_o
+            # in ḣ for this row — adding both would count the velocity twice.
+            # Only |n̂ᵀv| is clamped, so a dirty track cannot blow up the RHS.
+            # Same confirmation gate as every other track-derived term. The
+            # retreat cap and the evasion keep using v_o.
+            v_hdot, vobs_track = v_o, False
+            if (vobs_in_hdot and ob.v_vec is not None
+                    and ob.frames_seen >= self._P.obstacle_velocity_min_frames):
+                vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
+                if np.isfinite(vn):
+                    v_hdot = float(np.clip(vn, -vobs_hdot_max, vobs_hdot_max))
+                    vobs_track = True
             # NOT appended here. v_obs is indexed BY ROW in the QP
             # (h_qp = k1*(A@qdot - v_obs) + ...), so it has to be appended in
             # lockstep with rows_a, inside the finiteness guard below. Appending
@@ -1837,6 +1900,11 @@ class ConstraintBuilder:
                 h_brake, b_ff_i = velocity_feedforward_terms(
                     v_o, decel=self._P.obstacle_decel_assumed, gain=self._P.velocity_feedforward_gain,
                     brake_max=self._P.velocity_braking_margin_max)
+                if vobs_track:
+                    # The velocity is already in ḣ above: the RHS feedforward
+                    # on the same speed would count it twice. The braking
+                    # tightening of h stays.
+                    b_ff_i = 0.0
                 h -= h_brake
                 if v_o > self.diag_vapp:
                     self.diag_vapp = v_o
@@ -1897,6 +1965,30 @@ class ConstraintBuilder:
                 if h_lat > self.diag_hlat:
                     self.diag_hlat = h_lat
 
+            # ── Speed-proportional standoff (enable_velocity_standoff) ──────
+            # d_safe_eff = d_safe + time_s·v_app: the barrier moves out
+            # LINEARLY with the closing speed, so a fast obstacle is avoided
+            # from further away and a slow one is let closer. v_o is the
+            # conditioned approaching half (median, deadband, residual floor),
+            # the same number the k1 term and the retreat cap consume. After
+            # the smoothing store like the terms above, so it never compounds.
+            #
+            # Rise instant, decay EMA'd — the asymmetry cbf_h_recovery_alpha
+            # uses: tightening answers this frame's measurement, relaxing
+            # claims the danger has passed. The decay runs even while the
+            # frame gate holds the raw value at 0, so a track that drops out
+            # releases the barrier smoothly instead of stepping it by k0·h_std.
+            if stand_on:
+                raw = (velocity_standoff(v_o, time_s=stand_t, max_m=stand_max)
+                       if n_seen >= self._P.obstacle_velocity_min_frames else 0.0)
+                prev = self._stand_ema.get(lbl)
+                h_std = raw if (prev is None or raw >= prev) else (
+                    stand_alpha * prev + (1.0 - stand_alpha) * raw)
+                self._stand_ema[lbl] = h_std
+                h -= h_std
+                if h_std > self.diag_hstand:
+                    self.diag_hstand = h_std
+
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
@@ -1911,7 +2003,11 @@ class ConstraintBuilder:
                 # neither can ever drift out of alignment with the obstacle
                 # rows. rows_vobs is here for the same reason — it used to be
                 # appended above, outside the guard; see the note there.
-                rows_vobs.append(v_o)
+                rows_vobs.append(v_hdot)
+                if vobs_track:
+                    self.diag_vobs_hdot_n += 1
+                    if abs(v_hdot) > abs(self.diag_vobs_hdot):
+                        self.diag_vobs_hdot = v_hdot
                 obs_bff.append(b_ff_i)
                 obs_dz.append(float(ob.d))
                 # Criticality weight from the barrier value that ACTUALLY goes
