@@ -258,10 +258,30 @@ tracking:
   # step at 30 Hz differentiates to metres per second, and it gave the tracked
   # estimate a 0.198 m/s noise floor on a scene where nothing was moving.
   #
-  # 0.6 m is "wider than a person is not a person". Dropping such a cluster is
-  # the SAFE failure: no cluster -> no track -> zero defaults -> the barrier
-  # falls back to exactly the behaviour it has today.
-  cluster_max_radius_m: 0.6
+  # RAISED 0.6 -> 1.5 (Sep 2026). 0.6 was "wider than a person is not a
+  # person", and it was wrong about people: the radius is measured over voxel
+  # centroids of the WHOLE connected blob, and a standing person is one blob.
+  # Measured with the guard off on rosbag/{handtracker_poses,
+  # handratacker_object, arm_complex}: the cluster holding a control point's
+  # nearest obstacle point (gap < 0.7 m) has radius 0.76-1.06 m (10th-99th
+  # percentile), the largest cluster in three bags is 1.43 m, and the 2.2-2.6 m
+  # room blobs this guard was written against no longer occur at all — the
+  # depth jump above already keeps the person off the wall. At 0.6 every
+  # person was dropped, so the tracker delivered a velocity on 2-5% of the
+  # approaching samples inside 0.7 m (61-67% at 1.5), and the CBF fell back to
+  # v_obs = 0 exactly when it mattered. Dropping a cluster is still the safe
+  # failure for the BARRIER, but it silently removes the velocity, the
+  # uncertainty margin and the evasion direction; 1.5 keeps every person-sized
+  # blob and still drops a room-sized one.
+  # 1.2, not the 1.5 this was first raised to: the measured person clusters
+  # run to a 99th percentile of 1.06-1.21 m, so 1.2 keeps essentially all of
+  # them, while every 0.1 m above that only widens the door for a blob that
+  # fuses part of the room -- and a big blob's centroid moves when its visible
+  # surface changes, which the tracker reports as velocity. That fabricated
+  # velocity reaches the barrier and the evasion, and it is half of the
+  # "camera rumorosa -> velocita strane" report. The largest cluster seen in
+  # three bags is 1.43 m, and it is not a person.
+  cluster_max_radius_m: 1.2
 
   # Bounds the association cost, which is O(tracks x clusters). A degenerate
   # frame (the exclusion mask failing, the whole scene reading as obstacle)

@@ -120,8 +120,11 @@ _ALL_PARAMS = [
     'gazebo', 'lpf_alpha', 'tau_max_scale',
     'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
+    'camera_depth_profile',
     'start_real_time_distance',
-    'obstacle_tracking', 'obstacle_velocity_source', 'lateral_evasion',
+    'obstacle_tracking', 'obstacle_velocity_source', 'lateral_evasion', 'outrun_evasion',
+    'livelock_escape', 'latency_compensation',
+    'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
     'uncertainty_margin', 'sim_obstacle', 'depth_bag',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
@@ -384,12 +387,26 @@ def _launch_all(context):
     if start_camera:
         cam_delay = float(p['camera_delay_s'])
 
+        # Depth profile PINNED. With no profile rs_launch.py lets librealsense
+        # pick, and on this rig it picked 15 fps: the July bags and today's
+        # live tracker lines both show dt=66.7 ms. That is one frame period of
+        # extra sampling wait and a 62 ms camera hop (measured, scripts/
+        # latency_budget.py) against 13 ms at 30 fps — the single largest item
+        # in the blind time a fast obstacle can exploit. Empty = leave the
+        # driver's choice alone.
+        cam_args = {}
+        profile = str(p['camera_depth_profile']).strip()
+        if profile:
+            cam_args['depth_module.depth_profile'] = profile
         realsense_driver = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([
                 FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
             ]).perform(context)),
+            launch_arguments=cam_args.items(),
         )
         actions.append(TimerAction(period=cam_delay, actions=[realsense_driver]))
+        actions.append(LogInfo(msg=f'[torque_stack] [Perception]      RealSense depth profile: '
+                                   f'{profile or "driver default"}'))
 
         image_republisher = Node(
             package='franka_simulation',
@@ -489,7 +506,24 @@ def _launch_all(context):
         parameters=[{
             'obstacle_velocity_source': p['obstacle_velocity_source'],
             'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
+            'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
+            'enable_livelock_escape':   _as_bool(p['livelock_escape']),
+            'enable_latency_compensation': _as_bool(p['latency_compensation']),
             'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
+            'enable_zone_ladder':       _as_bool(p['zone_ladder']),
+            # A launch BOOL onto a threshold parameter: the guard's "off" state
+            # is 0.0 rad, and exposing the angle on the command line would
+            # invite tuning a number whose right value is a property of the
+            # depth sensor, not of the run. 0.15 rad is derived in
+            # fr3_control.yaml; change it there if the hardware says so.
+            'obstacle_velocity_normal_rot_max':
+                (0.15 if _as_bool(p['obstacle_velocity_normal_guard']) else 0.0),
+            # Same bool-onto-a-threshold shape, and for the same reason: the
+            # guard's "off" state is 0.0 m, and the right value of the jump
+            # floor is a property of the depth sensor's argmin noise, not of
+            # the run. 0.10 m is derived in fr3_control.yaml.
+            'obstacle_velocity_identity_jump':
+                (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
         }],
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
@@ -619,6 +653,11 @@ def generate_launch_description():
                 default_value=str(_DEFAULTS.get('camera_delay_s', '0.0')),
                 description='Seconds before launching camera pipeline'),
             DeclareLaunchArgument(
+                'camera_depth_profile',
+                default_value=str(_DEFAULTS.get('camera_depth_profile', '')),
+                description='RealSense depth_module.depth_profile, e.g. 848x480x30. '
+                            'Empty = driver default (measured to fall back to 15 fps)'),
+            DeclareLaunchArgument(
                 'start_real_time_distance',
                 default_value=_DEFAULTS.get('start_real_time_distance', 'true'),
                 description='Start real_time_distance node'),
@@ -703,6 +742,62 @@ def generate_launch_description():
                             'acceleration box says the closing rate cannot be '
                             'nulled before the gap reaches zero. Needs a '
                             'tracked velocity to have a direction at all'),
+            DeclareLaunchArgument(
+                'outrun_evasion',
+                default_value=str(_DEFAULTS.get('outrun_evasion', 'false')),
+                description='Step aside toward the fastest direction orthogonal '
+                            'to v_obs when the joint velocity box says the '
+                            'obstacle cannot be outrun along the normal '
+                            '(cbf_safety_filter enable_outrun_evasion)'),
+            DeclareLaunchArgument(
+                'livelock_escape',
+                default_value=str(_DEFAULTS.get('livelock_escape', 'false')),
+                description='When the QP has been bending the nominal while the '
+                            'arm stands still for livelock_stall_s, nudge it '
+                            'tangentially in the barrier nullspace (bounded, '
+                            'logged; cbf_safety_filter enable_livelock_escape)'),
+            DeclareLaunchArgument(
+                'zone_ladder',
+                default_value=str(_DEFAULTS.get('zone_ladder', 'false')),
+                description='Four rungs on the obstacle gap (notice/active/'
+                            'priority/hold) scheduling the HOCBF gains, the '
+                            'slack priority and whether the trajectory runs at '
+                            'all; boundaries are multiples of d_safe '
+                            '(zone_r_*). Below zone_r_hold*d_safe the TASK is suspended and '
+                            'the nominal becomes a braking command; the barrier '
+                            'rows keep full authority, so this is not a freeze '
+                            '(cbf_safety_filter enable_zone_ladder)'),
+            DeclareLaunchArgument(
+                'obstacle_velocity_normal_guard',
+                default_value=str(_DEFAULTS.get(
+                    'obstacle_velocity_normal_guard', 'false')),
+                description='Discard a residual v_obs frame when the contact '
+                            'normal rotated more than 0.15 rad between the two '
+                            'frames it differences, i.e. the nearest obstacle '
+                            'point hopped to another surface patch. Aimed at '
+                            'the closing speed fabricated on a STATIC obstacle; '
+                            'watch nrot= in CBFDIAG '
+                            '(obstacle_velocity_normal_rot_max)'),
+            DeclareLaunchArgument(
+                'obstacle_identity_guard',
+                default_value=str(_DEFAULTS.get(
+                    'obstacle_identity_guard', 'false')),
+                description='Discard a control point closing-speed state when '
+                            'its nearest obstacle changes identity (different '
+                            'track_id, or closest_point_human jumped further '
+                            'than the fastest admitted obstacle could travel). '
+                            'Stops the residual estimator differencing the '
+                            'distance across two different bodies when one '
+                            'static and one moving obstacle swap places; the '
+                            'tracker estimate is unaffected. Watch nid= in '
+                            'CBFDIAG (obstacle_velocity_identity_jump)'),
+            DeclareLaunchArgument(
+                'latency_compensation',
+                default_value=str(_DEFAULTS.get('latency_compensation', 'false')),
+                description='Move each tracked obstacle forward by the measured '
+                            'blind time and tighten by the propagated position '
+                            'uncertainty (cbf_safety_filter '
+                            'enable_latency_compensation). OFF by default.'),
             DeclareLaunchArgument(
                 'uncertainty_margin',
                 default_value=str(_DEFAULTS.get('uncertainty_margin', 'false')),

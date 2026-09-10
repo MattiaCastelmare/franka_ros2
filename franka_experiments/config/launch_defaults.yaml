@@ -16,6 +16,14 @@ controllers_yaml: "__auto__"
 
 # ── Camera & calibration ─────────────────────────────────────────────────
 enable_camera: true
+# RealSense depth_module.depth_profile for the scene camera (D455). PINNED
+# because with no profile librealsense chose 15 fps on this rig (July bags and
+# the Sep 2026 live runs both show a 66.7 ms frame period), which doubles the
+# sampling wait and turns a 13 ms camera hop into 62 ms — the largest single
+# item in the CBF's blind time (scripts/latency_budget.py). 848x480x30 is the
+# profile the D455 streamed for hours on this machine's USB 3 port. Set it to
+# "" to leave the driver's choice alone.
+camera_depth_profile: "848x480x30"
 
 # ── Controller mode (used by minimal.launch.py) ───────────────────────────
 # false → rt_velocity_executor_controller (default, safest)
@@ -103,6 +111,52 @@ uncertainty_margin: true
 # target, never a constraint, so it cannot loosen a barrier or make the problem
 # infeasible. Inert without a track.
 lateral_evasion: true
+
+# Step aside toward the fastest direction orthogonal to v_obs when the joint
+# VELOCITY box says the point cannot outrun the obstacle along the normal
+# (Phase 2, utils/evasion_direction). Also a bias on the QP's target only.
+outrun_evasion: true
+
+# Livelock escape (Phase 3c): the QP has been bending the nominal while the
+# arm stands still for livelock_stall_s -> a bounded, logged nudge in the
+# barrier's nullspace until the arm moves again. Objective only.
+livelock_escape: true
+
+# Zone ladder: four rungs on the obstacle gap (notice / active / priority /
+# hold) that schedule the HOCBF gains, the slack priority and whether the
+# trajectory runs at all. Replaces six uncoordinated engagement distances with
+# one explicit ladder; see the long note in fr3_control.yaml. Boundaries are
+# multiples of d_safe (zone_r_*), so the ladder follows d_safe. Below
+# zone_r_hold*d_safe the TASK is suspended and the nominal becomes a braking command
+# — the barrier rows keep full authority throughout, so this is not a freeze.
+zone_ladder: true
+
+# Discard a residual v_obs frame when the contact normal rotated further than
+# obstacle_velocity_normal_rot_max between the two frames it differences, i.e.
+# the nearest obstacle point hopped to another surface patch. Aimed at the
+# fabricated closing speed measured on a STATIC obstacle. Watch `nrot=` in
+# CBFDIAG: if it never climbs, the hypothesis is wrong and this should go back
+# off rather than be tuned.
+obstacle_velocity_normal_guard: true
+
+# Discard a control point's closing-speed state when its NEAREST OBSTACLE
+# changes identity — a different track_id, or a jump in closest_point_human
+# larger than the fastest obstacle the filter admits could have travelled.
+# Without it the residual estimator differences the distance across two
+# different bodies whenever the argmin switches between them, which is the
+# classic "one static obstacle plus one moving one" scene: measured on
+# hardware it fabricated closing speed up to the 2.0 m/s clamp on a row that
+# was not even the closest, and through k1 that is ~19 rad/s^2 of demanded
+# retreat. The TRACKER estimate is memoryless and survives the reset, so a
+# genuinely approaching obstacle keeps being reported. Watch `nid=` in
+# CBFDIAG. Threshold: obstacle_velocity_identity_jump in fr3_control.yaml.
+obstacle_identity_guard: true
+
+# Latency compensation (Phase 4): predict each tracked obstacle forward by the
+# measured blind time (scripts/latency_budget.py) and tighten by the propagated
+# position uncertainty. OFF by default, as specified — turn on after a
+# supervised run has confirmed the extra tightening on hardware.
+latency_compensation: false
 
 # DANGER, and it stays off. Renders a synthetic sphere into the depth stream so
 # the whole chain can be exercised end to end -- the arm WILL move away from

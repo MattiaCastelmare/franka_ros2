@@ -118,7 +118,8 @@ def build_osqp_bounds(
 
 
 def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
-                  retreat_horizon: float, speed_horizon: float):
+                  retreat_horizon: float, speed_horizon: float,
+                  zoned: bool = True):
     """The right-hand side ``h_qp`` of every CBF row, for one QP tick.
 
     Three kinds of row share one array, and they do NOT share a formula:
@@ -149,7 +150,13 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
         con: the :class:`~franka_experiments.utils.cbf_state_rows.ConstraintSnap`.
         qdot: (nv,) measured joint velocity, fresh this tick.
         qdot_cbf: (nv,) lightly smoothed velocity, for the ``k1`` term only.
-        k0, k1: linear class-K gains, shared by every barrier family.
+        k0, k1: linear class-K gains, shared by every barrier family — UNLESS
+            the snapshot carries per-row gains (``con.k0_row``/``k1_row``, set
+            by the zone ladder), in which case these are the fallback only.
+        zoned: honour the snapshot's per-row gains when it has them. False
+            forces the scalar expression, which is how the regression proves
+            that a flags-off build is bit-identical: it evaluates BOTH and
+            compares, so the two paths must be selectable on one snapshot.
         retreat_horizon, speed_horizon: [s] enforcement horizons of the two
             rate-cap families.
 
@@ -158,7 +165,19 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
         the bound vector, and the four numbers CBFDIAG reports about the caps
         (0.0 when that family has no rows this tick, never a stale value).
     """
-    h_qp = k1 * (con.A @ qdot_cbf - con.v_obs) + k0 * con.h_bar + con.jdot_qdot
+    # Per-row gains when the zone ladder put them in the snapshot, scalars
+    # otherwise. Both branches are the SAME expression: numpy broadcasts a
+    # length-n_c vector against the length-n_c operands elementwise exactly as
+    # it broadcasts a scalar, so this is a change of gain schedule and not a
+    # change of formula. That matters for the bit-identity claim — there is no
+    # second code path to keep in sync, only a different multiplicand.
+    kk0, kk1 = k0, k1
+    if zoned:
+        if getattr(con, 'k0_row', None) is not None:
+            kk0 = con.k0_row
+        if getattr(con, 'k1_row', None) is not None:
+            kk1 = con.k1_row
+    h_qp = kk1 * (con.A @ qdot_cbf - con.v_obs) + kk0 * con.h_bar + con.jdot_qdot
     if con.b_ff is not None:
         h_qp += con.b_ff
 
@@ -362,3 +381,101 @@ def tangential_bias(qddot_nom: np.ndarray, qdot: np.ndarray, con, *,
         if bias_norm > max_bias:
             bias *= max_bias / bias_norm
     return bias
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Never "no solution": the fallback ladder
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Every CBF row in this filter carries a slack column — obstacle, self-
+# collision, joint-limit, singularity, retreat-cap and speed-cap families all
+# have one — so the row block can never make the problem infeasible on its own.
+# The only hard constraints are the identity block: the joint acceleration box
+# (velocity- and position-tightened) and ``s >= 0``. That box is built with a
+# feasibility guard (``hard_accel_box`` collapses onto ``lb`` when the demands
+# conflict) and the slew box is pinned to a non-empty interval, so ``lb <= ub``
+# always holds and the QP always HAS a solution.
+#
+# What can still happen is that OSQP does not FIND it within its budget — an
+# ill-scaled instance after a Jacobian degenerates, a max_iter hit, a
+# "solved inaccurate" — and until now that was reported upward as "QP not
+# solved" and answered with open-loop braking. The controller must never see
+# that as the first resort, so the failure is walked down a ladder, each rung
+# strictly simpler and the last one closed-form:
+#
+#   level 0  the full problem, accepted when solved; a SOLVED_INACCURATE
+#            iterate is also accepted, clipped into the hard box (it is a
+#            feasible-up-to-tolerance point of the same problem, and clipping
+#            can only move it INTO the box)
+#   level 1  the same objective with every CBF row DROPPED — box only, a
+#            throwaway OSQP on an identity constraint matrix, which is a
+#            projection onto a box and converges in a handful of iterations
+#   level 2  pure braking inside the box, ``clip(-k_brake * qdot, lb, ub)``,
+#            which needs no solver at all
+#
+# Level 1 is "the barrier is off for this tick" and level 2 is "brake", and
+# both are reported as a safety-chain fault upstream — but both are FINITE
+# commands inside every hard limit, which is the property B4 asks for.
+
+OSQP_LEVEL_FULL, OSQP_LEVEL_BOX, OSQP_LEVEL_BRAKE = 0, 1, 2
+LEVEL_NAMES = ('full', 'box-only', 'brake')
+
+
+def accept_iterate(x, status_val: int, box_lb: np.ndarray, box_ub: np.ndarray,
+                   nv: int, *, solved: int, inaccurate: int):
+    """The decision vector to use from one OSQP solve, or ``None``.
+
+    ``solved`` and ``inaccurate`` are both taken, with the joint block clipped
+    into the hard box (see the comment in the body: OSQP's constraint
+    tolerance is not zero, and the box is the one constraint that must hold
+    exactly). Anything else — max_iter, primal/dual infeasible, non-finite —
+    is ``None`` and the caller walks down the ladder.
+    """
+    if x is None or not np.all(np.isfinite(x)):
+        return None
+    if status_val not in (solved, inaccurate):
+        return None
+    # Clip the joint block into the hard box in BOTH accepted cases. OSQP
+    # satisfies its constraints only to eps_abs (1e-3 by default), so even a
+    # SOLVED iterate can sit a hair outside the box; the box is the one
+    # constraint that must hold exactly (it is what keeps the firmware reflex
+    # from firing), and clipping can only move the point INTO it. The rows
+    # are soft, so nothing is lost by it.
+    y = np.array(x, dtype=np.float64, copy=True)
+    np.clip(y[:nv], box_lb[:nv], box_ub[:nv], out=y[:nv])
+    return y
+
+
+def box_only_solve(P_csc, qvec: np.ndarray, box_lb: np.ndarray, box_ub: np.ndarray,
+                   *, max_iter: int):
+    """Level 1: the same objective over the hard box alone.
+
+    A fresh OSQP instance every time — this rung fires rarely and must not
+    share state with the warm-started full problem, whose iterate is exactly
+    what just failed. Returns the decision vector or ``None`` (which, with a
+    consistent box, does not happen — but the caller still has level 2).
+    """
+    import osqp
+    n = qvec.size
+    prob = osqp.OSQP()
+    prob.setup(P=P_csc, q=qvec, A=sparse.identity(n, format='csc'),
+               l=box_lb, u=box_ub, warm_start=False, max_iter=int(max_iter),
+               eps_abs=1e-6, eps_rel=1e-6, verbose=False)
+    res = prob.solve()
+    x = res.x
+    if (res.info.status_val not in (osqp.constant('OSQP_SOLVED'),
+                                    osqp.constant('OSQP_SOLVED_INACCURATE'))
+            or x is None or not np.all(np.isfinite(x))):
+        return None
+    y = np.array(x, dtype=np.float64, copy=True)
+    np.clip(y, box_lb, box_ub, out=y)
+    return y
+
+
+def braking_command(qdot: np.ndarray, acc_lb: np.ndarray, acc_ub: np.ndarray,
+                    *, k_brake: float) -> np.ndarray:
+    """Level 2: ``clip(-k_brake * qdot, lb, ub)`` — closed form, always finite,
+    always inside the box handed in. Pass the TIGHTENED box, not the static
+    limits, so the braking step also honours the velocity/position caps."""
+    return np.clip(-float(k_brake) * np.asarray(qdot, dtype=np.float64),
+                   acc_lb, acc_ub)

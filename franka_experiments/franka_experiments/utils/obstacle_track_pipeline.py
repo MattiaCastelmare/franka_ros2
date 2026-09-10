@@ -48,12 +48,28 @@ Pure numpy. No ROS.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 
 from franka_experiments.utils.obstacle_clusters import Cluster, cluster_obstacles
 from franka_experiments.utils.obstacle_tracker import KalmanTrack, TrackManager
+
+
+class TrackInfo(NamedTuple):
+    """Everything a consumer may take from a confirmed track for one point.
+    All-zero (``track_id == 0``) is the "no track" state."""
+    track_id: int
+    frames_seen: int
+    velocity: np.ndarray          # (3,) base frame [m/s]
+    velocity_cov: np.ndarray      # (3, 3) P_vv
+    acceleration: np.ndarray      # (3,) base frame [m/s²]
+    position_cov: np.ndarray      # (3, 3) P_pp
+    pos_vel_cov: np.ndarray       # (3, 3) P_pv
+
+
+NO_TRACK = TrackInfo(0, 0, np.zeros(3), np.zeros((3, 3)), np.zeros(3),
+                     np.zeros((3, 3)), np.zeros((3, 3)))
 
 
 class ObstacleTrackPipeline:
@@ -225,6 +241,17 @@ class ObstacleTrackPipeline:
             return 0, 0, np.zeros(3), np.zeros((3, 3))
         return (int(trk.track_id), int(trk.frames_seen),
                 trk.velocity, trk.velocity_cov)
+
+    def track_info_for_point(self, p_base) -> TrackInfo:
+        """:class:`TrackInfo` for a point — :meth:`velocity_for_point` plus the
+        acceleration and the position / cross covariance blocks the latency
+        compensation propagates. ``NO_TRACK`` when the point matches nothing."""
+        trk = self.track_for_point(p_base)
+        if trk is None:
+            return NO_TRACK
+        return TrackInfo(int(trk.track_id), int(trk.frames_seen), trk.velocity,
+                         trk.velocity_cov, trk.acceleration, trk.position_cov,
+                         trk.pos_vel_cov)
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 

@@ -50,6 +50,7 @@ def hard_accel_box(
     brake_eta: float,        # fraction of decel authority for the braking curve
     dt: float,               # one-step horizon (nominal QP period)
     relax_dt: float | None = None,   # approach horizon; None → dt (legacy)
+    clip_to_limits: bool = False,    # keep the box inside [acc_lb, acc_ub]
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-joint q̈ box enforcing velocity AND position limits. Returns (lb, ub).
 
@@ -57,6 +58,17 @@ def hard_accel_box(
     lower position limit while already at −v_cap), the box collapses onto lb —
     the bound that encodes "brake away from the lower limit / don't exceed
     −q̈_max" — matching the pre-existing velocity-box guard semantics.
+
+    ``clip_to_limits`` (Phase 3b). The guard has a hole on the OTHER side: a
+    joint closing on a position limit faster than its braking curve allows
+    gets ``lb = (v_lb − q̇)/dt``, which can be far ABOVE ``acc_ub`` — measured
+    in the regression test at 189 rad/s² on joint 7 against a 17 rad/s²
+    limit — and the guard then hands the QP the box ``[189, 189]``. The
+    solver obeys it, the controller cannot, and the firmware answers the
+    torque it sees with a reflex. With the flag on the box is clipped into
+    the physical acceleration limits AFTER the guard, so the demand becomes
+    ``[acc_ub, acc_ub]``: everything the joint has, and nothing it does not.
+    Off reproduces the previous arithmetic bit for bit.
 
     ``relax_dt`` decouples APPROACHING a cap from being OVER it:
 
@@ -96,6 +108,10 @@ def hard_accel_box(
     ub = np.minimum(acc_ub, (v_ub - qdot) / dt_ub)
     lb = np.maximum(acc_lb, (v_lb - qdot) / dt_lb)
     ub = np.maximum(ub, lb)          # feasibility guard (priority to lb)
+    if clip_to_limits:
+        lb = np.minimum(lb, acc_ub)  # never ask for more than the joint has
+        ub = np.minimum(ub, acc_ub)
+        ub = np.maximum(ub, lb)      # keep the (possibly degenerate) box ordered
     return lb, ub
 
 
@@ -115,6 +131,7 @@ def position_velocity_accel_box(
     relax_dt: float | None = None,
     out_lb: np.ndarray = None,   # (n,) OUTPUT buffer, written in place
     out_ub: np.ndarray,      # (n,) OUTPUT buffer, written in place
+    clip_to_limits: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """:func:`hard_accel_box` with the calling convention the QP loop needs.
 
@@ -139,7 +156,7 @@ def position_velocity_accel_box(
     lb, ub = hard_accel_box(
         q, qdot, acc_lb=acc_lb, acc_ub=acc_ub, qdot_max=qdot_max,
         v_margin=v_margin, q_min=q_min, q_max=q_max, q_margin=q_margin,
-        brake_eta=brake_eta, dt=dt, relax_dt=relax_dt)
+        brake_eta=brake_eta, dt=dt, relax_dt=relax_dt, clip_to_limits=clip_to_limits)
     out_lb[:] = lb
     out_ub[:] = ub
     ratio = np.abs(qdot) / qdot_max

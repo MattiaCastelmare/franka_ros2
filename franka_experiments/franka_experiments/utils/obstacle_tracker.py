@@ -213,6 +213,22 @@ class KalmanTrack:
         """
         return self.P[IV, IV].copy()
 
+    @property
+    def position_cov(self) -> np.ndarray:
+        """(3, 3) ``P_pp``, the position block. What the latency compensation
+        propagates forward: the obstacle is moved by ``v·t + ½a·t²`` and this,
+        propagated the same way, says how far off that prediction can be."""
+        return self.P[IP, IP].copy()
+
+    @property
+    def pos_vel_cov(self) -> np.ndarray:
+        """(3, 3) ``P_pv``, the position-velocity cross block. Needed for the
+        propagation ``P_pp(t) = P_pp + t(P_pv + P_pvᵀ) + t²P_vv`` — dropping
+        the cross term would under-state the propagated uncertainty of a
+        track whose position and velocity errors are correlated, which after a
+        Kalman update they always are."""
+        return self.P[IP, IV].copy()
+
     def speed_variance_along(self, n_hat: np.ndarray) -> float:
         """``n̂ᵀ P_vv n̂`` [m²/s²], the variance of the projected speed.
 
@@ -246,7 +262,18 @@ class KalmanTrack:
         self.age += 1
 
     def update(self, z: np.ndarray) -> None:
-        """Correct with a measured centroid ``z`` (3,) in the filter's frame."""
+        """Correct with a measured centroid ``z`` (3,) in the filter's frame.
+
+        A ROBUST (innovation-gated) update was tried here and removed: on the
+        real centroid sequences of rosbag/arm_complex and
+        rosbag/handratacker_object, down-weighting a measurement whose
+        innovation exceeded 2, 3 or 5 standard deviations changed the
+        fabricated velocity by less than a millimetre per second at every
+        percentile. The wander this filter suffers from is not a few large
+        outliers a gate can catch; it is the centroid moving a little, all the
+        time. It is handled where it is consumed — see
+        ``ConstraintBuilder._obstacle_speed_tracked``.
+        """
         z = np.asarray(z, dtype=np.float64).ravel()
         S = self.innovation_cov()
         K = self.P @ H.T @ np.linalg.inv(S)

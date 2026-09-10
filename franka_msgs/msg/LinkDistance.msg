@@ -83,3 +83,23 @@ geometry_msgs/Vector3 obstacle_velocity
 # root times a latency is a distance the barrier can be tightened by. An EMA'd
 # scalar cannot report this at all, which is why it is on the wire.
 float64[9] velocity_covariance
+
+# ── Latency compensation (cbf_safety_filter, enable_latency_compensation) ────
+# The three quantities the filter needs to move the obstacle FORWARD by its own
+# measured blind time and to price the uncertainty of doing so. All defaults
+# (zero vectors) are the "no track" state and contribute exactly nothing; like
+# the fields above there is no value of these that can LOOSEN a constraint —
+# the consumer only ever tightens with them.
+
+# Obstacle acceleration in the BASE frame [m/s^2], the acceleration block of the
+# track's constant-acceleration Kalman state.
+geometry_msgs/Vector3 obstacle_acceleration
+
+# Row-major 3x3 covariance of closest_point_human's TRACK position [m^2], BASE
+# frame (the position block of the track's state covariance).
+float64[9] position_covariance
+
+# Row-major 3x3 position-velocity cross-covariance [m^2/s], BASE frame. With
+# velocity_covariance it lets the consumer propagate the position covariance
+# forward: P_pp(t) = P_pp + t (P_pv + P_pv^T) + t^2 P_vv.
+float64[9] position_velocity_covariance

@@ -58,13 +58,22 @@ from franka_experiments.utils.cbf_hard_limits import (
     apply_slew_limit,
     position_velocity_accel_box,
 )
+from franka_experiments.utils.cbf_zones import ladder_from_params, ZONE_NAMES
 from franka_experiments.utils.cbf_qp_assembly import (
+    LEVEL_NAMES,
+    OSQP_LEVEL_BOX,
+    OSQP_LEVEL_BRAKE,
+    OSQP_LEVEL_FULL,
+    accept_iterate,
+    box_only_solve,
+    braking_command,
     build_osqp_A,
     build_osqp_bounds,
     build_row_rhs,
     pad_rows_to_block,
     tangential_bias,
 )
+from franka_experiments.utils.livelock import LivelockDetector, ProgressWindow
 from franka_experiments.utils.cbf_state_rows import (
     FR3_JOINT_KEYS,
     FR3_JOINTS,
@@ -96,6 +105,7 @@ from franka_experiments.utils.logging_utils import (
     format_cbf_diag,
     format_velocity_summary,
 )
+from franka_experiments.utils.perception_msgs import labelled_links
 
 
 class CBFSafetyFilter(Node):
@@ -131,7 +141,8 @@ class CBFSafetyFilter(Node):
         # counters — and driven at the constraint rate, never on the QP tick.
         self._rows = ConstraintBuilder(
             P, kin, q_min=self._q_min, q_max=self._q_max,
-            acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(), **opt)
+            acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(),
+            qdot_max=self._qdot_max, **opt)
 
         # ── 4. QP, preallocated once ────────────────────────────────────
         # Slack penalty is QUADRATIC (½ρs²) and one slack per FAMILY. Quadratic
@@ -154,7 +165,28 @@ class CBFSafetyFilter(Node):
         self._osqp_prob = None
         self._prev_nc = -1
         self._qp_fail_count = 0
+        self._fallback_count = [0, 0, 0]      # ticks answered at each rung
+        self._last_level = OSQP_LEVEL_FULL
+        # Phase-3c livelock detector. Owns WHEN and HOW MUCH; the builder puts
+        # WHICH WAY into the snapshot (livelock_dir).
+        self._livelock = LivelockDetector(
+            stall_s=P.livelock_stall_s, ramp_s=P.livelock_ramp_s,
+            max_s=P.livelock_max_s, cooldown_s=P.livelock_cooldown_s)
+        self._lock_mag = 0.0
+        self._lock_was = False
+        self._lock_bias = np.zeros(NV)   # EMA state, like the other two biases
+        self._progress = ProgressWindow(P.livelock_progress_window_s)
         self._dt_qp = 1.0 / P.qp_rate_hz
+        # Zone ladder for the TASK SWITCH only. The constraint builder owns a
+        # second instance for the row gains: two rates, two pieces of state,
+        # one factory (utils.cbf_zones.ladder_from_params) so they cannot drift
+        # apart in configuration. None when the flag is off.
+        self._zones = ladder_from_params(P, self.get_logger())
+        if self._zones is not None:
+            self.get_logger().info(
+                f'zone ladder (x d_safe={P.d_safe} m): {self._zones.describe()}')
+        self._zone_held = False     # edge detector for the hold-zone log line
+        self._diag_w_task = 1.0     # last task weight, for CBFDIAG
 
         # ── 5. Shared state (lock-free: one immutable snapshot per producer,
         #       published by a single atomic attribute assignment) ────────
@@ -162,8 +194,10 @@ class CBFSafetyFilter(Node):
         self._js_frozen_since = None
         self._qdot_cbf = np.zeros(NV)
         self._qddot_prev = np.zeros(NV)
+        self._nom_prev = np.zeros(NV)   # last tick's (biased) nominal, for the livelock test
         self._tan_bias = np.zeros(NV)   # EMA state for tangential_bias, below
         self._esc_bias = np.zeros(NV)   # EMA state for the lateral-evasion bias
+        self._outrun_bias = np.zeros(NV)  # EMA state for the Phase-2 escape bias
 
         # ── 6. Diagnostics ──────────────────────────────────────────────
         self._diag_slack = np.zeros(N_SLACK)
@@ -391,8 +425,19 @@ class CBFSafetyFilter(Node):
         # two get compared on hardware before the source is flipped.
         # A publisher that knows nothing about tracking sends zeros, and zeros
         # are the documented "no track" state that contributes nothing.
-        items = tuple(
-            Obstacle(
+        #
+        # The control-point label comes from perception_msgs.labelled_links,
+        # the ONE definition of the convention — the publisher annotates
+        # skip_keys through the same function. It is positional over every
+        # entry, invalid ones included, and the label is carried on
+        # Obstacle.cp_label rather than rebuilt inside the ConstraintBuilder,
+        # which is what used to make it depend on which rows survived the
+        # builder's filters. See that function for what went wrong.
+        parsed = []
+        for cp_label, ld in labelled_links(msg):
+            if not ld.valid:
+                continue
+            parsed.append(Obstacle(
                 link=ld.robot_link_name,
                 d=float(ld.distance),
                 pr=np.array([ld.closest_point_robot.x,
@@ -409,9 +454,10 @@ class CBFSafetyFilter(Node):
                 vel_cov=np.asarray(ld.velocity_covariance,
                                    dtype=np.float64).reshape(3, 3),
                 track_id=int(ld.track_id),
-            )
-            for ld in msg.links if ld.valid
-        )
+                cp_label=cp_label,
+                **self._latency_fields(ld),
+            ))
+        items = tuple(parsed)
         now = self._now()
         # Capture time, with a plausibility guard: an unset header stamp reads
         # as 0.0 and would make Δt ≈ 1.8e9 s, silently zeroing every velocity
@@ -431,6 +477,21 @@ class CBFSafetyFilter(Node):
             t_cap = now
         self._diag_cap_age = age
         self._obs = ObstacleSnap(items, now, t_cap)
+
+    @staticmethod
+    def _latency_fields(ld) -> dict:
+        """The three latency-compensation fields of a LinkDistance, or an empty
+        dict when the message package predates them (the Obstacle defaults are
+        then None and the term evaluates to its velocity-only floor)."""
+        if not hasattr(ld, 'obstacle_acceleration'):
+            return {}
+        return dict(
+            a_vec=np.array([ld.obstacle_acceleration.x,
+                            ld.obstacle_acceleration.y,
+                            ld.obstacle_acceleration.z]),
+            pos_cov=np.asarray(ld.position_covariance, dtype=np.float64).reshape(3, 3),
+            pv_cov=np.asarray(ld.position_velocity_covariance,
+                              dtype=np.float64).reshape(3, 3))
 
     # ═════════════════════════════════════════════════════════════════════
     #  Perception rate (50 Hz) — geometry only; Pinocchio lives here
@@ -518,6 +579,10 @@ class CBFSafetyFilter(Node):
             self.get_logger().warn('qddot_nom stale → braking',
                                    throttle_duration_sec=2.0)
         qddot_nom = nom.qddot if fresh_nom else -P.k_brake * qdot
+        # The task's OWN command, before any bias this filter adds — the
+        # livelock test needs to know what the commander wanted, not what the
+        # filter has already talked itself into.
+        nom_raw = np.array(qddot_nom, copy=True)
         if js_frozen:
             qddot_nom = -P.k_brake * qdot           # overrides even a fresh one
 
@@ -534,6 +599,8 @@ class CBFSafetyFilter(Node):
             n_c, G = con.A.shape[0], con.G
             n_active = int(np.count_nonzero(con.h_bar < 0.0))
             self._smooth_qdot(qdot)
+            # k0/k1 stay the scalars here; the snapshot's per-row gains take
+            # over inside build_row_rhs when the zone ladder put them there.
             h_qp, self._diag_caps = build_row_rhs(
                 con, qdot, self._qdot_cbf, k0=P.k0_cbf, k1=P.k1_cbf,
                 retreat_horizon=P.retreat_cap_horizon_s,
@@ -547,6 +614,55 @@ class CBFSafetyFilter(Node):
             fault = 1.0
             self.get_logger().warn('distance stale → braking fallback (CBF inactive)',
                                    throttle_duration_sec=2.0)
+
+        # ── STEP 3a: the zone ladder's task switch ──────────────────────
+        # Below zone_r_priority*d_safe the trajectory starts giving way, and
+        # below zone_r_hold*d_safe it gives way entirely: the nominal is faded into a
+        # braking command so the arm sheds its speed and holds station instead
+        # of pursuing a path that leads into something.
+        #
+        # Faded into BRAKING, not into zero. A zero nominal makes the QP
+        # minimise ‖q̈‖², whose unconstrained solution is q̈ = 0 — "hold this
+        # velocity", i.e. the arm coasts into the obstacle at whatever speed it
+        # already had. That is the exact failure the joint-state-stale branch
+        # above documents, and it is why "stop" here is a command and not an
+        # absence of one.
+        #
+        # This is NOT a freeze. The CBF rows are untouched and keep their full
+        # authority, so an obstacle that goes on closing is still pushed away
+        # from; only the TASK is switched off. That distinction is load-bearing
+        # for a 5 cm boundary read by a depth sensor whose calibration residual
+        # measured 4.2 cm with 4.2 cm of spread: a latch there would fire on
+        # noise, and a frozen arm is the wrong answer to a limb still moving.
+        #
+        # Placed BEFORE the three evasion biases on purpose. Those biases are
+        # avoidance, not task, and attenuating them in the zone where avoidance
+        # matters most would be precisely backwards.
+        w_task = 1.0
+        if self._zones is not None:
+            # Global gap, not per row: there is one trajectory to switch off.
+            # inf on every braking path — n_c is 0 there while `con` still
+            # holds the last snapshot, and the nominal is ALREADY the braking
+            # command, so a second opinion off stale geometry would only fight
+            # it. The ramp still advances, so the task fades back in normally
+            # once rows return.
+            d_zone = (float(con.d_obs_min) if (n_c > 0 and con is not None)
+                      else float('inf'))
+            w_task = self._zones.task_weight(d_zone, self._dt_qp)
+            if w_task < 1.0:
+                qddot_nom = (w_task * qddot_nom
+                             + (1.0 - w_task) * (-P.k_brake * qdot))
+                if w_task <= 0.0 and not self._zone_held:
+                    self.get_logger().warn(
+                        f'ZONE hold: obstacle at {d_zone:.3f} m < '
+                        f'{self._zones.bounds[0]:.3f} m → trajectory suspended, barrier '
+                        f'rows keep full authority (resumes over '
+                        f'{P.zone_resume_s:.1f} s once it clears)')
+                    self._zone_held = True
+            if w_task >= 1.0 and self._zone_held:
+                self.get_logger().info('ZONE hold released → trajectory resumed')
+                self._zone_held = False
+        self._diag_w_task = w_task
 
         # ── STEP 3b: steer around, not just away from, a close obstacle ─
         # Bias only, on the QP's TARGET — every G/h row above is untouched, so
@@ -604,6 +720,68 @@ class CBFSafetyFilter(Node):
         else:
             self._esc_bias *= a_tan
 
+        # ── STEP 3d: step aside when the obstacle cannot be OUTRUN ──────
+        # The closed-form retreat authority (velocity box along n̂) says the
+        # point cannot separate as fast as the obstacle closes, so the bias
+        # rotates the target toward the fastest direction ⟂ v_obs. Its own,
+        # FASTER EMA: the situation it answers is over in a few hundred ms,
+        # and the 100 ms constant of the tangential filter would spend most
+        # of that ramping up. Same gate, same fade-out as the two above.
+        a_o = P.outrun_evasion_filter_alpha
+        if n_c > 0 and con is not None and con.outrun_bias is not None:
+            self._outrun_bias *= a_o
+            self._outrun_bias += (1.0 - a_o) * con.outrun_bias
+            qddot_nom = qddot_nom + self._outrun_bias
+        else:
+            self._outrun_bias *= a_o
+
+        # ── STEP 3e: livelock escape ────────────────────────────────────
+        # The detector is fed from the PREVIOUS tick's outcome (how much the
+        # QP bent the nominal) and this tick's joint speed; the direction is
+        # the snapshot's nullspace-projected lateral. Bias on the objective.
+        if P.enable_livelock_escape:
+            # "Blocked" means the task WANTS to move and the QP is taking that
+            # away. Both halves are needed: an arm parked at its goal beside a
+            # violated barrier also has a large ‖q̈_safe − q̈_nom‖ (the barrier
+            # is pushing it off the goal), and nudging THAT sideways is
+            # unexplained motion, not an escape — measured in the noisy-static
+            # scenario, where it fired with the arm holding still on target.
+            blocked = (n_c > 0 and con is not None and con.livelock_dir is not None
+                       and float(np.linalg.norm(nom_raw)) > P.livelock_nominal_min
+                       and float(np.linalg.norm(self._qddot_prev - self._nom_prev))
+                       > P.livelock_dnorm_thr)
+            moving = self._progress.push(now, js.q) > P.livelock_progress_thr
+            self._lock_mag = self._livelock.update(now, blocked=blocked, moving=moving)
+            if self._livelock.escaping and not self._lock_was:
+                self.get_logger().warn(
+                    f'LIVELOCK: QP bending the nominal for {P.livelock_stall_s:.1f} s '
+                    f'with the arm still → tangential escape #{self._livelock.n_escapes} '
+                    f'(gain {P.livelock_gain:.2f} rad/s², max {P.livelock_max_s:.1f} s)')
+            elif self._lock_was and not self._livelock.escaping:
+                self.get_logger().info(
+                    f'LIVELOCK: escape ended ({self._livelock.last_reason})')
+            self._lock_was = self._livelock.escaping
+            # EMA'd across ticks exactly like the tangential and evasion
+            # biases. Without it this was the one bias added raw: the escape
+            # direction is rebuilt at 50 Hz and can rotate when the closest
+            # row changes, so a raw add put a step of the full gain into
+            # q̈_nom — the arm jerks sideways instead of leaning into it.
+            raw_lock = np.zeros(NV)
+            if self._lock_mag > 0.0 and con is not None and con.livelock_dir is not None:
+                raw_lock = P.livelock_gain * self._lock_mag * con.livelock_dir
+            self._lock_bias *= a_tan
+            self._lock_bias += (1.0 - a_tan) * raw_lock
+            # Added only with rows in hand, the same gate the other two biases
+            # use: on a braking path (state frozen, perception stale) n_c is 0
+            # while `con` still holds the last snapshot, and steering off that
+            # geometry is the one thing braking must not do. The EMA keeps
+            # running, so the bias FADES OUT instead of freezing.
+            if n_c > 0:
+                qddot_nom = qddot_nom + self._lock_bias
+        else:
+            self._lock_bias *= self.P.cbf_tangential_filter_alpha
+        self._nom_prev = qddot_nom
+
         # ── STEP 4: the hard state box ──────────────────────────────────
         # Underneath every row, and NOT relaxable: one integration step must not
         # push |q̇| past the limit, and the position braking curve must keep the
@@ -616,7 +794,8 @@ class CBFSafetyFilter(Node):
             q_min=self._q_min, q_max=self._q_max,
             q_margin=P.position_margin_rad, brake_eta=P.position_brake_eta,
             dt=self._dt_qp, relax_dt=P.state_box_relax_s,
-            out_lb=self._box_lb[:NV], out_ub=self._box_ub[:NV])
+            out_lb=self._box_lb[:NV], out_ub=self._box_ub[:NV],
+            clip_to_limits=P.accel_box_clip_to_limits)
         if P.slew_box_enabled:
             self._box_lb[:NV], self._box_ub[:NV] = apply_slew_limit(
                 self._box_lb[:NV], self._box_ub[:NV],
@@ -628,10 +807,9 @@ class CBFSafetyFilter(Node):
                                           self._diag_vel_bite))
 
         # ── STEP 5: solve ───────────────────────────────────────────────
-        qddot_safe, slack, solve_ms, res = self._solve(G, h_qp, n_c)
-        if qddot_safe is None:
-            qddot_safe = np.clip(-P.k_brake * qdot, self._lb, self._ub)
-            fault = 1.0
+        qddot_safe, slack, solve_ms, res, level = self._solve(G, h_qp, n_c, qdot)
+        if level != OSQP_LEVEL_FULL:
+            fault = 1.0                     # the barrier was off for this tick
 
         # ── STEP 6: publish, then report ────────────────────────────────
         if P.slew_box_enabled:
@@ -697,13 +875,14 @@ class CBFSafetyFilter(Node):
         else:
             np.copyto(self._qdot_cbf, qdot)
 
-    def _solve(self, G, h_qp, n_c):
+    def _solve(self, G, h_qp, n_c, qdot):
         """Push the moving parts into OSQP and solve. Returns (q̈, slack, ms, res).
 
         ``setup()`` only when the row count changes the sparsity pattern;
-        otherwise ``update()`` the vectors that move. q̈ is ``None`` when the
-        solve failed, which the caller turns into braking — and the warm-start
-        iterate is discarded so a bad solve cannot seed the next one.
+        otherwise ``update()`` the vectors that move. NEVER returns ``None``:
+        a failed solve walks the fallback ladder in ``cbf_qp_assembly`` (box
+        only, then closed-form braking) and reports which rung answered — the
+        warm-start iterate is discarded so a bad solve cannot seed the next.
 
         The row count is QUANTISED to ``qp_row_block`` first (see
         ``pad_rows_to_block``): the real n_c changes almost every rebuild, and
@@ -732,19 +911,38 @@ class CBFSafetyFilter(Node):
         solve_ms = (time.perf_counter() - t0) * 1e3
 
         self._diag_slack[:] = 0.0
-        x = res.x
-        if (res.info.status_val != osqp.constant('OSQP_SOLVED')
-                or x is None or not np.all(np.isfinite(x))):
+        # ── The fallback ladder (cbf_qp_assembly): never "no solution" ──
+        x = accept_iterate(
+            res.x, res.info.status_val, self._box_lb, self._box_ub, NV,
+            solved=osqp.constant('OSQP_SOLVED'),
+            inaccurate=(osqp.constant('OSQP_SOLVED_INACCURATE')
+                        if self.P.accept_inaccurate_qp else -999))
+        level = OSQP_LEVEL_FULL
+        if x is None:
             self._qp_fail_count += 1
+            # Level 1: same objective, box only. A projection onto a box; a
+            # fresh instance so the failed warm start is not reused.
+            x = box_only_solve(self._P_csc, self._qvec, self._box_lb, self._box_ub,
+                               max_iter=self.P.osqp_max_iter)
+            level = OSQP_LEVEL_BOX
+            if x is None:
+                # Level 2: closed-form braking inside the tightened box.
+                x = np.concatenate([braking_command(qdot, self._box_lb[:NV],
+                                                    self._box_ub[:NV],
+                                                    k_brake=self.P.k_brake),
+                                    np.zeros(N_SLACK)])
+                level = OSQP_LEVEL_BRAKE
             self.get_logger().error(
-                f'QP not solved ({res.info.status}) → braking output '
-                f'[qp_fail_count={self._qp_fail_count}]',
+                f'QP not solved ({res.info.status}) → fallback level {level} '
+                f'({LEVEL_NAMES[level]}) [qp_fail_count={self._qp_fail_count} '
+                f'levels={self._fallback_count}]',
                 throttle_duration_sec=0.5)
             self._osqp_prob, self._prev_nc = None, -1
-            return None, 0.0, solve_ms, res
-        if n_c > 0:
+        self._fallback_count[level] += 1
+        self._last_level = level
+        if n_c > 0 and level == OSQP_LEVEL_FULL:
             np.copyto(self._diag_slack, x[NV:])
-        return x[:NV], float(self._diag_slack.max()), solve_ms, res
+        return x[:NV], float(self._diag_slack.max()), solve_ms, res, level
 
     def _report(self, now, con, h_qp, n_c, n_active, qdot, qddot_safe,
                 qddot_nom, slack, solve_ms, res) -> None:
@@ -757,7 +955,8 @@ class CBFSafetyFilter(Node):
             self.get_logger().info(
                 f'tick={self._tick_count} n_c={n_c} solve={solve_ms:.2f}ms '
                 f'qddot_nom_norm={float(np.linalg.norm(qddot_nom)):.2f} '
-                f'qp_fails={self._qp_fail_count} ' + tail)
+                f'qp_fails={self._qp_fail_count} fb={self._fallback_count} '
+                f'lock={self._lock_mag:.2f} ' + tail)
         if n_c > 0 and (now - self._last_diag_t) >= self.P.diag_period_s:
             self._last_diag_t = now
             self.get_logger().info(format_cbf_diag(
@@ -767,7 +966,7 @@ class CBFSafetyFilter(Node):
                 qddot_real=self._diag_qddot_real, slack=self._diag_slack,
                 n_active_cps=n_active, vel_ratio=self._diag_vel_ratio,
                 vel_bite=self._diag_vel_bite, slew_bite=self._diag_slew_bite,
-                cap_age=self._diag_cap_age))
+                cap_age=self._diag_cap_age, w_task=self._diag_w_task))
 
     # ═════════════════════════════════════════════════════════════════════
     #  Output

@@ -148,3 +148,29 @@ def test_the_margin_does_not_compound_across_rebuilds():
                         cov=np.eye(3) * 0.04)]
     vals = [run(b, ob, n_frames=1).h_bar[0] for _ in range(20)]
     assert max(vals) - min(vals) < 1e-9, 'the tightening is compounding'
+
+
+# ── The margin must not step (hardware jitter, Sep 2026) ────────────────────
+
+def test_the_margin_is_smoothed_across_rebuilds():
+    """On hardware the margin sat at its floor of 0.032 m and jumped to 0.106
+    whenever a control point matched a different track: through k0 = 25 that
+    is a 1.85 rad/s² step in the row's right-hand side, from a term that is
+    supposed to be a slowly-varying standoff. It is an admission of ignorance,
+    not a measurement, and nothing about it is urgent to one tick."""
+    import numpy as np
+    from _cbf_builder_harness import make_builder, make_obstacle, run
+
+    def barrier(alpha, cov_seq):
+        b = make_builder(obstacle_velocity_source='tracker',
+                         enable_uncertainty_margin=True,
+                         uncertainty_margin_alpha=alpha)
+        return [float(c) for c in [run(b, lambda k: [make_obstacle(
+            pr=(0.5, 0.0, 0.5), ph=(0.5, -0.25, 0.5), v=(0.0, 0.3, 0.0),
+            frames_seen=20, cov=np.eye(3) * cov_seq[min(k, len(cov_seq) - 1)])],
+            n_frames=i + 1).h_bar[0] for i in range(len(cov_seq))]]
+
+    seq = [0.0064] * 4 + [0.0700] * 6          # sigma_v 0.08 -> 0.26 m/s
+    raw = np.abs(np.diff(barrier(0.0, seq)))
+    ema = np.abs(np.diff(barrier(0.8, seq)))
+    assert raw.max() > 4 * ema.max(), (raw.max(), ema.max())

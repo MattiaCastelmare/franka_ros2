@@ -36,7 +36,7 @@ topics:
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
-  d_safe: 0.15          # minimum safe distance from obstacles [m]
+  d_safe: 0.10          # minimum safe distance from obstacles [m]
                         # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
                         # h = LinkDistance.distance - d_safe, i.e. measured from
                         # the capsule SURFACE. It used to be rebuilt as
@@ -134,6 +134,184 @@ params:
                            # checked safe vs cbf_activation_margin (penetration ≤~1 cm
                            # at 1 m/s, less than at k1=10.0). See CBF review notes.
                            # Do NOT "round down" to 10.0 without re-checking Δ.
+
+  # ── Zone ladder: gap-scheduled aggressiveness (cbf_safety_filter) ──────────
+  # WHAT PROBLEM THIS SOLVES. The filter changed its mind about an obstacle at
+  # five independent distances that did not know about each other
+  # (outrun_evasion_engage_gap 0.30, livelock_engage_gap 0.25, d_safe 0.15,
+  # retreat_cap_engage_gap 0.15, governor_d_full 0.05) and the barrier itself
+  # engaged at a SIXTH that is not a parameter at all. Solving h_qp = 0 gives
+  #
+  #     d_bind = d_safe + h_unc + (k1/k0)*|hdot|
+  #
+  # so with k0=25, k1=10.5 the row starts biting at 0.23 m when the arm walks
+  # in at 0.12 m/s and at 0.29 m when it walks in at 0.25 m/s. Measured on
+  # hardware: the obstacle slack first went non-zero at d=0.227 against 0.235
+  # predicted. The engagement distance was a function of how fast you happened
+  # to arrive, and nothing in this file said so.
+  #
+  # The ladder makes it explicit. FOUR RUNGS on the measured surface gap,
+  # every boundary a MULTIPLE OF d_safe (shipped ratios; metres at d_safe=0.20):
+  #
+  #   notice   >= 1.0·d_safe       (0.20)  low bandwidth: engages EARLY (larger
+  #                      k1/k0 pushes d_bind out) and pushes GENTLY. The speed
+  #                      dependence is kept deliberately — a fast obstacle is
+  #                      noticed further out, which is "prepare sooner when it
+  #                      is coming fast" for free, with no extra parameter.
+  #   active   1.0-0.5·d_safe (0.20-0.10)  k0_cbf / k1_cbf themselves.
+  #   priority 0.5-0.25·d_safe(0.10-0.05)  high bandwidth AND a slack
+  #                      multiplier below 1, so the QP can no longer buy its
+  #                      way out of the row by paying tracking error.
+  #   hold     < 0.25·d_safe       (0.05)  priority gains, plus the TASK is
+  #                      switched off.
+  #
+  # WHY HOLD IS NOT A FREEZE. The nominal is faded into -k_brake*qdot, so the
+  # arm sheds its speed and stops pursuing the path, while every barrier row
+  # keeps full authority to push it away. It is not a latch, for three reasons
+  # measured on the same hardware log the ladder was designed from:
+  #   * the calibration residual read 4.2 cm with 4.2 cm of spread, so the 5 cm
+  #     boundary sits INSIDE the error of the sensor that defines it;
+  #   * a control point went 0.242 -> 0.077 -> 0.253 m in three consecutive
+  #     depth frames and the approach-jump limiter still passed 67 mm through;
+  #   * h_unc, the filter's own admitted ignorance, ranges 0.032-0.092 m.
+  # A latch would fire on that noise, repeatedly, and each firing is a hard
+  # stop of a moving arm. Worse, freezing is the WRONG answer to the case that
+  # matters: a limb still closing at 0.3 m/s reaches a frozen arm in 130 ms.
+  #
+  # OFF here so a flags-off build produces bit-identical QP rows (asserted by
+  # test_cbf_zone_ladder). launch_defaults.yaml turns it ON, same as the
+  # outrun and livelock flags.
+  enable_zone_ladder: false
+
+  # [-] Rung boundaries on the MEASURED surface gap, as MULTIPLES OF d_safe:
+  # boundary [m] = zone_r_* x d_safe. The measured gap and not the tightened
+  # h_bar: these are a statement about where the obstacle IS, the number you
+  # read off the log and off a tape measure. Scheduling off h_bar would make
+  # the rungs move whenever the uncertainty margin or the braking term moved,
+  # which is the one thing an explicit ladder exists to stop.
+  #
+  # WHY RELATIVE. With absolute boundaries (0.30/0.20/0.10/0.05 m) lowering
+  # d_safe moved the barrier and nothing else: at d_safe=0.03 the task was
+  # still halved from ~0.12 m and suspended at 0.05 m — the hold rung sat
+  # OUTSIDE the barrier, so the robot could not get closer whatever d_safe
+  # said (measured 2026-09-10, runs at d_safe 0.15/0.10/0.05/0.03). Now the
+  # ladder follows d_safe. d_safe sits at 2/3 of the outermost boundary
+  # (1/1.5), and at d_safe=0.20 these ratios give back exactly the
+  # 0.30/0.20/0.10/0.05 m ladder designed on hardware.
+  #
+  # CAVEAT at small d_safe: the sensor, not the ladder, becomes the limit.
+  # The calibration residual read 4.2 cm with 4.2 cm of spread and h_unc never
+  # drops below ~0.032 m, so below d_safe ~0.05 the inner rungs are millimetres
+  # wide and sit inside the measurement noise.
+  #
+  # Must descend strictly (hold < priority < active < notice) or the builder
+  # raises at construction rather than silently inverting a rung. The resolved
+  # metres are logged at startup ("zone ladder (x d_safe=...)").
+  zone_r_notice: 1.5     # d_safe = 2/3 of this. Above it the notice gains
+                         # apply unchanged, which is harmless: the row is
+                         # nowhere near binding there.
+  zone_r_active: 1.0     # the barrier itself. Outside it the notice gains:
+                         # the row binds at d_safe + h_unc + 0.583*|hdot|,
+                         # inside the notice rung by construction, so the arm
+                         # is already leaning away before it gets here rather
+                         # than reversing its approach in one tick, which is
+                         # what produced the measured jump.
+  zone_r_priority: 0.5   # half-way inside d_safe. Reaching it means the
+                         # barrier has already been violated, so the response
+                         # stops being a compromise with the trajectory.
+  zone_r_hold: 0.25      # 3/4 of d_safe violated. Deepest excursion ever
+                         # measured was 8 mm inside d_safe against an obstacle
+                         # closing at 0.76 m/s — this rung should essentially
+                         # never be reached, and if it is, the task is the
+                         # thing that gives.
+
+  # [-] Width of the smoothstep band centred on each boundary, as a multiple of
+  # d_safe (0.04 m at d_safe=0.20). A hard switch would put a step of
+  # dk0*h_bar + dk1*hdot straight into the row's bound, and the measured
+  # correlation between the commanded radial acceleration and -h_qp is 0.9999:
+  # whatever moves that bound comes out of the joints. At the active->priority
+  # boundary an unblended switch is a step of 25*h_bar, which is exactly the
+  # jerk this whole exercise exists to remove.
+  #
+  # 0.2 leaves each rung FLAT across its middle. Clamped at construction to the
+  # narrowest gap between boundaries (0.25·d_safe with the ratios above): wider
+  # bands would overlap, the weights would stop summing to 1, and the blended
+  # gain would leave the convex hull of the rung values — a gain nobody
+  # configured.
+  zone_blend_r: 0.2
+
+  # Notice-rung gains. Chosen to hold the SAME damping as the shipped pair and
+  # move only the bandwidth: zeta = k1/(2*sqrt(k0)) = 7/(2*sqrt(12)) = 1.01
+  # against the shipped 10.5/(2*sqrt(25)) = 1.05. Nothing here is being made
+  # springier; it is being made slower.
+  #
+  # Why slower matters. k1 multiplies a DERIVATIVE of a measured signal, and
+  # against the arm's own velocity (an integrator) the loop crosses unity gain
+  # at omega = k1. At 10.5 that is 1.67 Hz, and the hardware log rings at 1.9 Hz
+  # with the commanded acceleration flipping sign every ~0.26 s and a swing of
+  # 2.2 rad/s^2 dominated by the arm's own retreat speed. At 7 the crossover
+  # drops to 1.11 Hz, below anything the torque loop and the 50 Hz rebuild add
+  # phase to. The same change cuts the noise gain: one frame of fabricated
+  # obstacle velocity (0.085 m/s was measured on a STATIC obstacle) lands as
+  # 0.60 rad/s^2 instead of 0.89.
+  #
+  # Raising k1_notice without raising k0_notice underdamps the barrier; the two
+  # move together or not at all.
+  zone_k0_notice: 12.0
+  zone_k1_notice: 7.0
+
+  # Priority-rung gains, shared with the hold rung. Same rule: zeta =
+  # 14/(2*sqrt(50)) = 0.99, i.e. the damping is held and only the bandwidth
+  # rises, 3.5 -> 5.0 -> 7.1 rad/s across the three rungs.
+  #
+  # The noise gain rises with it (0.085 m/s of artefact becomes 1.19 rad/s^2
+  # here) and that is accepted deliberately: at 10 cm the arm is already 5 cm
+  # inside d_safe, and reacting hard to a possible approach is the correct
+  # trade there in a way it is not at 25 cm.
+  zone_k0_priority: 50.0
+  zone_k1_priority: 14.0
+
+  # Slack-column multipliers for the two inner rungs. The row reads
+  # a^T qddot + m*s_g >= b, so m is how much relief one unit of paid slack
+  # buys: m < 1 means the QP must pay MORE slack to violate the row by the same
+  # amount, and the cost is 0.5*rho*s^2, so it grows with the SQUARE. m = 0.5
+  # makes a violation 4x more expensive, m = 0.25 makes it 16x.
+  #
+  # Done here rather than by raising rho_slack because rho lives in the OSQP
+  # cost matrix, and touching that forces a refactorization on a 100 Hz thread
+  # that already starves its own IO callback group (see pad_rows_to_block).
+  # The multiplier is already in G and costs nothing to change per rebuild.
+  #
+  # Floors, not zeros: m -> 0 makes the row effectively hard, and a hard row
+  # the arm physically cannot satisfy is how a QP becomes infeasible. 0.25 is
+  # a strong priority that still leaves the problem solvable at every pose,
+  # which is the B4 "never deadlock" requirement.
+  #
+  # Composes with enable_weighted_slack rather than replacing it: that one asks
+  # "of the rows engaged now, which can afford to yield", this one asks "how
+  # close is this one to the skin". Both factors are <= 1 so the product can
+  # only make a row harder to relax, never easier.
+  zone_slack_m_priority: 0.5
+  zone_slack_m_hold: 0.25
+
+  # Fraction of the commander's qddot_nom REMOVED at full priority weight, i.e.
+  # in the 0.10-0.05 band. 1.0 would make the priority rung indistinguishable
+  # from hold and there would be no ladder, only a cliff at 0.10.
+  zone_task_priority_cut: 0.5
+
+  # [s] Time for the task to fade back in once the gap clears. Only the CLIMB
+  # is rate limited; the fall is instant. The asymmetry is the same one the
+  # barrier recovery (cbf_h_recovery_alpha) and the v_obs clamp already use:
+  # tightening is a decision about this frame's measurement, relaxing is a
+  # claim that the danger has passed, and a 5 cm boundary read by a sensor
+  # with 4 cm of calibration spread will cross itself repeatedly on noise.
+  # Rate limiting only the climb turns that chatter into one decision.
+  #
+  # 0.5 s is long enough that the resume is invisible in the joint command and
+  # short enough not to be read as a hang. 0.0 restores an instant resume,
+  # which will step the nominal by whatever the commander wants at that moment.
+  zone_resume_s: 0.5
+
   # NOTE: cbf_activation_margin / cbf_hysteresis below are RETIRED for
   # cbf_safety_filter — that node replaced its old step activation gate
   # (d < d_safe + margin) with continuous HOCBF activation + the purely
@@ -423,7 +601,16 @@ params:
   # [m/s] absolute ceiling regardless of the terms above. The number to lower
   # first if the arm still feels violent; the number to raise if a fast
   # approach ends in contact with s[cap] pinned at 0.
-  retreat_cap_max_speed: 0.6
+  #
+  # RAISED 0.6 -> 1.1 (Sep 2026). The proportional term is base + 1.0*v_obs,
+  # so at 0.6 the cap saturated from v_obs = 0.55 m/s upward and the retreat
+  # was flat, not proportional, over the upper half of the 0.1-1.0 m/s range a
+  # walking person covers. 1.1 keeps the cap linear up to v_obs = 1.05 m/s.
+  # The closed-loop test (test_cbf_phase1_reactivity) pins that the commanded
+  # retreat is monotone and near-linear in v_obs over 0.2 / 0.5 / 1.0 m/s.
+  # It is still the number to lower first if the arm feels violent — and it
+  # must stay BELOW link_speed_max, which is the outer whip guard.
+  retreat_cap_max_speed: 1.1
 
   # [s] enforcement horizon: n^T J (qdot + qddot*T) <= v_cap. SYMMETRIC, unlike
   # the joint velocity box's asymmetric relax/dt pair: there, "past the cap"
@@ -441,7 +628,8 @@ params:
   # while link5 and the hand closed to a 2.9 cm gap.
   #
   #   ||p_dot_i|| <= v_allow_i,   v_allow_i = min(link_speed_max,
-  #                                               clearance_i / reaction_s)
+  #                        link_speed_v_at_d_safe * obstacle_gap_i / d_safe,
+  #                        self_collision_gap / link_speed_reaction_s)
   #
   # The second term is the GEOMETRIC one and the reason the row exists. The
   # barrier is rebuilt at 50 Hz from ~30 Hz perception, so a point travels
@@ -451,22 +639,42 @@ params:
   # That is plain discretisation tunnelling: no k0/k1 tuning fixes it, only
   # forbidding the speed that makes the gap jumpable.
   #
-  # clearance_i is min(this point's obstacle gap, the closest self-collision
-  # gap): a near self-collision is a whole-arm geometric event, so it slows
-  # every control point, not just the pair that reported it.
+  # The obstacle term scales with d_safe (link_speed_v_at_d_safe below); the
+  # self-collision term uses the closest self-collision gap with the fixed
+  # reaction_s: a near self-collision is a whole-arm geometric event, so it
+  # slows every control point, not just the pair that reported it.
   link_speed_rows_enabled: true
 
   # [m/s] flat ceiling on any control point's speed. Deliberately ABOVE
   # retreat_cap_max_speed (0.6): this row is the outer bound that catches a
   # whip, not the shaper of the retreat — that is the retreat cap's job, and
   # the two must not fight over the same motion.
-  link_speed_max: 0.8
+  #
+  # RAISED 0.8 -> 1.3 together with retreat_cap_max_speed (0.6 -> 1.1): the
+  # ordering "outer guard above the retreat shaper" is the invariant, not the
+  # numbers. At 0.8 this row would have been the thing capping a proportional
+  # retreat from a 1 m/s approach, one family down from where that decision is
+  # meant to be made. The GEOMETRIC term below is untouched and still binds
+  # first near an obstacle (0.15 m of clearance over 0.20 s is 0.75 m/s).
+  link_speed_max: 1.3
 
   # [s] worst-case BLIND time between barrier evaluations: perception period +
   # QP period + actuation lag, NOT the QP period alone. Raise it to make the
   # geometric term bite earlier — a point 10 cm from something may move at
   # 0.5 m/s at 0.20 s, 0.33 m/s at 0.30 s.
+  # Now used only for the SELF-COLLISION term and as the uncertainty margin's
+  # t_latency; the obstacle term uses link_speed_v_at_d_safe.
   link_speed_reaction_s: 0.20
+
+  # [m/s] speed a control point may have at obstacle gap = d_safe, falling
+  # linearly to 0 at contact: v <= v_at_d_safe * gap / d_safe. RELATIVE to
+  # d_safe so that lowering d_safe also lets the arm approach closer and
+  # faster (with a fixed 0.20 s, 5 cm of gap meant 0.25 m/s whatever d_safe
+  # said). 1.0 gives back exactly gap/0.20 s at d_safe = 0.20.
+  # PRICE: the implied blind time is d_safe/v_at_d_safe. Below the measured
+  # worst case (~0.085 s, see latency_t_blind), i.e. d_safe < ~0.085 m at 1.0,
+  # the anti-tunnelling guarantee above no longer holds.
+  link_speed_v_at_d_safe: 1.0
 
   # [s] enforcement horizon: v_hat^T Jp (qdot + qddot*T) <= v_allow. Symmetric,
   # same reasoning as retreat_cap_horizon_s.
@@ -726,6 +934,164 @@ params:
   # gate v_obs is 0, i.e. the static-obstacle assumption, not a guess.
   obstacle_velocity_min_frames: 3
 
+  # ── Residual floor under the tracked velocity ──────────────────────────────
+  # In 'tracker' mode, ALSO run the residual estimator and hand the QP
+  # max(n_hat^T v_track, v_residual). Meaningless in 'residual' mode.
+  #
+  # WHY (measured, Sep 2026 — the reactivity regression after the tracker
+  # landed). Two things, both structural:
+  #   1. A track is the velocity of a CLUSTER CENTROID and a person is one
+  #      cluster. Replaying the two hand bags with the person tracked, a
+  #      reaching hand read 0.22-0.27 m/s on the residual and 0.003 m/s on the
+  #      projected track (93-100% of approaching samples under half the
+  #      residual): the torso's centroid does not move when the hand does.
+  #   2. Where there is NO usable track — the scene guard dropped the cluster
+  #      (see cluster_max_radius_m in fr3_complete.yaml), the track is under
+  #      obstacle_velocity_min_frames, the nearest point fell outside every
+  #      cluster — the tracker's answer is exactly 0, the static-obstacle
+  #      assumption. On today's live logs v_obs reached the QP on 22% of the
+  #      approaching ticks in tracker mode against 72% in residual mode. With
+  #      v_obs = 0 the retreat cap collapses to retreat_cap_base_speed and the
+  #      arm creeps away from a person walking into it.
+  # Both estimates are clamped to the approaching half, so the max can only
+  # TIGHTEN, and a track that is right is never overruled downward. The
+  # tracker keeps everything it is actually better at: the 3D direction for
+  # lateral evasion, the covariance for the uncertainty margin, and the
+  # lower-lag estimate on an isolated moving object.
+  #
+  # false restores the tracker-only behaviour bit for bit.
+  obstacle_velocity_residual_floor: true
+
+  # ── Conditioning of the TRACKED velocity before the QP sees it ─────────────
+  # Measured by replaying the real cluster-centroid sequences of
+  # rosbag/arm_complex and rosbag/handratacker_object -- scenes whose
+  # obstacles do not move -- through the shipped Kalman filter: the tracked
+  # speed has a median of 0.06 m/s, a p90 of 0.19-0.25 m/s and excursions past
+  # 1.6 m/s. Through k1 = 10.5 that put a p99 step of 2.95 rad/s^2 into the
+  # row's right-hand side EVERY TICK, which is the jitter the arm showed on a
+  # static obstacle.
+  #
+  # It is not a tuning problem: q_jerk and sigma_meas were swept over three
+  # decades each, sigma_v0 and the frame gate too, and an innovation-gated
+  # robust update was tried; the numbers barely move, because the centroid of
+  # a depth blob genuinely wanders as its visible surface changes and the
+  # filter is differentiating it correctly. So it is conditioned here, at the
+  # consumer, where what it costs can be measured against what it buys.
+  #
+  # [samples] median over the last N PERCEPTION frames, on the FINAL estimate
+  # (whichever of the two produced it -- on hardware both are noisy and the QP
+  # only ever sees the max).
+  #
+  # Chosen by measuring on the v_obs series of a hardware log with a STATIC
+  # obstacle and the arm moving, against what each option costs on a real
+  # approach:
+  #     filter              step into h_qp (p95)   level p90   lag
+  #     none                       2.26 rad/s^2      0.177     -
+  #     median 3                   1.06              0.144     1 frame
+  #     MEDIAN 5                   0.60              0.078     2 frames
+  #     EMA 0.6                    0.71              0.121     4 frames
+  #     rate limit 4 m/s^2         2.26              0.177     0-3 frames
+  #
+  # A rate limit on the estimate was implemented and REMOVED: the artefact
+  # steps are only marginally faster than a limb could physically move, so a
+  # physically honest bound never binds, and its lag is worst for the FASTEST
+  # approaches, which is backwards. A median's lag is (N-1)/2 frames whatever
+  # the speed, and it rejects the isolated excursions this noise is made of
+  # rather than averaging them in. 5 frames at 30 Hz is a 165 ms window and
+  # 66 ms of lag. 1 disables it.
+  obstacle_velocity_median: 5
+
+  # [rad] Reject a residual frame when n_hat rotated further than this since
+  # the frame it is differenced against. 0.0 disables the guard.
+  #
+  # THE ARTEFACT. The residual differences a^T qdot against ddot and assumes
+  # n_hat is the SAME direction in both frames. It is not: closest_point_human
+  # is an argmin over depth pixels, so when it hops to a neighbouring surface
+  # patch the normal rotates, the two halves stop referring to the same axis,
+  # and their difference is the projection error of a rotation rather than an
+  # obstacle velocity. That error is then clamped to the approaching half and
+  # combined with max(), and symmetric noise clamped at zero and maximised has
+  # a POSITIVE mean — so on a stationary obstacle the estimator manufactures
+  # approach speed instead of averaging to nothing.
+  #
+  # Measured on hardware with a genuinely static obstacle, v_obs ran as a
+  # square wave 0.000 -> 0.085 -> 0.000 -> 0.035 m/s, and through k1 = 10.5
+  # each edge is a ~0.9 rad/s^2 step in a row that was binding on every tick.
+  # The two largest single-tick jumps in that whole log are those two edges;
+  # the distance closing accounted for less than a fifth of either.
+  #
+  # SIZING. With the arm at 0.12 m/s and a 0.2 m gap, honest tangential motion
+  # turns n_hat by 4 mm / 200 mm = 0.02 rad per 33 ms frame; a hop to a patch
+  # 5 cm away turns it by 0.25 rad. 0.15 sits an order of magnitude above the
+  # first and well below the second, so it cannot fire on the arm's own motion.
+  #
+  # On rejection the PREVIOUS estimate is held, not decayed: the estimator has
+  # learned nothing, and every quantity on this path is held to "may only
+  # tighten, never loosen". The baseline is re-anchored so the next clean frame
+  # differences against the new geometry.
+  #
+  # This is a HYPOTHESIS about where the fabricated velocity comes from, not a
+  # measured fact — n_hat is in no existing log. OFF here so a flags-off build
+  # is bit-identical; launch_defaults.yaml turns it on, and CBFDIAG's `nrot=`
+  # counts the rejections so the next hardware run decides. A counter that
+  # climbs while a static obstacle is in view is the guard working; one that
+  # never moves falsifies the hypothesis and this parameter should go back to
+  # 0.0 rather than be tuned.
+  obstacle_velocity_normal_rot_max: 0.0
+
+  # [m] MINIMUM jump in closest_point_human that means "this control point is
+  # now looking at a DIFFERENT obstacle", which discards its closing-speed
+  # state instead of differencing the distance across two bodies. The test
+  # actually applied is
+  #
+  #     ||delta p_h||  >  max(this, obstacle_velocity_max * dt)
+  #
+  # i.e. this value is a FLOOR on a physical bound: the nearest obstacle point
+  # cannot have travelled further than the fastest obstacle the filter admits
+  # (2.0 m/s * 33 ms = 6.7 cm), so the floor is what binds at frame rate and
+  # the bound relaxes honestly when a depth frame is dropped. A track_id that
+  # changes from one nonzero value to another is treated as a change too, and
+  # needs no threshold; the jump test is what covers the UNTRACKED case, which
+  # is the one that appeared on hardware.
+  #
+  # 0.10 m sits above the argmin's own patch hopping (a hop to a neighbouring
+  # surface patch moves the point ~5 cm — see the residual's rotation-guard
+  # docstring) and below the separation of two distinct obstacles. Too small
+  # and a static obstacle's own patch noise silences the residual floor; too
+  # large and a second obstacle entering at 0.2 m is missed.
+  #
+  # 0.0 disables the WHOLE identity guard, both signals, and is bit-identical
+  # to the pre-fix behaviour — which is why it is off here and turned on by
+  # launch_defaults.yaml. Watch nid= in CBFDIAG: climbing while two obstacles
+  # are in view is the guard working, pinned at 0 through a two-obstacle run
+  # falsifies the threshold.
+  obstacle_velocity_identity_jump: 0.0
+
+  # [m/s] soft threshold on the tracked speed: |v| below it becomes exactly 0,
+  # above it is reduced by it (subtracted, not gated -- a gate would step by
+  # the deadband every time the estimate crossed it, which is the jitter this
+  # exists to remove). At 0.15 the p90 of a STATIC scene is exactly zero, so a
+  # static obstacle contributes nothing at all: no k1 term, no moving retreat
+  # cap, no evasion trigger.
+  #
+  # It costs the deadband itself on a real approach (1.0 m/s reports 0.84),
+  # and that is precisely why obstacle_velocity_residual_floor above is NOT
+  # deadbanded: on the same static scenes the residual's p99 is 0.017-0.029
+  # m/s -- it is quiet where this is loud -- and close in it sees the limb the
+  # body's centroid cannot. max() of the two is quiet AND reactive.
+  # Together with the median: 2.95 -> 1.41 rad/s^2 of step. 0 disables it.
+  obstacle_velocity_track_deadband: 0.15
+
+
+
+  # [m] apply the floor only while the barrier is below this. Far from the
+  # obstacle the tracker's opinion is the only one that should reach the QP;
+  # the floor exists for the close-in case where a limb's motion is invisible
+  # to a body-centroid track. At 0.35 m a 0.3 m/s approach still gets ~1 s of
+  # anticipation before d_safe. 0 applies the floor everywhere (the previous
+  # behaviour).
+  obstacle_velocity_residual_floor_gap: 0.35
+
   # ── Obstacle-velocity feedforward (cbf_safety_filter, Phase 1) ─────────────
   # A SECOND, separately tunable use of the v_obs estimate the k1 term already
   # consumes:
@@ -801,6 +1167,17 @@ params:
   # Gaussian's one-sided mass. Raising it buys confidence linearly in metres, so
   # it is bounded by velocity_braking_margin_max below rather than by taste.
   uncertainty_k_sigma: 2.0
+
+  # [-] EMA on the margin across rebuilds (50 Hz), per control point. This is
+  # a standoff against what the ESTIMATOR admits it does not know, not a
+  # measurement of the world, and nothing about it is urgent to a single tick.
+  # Unsmoothed it was the second largest source of jitter on hardware: it sat
+  # at its floor of 0.032 m and jumped to 0.106 whenever a control point
+  # matched a different track, which through k0 = 25 is a 1.85 rad/s^2 step in
+  # the row's right-hand side. 0.8 at 50 Hz is a 100 ms constant, so the
+  # steady part of the margin is kept in full and only the jumps are spread.
+  # 0 restores the raw per-tick value.
+  uncertainty_margin_alpha: 0.8
   #
   # t_latency is NOT a parameter of its own: the term reuses
   # link_speed_reaction_s (0.20 s). Both answer the same physical question --
@@ -888,6 +1265,247 @@ params:
   # to its velocity" is a direction fitted to noise -- no bias is produced and
   # the normal retreat the barrier already demands is the whole response.
   lateral_evasion_v_min: 0.15
+
+  # ── Outrun test + lateral escape (cbf_safety_filter, Phase 2) ──────────────
+  # The lateral evasion above asks "can this point still BRAKE out of this",
+  # from the acceleration box. This asks the prior question, from the joint
+  # VELOCITY box, in closed form (utils/cbf_state_rows.retreat_speed_available):
+  #
+  #     v_avail  = sum_i |(n_hat^T Jp)_i| * velocity_box_margin*qdot_max_i
+  #     r        = (n_hat^T v_obs) / (outrun_evasion_margin * v_avail)
+  #     outrunnable  <=>  r <= 1
+  #
+  # Measured on this arm (Phase 0): v_avail is 2-3 m/s at the flange and
+  # 0.10-0.20 m/s on the link4 control points along their weak normal. An
+  # obstacle closing faster than v_avail is NOT outrun by any gain; the row pays
+  # slack and the arm backs into a contact it cannot prevent. So above the
+  # ramp the escape direction rotates from +n_hat (the normal retreat, today's
+  # behaviour) toward the unit direction PERPENDICULAR to v_obs along which
+  # the arm can move fastest — the same separable maximum, taken over the
+  # plane orthogonal to the obstacle's velocity — and the QP target is biased
+  # that way:
+  #     qddot_nom += gain * pinv(Jp) * (accel * m * w * e_escape)
+  # with w the smoothstep on r over [ramp_start, 1] and m = clip(v_close/v_ref).
+  # While the obstacle IS outrunnable w = 0 and NOTHING is added: the barrier's
+  # own retreat is the whole response, and there is no fight with the retreat
+  # cap. A BIAS on the objective, never a row: the safety rows are untouched,
+  # so this cannot loosen a barrier or make the QP infeasible.
+  #
+  # OFF by default here; launch_defaults.yaml turns it on with the rest of the
+  # prediction stack. With the flag off, or with a static / receding obstacle,
+  # every QP matrix is bit-identical (regression-tested).
+  enable_outrun_evasion: false
+
+  # [-] fraction of v_avail the point is credited with. < 1 because the same
+  # velocity budget also serves the task, and because v_avail is the box's
+  # vertex — reaching it means every joint at its limit in the right sign.
+  outrun_evasion_margin: 0.8
+
+  # [-] where the blend starts, as a fraction of the outrun ratio. 0.6 begins
+  # rotating the escape while the obstacle is still nominally outrunnable, so
+  # the swerve has room to work; the ramp to 1.0 is a smoothstep, never a step
+  # (a hard threshold on a 30 Hz vision quantity chatters the bias).
+  outrun_evasion_ramp_start: 0.6
+
+  # [m/s^2] Cartesian escape acceleration at full urgency and full closing
+  # speed. Read against the retreat authority (typical a_avail 3.9 m/s^2,
+  # Phase 0). Went 1.0 -> 3.0 after the Phase-5 scenarios, where a 3 m/s pass
+  # at the flange got a correctly orthogonal push that moved it a centimetre
+  # before contact -- and 3.0 -> 1.5 after that turned out to be a hardware
+  # smoothness problem: at 3.0, with the ungated trigger below, a noise spike
+  # bought a 6 rad/s^2 sideways kick. The gates are the real fix; this is the
+  # margin on top of them. The scenario it was raised for is one 0c says is
+  # unreachable from the 0.7 m publish gate anyway.
+  outrun_evasion_accel: 1.5
+  outrun_evasion_gain: 1.0
+
+  # [m/s] closing speed at which the magnitude ramp m saturates. Below it the
+  # bias grows linearly with v_close, and it is EXACTLY zero at v_close = 0.
+  outrun_evasion_v_ref: 0.5
+
+  # [m/s] below this |v_obs| the obstacle is not meaningfully moving and
+  # "perpendicular to its velocity" would be fitted to noise — no lateral
+  # direction, the normal retreat stays the whole response.
+  outrun_evasion_v_min: 0.15
+
+  # [rad/s^2] norm cap on the TOTAL bias over all control points, so the swerve
+  # does not scale with how many points face the same obstacle. Tracks the
+  # accel above (was 6.0 while that was 3.0); joint 2's own limit is 2.585 and
+  # the box clips per joint regardless.
+  outrun_evasion_max_bias: 3.0
+
+  # [-] EMA on the bias across QP ticks. Deliberately FASTER than
+  # cbf_tangential_filter_alpha (0.9 = 100 ms): the situation this answers is
+  # over in a few hundred ms, and Phase 0 measured the whole blind time at
+  # 48-85 ms - a 100 ms filter would spend most of the window ramping up.
+  # 0.8 at 100 Hz is a 50 ms constant: still well inside the event, but no
+  # longer able to put a full-amplitude step into qddot_nom in three ticks.
+  outrun_evasion_filter_alpha: 0.8
+
+  # [m] barrier value below which the outrun test may produce a bias at all.
+  # THE fix for the roughness this feature caused on hardware: the test
+  # compares a speed against a speed and never looked at the gap, so it fired
+  # anywhere inside cbf_obstacle_horizon (1.2 m). Stepping aside from
+  # something a metre away is not evasion, it is noise with a direction.
+  # 0.30 m is twice d_safe, the same engage margin the tangential bias uses.
+  # 0 restores the ungated behaviour.
+  outrun_evasion_engage_gap: 0.30
+
+  # [m/s] floor under v_avail in the outrun ratio. v_avail collapses with the
+  # leverage of the row: measured on this arm, the link4 control points have
+  # 0.10-0.20 m/s along their weak normal, so an unfloored ratio reads
+  # 0.15 m/s of estimation noise as "cannot be outrun" on 2-4% of directions
+  # there and 0.30 m/s on a third of them. A point that cannot retreat at
+  # 0.3 m/s cannot escape sideways at 0.3 m/s either -- its problem is
+  # leverage, not direction. 0 restores the unfloored ratio.
+  outrun_evasion_v_avail_floor: 0.30
+
+  # ── Livelock escape (cbf_safety_filter, Phase 3c) ──────────────────────────
+  # A filter can be stuck with nothing wrong: the commander asks for a motion
+  # straight into a barrier, the QP removes the normal component, and if that
+  # was the whole command nothing is left — qddot_safe ~ 0, qdot ~ 0, the
+  # reference parked, the barrier satisfied, slack zero, solve converged. It is
+  # the local minimum of the (nominal, barrier) pair, and it is also one half
+  # of the "arm stops" deadlock with the commander's phase governor.
+  #
+  # Detector (utils/livelock.py), two booleans per tick:
+  #     blocked = ||qddot_safe - qddot_nom|| > livelock_dnorm_thr
+  #     moving  = ||q(t) - q(t - livelock_progress_window_s)|| > livelock_progress_thr
+  # blocked and not moving for livelock_stall_s -> escape: a bias of
+  # livelock_gain * m(t) along the snapshot's livelock_dir, m ramping 0 -> 1
+  # over livelock_ramp_s, held at most livelock_max_s, ended the moment the
+  # task is no longer blocked (NOT on displacement: the nudge's own motion
+  # would end it before it had carried the arm anywhere — measured), followed
+  # by livelock_cooldown_s of rest. Every bound is explicit and every
+  # start/end is logged.
+  #
+  # The direction is "sideways here": Phase 2's most achievable direction
+  # orthogonal to v_obs (or to n_hat for a static obstacle), projected onto
+  # the NULLSPACE of the closest obstacle row, so it has exactly zero first-
+  # order effect on the barrier — it can neither help nor hurt the retreat,
+  # only carry the arm around. A bias on the objective, never a row.
+  #
+  # OFF here; launch_defaults.yaml turns it on. With the flag off the snapshot
+  # carries no direction and the node adds nothing (bit-identical).
+  enable_livelock_escape: false
+
+  # [s] "blocked and not moving" must persist this long. 1.0 s is well above
+  # any transient the slew box and the barrier's own dynamics produce, and
+  # short enough that a person does not read it as the robot giving up.
+  livelock_stall_s: 1.0
+
+  # [s] ramp of the nudge from 0 to full, so it is not a step in qddot_nom.
+  livelock_ramp_s: 0.3
+
+  # [s] longest continuous nudge. If sideways did not free the arm in 2 s the
+  # geometry is not a local minimum this can fix; stop and rest.
+  livelock_max_s: 2.0
+
+  # [s] rest after an escape ends, however it ended.
+  livelock_cooldown_s: 2.0
+
+  # "Standing still" is a DISPLACEMENT over a window, not a speed. Measured in
+  # the wedge scenario (scripts/cbf_scenarios.py): an arm pinned between two
+  # obstacles jiggles at 0.1-0.6 rad/s while going nowhere, as the barrier,
+  # the cap and the nominal trade blows tick to tick — a speed threshold never
+  # sees it as stuck. Half a second of joint displacement does.
+  livelock_progress_window_s: 0.5
+  # [rad] joint displacement over that window below which the arm counts as
+  # not progressing. 0.05 rad is ~1.5 cm at the flange.
+  livelock_progress_thr: 0.05
+
+  # [rad/s^2] above this ||qddot_safe - qddot_nom|| the QP counts as bending
+  # the nominal, i.e. the task is pushing into a barrier. A genuinely stuck
+  # task bends by 5-10 rad/s^2 (scripts/cbf_scenarios.py, wedge); an arm
+  # SETTLED at its goal beside a barrier still bends by 0.5-0.9 from the
+  # residual pull, and at 0.5 the detector kept arming on that. 1.5 keeps
+  # the two apart.
+  livelock_dnorm_thr: 1.5
+
+  # [rad/s^2] magnitude of the nudge at full ramp. It has to beat the task's
+  # own pull toward the blocked goal or the arm only leans sideways: with 1.5
+  # against a joint PD pulling at ~5 rad/s^2 the escape moved the flange a
+  # centimetre and the PD dragged it back (scripts/cbf_scenarios.py, around).
+  # 3.0 is still under every joint's static authority except joint 2's, and
+  # the QP box clips per joint. Bounded, ramped, timed, logged. Lowered to 2.0
+  # for hardware: with the engage gap below the escape now only fires with
+  # something genuinely close, so it does not need to overpower the task by as
+  # much, and a smaller nudge is a smaller surprise next to a person.
+  livelock_gain: 2.0
+
+  # [m] the escape is only OFFERED while an obstacle row is closer than this.
+  # A stopped arm with the nearest obstacle 0.5 m away is a finished
+  # trajectory, not a livelock, and nudging it sideways is exactly the
+  # unexplained motion this rework is meant to remove. 0 offers it whenever
+  # any obstacle row exists.
+  livelock_engage_gap: 0.25
+
+  # [rad/s^2] the TASK's own command must be at least this large for the arm
+  # to count as blocked. An arm parked on its goal next to a violated barrier
+  # also shows a large ||qddot_safe - qddot_nom|| -- the barrier is pushing it
+  # off the goal -- and nudging that sideways is unexplained motion, not an
+  # escape. Measured: it fired in the noisy-static scenario with the arm
+  # holding still on target. 0 disables this half of the test.
+  livelock_nominal_min: 1.0
+
+  # ── QP fallback ladder (cbf_safety_filter, Phase 3a) ───────────────────────
+  # Every CBF row carries a slack, so only the hard box can make the problem
+  # infeasible and the box is built non-empty; what remains is OSQP not
+  # FINDING the solution in its budget. That is walked down a ladder instead
+  # of being reported as "no solution": level 0 full problem (a SOLVED_INACCURATE
+  # iterate accepted after clipping into the box when this flag is on),
+  # level 1 the same objective over the box alone (rows dropped for this tick),
+  # level 2 clip(-k_brake*qdot, lb, ub). Levels 1-2 still raise fault_braking
+  # on cbf_status and log which rung fired. See cbf_qp_assembly.
+  accept_inaccurate_qp: true
+
+  # ── The acceleration box never exceeds the joint's authority (Phase 3b) ────
+  # The box's feasibility guard collapses onto lb when velocity/position
+  # demands conflict. On the closing-on-a-position-limit side lb is
+  # (v_curve - qdot)/dt, and when the joint is already past its braking curve
+  # that is far above the acceleration limit: the regression test measured
+  # [189, 189] rad/s^2 on joint 7 against a 17 rad/s^2 limit. The QP obeys the
+  # box, the controller cannot deliver it, the firmware reflexes on the torque.
+  # With this on, the box is clipped into [-decel, +decel] AFTER the guard, so
+  # the demand is "everything the joint has" and never more. false reproduces
+  # the previous arithmetic bit for bit.
+  accel_box_clip_to_limits: true
+
+  # ── Latency compensation (cbf_safety_filter, Phase 4) ──────────────────────
+  # The barrier is built from where the obstacle WAS at depth capture and
+  # acted on t_blind later. Phase 0 measured that chain hop by hop
+  # (scripts/latency_budget.py): 48 ms median / 85 ms p95 at 30 fps, 118 / 168
+  # at 15 fps, sampling wait included. At 1 m/s that is 5-9 cm the row does
+  # not know about; the k1 term reacts to the closing RATE but the barrier
+  # VALUE lags. With this on, per obstacle row:
+  #     h -= max(n_hat^T (v t + 0.5 a t^2), 0)              (prediction, closing
+  #                                                          half only)
+  #     h -= min(k_sigma sqrt(n^T P_pp(t) n), margin_max)   (propagated position
+  #                                                          uncertainty)
+  #     P_pp(t) = P_pp + t (P_pv + P_pv^T) + t^2 P_vv
+  # both from the track's Kalman state as carried on LinkDistance
+  # (obstacle_acceleration, position_covariance, position_velocity_covariance
+  # were added to the message for this). Tighten only: a receding obstacle is
+  # never predicted AWAY, and the two terms together are clamped at
+  # latency_margin_max. Gated on obstacle_velocity_min_frames like the other
+  # track-derived terms.
+  #
+  # OFF by default, as specified. With the flag off no term is evaluated and
+  # the rows are bit-identical (regression-tested).
+  enable_latency_compensation: false
+
+  # [s] the blind time to predict over. The measured p95 at 30 fps; use 0.168
+  # if the camera is left at the driver's 15 fps default. Zero disables the
+  # prediction but keeps the (then P_pp-only) uncertainty term.
+  latency_t_blind: 0.085
+
+  # [-] standard deviations of propagated position error to reserve.
+  latency_k_sigma: 2.0
+
+  # [m] clamp on prediction + uncertainty together. A brand-new track's
+  # covariance and a spurious acceleration would otherwise drive the barrier
+  # deeply negative — the failure this filter has been bitten by before.
+  latency_margin_max: 0.25
 
   # ── Risk-weighted slack (cbf_safety_filter, Phase 2) ───────────────────────
   # One slack per FAMILY is shared by every row in it, so when rows conflict the

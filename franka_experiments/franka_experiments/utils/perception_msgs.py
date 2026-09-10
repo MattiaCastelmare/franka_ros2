@@ -229,6 +229,41 @@ def build_cp_messages(
 
     return multi_msg, mld_msg
 
+def labelled_links(msg):
+    """Yield ``(label, ld)`` for every entry of a MultiLinkDistance.
+
+    ``label`` is ``'<robot_link_name>#<k>'`` with k counting the entries of
+    THIS link, and the counter advances for every entry — invalid ones
+    included. That last clause is the whole reason this function exists.
+
+    The convention is a contract between three places: this module writes the
+    track fields of the entry a ``skip_keys`` label names, ``cbf_safety_filter``
+    keys every per-control-point filter on the same label, and CBFDIAG prints
+    it. It used to be open-coded on each side, and the two implementations
+    disagreed: the consumer counted only the entries it had KEPT (valid, inside
+    the obstacle horizon, enough Jacobian leverage, finite), so dropping the
+    nearest control point of a link shifted every later one down by one — a
+    self-detection skip landed on the wrong control point, and the barrier's
+    recovery EMA, the residual closing-speed estimator, its rotation guard, the
+    v_obs median and the uncertainty EMA were all handed another control
+    point's state mid-run.
+
+    ``msg.links`` is ordered by ``segment_links`` and then by
+    ``(seg_idx, cp_idx)`` within a link, and ``build_cp_messages`` documents
+    that order as contractual (OSQP warm starts depend on it), so the position
+    of an entry is a stable identity for the control point that produced it.
+
+    Yields every entry, valid or not; callers decide what to do with
+    ``ld.valid``. Skipping them here would put the counter back inside a filter,
+    which is the bug.
+    """
+    seen: dict = {}
+    for ld in msg.links:
+        k = seen.get(ld.robot_link_name, 0)
+        seen[ld.robot_link_name] = k + 1
+        yield f'{ld.robot_link_name}#{k}', ld
+
+
 def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
     """Fill the track fields of every entry of ``msg`` IN PLACE.
 
@@ -251,16 +286,12 @@ def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
         How many entries were matched to a confirmed track.
     """
     skip = set(skip_keys or ())
-    link_seen: dict = {}
     n = 0
-    for ld in msg.links:
-        # link#k in arrival order — the same label cbf_safety_filter builds, so
-        # a key means the same control point on both sides of the wire. NOTE
-        # the counter must advance for EVERY entry, skipped or not, or the
-        # labels would shift and a skip would land on the wrong control point.
-        k = link_seen.get(ld.robot_link_name, 0)
-        link_seen[ld.robot_link_name] = k + 1
-        if f'{ld.robot_link_name}#{k}' in skip:
+    for lbl, ld in labelled_links(msg):
+        # link#k positionally — the same label cbf_safety_filter builds, from
+        # the same function, so a key means the same control point on both
+        # sides of the wire.
+        if lbl in skip:
             continue
         if not ld.valid:
             # An invalid entry has no meaningful closest_point_human — annotating
@@ -269,12 +300,31 @@ def annotate_track_fields(msg, pipeline, skip_keys=None) -> int:
         p_base = np.array([ld.closest_point_human.x,
                            ld.closest_point_human.y,
                            ld.closest_point_human.z])
-        tid, seen, v, P = pipeline.velocity_for_point(p_base)
+        if hasattr(pipeline, 'track_info_for_point'):
+            info = pipeline.track_info_for_point(p_base)
+        else:
+            # A pipeline (or a test double) that predates the latency fields:
+            # velocity only, the rest stays at the "no estimate" defaults.
+            from franka_experiments.utils.obstacle_track_pipeline import TrackInfo
+            tid_, seen_, v_, P_ = pipeline.velocity_for_point(p_base)
+            info = TrackInfo(tid_, seen_, np.asarray(v_), np.asarray(P_), np.zeros(3),
+                             np.zeros((3, 3)), np.zeros((3, 3)))
+        tid, seen, v, P = info.track_id, info.frames_seen, info.velocity, info.velocity_cov
         ld.track_id = int(tid)
         ld.frames_seen = int(seen)
         ld.obstacle_velocity.x = float(v[0])
         ld.obstacle_velocity.y = float(v[1])
         ld.obstacle_velocity.z = float(v[2])
+        # Latency-compensation fields. Guarded on the attribute so a message
+        # package built before they existed still publishes the four fields
+        # above — the consumer treats the missing ones as "no estimate".
+        if hasattr(ld, 'obstacle_acceleration'):
+            a = info.acceleration
+            ld.obstacle_acceleration.x = float(a[0])
+            ld.obstacle_acceleration.y = float(a[1])
+            ld.obstacle_acceleration.z = float(a[2])
+            ld.position_covariance = [float(x) for x in np.asarray(info.position_cov).ravel()]
+            ld.position_velocity_covariance = [float(x) for x in np.asarray(info.pos_vel_cov).ravel()]
         ld.velocity_covariance = np.asarray(P, dtype=np.float64).ravel()
         if tid:
             n += 1
