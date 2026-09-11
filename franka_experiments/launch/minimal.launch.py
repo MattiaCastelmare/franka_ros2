@@ -193,6 +193,9 @@ def _launch_all(context):
                 FindPackageShare('realsense2_camera'),
                 'launch', 'rs_launch.py',
             ]).perform(context)),
+            launch_arguments={
+                'align_depth.enable': 'true',
+            }.items(),
         )
         actions.append(TimerAction(period=cam_delay,
                                    actions=[realsense_driver]))

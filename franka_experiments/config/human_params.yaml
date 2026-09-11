@@ -2,7 +2,7 @@
 # Both nodes load this file directly through distance_utils.load_robot_config().
 
 common:
-  use_sim_time: true
+  use_sim_time: false
 
 human_tracker:
   # Topics and frames

@@ -11,6 +11,7 @@ from launch.actions import (
     LogInfo,
 )
 from launch.conditions import IfCondition
+from launch_ros.parameter_descriptions import ParameterValue
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -64,8 +65,11 @@ def generate_launch_description():
 
     translation = extrinsics['translation']
     rotation = extrinsics['rotation']
-    use_sim_time = bool(
-        human_config.get('common', {}).get('use_sim_time', True)
+    play_bag = LaunchConfiguration('play_bag')
+
+    use_sim_time = ParameterValue(
+        play_bag,
+        value_type=bool,
     )
 
     publish_camera_tf = LaunchConfiguration('publish_camera_tf')
@@ -94,6 +98,7 @@ def generate_launch_description():
         package='franka_experiments',
         executable='human_tracker',
         name='human_tracker',
+        parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
     )
 
@@ -101,6 +106,7 @@ def generate_launch_description():
         package='franka_experiments',
         executable='human_distance',
         name='human_distance',
+        parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
     )
 
@@ -108,6 +114,7 @@ def generate_launch_description():
         package='franka_experiments',
         executable='human_logging',
         name='human_logger',
+        parameters=[{'use_sim_time': use_sim_time}],
         output='screen'
     )
 
@@ -115,6 +122,7 @@ def generate_launch_description():
         package='franka_experiments',
         executable='human_visualizer',
         name='human_visualizer',
+        parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
     )
 
@@ -138,7 +146,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('play_bag', default_value='true'),
+        DeclareLaunchArgument('play_bag', default_value='false'),
         DeclareLaunchArgument('bag_path', default_value=DEFAULT_BAG_PATH),
         DeclareLaunchArgument('publish_camera_tf', default_value='true'),
         camera_tf_delayed,
