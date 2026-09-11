@@ -61,6 +61,7 @@ setup(
             'human_distance = franka_experiments.nodes.human_distance:main',
             'human_visualizer = franka_experiments.nodes.human_visualizer:main',
             'human_logging = franka_experiments.nodes.human_logging:main',
+            'pick_place_velocity_commander = franka_experiments.nodes.pick_place_velocity_commander:main',
         ],
     },
 )
