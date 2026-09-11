@@ -158,8 +158,8 @@ class PickPlaceVelocityCommander(Node):
         self._stop_end_time = 0.0
 
         # ROS / robot interface
-        self.declare_parameter('tracking_topic', "/fr3_velocity_controller/commands")
-        self.declare_parameter('joint_state_topic', "/joint_states")
+        self.declare_parameter('tracking_topic', "/NS_1/qdot_cmd")
+        self.declare_parameter('joint_state_topic', "/NS_1/joint_states")
         self.declare_parameter('ee_frame', 'fr3_hand_tcp')
         self.declare_parameter('rate_hz', 200.0)
         self.declare_parameter('warmup_s', 2.0)
@@ -172,12 +172,12 @@ class PickPlaceVelocityCommander(Node):
 
         # Task timing
         self.declare_parameter('move_time', 3.0)
-        self.declare_parameter('lift_time', 1.2)
-        self.declare_parameter('transfer_time', 4.0)
-        self.declare_parameter('return_time', 4.0)
-        self.declare_parameter('wait_pick', 3.0)
-        self.declare_parameter('wait_place', 3.0)
-        self.declare_parameter('wait_home', 3.0)
+        self.declare_parameter('lift_time', 1.0)
+        self.declare_parameter('transfer_time', 3.0)
+        self.declare_parameter('return_time', 3.0)
+        self.declare_parameter('wait_pick', 0.6)
+        self.declare_parameter('wait_place', 0.6)
+        self.declare_parameter('wait_home', 0.6)
 
         # Cartesian resolved-rate controller
         self.declare_parameter('kp_cart', 1.5)
