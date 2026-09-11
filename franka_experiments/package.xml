@@ -36,6 +36,8 @@
   <!-- Python dependencies (install via pip if not available via rosdep):
        pinocchio, qpsolvers, osqp, numpy, scipy, matplotlib, opencv-python, pyyaml -->
 
+  <test_depend>python3-pytest</test_depend>
+
   <buildtool_depend>ament_python</buildtool_depend>
 
   <export>

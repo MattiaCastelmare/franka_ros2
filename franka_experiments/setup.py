@@ -15,7 +15,8 @@ setup(
          glob.glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'),
          glob.glob('config/*.yaml') + glob.glob('config/*.rviz')),
-        (os.path.join('share', package_name, 'scripts'), glob.glob('scripts/*.py')),
+        (os.path.join('share', package_name, 'scripts'),
+         glob.glob('scripts/*.py') + glob.glob('scripts/*.sh')),
         # Test infrastructure
         (os.path.join('share', package_name, 'test', 'launch'),
          glob.glob('test/launch/*.launch.py')),
@@ -23,6 +24,12 @@ setup(
          glob.glob('test/config/*.yaml')),
     ],
     install_requires=['setuptools'],
+    # Makes `colcon test` run the pytest suite in test/ instead of falling back
+    # to `python -m unittest`, which discovers none of the function-style tests.
+    # NOTE: it must be extras_require['test'], not tests_require — modern
+    # setuptools dropped tests_require, so colcon reads back None and its
+    # pytest step never matches.
+    extras_require={'test': ['pytest']},
     zip_safe=True,
     maintainer='mattia',
     maintainer_email='mattia@todo.todo',
@@ -38,6 +45,7 @@ setup(
             'cbf_velocity_filter = franka_experiments.nodes.cbf_velocity_filter:main',
             # === Torque pipeline 1 (acceleration-level) ===
             'pentagon_qddot_commander = franka_experiments.nodes.pentagon_qddot_commander:main',
+            'rl_policy_commander = franka_experiments.nodes.rl_policy_commander:main',
             'qddot_to_torque = franka_experiments.nodes.qddot_to_torque:main',
             'cbf_safety_filter = franka_experiments.nodes.cbf_safety_filter:main',
             # === Torque pipeline 2 (OSCBF torque-level) ===

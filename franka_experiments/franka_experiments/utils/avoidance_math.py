@@ -12,6 +12,8 @@ environment to have all optional dependencies installed just to import this
 module.
 """
 
+# TODO[LEGACY]: only importer is utils/simulation_imports.py, itself an import shim | confidence: medium | superseded-by: none | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import os

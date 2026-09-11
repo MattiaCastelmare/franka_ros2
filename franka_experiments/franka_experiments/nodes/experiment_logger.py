@@ -23,9 +23,18 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from franka_msgs.msg import MultiDistance
+from franka_msgs.msg import FrankaRobotState, MultiDistance
+
+from franka_experiments.utils.math_utils import _safe_float  # noqa: F401
+from franka_experiments.utils.node_runtime import (  # noqa: F401
+    _as_list7,
+    _now_sec,
+    _stamp_to_sec,
+)
+from franka_experiments.utils.params import declare_float, declare_int
 
 try:
     from scipy.signal import savgol_filter as _savgol
@@ -53,30 +62,11 @@ DEFAULT_QDOT_NOM_TOPIC = "/NS_1/tracking_qdot"
 DEFAULT_QDOT_CMD_TOPIC = "/NS_1/qdot_cmd"
 DEFAULT_TORQUE_CMD_TOPIC = "/NS_1/torque_cmd"
 
-
-def _now_sec(node: Node) -> float:
-    return node.get_clock().now().nanoseconds * 1e-9
-
-
-def _stamp_to_sec(msg_stamp, fallback: float) -> float:
-    sec = float(msg_stamp.sec) + float(msg_stamp.nanosec) * 1e-9
-    return sec if sec > 0.0 else fallback
-
-
-def _safe_float(x, default=np.nan) -> float:
-    try:
-        y = float(x)
-        return y if math.isfinite(y) else default
-    except Exception:
-        return default
-
-
-def _as_list7(data: Sequence[float]) -> np.ndarray:
-    arr = np.full(NUM_JOINTS, np.nan, dtype=float)
-    n = min(NUM_JOINTS, len(data))
-    if n > 0:
-        arr[:n] = np.asarray(data[:n], dtype=float)
-    return arr
+# FCI health feed.  Set the parameter to "" to skip the subscription entirely:
+# it is the joint_state_broadcaster's 1 kHz sibling, and with shared memory off
+# (fastdds_no_shm.xml) every subscriber costs UDP loopback work next to the RT
+# loop.  The callback here is deliberately three assignments long.
+DEFAULT_ROBOT_STATE_TOPIC = "/NS_1/franka_robot_state_broadcaster/robot_state"
 
 
 class ExperimentLogger(Node):
@@ -84,6 +74,7 @@ class ExperimentLogger(Node):
         super().__init__("experiment_logger")
 
         # Try to reuse your YAML config defaults, but keep the node standalone.
+        # TODO[LEGACY]: cfg_topics is built from two YAML files and never read; its keys (joint_states_topic) would not match the parameter names (joint_state_topic) even if wired | confidence: high | superseded-by: none | flagged: 2026-09-01
         cfg_topics: Dict[str, str] = {}
         cfg_dsafe: Optional[float] = None
         try:
@@ -99,10 +90,16 @@ class ExperimentLogger(Node):
         self.declare_parameter("output_dir", DEFAULT_OUTPUT_DIR)
         self.declare_parameter("run_dir_override", "")
         self.declare_parameter("experiment_name", DEFAULT_EXPERIMENT_NAME)
-        self.declare_parameter("sample_rate_hz", 100.0)
-        self.declare_parameter("d_safe", 0.20 if cfg_dsafe is None else cfg_dsafe)
-        self.declare_parameter("max_cbf_entries", 12)
-        self.declare_parameter("accel_lpf_alpha", 0.35)
+        # Range-checked on startup: a non-positive rate would divide by zero in
+        # create_timer, a bad alpha would silently corrupt every logged trace.
+        # Declared + range-checked here; the values are read back below through
+        # get_parameter(), exactly as before.
+        declare_float(self, "sample_rate_hz", 100.0,
+                      positive=True, maximum=10000.0)
+        declare_float(self, "d_safe", 0.20 if cfg_dsafe is None else cfg_dsafe,
+                      minimum=0.0, maximum=2.0)
+        declare_int(self, "max_cbf_entries", 12, positive=True)
+        declare_float(self, "accel_lpf_alpha", 0.35, minimum=0.0, maximum=1.0)
         self.declare_parameter("joint_names", DEFAULT_JOINT_NAMES)
 
         self.declare_parameter("joint_state_topic", DEFAULT_JOINT_STATE_TOPIC)
@@ -110,6 +107,7 @@ class ExperimentLogger(Node):
         self.declare_parameter("qdot_nom_topic", DEFAULT_QDOT_NOM_TOPIC)
         self.declare_parameter("qdot_cmd_topic", DEFAULT_QDOT_CMD_TOPIC)
         self.declare_parameter("torque_cmd_topic", DEFAULT_TORQUE_CMD_TOPIC)
+        self.declare_parameter("robot_state_topic", DEFAULT_ROBOT_STATE_TOPIC)
 
         self.output_root = Path(str(self.get_parameter("output_dir").value)).expanduser()
         exp_name = str(self.get_parameter("experiment_name").value)
@@ -139,6 +137,16 @@ class ExperimentLogger(Node):
         self.last_tau_cmd = np.full(NUM_JOINTS, np.nan)
         self.last_qdot_nom = np.full(NUM_JOINTS, np.nan)
         self.last_qdot_cmd = np.full(NUM_JOINTS, np.nan)
+
+        # FCI communication health.  control_command_success_rate is libfranka's
+        # own rolling fraction of accepted commands over the last 100 packets —
+        # the quantity the firmware uses to decide a
+        # communication_constraints_violation reflex.  Sampling it at
+        # sample_rate_hz loses nothing: the metric is already a 100 ms average.
+        self.last_comm_success = float("nan")
+        self.last_robot_mode = -1
+        self.comm_success_min = float("nan")
+        self.comm_degraded_count = 0
 
         self._prev_qdot: Optional[np.ndarray] = None
         self._prev_js_time: Optional[float] = None
@@ -184,6 +192,17 @@ class ExperimentLogger(Node):
             20,
         )
 
+        _rs_topic = str(self.get_parameter("robot_state_topic").value).strip()
+        if _rs_topic:
+            # depth 1 + BEST_EFFORT: this publisher runs at 1 kHz and we only
+            # ever want its newest value, never a backlog.
+            self.create_subscription(
+                FrankaRobotState,
+                _rs_topic,
+                self.robot_state_cb,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+            )
+
         self.timer = self.create_timer(1.0 / self.sample_rate_hz, self.sample)
 
         self.get_logger().info(
@@ -194,7 +213,8 @@ class ExperimentLogger(Node):
             f"  multi_distance_topic : {self.get_parameter('multi_distance_topic').value}\n"
             f"  qdot_nom_topic       : {self.get_parameter('qdot_nom_topic').value}\n"
             f"  qdot_cmd_topic       : {self.get_parameter('qdot_cmd_topic').value}\n"
-            f"  torque_cmd_topic     : {self.get_parameter('torque_cmd_topic').value}"
+            f"  torque_cmd_topic     : {self.get_parameter('torque_cmd_topic').value}\n"
+            f"  robot_state_topic    : {_rs_topic or '(disabled)'}"
         )
 
     def _make_header(self) -> List[str]:
@@ -212,6 +232,9 @@ class ExperimentLogger(Node):
             "min_h_confidence",
             "valid_cbf_count",
             "cbf_violation_count",
+            "comm_success_rate",
+            "comm_success_min",
+            "robot_mode",
         ]
         for k in range(1, self.max_cbf_entries + 1):
             header += [
@@ -293,6 +316,20 @@ class ExperimentLogger(Node):
     def torque_cmd_cb(self, msg: Float64MultiArray):
         self.last_tau_cmd = _as_list7(msg.data)
 
+    def robot_state_cb(self, msg: FrankaRobotState):
+        """Runs at 1 kHz — keep it to assignments, no numpy, no logging.
+
+        The running minimum lives here rather than in sample() so a dip
+        shorter than the sampling period still lands in the CSV.
+        """
+        rate = float(msg.control_command_success_rate)
+        self.last_comm_success = rate
+        self.last_robot_mode = int(msg.robot_mode)
+        if rate < 1.0:
+            self.comm_degraded_count += 1
+        if not (self.comm_success_min <= rate):     # nan-safe: nan <= x is False
+            self.comm_success_min = rate
+
     @staticmethod
     def _norm(v: np.ndarray) -> float:
         return float(np.linalg.norm(v)) if np.all(np.isfinite(v)) else np.nan
@@ -342,6 +379,10 @@ class ExperimentLogger(Node):
             row["min_h_confidence"] = np.nan
             row["valid_cbf_count"] = 0
             row["cbf_violation_count"] = 0
+
+        row["comm_success_rate"] = self.last_comm_success
+        row["comm_success_min"] = self.comm_success_min
+        row["robot_mode"] = self.last_robot_mode
 
         for k in range(1, self.max_cbf_entries + 1):
             if k <= len(self.cbf_entries):
@@ -393,6 +434,7 @@ class ExperimentLogger(Node):
         self._plot_min_distance()
         self._plot_velocity_filter_effect()
         self._plot_norms()
+        self._plot_comm_health()
         self.get_logger().info(f"Done. CSV and plots saved in: {self.run_dir}")
 
     def _col(self, name: str) -> np.ndarray:
@@ -532,6 +574,43 @@ class ExperimentLogger(Node):
         plt.grid(True, alpha=0.3)
         plt.legend()
         self._savefig("min_distance.png")
+
+    def _plot_comm_health(self):
+        """FCI link health: the metric the firmware reflexes on.
+
+        A run that ends in communication_constraints_violation shows the rate
+        sagging BEFORE the abort; a run that ends on a control fault (velocity
+        or self-collision reflex) keeps it pinned at 1.0 and moves robot_mode
+        to REFLEX(4) instead.  That is the whole point of logging both.
+        """
+        t = self._time()
+        rate = self._col("comm_success_rate")
+        mode = self._col("robot_mode")
+        if not self._has_data(rate):
+            return
+
+        fig, ax = plt.subplots(2, 1, figsize=(12, 6), sharex=True,
+                               gridspec_kw={"height_ratios": [3, 1]})
+        ax[0].plot(t, rate, linewidth=1.4, label="control_command_success_rate")
+        ax[0].axhline(1.0, linestyle="--", linewidth=1.0, color="grey",
+                      label="1.0 = every command accepted")
+        finite = rate[np.isfinite(rate)]
+        if finite.size:
+            ax[0].set_ylim(min(0.9, float(finite.min()) - 0.01), 1.005)
+            ax[0].set_title(
+                f"FCI communication health — min {float(finite.min()):.3f}, "
+                f"{self.comm_degraded_count} degraded packets")
+        ax[0].set_ylabel("accepted fraction")
+        ax[0].grid(True, alpha=0.3)
+        ax[0].legend(loc="lower left")
+
+        ax[1].plot(t, mode, linewidth=1.4, drawstyle="steps-post")
+        ax[1].set_yticks([1, 2, 4, 5])
+        ax[1].set_yticklabels(["IDLE", "MOVE", "REFLEX", "USER_STOP"], fontsize=8)
+        ax[1].set_ylabel("robot_mode")
+        ax[1].set_xlabel("time [s]")
+        ax[1].grid(True, alpha=0.3)
+        self._savefig("comm_health.png")
 
     def _plot_velocity_filter_effect(self):
         t = self._time()

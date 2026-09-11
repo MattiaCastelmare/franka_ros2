@@ -6,6 +6,7 @@ Pipeline:
   [Perception]     RealSense camera driver
   [Distance est.]  real_time_distance       →  /cbf/per_link_distances
   [Motion gen.]    pentagon_qddot_commander →  /NS_1/qddot_nom   (q̈_nom)
+                   or rl_policy_commander   →  /NS_1/qddot_nom   (motion_source:=rl)
   [CBF filter]     cbf_safety_filter        →  /NS_1/qddot_safe  (safe q̈)
   [Dynamics conv.] qddot_to_torque          →  /NS_1/torque_cmd  (τ = M·q̈ + C·q̇)
   [Execution]      rt_torque_controller      ←  /NS_1/torque_cmd  →  hardware  (adds g(q))
@@ -20,7 +21,7 @@ Startup sequence (delays relative to launch time)
   t = 2 s                    cbf_safety_filter + qddot_to_torque  (pre-init before RT loop)
   t = 2 s                    real_time_distance  (pre-init: trimesh loading before RT loop)
   t = control_delay          rt_torque_controller spawner  (RT 1 kHz loop starts here)
-  t = control_delay + 2 s    pentagon_qddot_commander  (motion generator)
+  t = control_delay + 2 s    motion generator (pentagon_qddot_commander | rl_policy_commander)
 
 Examples
 --------
@@ -35,6 +36,11 @@ Examples
 
     # Fake hardware (simulation):
     ros2 launch franka_experiments torque_control_stack.launch.py use_fake_hardware:=true
+
+    # Safe-RL policy instead of the pentagon path (see franka_sim_to_real_roadmap.md).
+    # A cautious first run on real hardware: derate the policy to 30% authority.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        motion_source:=rl start_move_group:=false rl_action_scale:=0.3
 """
 
 import yaml
@@ -53,11 +59,13 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
-from franka_experiments.utils.ros import (
-    declare_robot_args,
-    declare_rt_torque_args,
+from franka_experiments.utils.config import (
     load_franka_config_defaults,
     load_launch_defaults,
+)
+from franka_experiments.utils.launch_support import (
+    declare_robot_args,
+    declare_rt_torque_args,
     pick_controllers_yaml,
     resolve_controller_manager_name,
 )
@@ -67,20 +75,50 @@ _LAUNCH_DEFAULTS, _ = load_launch_defaults()
 _BRINGUP_DEFAULTS, _ = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
 
+# NumPy ships its own OpenBLAS, whose worker pool BUSY-WAITS instead of
+# sleeping: on this 24-core box pentagon_qddot_commander was measured at 588%
+# CPU with six threads pegged at ~95% while the node's own thread used 10.7%.
+# Every matrix in this stack is 7x7 or smaller, where a thread pool is pure
+# overhead, and the spinners sit on the P-cores next to the SCHED_FIFO thread
+# of ros2_control_node -- cache thrash and thermal throttling on the one core
+# that must not miss a 1 ms deadline.  One thread per node is both faster here
+# and quieter for the RT loop.
+_SINGLE_THREAD_BLAS = {
+    'OPENBLAS_NUM_THREADS': '1',
+    'OMP_NUM_THREADS': '1',
+    'MKL_NUM_THREADS': '1',
+    'NUMEXPR_NUM_THREADS': '1',
+}
+
 _ALL_PARAMS = [
     'namespace', 'use_fake_hardware', 'robot_ip', 'arm_id',
     'fake_sensor_commands', 'load_gripper', 'controllers_yaml',
     'gazebo', 'lpf_alpha', 'tau_max_scale',
-    'control_spawner_delay_s',
+    'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
     'start_real_time_distance',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
+    'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
+    'rl_target_sequence', 'rl_action_scale',
+    'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
+    'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
+    'torque_world_tf_delay_s', 'torque_camera_tf_delay_s',
+    'torque_image_republisher_extra_delay_s',
+    'torque_finger_pub_delay_s', 'torque_finger_pub_rate_hz',
 ]
 
 
 def _as_bool(x: str) -> bool:
     return str(x).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+
+
+def _as_float_list(x: str):
+    """Parse ``'[0.4, 0.0, 0.45]'`` / ``'0.4,0.0,0.45'`` → list[float] ([] if empty)."""
+    s = str(x).strip().strip('[]')
+    if not s:
+        return []
+    return [float(v) for v in s.replace(';', ',').split(',') if v.strip()]
 
 
 def _launch_all(context):
@@ -91,9 +129,9 @@ def _launch_all(context):
     start_rtd    = _as_bool(p['start_real_time_distance'])
 
     control_delay   = float(p['control_spawner_delay_s'])
-    dynamics_delay  = 2.0                   # cbf + qddot_to_torque pre-init (before RT loop)
-    rtd_delay       = 2.0                   # real_time_distance pre-init (trimesh before RT loop)
-    commander_delay = control_delay + 2.0   # commander starts after controller is active
+    dynamics_delay  = float(p['torque_dynamics_delay_s'])  # cbf + qddot_to_torque pre-init (before RT loop)
+    rtd_delay       = float(p['torque_rtd_delay_s'])       # real_time_distance pre-init (trimesh before RT loop)
+    commander_delay = control_delay + float(p['torque_commander_extra_delay_s'])
 
     # ── Build controller YAML for rt_torque_controller ────────────────────────
     # The controller listens on torque_cmd — the direct output of qddot_to_torque.
@@ -101,7 +139,7 @@ def _launch_all(context):
         is_real=not use_fake,
         arm_id=p['arm_id'],
         controller_type='torque',
-        torque_command_topic='torque_cmd',
+        torque_command_topic=p['torque_command_topic'],
         gazebo=p['gazebo'],
         lpf_alpha=float(p['lpf_alpha']),
         tau_max_scale=float(p['tau_max_scale']),
@@ -129,8 +167,28 @@ def _launch_all(context):
         package='controller_manager', executable='spawner',
         arguments=['rt_torque_controller',
                    '--controller-manager', cm_name,
-                   '--controller-manager-timeout', '30'],
+                   '--controller-manager-timeout',
+                   str(int(float(p['controller_spawner_timeout_s'])))],
         output='screen',
+    )
+
+    # ── [RT] pin the control loop onto the isolated core ─────────────────────
+    # isolcpus=2,3 only EMPTIES those cores; nothing lands on them until asked.
+    # Without this the SCHED_FIFO thread of ros2_control_node was measured on
+    # CPU5, sharing a P-core with the OpenBLAS spinners and free to migrate onto
+    # CPU4, whose iwlwifi/nvme IRQs produce 6 ms stalls -- six missed FCI
+    # deadlines in a row, i.e. communication_constraints_violation.
+    # Only the one FF thread is moved; see scripts/pin_rt_thread.sh for why.
+    # Set rt_pin_cpu:='' to disable (e.g. on a machine without isolcpus).
+    rt_pin_cpu = str(p['rt_pin_cpu']).strip()
+    pin_rt_thread = ExecuteProcess(
+        # 'bash <script>' rather than executing it directly: setuptools
+        # data_files does not preserve the executable bit on install.
+        cmd=['bash', PathJoinSubstitution([
+            FindPackageShare('franka_experiments'), 'scripts', 'pin_rt_thread.sh',
+        ]), rt_pin_cpu, '60'],
+        output='screen',
+        shell=False,
     )
 
     # world → base static TF (identity).  robot_state_publisher already
@@ -159,9 +217,25 @@ def _launch_all(context):
             '  fake=', p['use_fake_hardware'],
         ]),
         franka_launch,
-        TimerAction(period=1.0, actions=[world_tf_node]),
+        TimerAction(period=float(p['torque_world_tf_delay_s']),
+                    actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
+    if rt_pin_cpu:
+        # Start alongside the spawner, not after it: the script polls for the
+        # FF thread anyway (up to 60 s), so starting early costs nothing. An
+        # added delay here left the RT thread unpinned for 1+ s right as it
+        # begins the 1 kHz FCI loop -- exactly the window that produced
+        # communication_constraints_violation (thread free to land on a busy
+        # core before ever being pinned).
+        actions.append(TimerAction(period=control_delay,
+                                   actions=[pin_rt_thread]))
+        actions.append(LogInfo(msg=['[torque_stack] [RT pinning]     '
+                                    'ros2_control_node FF thread -> CPU',
+                                    rt_pin_cpu]))
+    else:
+        actions.append(LogInfo(
+            msg='[torque_stack] [RT pinning]     DISABLED (rt_pin_cpu empty)'))
 
     # ── [MoveIt] move_group — planning services for the commander ────────────
     # pentagon_qddot_commander generates its pentagon via MoveIt's compute_fk /
@@ -187,6 +261,13 @@ def _launch_all(context):
         )
         actions.append(move_group_launch)
         actions.append(LogInfo(msg='[torque_stack] [MoveIt]          move_group ENABLED'))
+        if str(p['motion_source']).strip().lower() == 'rl':
+            # Not auto-disabled: start_move_group is an explicit user argument
+            # and silently ignoring it would be worse than a wasted node.
+            actions.append(LogInfo(
+                msg='[torque_stack] [MoveIt]          NOTE: motion_source:=rl '
+                    'does not use move_group — pass start_move_group:=false to '
+                    'save the startup cost'))
     else:
         actions.append(LogInfo(msg='[torque_stack] [MoveIt]          move_group DISABLED — '
                                    'pentagon_qddot_commander will publish zeros until '
@@ -206,12 +287,13 @@ def _launch_all(context):
             'sensor_msgs/msg/JointState',
             '{name: [fr3_finger_joint1, fr3_finger_joint2],'
             ' position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]}',
-            '--rate', '10',
+            '--rate', str(float(p['torque_finger_pub_rate_hz'])),
         ],
         output='log',
         name='finger_state_publisher',
     )
-    actions.append(TimerAction(period=2.0, actions=[finger_state_publisher]))
+    actions.append(TimerAction(period=float(p['torque_finger_pub_delay_s']),
+                               actions=[finger_state_publisher]))
     actions.append(LogInfo(msg='[torque_stack] [MoveIt]          finger_state_publisher ENABLED'))
 
     # ── [Perception] RealSense camera ─────────────────────────────────────────
@@ -231,7 +313,9 @@ def _launch_all(context):
             name='image_republisher',
             output='log',
         )
-        actions.append(TimerAction(period=cam_delay + 3.0, actions=[image_republisher]))
+        actions.append(TimerAction(
+            period=cam_delay + float(p['torque_image_republisher_extra_delay_s']),
+            actions=[image_republisher]))
 
         # TF publisher: base → camera_link (connects the RealSense TF sub-tree
         # to the robot tree). Uses camera_link_extrinsics.yaml, NOT the same
@@ -258,7 +342,8 @@ def _launch_all(context):
                 '--child-frame-id', link_ext['child_frame'],
             ],
         )
-        actions.append(TimerAction(period=1.0, actions=[camera_tf_node]))
+        actions.append(TimerAction(period=float(p['torque_camera_tf_delay_s']),
+                                   actions=[camera_tf_node]))
         actions.append(LogInfo(msg=['[torque_stack] [Perception]      camera ENABLED '
                                     '(delay=', str(cam_delay), 's)']))
     else:
@@ -266,15 +351,13 @@ def _launch_all(context):
 
     # ── [Distance estimation] real_time_distance ──────────────────────────────
     if start_rtd:
-        rtd_config = PathJoinSubstitution([
-            FindPackageShare('franka_experiments'),
-            'config', 'fr3_complete.yaml',
-        ]).perform(context)
+        rtd_config = p['robot_config_yaml']
         real_time_distance_node = Node(
             package='franka_experiments',
             executable='real_time_distance',
             name='real_time_distance',
             output='log',
+            additional_env=_SINGLE_THREAD_BLAS,
             parameters=[{
                 'robot_config_path':      rtd_config,
                 'camera_extrinsics_path': p['camera_extrinsics_yaml'],
@@ -294,6 +377,7 @@ def _launch_all(context):
         executable='cbf_safety_filter',
         name='cbf_safety_filter',
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
     # acceleration) and converts it to torque — no remap needed.
@@ -302,35 +386,74 @@ def _launch_all(context):
         executable='qddot_to_torque',
         name='qddot_to_torque',
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
     )
     actions.append(TimerAction(period=dynamics_delay,
                                actions=[cbf_node, qddot_to_torque_node]))
     actions.append(LogInfo(msg=['[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque'
                                 ' (delay=', str(dynamics_delay), 's)']))
 
-    # ── [Motion generation] pentagon_qddot_commander ──────────────────────────
-    # Runs in the robot namespace so its relative MoveIt service clients
-    # (compute_fk, compute_cartesian_path) resolve to move_group above.
-    # Its topics are absolute (/NS_1/…) and unaffected by the namespace.
-    commander_node = Node(
-        package='franka_experiments',
-        executable='pentagon_qddot_commander',
-        name='pentagon_qddot_commander',
-        namespace=p['namespace'],
-        output='screen',
-        parameters=[{
-            # Geometry: plane='front' is the YZ plane (X fixed at center[0]).
-            # The commander builds a cyclic joint-space trajectory offline (Pinocchio
-            # IK) and freezes its virtual time while the CBF filter reports active
-            # constraints (subscribes to /NS_1/cbf_status).
-            'center_xyz':       [0.4, 0.0, 0.45],
-            'path_type':        'circle',
-            'radius':           0.25,   # m — circle radius in the YZ plane
-        }],
-    )
+    # ── [Motion generation] one q̈_nom source — never two ─────────────────────
+    # Both sources publish /NS_1/qddot_nom and would fight for the topic, so
+    # motion_source selects exactly one:
+    #   'pentagon' — analytic path + avoidance-first shaping (default)
+    #   'rl'       — ONNX Safe-RL policy trained in franka_sim against this same
+    #                CBF filter (franka_sim_to_real_roadmap.md, Step 3)
+    # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
+    # identical in both cases: the safety certificate does not depend on who
+    # generates the nominal acceleration.
+    motion_source = str(p['motion_source']).strip().lower()
+    if motion_source not in ('pentagon', 'rl'):
+        raise RuntimeError(
+            f'motion_source="{motion_source}" — expected "pentagon" or "rl"')
+
+    if motion_source == 'rl':
+        # Only non-empty overrides are passed: every one of these has a
+        # declare_parameter default in the node (model/config auto-discovered
+        # from the franka_sim checkout), and forwarding '' would override a
+        # working default with an invalid path.
+        rl_params = {
+            'action_scale': float(p['rl_action_scale']),
+            'target_xyz':   _as_float_list(p['rl_target_xyz']) or [0.45, 0.0, 0.45],
+        }
+        if p['rl_onnx_model']:
+            rl_params['onnx_model'] = p['rl_onnx_model']
+        if p['rl_sim_config']:
+            rl_params['sim_config'] = p['rl_sim_config']
+        seq = _as_float_list(p['rl_target_sequence'])
+        if seq:
+            rl_params['target_sequence'] = seq
+        commander_node = Node(
+            package='franka_experiments',
+            executable='rl_policy_commander',
+            name='rl_policy_commander',
+            namespace=p['namespace'],
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[rl_params],
+        )
+        commander_label = 'rl_policy_commander (ONNX Safe-RL policy)'
+    else:
+        # Runs in the robot namespace so its relative MoveIt service clients
+        # (compute_fk, compute_cartesian_path) resolve to move_group above.
+        # Its topics are absolute (/NS_1/…) and unaffected by the namespace.
+        commander_node = Node(
+            package='franka_experiments',
+            executable='pentagon_qddot_commander',
+            name='pentagon_qddot_commander',
+            namespace=p['namespace'],
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            # Path geometry (centre / shape / radius) is NOT set here: the node
+            # reads it from config/fr3_control.yaml (params: path_center_xyz,
+            # path_type, path_radius) as its declare_parameter defaults. Launch
+            # files carry wiring, not tunables.
+
+        )
+        commander_label = 'pentagon_qddot_commander'
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
-    actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     pentagon_qddot_commander '
-                                '(delay=', str(commander_delay), 's)']))
+    actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     ', commander_label,
+                                ' (delay=', str(commander_delay), 's)']))
 
     # ── Experiment logger ─────────────────────────────────────────────────────
     if _as_bool(p['start_experiment_logger']):
@@ -388,17 +511,108 @@ def generate_launch_description():
                 description='Start real_time_distance node'),
             DeclareLaunchArgument(
                 'start_experiment_logger',
-                default_value='true',
+                default_value=str(_DEFAULTS.get('start_experiment_logger', 'true')),
                 description='Start experiment logger automatically'),
             DeclareLaunchArgument(
                 'experiment_logger_delay_s',
-                default_value='2.0',
+                default_value=str(_DEFAULTS.get('experiment_logger_delay_s', '2.0')),
                 description='Seconds before launching experiment_logger'),
             DeclareLaunchArgument(
                 'start_move_group',
-                default_value='true',
+                default_value=str(_DEFAULTS.get('start_move_group', 'true')),
                 description='Start move_group (MoveIt planning services used by '
-                            'pentagon_qddot_commander)'),
+                            'pentagon_qddot_commander; not needed for '
+                            'motion_source:=rl)'),
+
+            # ── Motion source: pentagon (default) | rl ─────────────────────────
+            DeclareLaunchArgument(
+                'motion_source',
+                default_value=_DEFAULTS.get('motion_source', 'pentagon'),
+                description="Which node publishes q̈_nom: 'pentagon' "
+                            "(analytic path) or 'rl' (ONNX Safe-RL policy)"),
+            DeclareLaunchArgument(
+                'rl_onnx_model',
+                default_value=_DEFAULTS.get('rl_onnx_model', ''),
+                description='Path to the exported .onnx actor. Empty = '
+                            'auto-discover the newest model in franka_sim/models'),
+            DeclareLaunchArgument(
+                'rl_sim_config',
+                default_value=_DEFAULTS.get('rl_sim_config', ''),
+                description='Path to the franka_sim config.yaml the policy was '
+                            'trained with. Empty = the config frozen next to the model'),
+            DeclareLaunchArgument(
+                'rl_target_xyz',
+                default_value=str(_DEFAULTS.get('rl_target_xyz', '[0.45, 0.0, 0.45]')),
+                description='[m] reach target in fr3_link0, as "x,y,z"'),
+            DeclareLaunchArgument(
+                'rl_target_sequence',
+                default_value=str(_DEFAULTS.get('rl_target_sequence', '')),
+                description='Flat "x,y,z, x,y,z, …" list of targets visited in '
+                            'order (overrides rl_target_xyz)'),
+            DeclareLaunchArgument(
+                'rl_action_scale',
+                default_value=str(_DEFAULTS.get('rl_action_scale', '1.0')),
+                description='Derate in (0,1] applied to the policy output: '
+                            'q̈_nom = a·q̈_max·action_scale. Use 0.3 for a first run'),
+
+            # ── Wiring / sequencing (defaults in config/launch_defaults.yaml) ──
+            DeclareLaunchArgument(
+                'robot_config_yaml',
+                default_value=PathJoinSubstitution([
+                    FindPackageShare('franka_experiments'),
+                    'config', 'fr3_complete.yaml',
+                ]),
+                description='Path to fr3_complete.yaml (robot/mesh/distance config '
+                            'loaded by real_time_distance)'),
+            DeclareLaunchArgument(
+                'torque_command_topic',
+                default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd')),
+                description='Topic rt_torque_controller reads tau from (relative to '
+                            'the controller_manager namespace)'),
+            DeclareLaunchArgument(
+                'controller_spawner_timeout_s',
+                default_value=str(_DEFAULTS.get('controller_spawner_timeout_s', '30.0')),
+                description='[s] controller_manager spawner timeout'),
+            DeclareLaunchArgument(
+                'torque_dynamics_delay_s',
+                default_value=str(_DEFAULTS.get('torque_dynamics_delay_s', '2.0')),
+                description='[s] delay before cbf_safety_filter + qddot_to_torque'),
+            DeclareLaunchArgument(
+                'torque_rtd_delay_s',
+                default_value=str(_DEFAULTS.get('torque_rtd_delay_s', '2.0')),
+                description='[s] delay before real_time_distance'),
+            DeclareLaunchArgument(
+                'torque_commander_extra_delay_s',
+                default_value=str(_DEFAULTS.get('torque_commander_extra_delay_s', '2.0')),
+                description='[s] added to control_spawner_delay_s before the commander'),
+            DeclareLaunchArgument(
+                'torque_world_tf_delay_s',
+                default_value=str(_DEFAULTS.get('torque_world_tf_delay_s', '1.0')),
+                description='[s] delay before the world -> base static TF'),
+            DeclareLaunchArgument(
+                'torque_camera_tf_delay_s',
+                default_value=str(_DEFAULTS.get('torque_camera_tf_delay_s', '1.0')),
+                description='[s] delay before the base -> camera_link static TF'),
+            DeclareLaunchArgument(
+                'torque_image_republisher_extra_delay_s',
+                default_value=str(_DEFAULTS.get(
+                    'torque_image_republisher_extra_delay_s', '3.0')),
+                description='[s] added to camera_delay_s before the image republisher'),
+            DeclareLaunchArgument(
+                'torque_finger_pub_delay_s',
+                default_value=str(_DEFAULTS.get('torque_finger_pub_delay_s', '2.0')),
+                description='[s] delay before the MoveIt finger joint-state publisher'),
+            DeclareLaunchArgument(
+                'torque_finger_pub_rate_hz',
+                default_value=str(_DEFAULTS.get('torque_finger_pub_rate_hz', '10.0')),
+                description='[Hz] MoveIt finger joint-state publisher rate'),
+
+            DeclareLaunchArgument(
+                'rt_pin_cpu',
+                default_value=str(_DEFAULTS.get('rt_pin_cpu', '3')),
+                description="CPU for the ros2_control_node SCHED_FIFO thread; "
+                            "must be one of the isolcpus cores. '' disables pinning"),
+
             OpaqueFunction(function=_launch_all),
         ]
     )

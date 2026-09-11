@@ -3,45 +3,21 @@
 Ported from franka_simulation/src/utils.py with hardcoded paths removed.
 All file-loading helpers now accept an explicit path argument.
 """
-import yaml
+import yaml  # noqa: F401 — kept for callers importing yaml via this module
 import numpy as np
 
+# MOVED to utils/config.py (Phase 2). Re-exported under the original names
+# so every existing call site keeps working unchanged.
+# find_pt_confidence MOVED to utils/perception_msgs.py (Phase 2);
+# re-exported so existing call sites keep working.
+from franka_experiments.utils.perception_msgs import (  # noqa: F401
+    find_pt_confidence,
+)
+from franka_experiments.utils.config import (  # noqa: F401
+    load_extrinsics,
+    load_config_file as load_robot_config,
+)
 
-def load_extrinsics(path: str):
-    """Load camera extrinsic calibration from a YAML file.
-
-    Returns
-    -------
-    R : np.ndarray, shape (3, 3)
-        Rotation matrix (camera → base).
-    t : np.ndarray, shape (3,)
-        Translation vector (camera → base).
-    """
-    with open(path, 'r') as f:
-        data = yaml.safe_load(f)
-
-    tx = data['translation']['x']
-    ty = data['translation']['y']
-    tz = data['translation']['z']
-
-    qx = data['rotation']['x']
-    qy = data['rotation']['y']
-    qz = data['rotation']['z']
-    qw = data['rotation']['w']
-
-    R = np.array([
-        [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
-        [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
-        [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
-    ], dtype=float)
-
-    return R, np.array([tx, ty, tz], dtype=float)
-
-
-def load_robot_config(path: str) -> dict:
-    """Load robot configuration from a YAML file."""
-    with open(path, 'r') as f:
-        return yaml.safe_load(f)
 
 
 def point_to_segment_distance_with_projection(p, a, b):
@@ -217,16 +193,6 @@ def get_rotation_from_quaternion(q) -> np.ndarray:
         [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
         [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
     ], dtype=float)
-
-
-def find_pt_confidence(best_result: float, n_pts: int) -> float:
-    """Compute confidence score based on valid point count and distance value."""
-    lm_conf = float(np.clip(n_pts / 500.0, 0.2, 1.0))
-    dist_conf = (
-        1.0 if best_result < 2.0
-        else float(np.clip(1.0 - (best_result - 2.0) / 3.0, 0.3, 1.0))
-    )
-    return float(np.clip(lm_conf * dist_conf, 0.0, 1.0))
 
 
 def compute_direction_vector(p_obs: np.ndarray, cp_positions: np.ndarray, i: int) -> np.ndarray:

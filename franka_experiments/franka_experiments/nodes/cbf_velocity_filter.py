@@ -38,6 +38,8 @@ Parameters:
     Use for Phase 1 testing (no camera, no distances required).
 """
 
+# TODO[LEGACY]: velocity-space control mode; the stack is torque/acceleration-based | confidence: high | superseded-by: nodes/cbf_safety_filter.py | flagged: 2026-09-01
+
 import time
 
 import numpy as np

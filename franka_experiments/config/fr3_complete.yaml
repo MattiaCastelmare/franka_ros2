@@ -94,6 +94,18 @@ topics:
   overlay_image: /real_time_distance/overlay_image
   depth_optical_frame: camera_depth_optical_frame
 
+# Distance semantics (what /cbf/per_link_distances carries)
+# ---------------------------------------------------------
+# LinkDistance.distance is the gap from a control point to the nearest OBSERVED
+# obstacle surface point, with the capsule radius and the mask-dilation margin
+# already subtracted, clamped at 0. It is a surface/edge gap by construction: a
+# depth camera returns only the front surface of an obstacle, so there is no
+# interior term and no distance transform anywhere in this pipeline. A gap of
+# exactly 0.0 means "at the capsule surface" and is published valid.
+#
+# One LinkDistance is emitted per CONTROL POINT, not per link, so robot_link_name
+# repeats across the CPs of a segment and the CBF assembles one HOCBF row for
+# each. With the segments below that is 11 rows (2+2+2+2+3), not 5.
 distance: # in meters
   min_depth_m: 0.15
   max_depth_m: 4.0
@@ -101,13 +113,45 @@ distance: # in meters
   image_margin_px: 10
   roi_pad_px: 90
 
-  # consider distance within this range
+  # ── Publish gate for the whole frame (NOT a per-CP filter) ───────────────
+  # real_time_distance builds `valid` = CPs whose distance falls in this band.
+  # If `valid` is EMPTY the frame publishes only the empty heartbeat and no
+  # MultiLinkDistance at all; if ANY CP falls inside, EVERY control point is
+  # published (build_cp_messages applies this band only to the legacy
+  # MultiDistance topic, never to the per-CP MultiLinkDistance the CBF reads).
+  #
+  # UNCHANGED from the pre-multi-CP values, deliberately. Two things to know:
+  #
+  # min_thresh is a lower bound on the reported GAP, not on depth — depth noise
+  # is already gated by min_depth_m below. Its real job is rejecting robot
+  # pixels that leak through the dilated exclusion mask, which read as a gap of
+  # ~0. That guard now costs something: since LinkDistance.valid accepts a gap
+  # of exactly 0.0 (a CP at the capsule surface is a measurement, not a
+  # dropout), a frame in which every CP is either < 0.08 m or > 0.7 m still
+  # publishes nothing and leaves the QP with no rows. Adjacent CPs on a link sit
+  # ~0.1-0.15 m apart, so in practice one of them lands in the band and rescues
+  # the frame — but the hole is real and lives exactly in the contact regime.
+  # Closing it means separating "is this CP self-detection?" from "should this
+  # frame publish?", which is a change inside real_time_distance. Watch for it
+  # on hardware before touching this number: lowering min_thresh toward 0
+  # re-exposes mask leakage as emergency braking.
+  #
+  # max_thresh gates publishing only. CPs beyond it are still published (as long
+  # as some other CP is in band) and are then trimmed by cbf_obstacle_horizon
+  # (1.2 m, fr3_control.yaml). The CBF therefore never sees a frame in which no
+  # CP is within 0.7 m, so that horizon only ever trims — it cannot reach
+  # farther than this band allows.
   thresholds:
     min_thresh: 0.08
     max_thresh: 0.7
 
   # distance published when no obstacle is detected within max_thresh
   fallback_distance: 2.0
+
+  # Liveness heartbeat: publish an EMPTY /cbf/per_link_distances when no CP is in
+  # range, so consumers tell "no obstacle near" from "perception dead"; false =
+  # legacy gated behaviour. Authoritative source is the ROS param of the same name.
+  publish_empty_per_link: true
 
   # offset for control point on ee
   ee_tip_offset: 0.10
@@ -118,32 +162,6 @@ distance: # in meters
   # Only the recovery (obstacle moving away) is smoothed.
   # 0.0 = no filter (raw), 0.9 = heavy smoothing (slow recovery)
   lpf_alpha: 0.5
-
-  # Spatial-continuity gate (option c): a suspicious approach jump (implied speed
-  # > lpf_v_max_approach) that ALSO teleports the winning surface point by more
-  # than this in 3D [m] requires 2 confirmation frames instead of 1 — it is likely
-  # the memoryless argmin switching surface REGION (a static-obstacle artefact),
-  # not a real fast approach. Never alters the reported distance, only acceptance
-  # latency. Default 1.0 m = deliberately permissive (≈ disabled): no real d3d
-  # distribution yet, so this MUST NOT change today's behaviour. Tighten to the
-  # eventual ~0.1-0.2 m only AFTER collecting the logged RTDDIAG d3d values.
-  lpf_d3d_gate_m: 1.0
-
-  # ── DistanceEngine rate-limiter / outlier rejection ─────────────────────
-  # These were hardcoded defaults inside DistanceEngine.__init__ — now exposed
-  # for tuning. Values below REPRODUCE the previous hardcoded defaults exactly,
-  # so adding them here does NOT change runtime behaviour until tuned.
-  # (lpf_alpha and lpf_d3d_gate_m above are part of the same group.)
-  lpf_v_max_approach: 2.0         # [m/s] implied approach speed gate
-  lpf_outlier_recover_frac: 0.10  # fraction of d_pre to call "recovered"
-  lpf_outlier_recover_abs: 0.03   # [m] absolute floor for recovery tolerance
-  # Sync-jump gate (cross-CP): when this FRACTION of valid CPs all trip the
-  # approach rate-limit in the same frame (with at least min_cps valid samples),
-  # demand an extra confirmation frame on those CPs — likely a systemic artefact
-  # (TF jitter, mask instability), not independent per-pixel noise. Conservative
-  # defaults; the reported distance is never altered, only acceptance latency.
-  lpf_sync_jump_frac: 0.5         # fraction of valid CPs rate-limited together
-  lpf_sync_jump_min_cps: 3        # min valid-CP sample size for the gate
 
   # Throttle interval [s] for repeated distance/obstacle log messages.
   log_throttle_s: 2.0

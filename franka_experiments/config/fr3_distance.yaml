@@ -1,3 +1,4 @@
+# TODO[LEGACY]: loaded by experiment_logger only, which merges its topics into cfg_topics and never reads the result | confidence: medium | superseded-by: config/fr3_complete.yaml | flagged: 2026-09-01
 robot:
   joint_names:
     - fr3_joint1

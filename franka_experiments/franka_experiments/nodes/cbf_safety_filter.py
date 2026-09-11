@@ -1,63 +1,51 @@
 #!/usr/bin/env python3
-"""CBF Safety Filter — acceleration-level, real-time decoupled architecture.
+"""CBF safety filter — acceleration-level, three rates, one process.
 
-Three rates, one process (MultiThreadedExecutor + per-group callback threads):
+    I/O callbacks (event-driven)     perception group        control group
+    ────────────────────────────     ────────────────        ─────────────
+    /joint_states  ─┐                50 Hz: Pinocchio        100 Hz: OSQP
+    /qddot_nom     ─┼► snapshots ──► FK + point Jacobians ─► solve + publish
+    /per_link_dist ─┘  (atomic       ConstraintBuilder       /qddot_safe
+                        swap)        (atomic swap)
 
-    I/O callbacks (event-driven)     perception group         control group
-    ────────────────────────────     ─────────────────        ──────────────
-    /joint_states  ─┐                constraint timer         QP timer
-    /qddot_nom     ─┼► snapshots ──► ~50 Hz: Pinocchio  ────► ~200 Hz: OSQP
-    /per_link_dist ─┘  (atomic       FK + point Jacobians     only — no
-                        swap)        builds A, h̄, G           Pinocchio, no
-                                     (atomic swap)            allocations →
-                                                              /qddot_safe
+Per QP tick:
 
-QP solved per control tick:
+    min ½‖q̈ − q̈_nom‖² + ½ Σ_g ρ_g s_g²
+    s.t.  q̈_min ≤ q̈ ≤ q̈_max                     (state box, hard)
+          aᵢᵀq̈ + mᵢ·s_g ≥ bᵢ   ∀ row i           (CBF rows, relaxable)
 
-    min  ½ ‖qddot − qddot_nom‖²  +  ½ ρ s²
-    s.t. qddot_min ≤ qddot ≤ qddot_max
-         aᵢᵀ qddot + s ≥ bᵢ   ∀ ostacolo attivo   (s ≥ 0, slack)
+This module is the ORCHESTRATOR and nothing else. It owns the ROS wiring, the
+three clocks, the staleness policy and the OSQP instance. It owns no formula:
 
-Per active obstacle i (h̄ has relative degree 2 → HOCBF, d̈ depends on q̈):
-    h̄ᵢ  = dᵢ − d_safe                 ┐ geometry — rebuilt at ~50 Hz
-    aᵢ  = n̂ᵢᵀ Jᵢ                      │ (perception group); the centripetal/
-    ċᵢ  = n̂ᵢᵀ (J̇ᵢ q̇)                 ┘ Coriolis term ċᵢ is frozen at the
-                                        snapshot q̇ (J̇ needs Pinocchio)
-    bᵢ  = −k1·(aᵢᵀ q̇) − k0·h̄ᵢ − ċᵢ    aᵢᵀq̇ recomputed EVERY QP tick with the
-                                        latest q̇; ċᵢ carried from the snapshot
+* what a row IS            → utils.cbf_state_rows (all six families + builder)
+* the rows' right-hand side→ utils.cbf_qp_assembly.build_row_rhs
+* the hard state box       → utils.cbf_hard_limits
+* the singularity barrier  → utils.cbf_singularity
+* every parameter          → config/fr3_control.yaml, via utils.config
+* the CBFDIAG line         → utils.logging_utils.format_cbf_diag
 
-Shared-state rule (lock-free): each producer publishes one *immutable*
-NamedTuple by assigning a single attribute — reference assignment is atomic
-under the GIL. Each consumer reads the attribute once into a local variable
-and works on that consistent snapshot. No field is ever mutated in place.
+Staleness policy, all of it in one place (``_qp_tick``):
 
-Staleness policy (checked in the QP loop with carried timestamps):
-    distances older than distance_timeout → CBF rows dropped (passthrough)
-    qddot_nom older than nom_timeout      → braking fallback  −k_brake·q̇
-    joint state older than js_timeout     → publish zeros, log error
-    QP failure                            → braking fallback, reset warm start
+    joint state older than joint_state_timeout   → brake on last known q̇
+    joint state FROZEN (identical, re-stamped)   → brake, CBF rows dropped
+    distances older than distance_timeout        → brake, CBF rows dropped
+    q̈_nom older than nom_timeout                 → brake
+    QP not solved                                → brake, reset the warm start
 
-Pubblica /NS_1/qddot_safe (Float64MultiArray, 7-dim); la conversione
-qddot_safe → torque resta delegata a qddot_to_torque.py.
+Every one of those degrades toward braking, never toward passthrough, and
+raises ``fault_braking`` on /cbf_status.
 """
 
 import gc
-import glob
 import os
-import subprocess
-import tempfile
 import threading
 import time
-
-from typing import NamedTuple
 
 import numpy as np
 import osqp
 import pinocchio as pin
 import rclpy
 import scipy.sparse as sparse
-import yaml
-from ament_index_python.packages import get_package_share_directory
 from franka_msgs.msg import MultiLinkDistance
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -66,219 +54,148 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
-from franka_experiments.utils.cbf_kinematics import CBFKinematics
+from franka_experiments.utils.cbf_hard_limits import (
+    apply_slew_limit,
+    position_velocity_accel_box,
+)
+from franka_experiments.utils.cbf_qp_assembly import (
+    build_osqp_A,
+    build_osqp_bounds,
+    build_row_rhs,
+    pad_rows_to_block,
+    tangential_bias,
+)
+from franka_experiments.utils.cbf_state_rows import (
+    FR3_JOINT_KEYS,
+    FR3_JOINTS,
+    G_CAP,
+    G_OBS,
+    G_QLIM,
+    G_SC,
+    G_SING,
+    G_SPD,
+    NV,
+    NX,
+    N_SLACK,
+    ConstraintBuilder,
+    JointSnap,
+    NomSnap,
+    Obstacle,
+    ObstacleSnap,
+    build_optional_row_builders,
+)
+from franka_experiments.utils.config import (
+    load_cbf_config,
+    load_franka_joint_limits,
+)
+from franka_experiments.utils.kinematics import (
+    CBFKinematics,
+    build_urdf_no_hand,
+)
+from franka_experiments.utils.logging_utils import (
+    format_cbf_diag,
+    format_velocity_summary,
+)
 
-# ─────────────────────────────────────────────────────────────────────────────
-
-FR3_JOINTS = [f'fr3_joint{i}' for i in range(1, 8)]
-NV         = 7
-
-
-# ── Immutable snapshots (atomic-swap shared state) ───────────────────────────
-
-class _JointSnap(NamedTuple):
-    q:     np.ndarray   # (NV,)
-    qdot:  np.ndarray   # (NV,)
-    stamp: float
-
-
-class _NomSnap(NamedTuple):
-    qddot: np.ndarray   # (NV,)
-    stamp: float
-
-
-class _Obstacle(NamedTuple):
-    link: str
-    d:    float
-    pr:   np.ndarray    # closest point on robot, world frame
-    ph:   np.ndarray    # closest point on human, world frame
-    conf: float
-
-
-class _ObstacleSnap(NamedTuple):
-    items: tuple        # tuple[_Obstacle, ...]
-    stamp: float
-
-
-class _ConstraintSnap(NamedTuple):
-    A:         np.ndarray  # (n_c, NV)     aᵢ = n̂ᵢᵀ Jᵢ rows
-    h_bar:     np.ndarray  # (n_c,)        barrier values h̄ᵢ
-    jdot_qdot: np.ndarray  # (n_c,)        ċᵢ = n̂ᵢᵀ(J̇ᵢ q̇) at the snapshot q̇
-    G:         np.ndarray  # (n_c, NV+1)   prebuilt [−A | −1] for the QP
-    t_dist:    float       # stamp of the distance data the geometry is based on
-    links:     tuple       # (n_c,) link names, DIAGNOSTIC only — not used by QP
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _load_yaml(pkg: str, rel: str) -> dict:
-    with open(os.path.join(get_package_share_directory(pkg), rel)) as f:
-        return yaml.safe_load(f)
-
-
-def _build_urdf_no_hand() -> str:
-    share = get_package_share_directory('franka_description')
-    xs = glob.glob(os.path.join(share, '**', 'fr3.urdf.xacro'), recursive=True)
-    if not xs:
-        raise RuntimeError('fr3.urdf.xacro not found under franka_description share')
-    tmp = tempfile.NamedTemporaryFile(suffix='.urdf', delete=False, prefix='fr3_cbf_')
-    tmp.close()
-    r = subprocess.run(['xacro', xs[0], 'hand:=false', '-o', tmp.name],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f'xacro failed:\n{r.stderr}')
-    return tmp.name
-
-
-# ── Node ─────────────────────────────────────────────────────────────────────
 
 class CBFSafetyFilter(Node):
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Construction
+    # ═════════════════════════════════════════════════════════════════════
 
     def __init__(self):
         super().__init__('cbf_safety_filter')
 
-        cfg    = _load_yaml('franka_experiments', 'config/fr3_control.yaml')
-        topics = cfg['topics']
-        p      = cfg['params']
-        lims   = cfg['joint_limits']
-        keys   = [f'joint{i}' for i in range(1, 8)]
+        # ── 1. Configuration ────────────────────────────────────────────
+        # Every knob comes from config/fr3_control.yaml and from nowhere else;
+        # utils.config.CBF_PARAM_SPEC carries only the type and the validation
+        # range. A missing key is a startup failure naming the key.
+        topics, P = load_cbf_config(self)
+        self.P = P
 
-        self._lb = np.array([-lims[k][3] for k in keys])   # −qddot_max per joint
-        self._ub = np.array([ lims[k][3] for k in keys])   #  qddot_max per joint
-        # Official Franka per-joint velocity limit (joint_limits.yaml limit.velocity,
-        # = fr3_control.yaml col[2]). Until now UNUSED by the QP — the box bounded
-        # only q̈, so a sustained q̈ could integrate q̇ past this limit and trip the
-        # firmware `joint_velocity_violation` reflex. Now used to tighten the accel
-        # box per tick (see _update_velocity_box).
-        self._qdot_max = np.array([lims[k][2] for k in keys])   # q̇_max per joint [rad/s]
+        # ── 2. State limits, straight from franka_description ───────────
+        # NOT from the joint_limits: block at the bottom of fr3_control.yaml —
+        # that one is read by four other nodes and the two can drift.
+        jl = load_franka_joint_limits(FR3_JOINT_KEYS)
+        self._lb, self._ub = -jl['decel_max'], jl['decel_max']
+        self._qdot_max = jl['qdot_max']
+        self._q_min, self._q_max = jl['q_min'], jl['q_max']
 
-        qp_rate          = float(p.get('qp_rate_hz',           200.0))
-        cbf_rate         = float(p.get('cbf_update_rate_hz',    50.0))
-        self._d_safe     = float(p.get('d_safe',                 0.20))
-        # Pure computational horizon (NOT a safety activation gate): obstacles
-        # beyond this are skipped only to cap/stabilize n_c. The linear HOCBF
-        # self-deactivates at large d (k0·h̄ term), so activation is continuous.
-        self._obstacle_horizon = float(p.get('cbf_obstacle_horizon', 1.2))
-        self._k0         = float(p.get('k0_cbf',                25.0))
-        self._k1         = float(p.get('k1_cbf',                10.5))
-        self._rho        = float(p.get('rho_slack',           1000.0))
-        self._solver     = str(  p.get('qp_solver',            'osqp'))
-        self._dist_to    = float(p.get('distance_timeout',       0.5))
-        self._nom_to     = float(p.get('nom_timeout',            0.5))
-        self._js_to      = float(p.get('joint_state_timeout',    0.1))
-        self._k_brake    = float(p.get('k_brake',                3.0))
-        self._conf_min   = float(p.get('min_confidence',         0.2))
-        # Min CBF leverage ‖a‖=‖n̂ᵀJp‖ [m/rad] for a constraint to be kept.
-        # Replaces the old cond(Jp)>1e5 test (see _update_constraints).
-        self._a_min      = float(p.get('cbf_min_leverage',      0.05))
+        # ── 3. Kinematics and the row builders ──────────────────────────
+        kin = CBFKinematics(pin.buildModelFromUrdf(build_urdf_no_hand()))
+        opt = build_optional_row_builders(P, kin, self.get_logger())
 
-        self._kin = CBFKinematics(pin.buildModelFromUrdf(_build_urdf_no_hand()))
-        self._fid_cache: dict[str, int | None] = {}
+        # The one object that turns a (joint state, obstacle) pair into rows.
+        # Stateful — barrier smoothing, per-track velocity filters, frame
+        # counters — and driven at the constraint rate, never on the QP tick.
+        self._rows = ConstraintBuilder(
+            P, kin, q_min=self._q_min, q_max=self._q_max,
+            acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(), **opt)
 
-        # ── Preallocated QP buffers (fixed-shape; G/h vary with n_c) ─────────
-        # Slack penalty is QUADRATIC (½ρs²: ρ sits on the s² diagonal of P,
-        # with NO linear slack term in q — _qvec[NV] stays 0). This DIVERGES
-        # from OSCBF Eq.6 (Morton & Pavone), which uses a LINEAR slack penalty
-        # ρᵀt. Deliberate choice: ½ρs² is C¹ at s=0 (no kink ⇒ smoother for the
-        # QP solver) and prices small violations softly (marginal cost ρs→0 as
-        # s→0) while punishing large ones harder. Consequence: ρ is NOT directly
-        # comparable to an OSCBF linear ρ — the same ρ=1000 gives a
-        # violation-dependent price (the two penalties cross only at s=2, ρ
-        # cancelling). See CBF review notes for the full comparison; do not
-        # "match OSCBF" by retuning ρ here.
-        self._P = np.eye(NV + 1)
-        self._P[-1, -1] = self._rho
-        # Cost matrix is constant → convert to CSC once. Native OSQP requires
-        # sparse matrices; reusing this instance avoids per-tick conversion.
-        self._P_csc  = sparse.csc_matrix(self._P)
-        self._qvec   = np.zeros(NV + 1)
-        # Box bounds: indices 0..NV-1 are the per-joint q̈ bounds (STATIC accel
-        # part from decel_limit, dynamically TIGHTENED by the velocity bound each
-        # tick in _update_velocity_box); index NV is the slack slot s∈[0, 1e6]
-        # (NEVER touched by the velocity update).
-        self._box_lb = np.append(self._lb, 0.0)
-        self._box_ub = np.append(self._ub, 1e6)
-        # Velocity-aware box: one integration step (Δt = nominal QP period) must
-        # not push |q̇| past v_margin·q̇_max. Nominal Δt (not measured) chosen on
-        # purpose — see _update_velocity_box: error only shifts conservativeness,
-        # absorbed by the 0.9 margin, and a fixed Δt keeps the bound deterministic
-        # (independent of scheduling jitter).
-        self._v_margin = 0.9
-        self._dt_qp    = 1.0 / qp_rate
-        # Per-joint velocity diagnostics, refilled each tick by
-        # _update_velocity_box; read by the CBFDIAG line and the high-res VELHI
-        # log. ratio = |q̇|/q̇_max; bite = this joint's q̈ box was tightened by the
-        # velocity bound (vs the static decel box).
-        self._diag_vel_ratio = np.zeros(NV)
-        self._diag_vel_bite  = np.zeros(NV, dtype=bool)
-        # VELHI gate: emit the per-tick (10 ms) per-joint line only when the worst
-        # joint exceeds this q̇/q̇_max ratio. Default 0.85 → silent in normal
-        # operation, full resolution in the pre-violation window. >1.0 disables.
-        self.declare_parameter('diag_vel_ratio_thr', 0.85)
-        self._diag_vel_ratio_thr = float(self.get_parameter('diag_vel_ratio_thr').value)
-        # Cumulative QP-failure counter (surfaced in the QP-fail error + the
-        # periodic tick log) to correlate failures with the critical window.
-        self._qp_fail_count = 0
-        self._prev_nc = -1   # forces (re)setup the first time n_c is seen
-        # Persistent native-OSQP problem. solve_qp() rebuilt the OSQP problem
-        # (alloc + scaling + factorization) on every call — 5-24 ms even for the
-        # empty n_c=0 problem. We instead keep one OSQP instance and .update()
-        # the vectors (and A values when CBF is active) between ticks, paying
-        # setup() only when the constraint count n_c changes the sparsity pattern.
+        # ── 4. QP, preallocated once ────────────────────────────────────
+        # Slack penalty is QUADRATIC (½ρs²) and one slack per FAMILY. Quadratic
+        # is C¹ at s=0 and prices small violations softly; per-family because a
+        # single shared slack let a joint-limit row in RADIANS relax every
+        # self-collision row in METRES by the same amount, until the firmware
+        # fired its own reflex.
+        P_mat = np.eye(NX)
+        for g, rho in ((G_OBS,  P.rho_slack),
+                       (G_SC,   P.rho_slack_self_collision),
+                       (G_QLIM, P.rho_slack_joint_limit),
+                       (G_SING, P.rho_slack_singularity),
+                       (G_CAP,  P.rho_slack_retreat),
+                       (G_SPD,  P.rho_slack_link_speed)):
+            P_mat[NV + g, NV + g] = rho
+        self._P_csc = sparse.csc_matrix(P_mat)
+        self._qvec = np.zeros(NX)
+        self._box_lb = np.concatenate([self._lb, np.zeros(N_SLACK)])
+        self._box_ub = np.concatenate([self._ub, np.full(N_SLACK, 1e6)])
         self._osqp_prob = None
-        # OSQP's default max_iter (4000) can be hit on ill-scaled instances;
-        # at this problem size 20k iterations still complete in < 1.5 ms.
-        self._osqp_max_iter = 20000
+        self._prev_nc = -1
+        self._qp_fail_count = 0
+        self._dt_qp = 1.0 / P.qp_rate_hz
 
-        # ── Shared snapshots (written/read by attribute assignment only) ─────
-        self._js:  _JointSnap      | None = None
-        self._nom: _NomSnap        | None = None
-        self._obs: _ObstacleSnap   | None = None
-        self._con: _ConstraintSnap | None = None
+        # ── 5. Shared state (lock-free: one immutable snapshot per producer,
+        #       published by a single atomic attribute assignment) ────────
+        self._js = self._nom = self._obs = self._con = None
+        self._js_frozen_since = None
+        self._qdot_cbf = np.zeros(NV)
+        self._qddot_prev = np.zeros(NV)
+        self._tan_bias = np.zeros(NV)   # EMA state for tangential_bias, below
 
-        # ── Structured CBF-episode diagnostic (manual time throttle) ─────────
-        # Emitted only when n_c>0. Manual gate (not get_logger throttle) so the
-        # projection math + f-string are computed ONLY when actually emitted,
-        # keeping per-tick overhead ~0 between emissions. ~50 ms → good temporal
-        # resolution for a few-second approach episode without log spam.
-        self._diag_period = 0.05
+        # ── 6. Diagnostics ──────────────────────────────────────────────
+        self._diag_slack = np.zeros(N_SLACK)
+        self._diag_vel_ratio = np.zeros(NV)
+        self._diag_vel_bite = np.zeros(NV, dtype=bool)
+        self._diag_slew_step = np.zeros(NV)
+        self._diag_slew_bite = np.zeros(NV, dtype=bool)
+        self._diag_qddot_real = np.zeros(NV)
+        self._diag_qdot_prev = self._diag_t_prev = None
+        self._diag_cap_age = 0.0
+        self._diag_caps = (0.0, 0.0, 0.0, 0.0)
+        self._cap_warned = False
         self._last_diag_t = 0.0
-
-        # ── DIAGNOSTIC ONLY — realized joint acceleration estimate ───────────
-        # q̈_real ≈ Δq̇/Δt from consecutive MEASURED q̇ (finite difference at the
-        # native joint_states rate), lightly EMA-smoothed. This is a NOISY
-        # numerical-derivative estimate kept SOLELY to compare commanded q̈_safe
-        # against what the robot actually does (Phase-1 actuation debug). It is
-        # NEVER read by the QP, the constraint builder, or ANY control/safety
-        # decision — only by the CBFDIAG log block below. Do not wire it into
-        # control. EMA α=0.7: measured-velocity differencing is noisy at the
-        # high joint_states rate; 0.7 trims high-freq derivative noise while
-        # still tracking the ~50 ms-scale trend a sub-second approach needs —
-        # light enough not to mask a genuine commanded-vs-realized deficit.
-        self._diag_qddot_real  = np.zeros(NV)               # latest est [rad/s²]
-        self._diag_qdot_prev: np.ndarray | None = None
-        self._diag_t_prev:    float | None = None
-        self._diag_qddot_alpha = 0.7
-
-        # ── Diagnostics: detect QP-tick scheduling gaps (see _qp_tick) ───────
         self._last_tick_t = None
-        # Gap-warning threshold = 3x the nominal QP period; derived from qp_rate
-        # so the "gap = 3x period" criterion stays correct if qp_rate_hz changes.
-        # (qp_rate=100 Hz → 3 * 10 ms = 30 ms; qp_rate=200 Hz → 15 ms.)
-        self._gap_warn_thr_ms = 3.0 * (1000.0 / qp_rate)
-        # Set once, on the first _qp_tick, from the executor's QP thread (the
-        # thread is only created after executor.spin(), so it cannot be done
-        # here in __init__ which runs on the main thread). See _qp_tick.
+        self._tick_count = 0
         self._priority_set = False
+        self._gap_warn_thr_ms = P.tick_gap_warn_factor * 1000.0 * self._dt_qp
 
+        # ── 7. ROS wiring ───────────────────────────────────────────────
         # ── Callback groups: QP loop must never wait on perception ──────────
         grp_io   = MutuallyExclusiveCallbackGroup()
         grp_perc = MutuallyExclusiveCallbackGroup()
         grp_ctrl = MutuallyExclusiveCallbackGroup()
 
         # depth=1: always consume the latest sample, never drain a backlog
+        # joint_states_fast, NOT joint_states: the latter comes from a 30 Hz
+        # Python republisher that re-stamps its CACHED values, so a stall in it
+        # is invisible to every staleness check here (see the topics block in
+        # fr3_control.yaml). Falls back to the old key if the config predates it.
+        js_topic = topics.get('joint_states_fast',
+                              topics['joint_states_topic'])
         self.create_subscription(
-            JointState, topics['joint_states_topic'], self._on_joint_state,
+            JointState, js_topic, self._on_joint_state,
             QoSProfile(depth=1), callback_group=grp_io)
         self.create_subscription(
             Float64MultiArray, topics['qddot_nom'], self._on_qddot_nom,
@@ -292,7 +209,22 @@ class CBFSafetyFilter(Node):
             Float64MultiArray, topics['qddot_safe'], 10)
 
         # CBF activity status for downstream consumers.
-        # data = [n_active_constraints, slack, fault_braking].
+        # data = [n_active_constraints, slack, fault_braking, n_active_cps,
+        #         d_obstacle_min].
+        # data[4] is the closest OBSTACLE surface gap [m], +inf when nothing is
+        # in range. It is NOT min(h_bar) + d_safe: h_bar mixes obstacle rows
+        # with joint-limit rows measured in radians. pentagon_qddot_commander
+        # reads it to scale its phase rate — slow the trajectory down only when
+        # something is genuinely close, never on tracking error (an error-driven
+        # governor deadlocks: CBF blocks -> error grows -> phase freezes ->
+        # reference parked on the blocked pose -> CBF keeps blocking).
+        # data[3] (n_active_cps) counts the rows whose barrier is actually
+        # VIOLATED (h̄ < 0, i.e. the CP is inside d_safe), which is the honest
+        # "how many control points triggered this cycle" figure. data[0] is the
+        # larger count of rows PRESENT in the QP — every CP inside
+        # cbf_obstacle_horizon, most of them non-binding. Both consumers
+        # (frame_grabber, rl_policy_commander) index positionally behind a
+        # len() guard, so appending a 4th element is backward compatible.
         # Today the only subscriber is frame_grabber.py, which uses it to gate
         # frame saving (save while CBF active or fault-braking). NOTE: no
         # consumer currently freezes virtual time on this signal — a "freeze
@@ -304,35 +236,32 @@ class CBFSafetyFilter(Node):
         self._status_pub = self.create_publisher(
             Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
         self._status_msg = Float64MultiArray()
-        self._status_msg.data = [0.0, 0.0, 0.0]
+        self._status_msg.data = [0.0, 0.0, 0.0, 0.0, float('inf')]
 
-        # Pay one-shot lazy costs now (robot stationary) instead of on the first
-        # real tick — must run before the timers start firing callbacks.
+        # ── 8. Start ────────────────────────────────────────────────────
+        # Warm-up FIRST: the one-shot lazy costs (Pinocchio's first FK, OSQP's
+        # first factorization, numpy's first BLAS call) stalled the first real
+        # tick by 400-800 ms. Pay them here, with the robot stationary.
         self._warmup()
-
-        self.create_timer(1.0 / cbf_rate, self._update_constraints,
-                          callback_group=grp_perc)
-        self.create_timer(1.0 / qp_rate, self._qp_tick,
-                          callback_group=grp_ctrl)
-
-        self.get_logger().info(
-            f'CBF filter  QP={qp_rate:.0f} Hz  constraints={cbf_rate:.0f} Hz  '
-            f'solver={self._solver}\n'
-            f'  d_safe={self._d_safe} m   obstacle_horizon={self._obstacle_horizon} m\n'
-            f'  k0={self._k0}   k1={self._k1}   rho={self._rho}')
-
-        # ── Diagnostic: optionally disable the garbage collector ─────────────
-        # Used to test whether _qp_tick gaps coincide with GC pauses. This is a
-        # temporary diagnostic mode only — NOT for normal operation, since it
-        # can grow memory unbounded if cyclic garbage accumulates.
-        self.declare_parameter('diag_disable_gc', False)
-        if self.get_parameter('diag_disable_gc').value:
+        if P.diag_disable_gc:
+            # Diagnostic only — used to test whether _qp_tick gaps coincide with
+            # GC pauses. Memory can grow unbounded if cyclic garbage collects.
             gc.disable()
-            self.get_logger().warn(
-                'diag_disable_gc=TRUE → gc.disable() called. This is a TEMPORARY '
-                'DIAGNOSTIC mode, not for normal use; memory may grow unbounded.')
-
-    # ── Warm-up: pay one-shot lazy costs in __init__, not on the first tick ──
+            self.get_logger().warn('diag_disable_gc=TRUE → gc.disable(). '
+                                   'TEMPORARY diagnostic mode, not for normal use.')
+        self.create_timer(1.0 / P.cbf_update_rate_hz, self._update_constraints,
+                          callback_group=grp_perc)
+        self.create_timer(1.0 / P.qp_rate_hz, self._qp_tick,
+                          callback_group=grp_ctrl)
+        self.get_logger().info(
+            f'CBF filter  QP={P.qp_rate_hz:.0f} Hz  rows={P.cbf_update_rate_hz:.0f} Hz  '
+            f'solver={P.qp_solver}\n'
+            f'  config: {P.config_path}\n'
+            f'  d_safe={P.d_safe} m  horizon={P.cbf_obstacle_horizon} m  '
+            f'k0={P.k0_cbf} k1={P.k1_cbf} rho={P.rho_slack}\n'
+            f'  limits from franka_description: q margin={P.position_margin_rad} rad, '
+            f'brake_eta={P.position_brake_eta}, qdot at {P.velocity_box_margin:.0%}, '
+            f'qddot +-{np.round(self._ub, 2).tolist()} rad/s^2')
 
     def _warmup(self) -> None:
         """Run every per-tick code path once with dummy data, results discarded.
@@ -359,7 +288,7 @@ class CBFSafetyFilter(Node):
         # (a) Pinocchio FK + Jacobian internal structures. with_jdot=True so the
         #     Jacobian-time-variation pass (used per real tick now) is also warmed.
         try:
-            self._kin.update(q0, qdot0, with_jdot=True)
+            self._rows._kin.update(q0, qdot0, with_jdot=True)
         except Exception as exc:
             self.get_logger().warn(f'warmup: kin.update failed: {exc}')
 
@@ -369,14 +298,14 @@ class CBFSafetyFilter(Node):
         first_fid = None
         for link in (f'fr3_link{i}' for i in range(9)):
             try:
-                fid = self._frame_id(link)
+                fid = self._rows._frame_id(link)
                 if fid is not None and first_fid is None:
                     first_fid = fid
             except Exception as exc:
                 self.get_logger().warn(f"warmup: _frame_id('{link}') failed: {exc}")
         if first_fid is not None:
             try:
-                self._kin.point_jacobian(first_fid, p_dummy)   # warms J and J̇ paths
+                self._rows._kin.point_jacobian(first_fid, p_dummy)   # warms J and J̇ paths
             except Exception as exc:
                 self.get_logger().warn(f'warmup: point_jacobian failed: {exc}')
         else:
@@ -386,21 +315,21 @@ class CBFSafetyFilter(Node):
         #     n_c=1 (setup + update(Ax) + solve), on throwaway problems. Also pays
         #     osqp's lazy library-init cost here rather than on the first tick.
         try:
-            l0, u0 = self._osqp_lu(None, None)
+            l0, u0 = build_osqp_bounds(None, None, self._box_lb, self._box_ub)
             prob0 = osqp.OSQP()
-            prob0.setup(P=self._P_csc, q=self._qvec, A=self._osqp_A(None),
+            prob0.setup(P=self._P_csc, q=self._qvec, A=build_osqp_A(None, NV, N_SLACK),
                         l=l0, u=u0, warm_start=True,
-                        max_iter=self._osqp_max_iter, verbose=False)
+                        max_iter=self.P.osqp_max_iter, verbose=False)
             prob0.solve()
 
-            G1 = np.zeros((1, NV + 1)); G1[0, -1] = -1.0   # dummy [−a | −1] row
+            G1 = np.zeros((1, NX)); G1[0, NV + G_OBS] = -1.0   # dummy row
             h1 = np.array([1.0])
-            l1, u1 = self._osqp_lu(G1, h1)
+            l1, u1 = build_osqp_bounds(G1, h1, self._box_lb, self._box_ub)
             prob1 = osqp.OSQP()
-            prob1.setup(P=self._P_csc, q=self._qvec, A=self._osqp_A(G1),
+            prob1.setup(P=self._P_csc, q=self._qvec, A=build_osqp_A(G1, NV, N_SLACK),
                         l=l1, u=u1, warm_start=True,
-                        max_iter=self._osqp_max_iter, verbose=False)
-            prob1.update(q=self._qvec, l=l1, u=u1, Ax=self._osqp_A(G1).data)
+                        max_iter=self.P.osqp_max_iter, verbose=False)
+            prob1.update(q=self._qvec, l=l1, u=u1, Ax=build_osqp_A(G1, NV, N_SLACK).data)
             prob1.solve()
         except Exception as exc:
             self.get_logger().warn(f'warmup: OSQP path failed: {exc}')
@@ -410,8 +339,6 @@ class CBFSafetyFilter(Node):
             f'warmup complete in {dt_ms:.1f} ms — one-shot lazy costs paid in '
             f'__init__ (robot stationary), not on the first control tick')
 
-    # ── I/O callbacks: parse + atomic swap, nothing else ────────────────────
-
     def _on_joint_state(self, msg: JointState) -> None:
         n2p = dict(zip(msg.name, msg.position))
         n2v = dict(zip(msg.name, msg.velocity))
@@ -420,7 +347,17 @@ class CBFSafetyFilter(Node):
             qdot = np.array([n2v[n] for n in FR3_JOINTS])
         except KeyError:
             return
-        self._js = _JointSnap(q, qdot, self._now())
+        prev = self._js
+        if (prev is not None
+                and np.array_equal(q, prev.q)
+                and np.array_equal(qdot, prev.qdot)):
+            # Identical to the previous message. Remember when the run STARTED
+            # (the previous message's stamp), so the QP thread can age it.
+            if self._js_frozen_since is None:
+                self._js_frozen_since = prev.stamp
+        else:
+            self._js_frozen_since = None
+        self._js = JointSnap(q, qdot, self._now())
 
         # ── DIAGNOSTIC ONLY — realized q̈ estimate (see __init__; NOT control) ─
         # Finite difference of MEASURED q̇ → q̈_real, EMA-smoothed. Δt uses the
@@ -433,7 +370,7 @@ class CBFSafetyFilter(Node):
             dt = t_hdr - self._diag_t_prev
             if 1e-4 < dt < 0.1:
                 raw = (qdot - self._diag_qdot_prev) / dt
-                a   = self._diag_qddot_alpha
+                a   = self.P.diag_qddot_alpha
                 self._diag_qddot_real = a * self._diag_qddot_real + (1.0 - a) * raw
         self._diag_qdot_prev = qdot
         self._diag_t_prev    = t_hdr
@@ -441,11 +378,12 @@ class CBFSafetyFilter(Node):
     def _on_qddot_nom(self, msg: Float64MultiArray) -> None:
         data = np.asarray(msg.data, dtype=np.float64)
         if data.shape == (NV,):
-            self._nom = _NomSnap(data, self._now())
+            self._nom = NomSnap(data, self._now())
 
     def _on_distances(self, msg: MultiLinkDistance) -> None:
+        P = self.P
         items = tuple(
-            _Obstacle(
+            Obstacle(
                 link=ld.robot_link_name,
                 d=float(ld.distance),
                 pr=np.array([ld.closest_point_robot.x,
@@ -458,203 +396,34 @@ class CBFSafetyFilter(Node):
             )
             for ld in msg.links if ld.valid
         )
-        self._obs = _ObstacleSnap(items, self._now())
+        now = self._now()
+        # Capture time, with a plausibility guard: an unset header stamp reads
+        # as 0.0 and would make Δt ≈ 1.8e9 s, silently zeroing every velocity
+        # estimate; a clock skew the other way would make Δt negative. Accept it
+        # only when it sits in a sane window behind `now`, else fall back to the
+        # receipt time (which reproduces the pre-fix behaviour exactly).
+        t_cap = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        age = now - t_cap
+        if not (-P.distance_capture_skew_tol < age < P.distance_capture_age_max):
+            if t_cap != 0.0 or self._cap_warned is False:
+                self.get_logger().warn(
+                    f'per_link_distances header stamp implausible '
+                    f'(age={age:.3f} s) → falling back to receipt time; '
+                    f'v_obs keeps the pre-fix jitter',
+                    throttle_duration_sec=5.0)
+                self._cap_warned = True
+            t_cap = now
+        self._diag_cap_age = age
+        self._obs = ObstacleSnap(items, now, t_cap)
 
-    # ── Perception-rate loop: geometry only (Pinocchio lives here) ──────────
+    # ═════════════════════════════════════════════════════════════════════
+    #  Perception rate (50 Hz) — geometry only; Pinocchio lives here
+    # ═════════════════════════════════════════════════════════════════════
 
     def _update_constraints(self) -> None:
         js, obs = self._js, self._obs
-        if js is None or obs is None:
-            return
-        if self._now() - obs.stamp > self._dist_to:
-            self._con = None
-            return
-
-        # with_jdot=True: also run computeJointJacobiansTimeVariation so that
-        # point_jacobian() can return J̇p — needed for the J̇q̇ term of d̈
-        # (h̄ has relative degree 2). One extra O(nv) backward pass at 50 Hz.
-        self._kin.update(js.q, js.qdot, with_jdot=True)
-        rows_a, rows_h, rows_jdq = [], [], []
-        rows_link     = []          # link name per kept row (DIAGNOSTIC only)
-        n_weak        = 0           # obstacles dropped this tick for low leverage
-        min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
-
-        for ob in obs.items:
-            # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
-            # linear HOCBF row self-deactivates at large d (its lower bound
-            # −k0·h̄ becomes very negative), and the k1·ḣ̄ + jdq terms let a fast
-            # approach engage the row gradually from afar — so activation is now
-            # continuous. We skip only obstacles so far that engaging them would
-            # need a physically unrealistic approach speed (at 1.2 m with the
-            # current k0/k1 that is ≈ −2.4 m/s, beyond human motion), purely to
-            # bound/stabilize n_c and avoid OSQP setup() churn. Replaces the old
-            # d_safe+cbf_activation_margin step gate.
-            if ob.d > self._obstacle_horizon or ob.conf < self._conf_min:
-                continue
-
-            delta = ob.pr - ob.ph
-            d     = float(np.linalg.norm(delta))
-            if d < 1e-8:
-                continue
-            n_w = delta / d
-
-            fid = self._frame_id(ob.link)
-            if fid is None:
-                continue
-
-            # point_jacobian returns (Jp, J̇p): Jp is the 3×7 position Jacobian
-            # (same matrix as the old point_jacobian_pos), J̇p feeds jdq below.
-            Jp, Jpd = self._kin.point_jacobian(fid, ob.pr)
-            a      = (n_w @ Jp).astype(np.float64)      # (NV,)  aᵢ = n̂ᵀ Jp
-            a_norm = float(np.linalg.norm(a))
-            # Drop constraints with too little leverage on q̈ along THIS
-            # obstacle's normal. Replaces the old cond(Jp)>1e5 test: cond(Jp)
-            # measured the conditioning of the whole 3×7 map, not the leverage
-            # of the specific row aᵢ the QP actually uses — a high cond only
-            # weakens ‖aᵢ‖ when n̂ aligns with the ill-conditioned singular
-            # direction, so it dropped direction-OK constraints and was an
-            # indirect proxy for the weak case (see CBF review notes).
-            if a_norm < self._a_min:
-                n_weak       += 1
-                min_a_dropped = min(min_a_dropped, a_norm)
-                continue
-
-            h = d - self._d_safe                        # barrier value h̄
-            # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
-            # depend on q̈ (the relative-degree-2 term previously omitted).
-            # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
-            jdq = float(n_w @ (Jpd @ js.qdot))          # scalar ċᵢ
-
-            if np.all(np.isfinite(a)) and np.isfinite(h) and np.isfinite(jdq):
-                rows_a.append(a)
-                rows_h.append(h)
-                rows_jdq.append(jdq)
-                rows_link.append(ob.link)
-
-        if n_weak > 0:
-            # Previously this drop was silent (no log/counter). Throttled so a
-            # persistently weak-leverage obstacle can't spam the log.
-            self.get_logger().warn(
-                f'{n_weak} obstacle(s) dropped: CBF leverage ‖a‖ < cbf_min_leverage='
-                f'{self._a_min:.3g} (min ‖a‖={min_a_dropped:.3g})',
-                throttle_duration_sec=2.0)
-
-        if not rows_a:
-            self._con = None
-            return
-
-        A     = np.vstack(rows_a)
-        h_bar = np.array(rows_h,   dtype=np.float64)
-        jdq_v = np.array(rows_jdq, dtype=np.float64)    # (n_c,) ċᵢ
-        n_c   = A.shape[0]
-        G     = np.empty((n_c, NV + 1))                # [−A | −1]: A q̈ + s ≥ b
-        G[:, :NV] = -A
-        G[:, -1]  = -1.0
-        self._con = _ConstraintSnap(A, h_bar, jdq_v, G, obs.stamp, tuple(rows_link))
-
-    def _frame_id(self, link: str) -> int | None:
-        if link not in self._fid_cache:
-            self._fid_cache[link] = self._kin.resolve_frame_id(link)
-        return self._fid_cache[link]
-
-    # ── Control-rate loop: read snapshots, solve QP, publish ────────────────
-
-    @staticmethod
-    def _osqp_A(G: np.ndarray | None) -> sparse.csc_matrix:
-        """Build the native-OSQP constraint matrix  A = [ G ; I ].
-
-        Rows 0..n_c-1 are the CBF constraints ([−A | −1]); the trailing NV+1
-        rows are the identity block that carries the box bounds (joint qddot
-        limits + slack ≥ 0). The CBF block is stored with a FULL (dense)
-        sparsity pattern — every entry is an explicit structural nonzero,
-        including zeros — so the pattern is invariant for a given n_c. That lets
-        prob.update(Ax=...) stay valid across ticks even when a Jacobian entry
-        passes through zero (a plain csc_matrix(G) would drop those zeros and
-        change the pattern). l <= A x <= u is set by _osqp_lu().
-        """
-        box = sparse.identity(NV + 1, format='csc')
-        if G is None:                       # n_c == 0 → box bounds only
-            return box
-        n_c  = G.shape[0]
-        rows = np.repeat(np.arange(n_c), NV + 1)
-        cols = np.tile(np.arange(NV + 1), n_c)
-        cbf  = sparse.csc_matrix((G.ravel(), (rows, cols)), shape=(n_c, NV + 1))
-        return sparse.vstack([cbf, box], format='csc')
-
-    def _update_velocity_box(self, qdot: np.ndarray) -> None:
-        """Tighten the per-joint q̈ box so q̇ cannot exceed v_margin·q̇_max.
-
-        One-step bound: after one Δt the velocity q̇ + q̈·Δt must stay within
-        ±v_margin·q̇_max. This yields a velocity-dependent acceleration box that
-        is intersected (min/max) with the STATIC decel-limit box self._lb/_ub:
-
-            q̈_ub = min( +decel,  (+v_margin·q̇_max − q̇)/Δt )
-            q̈_lb = max( −decel,  (−v_margin·q̇_max − q̇)/Δt )
-
-        Recomputed every tick from the fresh q̇ the QP already reads. Only the
-        accel rows (0..NV-1) of the box are written; the slack slot (index NV)
-        is left untouched.
-
-        Anti-asymmetry note (matches the design): near +q̇_max the upper bound
-        collapses toward 0 (no further +accel) while the lower bound stays at
-        −decel (full braking authority) — and symmetrically near −q̇_max. So the
-        CBF keeps full authority to decelerate AWAY from an obstacle; only the
-        velocity-increasing direction is curtailed.
-
-        SAFETY caveat (accepted): if a CBF avoidance row conflicts with this
-        HARD box at velocity saturation, OSQP relaxes the (soft) CBF row via its
-        slack s rather than violate the box — a bounded softening of CBF
-        authority, deliberately preferred over a total firmware motion abort.
-        """
-        vmax   = self._v_margin * self._qdot_max
-        ub_vel = (vmax - qdot) / self._dt_qp
-        lb_vel = (-vmax - qdot) / self._dt_qp
-        ub = np.minimum(self._ub, ub_vel)
-        lb = np.maximum(self._lb, lb_vel)
-        # Feasibility guard: if already past v_margin·q̇_max by more than one
-        # tick's decel authority, the velocity bound would invert the box
-        # (lb > ub). Clamp ub UP to lb (NOT lb down — that could exceed −decel
-        # and violate the accel limit) → forces q̈ = −decel, i.e. hardest legal
-        # braking. No-op whenever the box is already feasible (ub ≥ lb).
-        ub = np.maximum(ub, lb)
-
-        # Per-joint velocity diagnostics (read by the CBFDIAG line and the
-        # high-res VELHI log in _qp_tick — logging is done THERE, where now/n_c
-        # are in scope). ratio = fraction of the official q̇_max; bite[i] = this
-        # joint's q̈ box was tightened by the velocity bound (tighter than the
-        # static decel box) → the bound is "biting" on joint i specifically.
-        self._diag_vel_ratio = np.abs(qdot) / self._qdot_max
-        self._diag_vel_bite  = (ub < self._ub - 1e-9) | (lb > self._lb + 1e-9)
-
-        # Write back accel rows only; slack slot (index NV) untouched.
-        self._box_lb[:NV] = lb
-        self._box_ub[:NV] = ub
-
-    def _fmt_vel(self, qdot: np.ndarray) -> str:
-        """Compact per-joint velocity summary string (shared by CBFDIAG/VELHI).
-
-        worst joint (signed q̇ + ratio), the 7 ratios in order, and a 7-char
-        bite mask (X = velocity bound tightened that joint's q̈ box this tick).
-        """
-        ratio = self._diag_vel_ratio
-        bite  = self._diag_vel_bite
-        k     = int(np.argmax(ratio))
-        rats  = '/'.join(f'{r:.2f}' for r in ratio)
-        mask  = ''.join('X' if b else '.' for b in bite)
-        return (f'worst=j{k+1}:q̇={qdot[k]:+.2f}({ratio[k]:.2f}) '
-                f'vrat=[{rats}] vbite={mask}')
-
-    def _osqp_lu(self, G: np.ndarray | None, h_qp: np.ndarray | None):
-        """Bounds for A x: CBF rows  −inf ≤ Gx ≤ h_qp,  box rows  lb ≤ x ≤ ub.
-
-        Same row order as _osqp_A (CBF rows first, then the identity block).
-        """
-        if G is None:
-            return self._box_lb, self._box_ub
-        n_c = G.shape[0]
-        l = np.concatenate([np.full(n_c, -np.inf), self._box_lb])
-        u = np.concatenate([h_qp,                  self._box_ub])
-        return l, u
+        if js is not None and obs is not None:
+            self._con = self._rows.build(js, obs, self._now())
 
     def _elevate_thread_priority(self) -> None:
         """Put *only* the calling (QP) thread on SCHED_FIFO at moderate priority.
@@ -696,230 +465,305 @@ class CBFSafetyFilter(Node):
         except Exception as exc:
             self.get_logger().warn(f'_elevate_thread_priority failed: {exc}')
 
-    def _qp_tick(self) -> None:
-        # One-shot: elevate this (QP) thread's OS scheduling priority on the
-        # first tick. Guarded so a permission failure isn't retried every tick.
-        if not self._priority_set:
-            self._priority_set = True
-            self._elevate_thread_priority()
+    # ═════════════════════════════════════════════════════════════════════
+    #  Control rate (100 Hz) — read snapshots, solve, publish
+    # ═════════════════════════════════════════════════════════════════════
 
-        # ── Diagnostic: measure wall-clock gap between consecutive ticks ─────
-        now_tick = time.perf_counter()
-        if self._last_tick_t is not None:
-            dt_tick_ms = (now_tick - self._last_tick_t) * 1e3
-            if dt_tick_ms > self._gap_warn_thr_ms:  # 3x nominal period (see __init__)
-                self.get_logger().warn(f'_qp_tick gap: {dt_tick_ms:.1f} ms')
-        self._last_tick_t = now_tick
+    def _qp_tick(self) -> None:
+        P = self.P
+        if not self._priority_set:                      # one-shot, needs the
+            self._priority_set = True                   # executor's own thread
+            self._elevate_thread_priority()
+        self._watch_tick_gap()
 
         js = self._js
         if js is None:
             return
         now = self._now()
 
-        if now - js.stamp > self._js_to:
-            self.get_logger().error('joint state stale → zero output',
+        # ── STEP 1: is the state usable at all? ─────────────────────────
+        # Both failures degrade to braking on the last known q̇. Zeros would
+        # NOT: q̈ = 0 reads as "hold this velocity" all the way down the chain,
+        # so the arm coasts through the outage — measured, twice, ending in a
+        # joint_velocity_violation reflex.
+        if now - js.stamp > P.joint_state_timeout:
+            self.get_logger().error('joint state stale → braking on last known q̇',
                                     throttle_duration_sec=0.5)
-            self._publish(np.zeros(NV))
+            self._publish(np.clip(-P.k_brake * js.qdot, self._lb, self._ub))
+            self._publish_status(0, 0.0, fault=1.0, n_act=0)
             return
         qdot = js.qdot
+        js_frozen = self._joint_state_frozen(now, qdot)
 
+        # ── STEP 2: the nominal command we are filtering ────────────────
         nom = self._nom
-        if nom is not None and now - nom.stamp < self._nom_to:
-            qddot_nom = nom.qddot
-        else:
-            qddot_nom = -self._k_brake * qdot          # safe deceleration
+        fresh_nom = nom is not None and now - nom.stamp < P.nom_timeout
+        if not fresh_nom:
             self.get_logger().warn('qddot_nom stale → braking',
                                    throttle_duration_sec=2.0)
+        qddot_nom = nom.qddot if fresh_nom else -P.k_brake * qdot
+        if js_frozen:
+            qddot_nom = -P.k_brake * qdot           # overrides even a fresh one
 
-        con  = self._con
-        obs  = self._obs
-        G    = h_qp = None
-        n_c  = 0
-        # Safety-chain fault flag (status data[2]); set by the distance-stale
-        # and QP-failure paths below. Stays 0 for normal operation and for the
-        # qddot_nom-stale fallback (that is a nominal-command loss, not a
-        # safety-chain fault).
-        fault_braking = 0.0
-        if con is not None and now - con.t_dist < self._dist_to:
-            n_c  = con.A.shape[0]
-            G    = con.G
-            # HOCBF, relative degree 2 (per obstacle i), with linear class-K:
-            #   d̈ + k1·ḋ + k0·h̄ ≥ 0 ,  ḋ = aᵀq̇ ,  d̈ = aᵀq̈ + n̂ᵀ(J̇q̇)
-            #   ⇒  aᵀq̈ + n̂ᵀ(J̇q̇) ≥ −k1·(aᵀq̇) − k0·h̄              (with slack s≥0
-            #   ⇒  aᵀq̈ + s ≥ −k1·(aᵀq̇) − k0·h̄ − n̂ᵀ(J̇q̇)          relaxes it)
-            # QP rows: G = [−A | −1], assembled as G x ≤ u (u ≡ h_qp), so
-            #   −Aq̈ − s ≤ h_qp  ⇔  aᵀq̈ + s ≥ −h_qp .  Matching the two:
-            #   −h_qp = −k1·(aᵀq̇) − k0·h̄ − n̂ᵀ(J̇q̇)
-            #   ⇒  h_qp =  k1·(aᵀq̇) + k0·h̄ + n̂ᵀ(J̇q̇)   (J̇q̇ term ADDED, sign +)
-            # aᵀq̇ uses the fresh QP-tick q̇; n̂ᵀ(J̇q̇)=con.jdot_qdot is carried
-            # from the 50 Hz snapshot (J̇ needs Pinocchio, absent in this loop).
-            h_qp = (self._k1 * (con.A @ qdot)
-                    + self._k0 * con.h_bar
-                    + con.jdot_qdot)
-        elif obs is not None and (now - obs.stamp) > self._dist_to:
-            # Genuine perception staleness: distance data WAS received but the
-            # latest sample is older than distance_timeout (camera frozen,
-            # distance node crashed, link down). A failure in the channel that
-            # feeds the safety barrier must degrade toward a MORE conservative
-            # behaviour, not toward zero constraints (silent passthrough). Mirror
-            # the stale-qddot_nom fallback above: replace the nominal with
-            # braking, so the QP then runs with n_c=0 (no CBF rows) but on an
-            # already-decelerating nominal. The expression is intentionally
-            # duplicated from the qddot_nom-stale branch rather than factored,
-            # to keep that branch byte-for-byte unchanged.
-            # This branch is reached ONLY on real staleness; when obstacles are
-            # simply out of range obs is fresh (now-obs.stamp ≤ dist_to) so we
-            # fall through here and keep normal passthrough — no spurious braking.
-            qddot_nom = -self._k_brake * qdot          # safe deceleration
-            fault_braking = 1.0                         # safety-feed fault (status data[2])
+        # ── STEP 3: the CBF rows, and their right-hand side ─────────────
+        # The rows themselves were built at 50 Hz; only their RHS is refreshed
+        # here, with this tick's q̇.
+        con, obs = self._con, self._obs
+        G = h_qp = None
+        n_c = n_active = 0
+        fault = 0.0
+        if js_frozen:
+            fault = 1.0                             # blind: no rows, brake
+        elif con is not None and now - con.t_dist < P.distance_timeout:
+            n_c, G = con.A.shape[0], con.G
+            n_active = int(np.count_nonzero(con.h_bar < 0.0))
+            self._smooth_qdot(qdot)
+            h_qp, self._diag_caps = build_row_rhs(
+                con, qdot, self._qdot_cbf, k0=P.k0_cbf, k1=P.k1_cbf,
+                retreat_horizon=P.retreat_cap_horizon_s,
+                speed_horizon=P.link_speed_horizon_s)
+        elif obs is not None and now - obs.stamp > P.distance_timeout:
+            # Perception was received once and has since gone stale — a failure
+            # of the channel that feeds the barrier must degrade toward MORE
+            # conservative, never toward silent passthrough. (Obstacles merely
+            # out of range keep obs fresh, so they do not land here.)
+            qddot_nom = -P.k_brake * qdot
+            fault = 1.0
             self.get_logger().warn('distance stale → braking fallback (CBF inactive)',
                                    throttle_duration_sec=2.0)
 
+        # ── STEP 3b: steer around, not just away from, a close obstacle ─
+        # Bias only, on the QP's TARGET — every G/h row above is untouched, so
+        # this cannot loosen the safety guarantee, only shift which feasible
+        # q̈ the solver prefers. See cbf_qp_assembly.tangential_bias.
+        #
+        # Two smoothing layers, deliberately at two different rates:
+        # tangential_bias() itself already blends its two direction sources
+        # continuously (no per-tick hard switch); THIS EMA additionally
+        # smooths the resulting vector ACROSS ticks, because even a smoothly
+        # blended bias still rotates with âᵢ as the arm moves and with which
+        # rows are engaged — unfiltered, that showed up on hardware as visible
+        # oscillation.
+        #
+        # Gated on n_c > 0, which is set ONLY on the branch that actually built
+        # rows from a fresh snapshot. That gate is load-bearing: on every
+        # braking path above (state frozen, perception stale) n_c stays 0 while
+        # `con` still holds the LAST snapshot, so an ungated call would steer
+        # sideways off stale geometry at exactly the moment the filter has
+        # decided it is blind. Braking stays pure. The EMA still runs on those
+        # ticks, so the bias FADES OUT instead of freezing at whatever it was
+        # when the feed died.
+        a_tan = P.cbf_tangential_filter_alpha
+        if n_c > 0:
+            raw_bias = tangential_bias(
+                qddot_nom, self._qdot_cbf, con, gain=P.cbf_tangential_gain,
+                engage_margin=P.cbf_tangential_engage_margin,
+                max_bias=P.cbf_tangential_max_bias)
+            self._tan_bias *= a_tan
+            self._tan_bias += (1.0 - a_tan) * raw_bias
+            qddot_nom = qddot_nom + self._tan_bias
+        else:
+            self._tan_bias *= a_tan
+
+        # ── STEP 4: the hard state box ──────────────────────────────────
+        # Underneath every row, and NOT relaxable: one integration step must not
+        # push |q̇| past the limit, and the position braking curve must keep the
+        # joint able to stop. Then the slew box, so the arm can track what comes
+        # out. Both mutate _box_lb/_box_ub in place, before the bounds are read.
         self._qvec[:NV] = -qddot_nom
-
-        # Velocity-aware box: tighten the per-joint q̈ bounds from the fresh q̇ so
-        # the integrated velocity can't trip the firmware joint_velocity_violation
-        # reflex. Mutates self._box_lb/_box_ub (accel rows only) in place → must
-        # run BEFORE _osqp_lu reads them. Also refills self._diag_vel_ratio/_bite.
-        self._update_velocity_box(qdot)
-
-        # ── High-resolution velocity telemetry (VELHI) ───────────────────────
-        # Per-TICK (10 ms, NO throttle) per-joint line, emitted ONLY when the
-        # worst joint exceeds diag_vel_ratio_thr (0.85) — silent in normal
-        # operation, full resolution exactly in the pre-violation window. Catches
-        # transients faster than the 50 ms CBFDIAG throttle and is independent of
-        # n_c, so it shows a velocity saturation even when no CBF row is active
-        # (the suspected "biting joint ≠ CBF-projected joint" case). Disable with
-        # diag_vel_ratio_thr > 1.0.
-        if float(np.max(self._diag_vel_ratio)) > self._diag_vel_ratio_thr:
+        self._diag_vel_ratio, self._diag_vel_bite = position_velocity_accel_box(
+            js.q, qdot, acc_lb=self._lb, acc_ub=self._ub,
+            qdot_max=self._qdot_max, v_margin=P.velocity_box_margin,
+            q_min=self._q_min, q_max=self._q_max,
+            q_margin=P.position_margin_rad, brake_eta=P.position_brake_eta,
+            dt=self._dt_qp, relax_dt=P.state_box_relax_s,
+            out_lb=self._box_lb[:NV], out_ub=self._box_ub[:NV])
+        if P.slew_box_enabled:
+            self._box_lb[:NV], self._box_ub[:NV] = apply_slew_limit(
+                self._box_lb[:NV], self._box_ub[:NV],
+                self._qddot_prev, P.max_qddot_delta)
+        if float(np.max(self._diag_vel_ratio)) > P.diag_vel_ratio_thr:
             self.get_logger().info(
-                f'VELHI t={now:.3f} n_c={n_c} {self._fmt_vel(qdot)}')
+                f'VELHI t={now:.3f} n_c={n_c} '
+                + format_velocity_summary(qdot, self._diag_vel_ratio,
+                                          self._diag_vel_bite))
 
-        # ── Native-OSQP solve ────────────────────────────────────────────────
-        # Reuse one OSQP instance: setup() (alloc + scaling + symbolic
-        # factorization) only when n_c changes the sparsity pattern; otherwise
-        # update() the vectors that move each tick and reuse the factorization.
-        #   n_c == 0 : A is the constant identity block, but the box bounds l/u
-        #              now MOVE every tick (velocity box) → push q AND l/u.
-        #   n_c  > 0 : the CBF normals in G move every tick (geometry recomputed
-        #              at cbf_rate) and h_qp moves with q̇/h̄ → push Ax + u too.
-        l, u = self._osqp_lu(G, h_qp)
-        if n_c != self._prev_nc or self._osqp_prob is None:
-            self._prev_nc   = n_c
+        # ── STEP 5: solve ───────────────────────────────────────────────
+        qddot_safe, slack, solve_ms, res = self._solve(G, h_qp, n_c)
+        if qddot_safe is None:
+            qddot_safe = np.clip(-P.k_brake * qdot, self._lb, self._ub)
+            fault = 1.0
+
+        # ── STEP 6: publish, then report ────────────────────────────────
+        if P.slew_box_enabled:
+            np.subtract(qddot_safe, self._qddot_prev, out=self._diag_slew_step)
+            np.greater(np.abs(self._diag_slew_step), P.max_qddot_delta - 1e-6,
+                       out=self._diag_slew_bite)
+        self._publish(qddot_safe)
+        self._publish_status(n_c, slack, fault, n_active,
+                             con.d_obs_min if con is not None else float('inf'))
+        self._report(now, con, h_qp, n_c, n_active, qdot, qddot_safe,
+                     qddot_nom, slack, solve_ms, res)
+
+    # ── QP tick helpers ──────────────────────────────────────────────────
+
+    def _watch_tick_gap(self) -> None:
+        """Warn when the executor did not come back on time."""
+        t = time.perf_counter()
+        if self._last_tick_t is not None:
+            gap_ms = (t - self._last_tick_t) * 1e3
+            if gap_ms > self._gap_warn_thr_ms:
+                self.get_logger().warn(f'_qp_tick gap: {gap_ms:.1f} ms')
+        self._last_tick_t = t
+
+    def _joint_state_frozen(self, now: float, qdot) -> bool:
+        """A re-stamped but UNCHANGED state, which the timeout cannot see.
+
+        Strictly worse than a dead topic: the velocity box reads a q̇ that never
+        grows, so it never tightens, while the real joint accelerates. This is
+        what a 30 Hz republisher does when it stalls — it keeps emitting its
+        cached values with fresh header stamps.
+        """
+        P = self.P
+        if (self._js_frozen_since is None
+                or (now - self._js_frozen_since) <= P.joint_state_freeze_timeout
+                or float(np.max(np.abs(qdot))) <= P.joint_state_freeze_min_speed):
+            return False
+        self.get_logger().error(
+            f'joint state FROZEN for {now - self._js_frozen_since:.3f} s '
+            f'(identical q/q̇, fresh stamps) while |q̇|max='
+            f'{float(np.max(np.abs(qdot))):.2f} rad/s → braking, CBF rows '
+            f'dropped. The publisher is re-stamping cached values.',
+            throttle_duration_sec=0.5)
+        return True
+
+    def _smooth_qdot(self, qdot) -> None:
+        """EMA on the q̇ used by the k1 anticipation term and by
+        ``tangential_bias``'s qdot-fallback direction — nothing else.
+
+        ḣ is a DERIVATIVE of a measured signal and k1 multiplies it straight
+        into the bound: unfiltered it was 159 % of h_qp's whole swing on
+        hardware and the command flipped sign nine times in 28 intervals.
+        ``tangential_bias`` NORMALISES q̇'s orthogonal component to get a
+        direction, which amplifies raw-signal noise even more than a linear
+        term does — the same failure mode, one derivative worse — so it reuses
+        this filtered copy rather than opening a second one. The barrier
+        value, the row direction, the accel box, the braking fallback and
+        every diagnostic keep the raw q̇.
+        """
+        a = self.P.cbf_hdot_filter_alpha
+        if a > 0.0:
+            self._qdot_cbf *= a
+            self._qdot_cbf += (1.0 - a) * qdot
+        else:
+            np.copyto(self._qdot_cbf, qdot)
+
+    def _solve(self, G, h_qp, n_c):
+        """Push the moving parts into OSQP and solve. Returns (q̈, slack, ms, res).
+
+        ``setup()`` only when the row count changes the sparsity pattern;
+        otherwise ``update()`` the vectors that move. q̈ is ``None`` when the
+        solve failed, which the caller turns into braking — and the warm-start
+        iterate is discarded so a bad solve cannot seed the next one.
+
+        The row count is QUANTISED to ``qp_row_block`` first (see
+        ``pad_rows_to_block``): the real n_c changes almost every rebuild, and
+        re-``setup()``ing on each change was a per-tick allocate-and-factorize
+        spike in a 100 Hz Python node. The caller's ``n_c`` is still the real
+        one — padding is invisible to every diagnostic.
+        """
+        G, h_qp = pad_rows_to_block(G, h_qp, self.P.qp_row_block)
+        n_rows = 0 if G is None else G.shape[0]
+        l, u = build_osqp_bounds(G, h_qp, self._box_lb, self._box_ub)
+        if n_rows != self._prev_nc or self._osqp_prob is None:
+            self._prev_nc = n_rows
             self._osqp_prob = osqp.OSQP()
             self._osqp_prob.setup(
-                P=self._P_csc, q=self._qvec, A=self._osqp_A(G), l=l, u=u,
-                warm_start=True, max_iter=self._osqp_max_iter, verbose=False)
-        elif n_c > 0:
+                P=self._P_csc, q=self._qvec, A=build_osqp_A(G, NV, N_SLACK),
+                l=l, u=u, warm_start=True,
+                max_iter=self.P.osqp_max_iter, verbose=False)
+        elif n_rows > 0:
             self._osqp_prob.update(q=self._qvec, l=l, u=u,
-                                   Ax=self._osqp_A(G).data)
+                                   Ax=build_osqp_A(G, NV, N_SLACK).data)
         else:
-            # Box-only problem, but the box is now dynamic → push l/u, not just q.
             self._osqp_prob.update(q=self._qvec, l=l, u=u)
 
-        # solve_ms measures .solve() only (not setup/update), so it stays
-        # directly comparable to the pre-migration diagnostic.
         t0 = time.perf_counter()
         res = self._osqp_prob.solve()
         solve_ms = (time.perf_counter() - t0) * 1e3
+
+        self._diag_slack[:] = 0.0
         x = res.x
-
-        # ── Diagnostic: log solve time on every tick (counter-throttled), so
-        # anomalous samples are never dropped by a time-based throttle window.
-        self._tick_count = getattr(self, '_tick_count', 0) + 1
-        if self._tick_count % 100 == 0 or solve_ms > 5.0:
-            qddot_nom_norm = float(np.linalg.norm(qddot_nom))
-            self.get_logger().info(
-                f'tick={self._tick_count} n_c={n_c} solve={solve_ms:.2f}ms '
-                f'qddot_nom_norm={qddot_nom_norm:.2f} qp_fails={self._qp_fail_count} '
-                + (f'iter={res.info.iter} status={res.info.status} h_norm={float(np.linalg.norm(h_qp)):.2f}'
-                   if n_c > 0 else 'iter=- status=- h_norm=-')
-            )
-
-        slack = 0.0
-        solved = res.info.status_val == osqp.constant('OSQP_SOLVED')
-        if not solved or x is None or not np.all(np.isfinite(x)):
+        if (res.info.status_val != osqp.constant('OSQP_SOLVED')
+                or x is None or not np.all(np.isfinite(x))):
             self._qp_fail_count += 1
             self.get_logger().error(
                 f'QP not solved ({res.info.status}) → braking output '
                 f'[qp_fail_count={self._qp_fail_count}]',
                 throttle_duration_sec=0.5)
-            # Discard the (possibly poisoned) internal warm-start iterate: force
-            # a clean setup() next tick so a bad solve can't seed the next one.
-            self._osqp_prob = None
-            self._prev_nc   = -1
-            qddot_safe = np.clip(-self._k_brake * qdot, self._lb, self._ub)
-            fault_braking = 1.0                         # safety-QP fault (status data[2])
-        else:
-            qddot_safe = x[:NV]
-            if n_c > 0:
-                slack = float(x[-1])
+            self._osqp_prob, self._prev_nc = None, -1
+            return None, 0.0, solve_ms, res
+        if n_c > 0:
+            np.copyto(self._diag_slack, x[NV:])
+        return x[:NV], float(self._diag_slack.max()), solve_ms, res
 
-        self._publish(qddot_safe)
-        self._status_msg.data[0] = float(n_c)
-        self._status_msg.data[1] = slack
-        self._status_msg.data[2] = fault_braking
-        self._status_pub.publish(self._status_msg)
-
-        # ── Structured CBF-episode diagnostic ────────────────────────────────
-        # One compact, CSV-like line per ~50 ms while any CBF row is active.
-        # Whole block (projections + f-string) runs only when the manual throttle
-        # is due → negligible average per-tick cost. DIAGNOSTIC ONLY: reads
-        # already-computed values, changes nothing in the control/safety path.
-        # Field guide (units): d_min [m] closest active obstacle (= min h̄ + d_safe);
-        #   link closest link; hdot=aᵀq̇ [m/s] approach rate (velocity anticipation);
-        #   h_qp [m/s²] RHS of that row's bound (more positive ⇒ looser/inactive);
-        #   dnorm=‖q̈_safe−q̈_nom‖ [rad/s²] how hard the QP bends the nominal;
-        #   s slack (>0 ⇒ QP relaxing the constraint, local conflict/infeasibility);
-        #   dq_rad/dq_ort split of (q̈_safe−q̈_nom) along/⊥ the constrained joint
-        #   direction â (large dq_ort ⇒ motion leaking into UNconstrained joints —
-        #   the suspected "throws itself backward"); cart_rad=aᵀΔq̈ [m/s²] Cartesian
-        #   accel change along n̂ at the control point.
-        #   Phase-1 actuation debug (commanded vs realized, DIAGNOSTIC q̈_real):
-        #   qdd_cmd_rad=aᵀq̈_safe [m/s²] COMMANDED Cartesian accel along n̂;
-        #   qdd_real_rad=aᵀq̈_real [m/s²] REALIZED (from measured q̇ finite diff);
-        #   trk_err=‖q̈_safe−q̈_real‖ [rad/s²] joint-space tracking error.
-        #   qdd_real_rad ≪ qdd_cmd_rad while pushing away ⇒ command not executed.
-        if n_c > 0 and (now - self._last_diag_t) >= self._diag_period:
-            self._last_diag_t = now
-            dq    = qddot_safe - qddot_nom
-            i     = int(np.argmin(con.h_bar))           # closest obstacle row
-            a_i   = con.A[i]
-            a_n   = float(np.linalg.norm(a_i))
-            a_hat = a_i / a_n if a_n > 1e-12 else a_i
-            dq_rad = float(a_hat @ dq)
-            dq_ort = float(np.linalg.norm(dq - dq_rad * a_hat))
-            link_i = con.links[i] if i < len(con.links) else '?'
-            # Phase-1: commanded vs realized accel along â (diagnostic q̈_real).
-            qddot_real   = self._diag_qddot_real
-            qdd_cmd_rad  = float(a_i @ qddot_safe)
-            qdd_real_rad = float(a_i @ qddot_real)
-            trk_err      = float(np.linalg.norm(qddot_safe - qddot_real))
+    def _report(self, now, con, h_qp, n_c, n_active, qdot, qddot_safe,
+                qddot_nom, slack, solve_ms, res) -> None:
+        """Solve-time line every 100 ticks, CBFDIAG line on its own throttle."""
+        self._tick_count += 1
+        if self._tick_count % 100 == 0 or solve_ms > 5.0:
+            tail = (f'iter={res.info.iter} status={res.info.status} '
+                    f'h_norm={float(np.linalg.norm(h_qp)):.2f}'
+                    if n_c > 0 else 'iter=- status=- h_norm=-')
             self.get_logger().info(
-                f'CBFDIAG t={now:.3f} n_c={n_c} d_min={float(con.h_bar[i]) + self._d_safe:.3f} '
-                f'link={link_i} hdot={float(a_i @ qdot):+.3f} h_qp={float(h_qp[i]):+.3f} '
-                f'dnorm={float(np.linalg.norm(dq)):.3f} s={slack:.4f} '
-                f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} cart_rad={float(a_i @ dq):+.3f} '
-                f'qdd_cmd_rad={qdd_cmd_rad:+.3f} qdd_real_rad={qdd_real_rad:+.3f} trk_err={trk_err:.3f} '
-                f'| {self._fmt_vel(qdot)}')
+                f'tick={self._tick_count} n_c={n_c} solve={solve_ms:.2f}ms '
+                f'qddot_nom_norm={float(np.linalg.norm(qddot_nom)):.2f} '
+                f'qp_fails={self._qp_fail_count} ' + tail)
+        if n_c > 0 and (now - self._last_diag_t) >= self.P.diag_period_s:
+            self._last_diag_t = now
+            self.get_logger().info(format_cbf_diag(
+                now=now, con=con, rows=self._rows, caps=self._diag_caps,
+                h_qp=h_qp, qdot=qdot, qdot_cbf=self._qdot_cbf,
+                qddot_safe=qddot_safe, qddot_nom=qddot_nom,
+                qddot_real=self._diag_qddot_real, slack=self._diag_slack,
+                n_active_cps=n_active, vel_ratio=self._diag_vel_ratio,
+                vel_bite=self._diag_vel_bite, slew_bite=self._diag_slew_bite,
+                cap_age=self._diag_cap_age))
 
-    def _publish(self, qddot_safe: np.ndarray) -> None:
-        msg      = Float64MultiArray()
+    # ═════════════════════════════════════════════════════════════════════
+    #  Output
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _publish(self, qddot_safe) -> None:
+        """Send q̈_safe, and remember it: the NEXT tick's slew box is centred on
+        what actually went out, not on whatever the QP happened to compute."""
+        self._qddot_prev[:] = qddot_safe
+        msg = Float64MultiArray()
         msg.data = qddot_safe.tolist()
         self._pub.publish(msg)
 
-    # ── Utility ──────────────────────────────────────────────────────────────
+    def _publish_status(self, n_c, slack, fault, n_act, d_obs=float('inf')) -> None:
+        """/cbf_status = [n_rows, max slack, fault_braking, n_violated, d_min].
+
+        ``fault_braking`` marks a SAFETY-CHAIN fault (state stale or frozen,
+        perception stale, QP failed) — distinct from n_c = 0 during normal
+        "nothing nearby" operation. ``d_obs`` is the closest obstacle gap, which
+        the commander's phase governor reads: slowing on genuine proximity is
+        safe, slowing on tracking error deadlocks (error grows → phase freezes →
+        reference parked on the blocked pose → the CBF keeps blocking).
+        """
+        self._status_msg.data = [float(n_c), slack, fault, float(n_act), d_obs]
+        self._status_pub.publish(self._status_msg)
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 def main(args=None):
     rclpy.init(args=args)
     node = CBFSafetyFilter()
-    # one thread per callback group: I/O, constraint builder, QP loop
+    # One thread per callback group: I/O, constraint builder, QP loop. The QP
+    # thread must never wait on perception.
     executor = MultiThreadedExecutor(num_threads=3)
     executor.add_node(node)
     try:

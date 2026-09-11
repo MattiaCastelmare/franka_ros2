@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -57,12 +58,55 @@ controller_interface::return_type RtTorqueController::update(
   // 1. Stato misurato (posizione+velocità) dalle interfacce hardware.
   updateJointStates();   // riempie q_, dq_
 
-  // 2. Ultimo feedforward τ_ff (lock-free) — trasporto invariato.
+  // 2. Ultimo feedforward τ_ff (lock-free) + check di freschezza.
   const auto input = *command_buf_.readFromRT();
+  const double now_s_cmd = time.seconds();
+  const bool   cmd_ok =
+      input.received && (now_s_cmd - input.stamp) < command_timeout_;
+
+  // ── τ_ff PERDUTO → HOLD DI POSIZIONE ──────────────────────────────────
+  // Senza questo ramo l'ULTIMA coppia ricevuta restava applicata all'infinito:
+  // accel_timeout copriva q̈_safe, ma nulla copriva τ_ff, quindi un
+  // qddot_to_torque morto lasciava il braccio sotto una coppia costante — il
+  // contrario di una degradazione sicura.
+  //
+  // La risposta giusta per un controllore di coppia che perde la sorgente non
+  // è τ = 0 (la gravità è compensata dal firmware, quindi il braccio prosegue
+  // per inerzia) ma un HOLD: si cattura la posa UNA VOLTA sul fronte e si
+  // frena su di essa con lo stesso PD. Il braccio si ferma in ~80 ms su j1 e
+  // ci resta, invece di andare alla deriva.
+  //
+  // Con p_gains a zero (anello di posizione disattivato, o fake hardware)
+  // questo degrada a un puro smorzatore τ = −Kd·q̇: il braccio si ferma ma non
+  // tiene la posa. È comunque l'opposto del comportamento precedente.
+  if (!cmd_ok) {
+    if (!hold_latched_) {
+      q_hold_ = q_;
+      hold_latched_ = true;
+      // Segnala il FAULT solo se una coppia stava effettivamente arrivando:
+      // prima del primo comando questo ramo è lo stato normale di attesa, non
+      // un guasto, e loggarlo a ogni avvio sarebbe solo rumore.
+      if (input.received) {
+        in_hold_.store(true, std::memory_order_relaxed);  // il timer non-RT logga
+      }
+    }
+    for (size_t i = 0; i < kNumJoints; ++i) {
+      command_interfaces_[i].set_value(p_gains_[i] * (q_hold_[i] - q_[i])
+                                       - d_gains_[i] * dq_[i]);
+    }
+    // Riferimenti riallineati sulla misura, così alla ripresa non c'è scalino.
+    q_des_    = q_;
+    qdot_des_ = dq_;
+    return controller_interface::return_type::OK;
+  }
+  if (hold_latched_) {
+    hold_latched_ = false;
+    in_hold_.store(false, std::memory_order_relaxed);
+  }
 
   // 3. Ultimo q̈_safe (lock-free) + check di freschezza.
   const auto accel = *accel_buf_.readFromRT();
-  const double now_s   = time.seconds();
+  const double now_s   = now_s_cmd;
   const bool   accel_ok =
       accel.received && (now_s - accel.stamp) < accel_timeout_;
 
@@ -77,32 +121,147 @@ controller_interface::return_type RtTorqueController::update(
   // qui, o verrebbe compensata due volte. Nessun LPF e nessuna saturazione SW:
   // limiti/saturazione coppia restano delegati allo stack low-level Franka.
   for (size_t i = 0; i < kNumJoints; ++i) {
-    double e;
+    double e, p;
     if (accel_ok && dt > 0.0) {
       // Integra q̇_des da q̈_safe, poi CLAMP DURO dell'errore di velocità a
       // ±e_max (anti-windup; NESSUN leak proporzionale — vedi Diagnosi/4b: un
       // leak reintrodurrebbe una frazione k_sync/(Kd+k_sync) proprio del
       // deficit che questo termine esiste per annullare).
       qdot_des_[i] += accel.qddot[i] * dt;
+
+      // TETTO DI VELOCITÀ sul riferimento integrato. q̇_des è un integratore
+      // libero di q̈_safe: finché il CBF chiede accelerazione (ostacolo veloce
+      // ⇒ q̈_safe grande e SOSTENUTO) q̇_des cresce senza alcun limite, e il
+      // clamp e_max lo tiene comunque a dq_+e_max — cioè richiede una velocità
+      // di 1 rad/s SOPRA la misurata, con Kd·e_max di coppia costante che la
+      // insegue. Il box di velocità del CBF vive a 100 Hz e sul COMANDO q̈, non
+      // su questo riferimento: fra i due nulla conosceva q̇_max, e il primo a
+      // reagire era il firmware con `joint_velocity_violation`. Qui, a 1 kHz e
+      // sulla velocità MISURATA, c'è il backstop. Il clamp e_max sotto può solo
+      // avvicinare q̇_des a dq_, quindi non può riportarlo sopra il tetto.
+      if (qdot_margin_ > 0.0) {
+        qdot_des_[i] = std::min(qdotCeiling(i, q_[i]),
+                                std::max(qdotFloor(i, q_[i]), qdot_des_[i]));
+      }
+
       e = qdot_des_[i] - dq_[i];
       if (std::abs(e) > e_max_) {
         e = std::copysign(e_max_, e);   // errore POST-clamp: è quello
         qdot_des_[i] = dq_[i] + e;      // "fisicamente ammesso" → usato per τ
       }
+
+      // Riferimento di POSIZIONE, integrato dal q̇_des GIÀ clampato (tetto di
+      // velocità + clamp e_max), così non può inseguire nulla di infattibile.
+      // Integra q̈_SAFE: segue la traiettoria che il CBF ha già filtrato, e
+      // corregge quindi l'ESECUZIONE, non l'avoidance — un termine di
+      // posizione costruito sul nominale combatterebbe la barriera.
+      q_des_[i] += qdot_des_[i] * dt;
+      p = q_des_[i] - q_[i];
+      if (std::abs(p) > p_max_) {
+        p = std::copysign(p_max_, p);   // stesso anti-windup di e_max: il
+        q_des_[i] = q_[i] + p;          // riferimento non scappa se il braccio
+      }                                 // è bloccato o non riesce a seguire
     } else {
       // Nessun q̈_safe fresco: degrada in modo SICURO al puro pass-through del
       // feedforward (comportamento odierno). Congela q̇_des sulla misura, così
       // l'errore — e quindi la coppia di feedback — è esattamente zero, e
-      // l'integratore è già riallineato per quando q̈_safe riprende.
+      // l'integratore è già riallineato per quando q̈_safe riprende. Idem per
+      // il riferimento di posizione: nessun termine Kp senza un q̈ fresco da
+      // cui derivarlo.
       qdot_des_[i] = dq_[i];
+      q_des_[i]    = q_[i];
       e = 0.0;
+      p = 0.0;
     }
 
-    // 4. Legge di controllo: τ = τ_ff + Kd·e   (errore post-clamp).
-    command_interfaces_[i].set_value(input.tau[i] + d_gains_[i] * e);
+    // 4. Legge di controllo: τ = s·τ_ff + Kp·p + Kd·e   (errori post-clamp).
+    // Con Kp = 0 e ff_fade_band <= 0 questa è esattamente la legge
+    // precedente, quindi disattivare l'anello di posizione o il gate è una
+    // questione di configurazione, non di codice.
+    //
+    // s = ffScale(): il TERZO e ultimo anello di protezione sulla velocità,
+    // e l'unico che agisce sul termine che davvero accelera il giunto.
+    //   1. box di accelerazione del CBF — 100 Hz, sul COMANDO q̈, e assume che
+    //      il braccio segua q̈_safe (in hardware non lo fa: q̈ reale fino a 2×);
+    //   2. tetto su qdot_des_ (sopra) — limita il RIFERIMENTO, non τ_ff;
+    //   3. questo — 1 kHz, sulla velocità MISURATA, sul feedforward stesso.
+    // Senza (3), un q̈_safe grande e sostenuto (ritirata violenta da una
+    // auto-collisione imminente) applica M·q̈_safe per intero mentre qdot_des_
+    // sta già saturo al tetto: il solo Kd·e vi si oppone, e se non basta il
+    // primo a reagire è il firmware con `joint_velocity_violation` — le luci
+    // rosse. Il gate può solo RIDURRE |τ| verso zero, mai aggiungere coppia,
+    // quindi non può introdurre di per sé una violazione (e la gravità è
+    // compensata dal firmware: τ_ff = 0 significa "non accelerare", non
+    // "cadi"). Il freno resta interamente disponibile: la dissolvenza è
+    // DIREZIONALE, τ_ff che decelera passa sempre per intero.
+    command_interfaces_[i].set_value(
+        ffScale(i, input.tau[i]) * input.tau[i] + p_gains_[i] * p + d_gains_[i] * e);
   }
 
   return controller_interface::return_type::OK;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  qdotCeiling / qdotFloor  (RT thread) — inviluppo di velocità del firmware
+// ═══════════════════════════════════════════════════════════════════════════
+//  Il firmware FR3 non ammette |q̇| ≤ q̇_max costante: vicino a un fine corsa
+//  il limite si stringe secondo (franka_description, position_based_velocity_
+//  limits)
+//      q̇_max(q) = min( q̇_lim ,  v_off + sqrt(2·a_dec·h) ) ,   h = dist. dal
+//  limite di posizione in quella direzione. Riprodurlo qui — invece del solo
+//  q̇_lim piatto — fa sì che il tetto copra ENTRAMBI i reflex di velocità, non
+//  solo quello sul limite assoluto.
+//
+//  qdot_margin_ (< 1) sposta il tetto sotto la soglia del firmware, così a
+//  mordere è questo controller e non il reflex. Nessuna allocazione, una sola
+//  sqrt per giunto per tick: RT-safe.
+
+double RtTorqueController::qdotCeiling(size_t i, double q) const {
+  const double h = std::max(0.0, q_max_[i] - q);
+  return qdot_margin_ * std::min(qdot_max_[i],
+                                 v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+}
+
+double RtTorqueController::qdotFloor(size_t i, double q) const {
+  const double h = std::max(0.0, q - q_min_[i]);
+  return -qdot_margin_ * std::min(qdot_max_[i],
+                                  v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ffScale  (RT thread) — dissolvenza DIREZIONALE del feedforward
+// ═══════════════════════════════════════════════════════════════════════════
+//  Margine di velocità residuo NELLA DIREZIONE in cui τ_ff spinge, riportato
+//  a [0,1] sulla banda ff_fade_band_:
+//
+//      τ_ff > 0 → margine = ceiling(q) − q̇      (quanto spazio verso l'alto)
+//      τ_ff < 0 → margine = q̇ − floor(q)        (quanto spazio verso il basso)
+//
+//  margine ≥ banda → 1 (nessun effetto, il caso normale);
+//  margine ≤ 0     → 0 (giunto già sull'inviluppo: nessuna coppia che lo
+//                       spinga oltre viene applicata).
+//  Fra i due una smoothstep, non una rampa lineare: la derivata è nulla a
+//  entrambi gli estremi, quindi la coppia non ha spigoli né quando il gate
+//  inizia a mordere né quando lascia la presa — è la stessa ragione per cui
+//  tangential_bias usa una smoothstep, e qui conta di più perché siamo su
+//  un comando di coppia a 1 kHz.
+//
+//  Approssimazione, dichiarata: usa il segno di τ_ff sul giunto i come proxy
+//  della direzione in cui quel giunto accelererà, mentre M è accoppiata e
+//  τ_i muove anche gli altri. È accettabile perché il gate è MONOTONO verso
+//  lo zero — non può che ridurre |τ|, quindi un'attribuzione imperfetta della
+//  direzione costa prestazioni (un filo di feedforward in meno vicino
+//  all'inviluppo), mai sicurezza.
+//
+//  RT-safe: nessuna allocazione, due sqrt per giunto per tick.
+double RtTorqueController::ffScale(size_t i, double tau_ff) const {
+  if (ff_fade_band_ <= 0.0 || qdot_margin_ <= 0.0 || tau_ff == 0.0) {
+    return 1.0;
+  }
+  const double margin = (tau_ff > 0.0) ? (qdotCeiling(i, q_[i]) - dq_[i])
+                                       : (dq_[i] - qdotFloor(i, q_[i]));
+  const double x = std::clamp(margin / ff_fade_band_, 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);          // smoothstep(x)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -124,6 +283,42 @@ CallbackReturn RtTorqueController::on_init() {
         "d_gains", std::vector<double>{30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0});
     auto_declare<double>("e_max", 1.0);
     auto_declare<double>("accel_timeout", 0.1);
+    // ── Tetto di velocità sul riferimento integrato ───────────────────────
+    // Default = franka_description/robots/fr3/joint_limits.yaml (stessa fonte
+    // che legge il box di stato del cbf_safety_filter). qdot_margin = 0
+    // disattiva il tetto e ripristina il comportamento precedente.
+    auto_declare<std::vector<double>>(
+        "qdot_max", std::vector<double>{2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26});
+    auto_declare<std::vector<double>>(
+        "q_min", std::vector<double>{-2.9007, -1.8361, -2.9007, -3.0770,
+                                     -2.8763, 0.4398, -3.0508});
+    auto_declare<std::vector<double>>(
+        "q_max", std::vector<double>{2.9007, 1.8361, 2.9007, -0.1169,
+                                     2.8763, 4.6216, 3.0508});
+    auto_declare<std::vector<double>>(
+        "velocity_offset", std::vector<double>{0.6520, 0.2500, 0.2005, 0.3542,
+                                               0.5738, 0.4885, 0.4592});
+    auto_declare<std::vector<double>>(
+        "deceleration_limit", std::vector<double>{6.0, 2.585, 3.5, 4.0,
+                                                  17.0, 5.5, 17.0});
+    auto_declare<double>("qdot_margin", 0.95);
+    // [rad/s] banda di dissolvenza di τ_ff contro l'inviluppo di velocità.
+    // 0.25 ≈ 10% del q̇_max dei giunti del braccio: il gate resta inattivo in
+    // tutto il moto normale e morde solo nell'ultimo decimo prima del reflex.
+    // 0 disattiva il gate. Vedi ffScale().
+    auto_declare<double>("ff_fade_band", 0.25);
+    // ── Anello di posizione + freschezza di τ_ff ──────────────────────────
+    // p_gains INITIAL: derivati da d_gains per uno smorzamento ~critico a
+    // ω ≈ 4 rad/s con le inerzie di link dell'FR3 stimate grossolanamente
+    // (Kp ≈ Kd·ω). Sono l'unico numero qui che NON viene da una tabella del
+    // costruttore: da validare in hardware, e la direzione sicura in cui
+    // sbagliare è VERSO IL BASSO (correzione più lenta, mai oscillazione).
+    // Tutti a 0 = legge di controllo precedente, esattamente.
+    auto_declare<std::vector<double>>(
+        "p_gains", std::vector<double>{120.0, 120.0, 120.0, 100.0,
+                                       40.0, 40.0, 20.0});
+    auto_declare<double>("p_max", 0.15);
+    auto_declare<double>("command_timeout", 0.1);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception in RtTorqueController::on_init: %s\n", e.what());
     return CallbackReturn::ERROR;
@@ -155,6 +350,49 @@ CallbackReturn RtTorqueController::on_configure(
     return CallbackReturn::ERROR;
   }
   std::copy_n(d_gains.begin(), kNumJoints, d_gains_.begin());
+
+  // ── Tetto di velocità: carica e valida i cinque array dell'inviluppo ─────
+  p_max_           = get_node()->get_parameter("p_max").as_double();
+  command_timeout_ = get_node()->get_parameter("command_timeout").as_double();
+  const auto p_gains = get_node()->get_parameter("p_gains").as_double_array();
+  if (p_gains.size() != kNumJoints) {
+    RCLCPP_ERROR(logger, "p_gains must have %zu entries, got %zu",
+                 kNumJoints, p_gains.size());
+    return CallbackReturn::ERROR;
+  }
+  std::copy_n(p_gains.begin(), kNumJoints, p_gains_.begin());
+
+  qdot_margin_ = get_node()->get_parameter("qdot_margin").as_double();
+  ff_fade_band_ = get_node()->get_parameter("ff_fade_band").as_double();
+  const std::array<std::pair<const char*, std::array<double, kNumJoints>*>, 5> limit_params{{
+      {"qdot_max", &qdot_max_},
+      {"q_min", &q_min_},
+      {"q_max", &q_max_},
+      {"velocity_offset", &v_offset_},
+      {"deceleration_limit", &decel_},
+  }};
+  for (const auto& [name, dest] : limit_params) {
+    const auto v = get_node()->get_parameter(name).as_double_array();
+    if (v.size() != kNumJoints) {
+      RCLCPP_ERROR(logger, "%s must have %zu entries, got %zu", name, kNumJoints, v.size());
+      return CallbackReturn::ERROR;
+    }
+    std::copy_n(v.begin(), kNumJoints, dest->begin());
+  }
+  if (qdot_margin_ <= 0.0) {
+    RCLCPP_WARN(logger,
+        "qdot_margin=%.3f <= 0 — tetto di velocità DISATTIVATO: q̇_des integra "
+        "q̈_safe senza limite e solo il reflex del firmware ferma il giunto.",
+        qdot_margin_);
+  }
+  if (ff_fade_band_ <= 0.0) {
+    RCLCPP_WARN(logger,
+        "ff_fade_band=%.3f <= 0 — gate sul feedforward DISATTIVATO: τ_ff = "
+        "M·q̈_safe è applicato per intero anche a q̇ già sull'inviluppo, e "
+        "nulla sotto il CBF impedisce a un q̈_safe grande di far scattare "
+        "`joint_velocity_violation`.",
+        ff_fade_band_);
+  }
 
   const auto joints_param = get_node()->get_parameter("joints").as_string_array();
   if (joints_param.empty()) {
@@ -207,6 +445,28 @@ CallbackReturn RtTorqueController::on_configure(
         commandCb(msg);
       });
 
+  // Il loop RT non logga (vedi le garanzie sopra update()), ma una
+  // degradazione di sicurezza silenziosa è peggio del costo di un log. Il
+  // fronte è quindi pubblicato dall'RT su un atomic e letto QUI, da un timer
+  // che gira sull'executor del controller_manager — thread non-RT — così la
+  // regola resta intatta e il fault resta visibile.
+  fault_timer_ = get_node()->create_wall_timer(
+      std::chrono::milliseconds(200), [this]() {
+        const bool holding = in_hold_.load(std::memory_order_relaxed);
+        if (holding && !hold_logged_) {
+          hold_logged_ = true;
+          RCLCPP_ERROR(get_node()->get_logger(),
+              "torque_cmd STALE (> %.3f s) → HOLD di posizione sulla posa "
+              "corrente. qddot_to_torque non sta pubblicando; senza questo "
+              "l'ultima coppia ricevuta resterebbe applicata.",
+              command_timeout_);
+        } else if (!holding && hold_logged_) {
+          hold_logged_ = false;
+          RCLCPP_INFO(get_node()->get_logger(),
+                      "torque_cmd di nuovo fresco → hold rilasciato.");
+        }
+      });
+
   accel_sub_ = get_node()->create_subscription<std_msgs::msg::Float64MultiArray>(
       accel_topic_, rclcpp::SensorDataQoS().keep_last(1),
       [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
@@ -214,9 +474,13 @@ CallbackReturn RtTorqueController::on_configure(
       });
 
   RCLCPP_INFO(logger,
-      "RtTorqueController configured (τ_ff + Kd·(q̇_des−q̇), clamp e_max=%.3f rad/s, "
-      "accel_timeout=%.3f s)  arm=%s  τ_topic=%s  q̈_topic=%s  gazebo=%s",
-      e_max_, accel_timeout_, arm_id_.c_str(), command_topic_.c_str(),
+      "RtTorqueController configured (τ_ff + Kp·(q_des−q) + Kd·(q̇_des−q̇), "
+      "clamp e_max=%.3f rad/s, "
+      "qdot_margin=%.3f, ff_fade_band=%.3f rad/s, accel_timeout=%.3f s, "
+      "command_timeout=%.3f s, "
+      "p_max=%.3f rad)  arm=%s  τ_topic=%s  q̈_topic=%s  gazebo=%s",
+      e_max_, qdot_margin_, ff_fade_band_, accel_timeout_, command_timeout_, p_max_,
+      arm_id_.c_str(), command_topic_.c_str(),
       accel_topic_.c_str(), is_gazebo_ ? "true" : "false");
 
   return CallbackReturn::SUCCESS;
@@ -238,6 +502,10 @@ CallbackReturn RtTorqueController::on_activate(
   // transitorio all'attivazione (analogo a initial_q_ = q_ nell'esempio).
   updateJointStates();
   qdot_des_ = dq_;
+  q_des_    = q_;          // errore di posizione nullo alla partenza
+  q_hold_   = q_;
+  hold_latched_ = false;
+  in_hold_.store(false, std::memory_order_relaxed);
 
   for (size_t i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(0.0);
@@ -293,6 +561,7 @@ void RtTorqueController::commandCb(
   TorqueInput input;
   std::copy_n(msg->data.begin(), kNumJoints, input.tau.begin());
   input.received = true;
+  input.stamp    = get_node()->now().seconds();
   command_buf_.writeFromNonRT(input);
 }
 

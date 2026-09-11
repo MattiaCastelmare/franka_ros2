@@ -13,6 +13,8 @@ franka_experiments nodes can reuse them without code duplication.
    that imports from here.
 """
 
+# TODO[LEGACY]: import shim with a single consumer (capsule_overlay_node) | confidence: medium | superseded-by: none | flagged: 2026-09-01
+
 from __future__ import annotations
 
 import os
