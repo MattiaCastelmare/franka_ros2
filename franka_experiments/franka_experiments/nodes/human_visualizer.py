@@ -25,7 +25,7 @@ from sensor_msgs.msg import Image, PointCloud, CameraInfo
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
-from franka_msgs.msg import HumanArmState, MultiLinkDistance
+from franka_msgs.msg import HumanArmState, MultiLinkDistance, HumanArmPrediction
 
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
@@ -97,6 +97,9 @@ class HumanArmVisualizer(Node):
         self.camera_info_sub = self.create_subscription(
             CameraInfo, camera_info_topic, self.camera_info_cb, 10
         )
+        self.pred_sub = self.create_subscription(
+            HumanArmPrediction, '/human/arm_prediction', self.pred_cb, 10
+        )
 
         # --- Publishers ---
         self.marker_pub = self.create_publisher(MarkerArray, '/human_robot/markers', 10)
@@ -144,6 +147,9 @@ class HumanArmVisualizer(Node):
 
     def arm_state_cb(self, msg: HumanArmState) -> None:
         self.latest_arm_state = msg
+
+    def pred_cb(self, msg: HumanArmPrediction) -> None:
+        self.latest_arm_prediction = msg
 
     def landmarks_cb(self, msg: PointCloud) -> None:
         """Accept complete MediaPipe detections."""
@@ -207,7 +213,73 @@ class HumanArmVisualizer(Node):
                 
         marker_array.markers.append(arm_marker)
 
-        # 2. --- ROBOT CPs & DISTANCE ARROWS ---
+        # 2. --- HUMAN ARM PREDICTION (FADING GHOST ARMS WITH JOINTS) ---
+        if self.latest_arm_prediction is not None:
+            pred = self.latest_arm_prediction
+            pts_valid = pred.keypoint_valid
+            
+            # Limit the trail to the first 4 future steps to avoid visual clutter
+            max_display_steps = 10
+            display_steps = min(max_display_steps, pred.num_steps)
+            
+            # Iterate through each future step to create a "ghost arm"
+            for step in range(display_steps):
+                # Calculate fading alpha (transparency) based on the step index
+                alpha = max(0.05, 0.4 - (0.15 * step))
+                
+                # Use Red color for prediction to indicate future danger zones
+                pred_color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=alpha)
+                
+                # Extract the 3D pose of the arm at this specific future instant
+                keypoints_future = [
+                    pred.shoulder[step], 
+                    pred.elbow[step], 
+                    pred.wrist[step], 
+                    pred.hand[step]
+                ]
+                
+                # Gather only the valid keypoints
+                valid_points = []
+                for i, pt in enumerate(keypoints_future):
+                    if pts_valid[i]:
+                        valid_points.append(pt)
+                
+                if len(valid_points) > 0:
+                    # --- A. Ghost Arm Segments (LINE_STRIP) ---
+                    lines_marker = Marker()
+                    lines_marker.header.frame_id = base_frame
+                    lines_marker.header.stamp = timestamp
+                    lines_marker.ns = "human_prediction_lines"
+                    lines_marker.id = step + 10  # Unique ID per step
+                    lines_marker.type = Marker.LINE_STRIP
+                    lines_marker.action = Marker.ADD
+                    
+                    # Line thickness (thinner than the actual blue arm)
+                    lines_marker.scale.x = 0.04  
+                    lines_marker.color = pred_color
+                    lines_marker.points = valid_points
+                    
+                    marker_array.markers.append(lines_marker)
+                    
+                    # --- B. Ghost Arm Joints (SPHERE_LIST) ---
+                    joints_marker = Marker()
+                    joints_marker.header.frame_id = base_frame
+                    joints_marker.header.stamp = timestamp
+                    joints_marker.ns = "human_prediction_joints"
+                    joints_marker.id = step + 50  # Unique ID per step (offset to avoid conflicts)
+                    joints_marker.type = Marker.SPHERE_LIST
+                    joints_marker.action = Marker.ADD
+                    
+                    # Sphere size (slightly larger than the line thickness to pop out)
+                    joints_marker.scale.x = 0.06
+                    joints_marker.scale.y = 0.06
+                    joints_marker.scale.z = 0.06
+                    joints_marker.color = pred_color
+                    joints_marker.points = valid_points
+                    
+                    marker_array.markers.append(joints_marker)
+
+        # 3. --- ROBOT CPs & DISTANCE ARROWS ---
         if self.latest_distances is not None and self.latest_distances.links:
 
             # Draw a sphere for each control point on the robot
@@ -318,10 +390,19 @@ class HumanArmVisualizer(Node):
                     uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
                     uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
                 
-                cv2.line(image, uv_robot, uv_human, (255, 255, 255), 1)
-                cv2.circle(image, uv_robot, 3, (0, 255, 255), -1) 
-                cv2.circle(image, uv_human, 3, (0, 0, 255), -1)   
-        
+                # Draw the shortest distance line and the exact collision points
+                cv2.line(image, uv_robot, uv_human, (255, 255, 255), 2)
+                cv2.circle(image, uv_robot, 6, (0, 255, 255), -1)  # Yellow for robot
+                cv2.circle(image, uv_human, 6, (0, 0, 255), -1)    # Red for human 
+
+                # Add the Control Point name next to the robot point
+                cp_name = min_link.robot_link_name
+                text_pos = (uv_robot[0] + 8, uv_robot[1] - 8)
+                cv2.putText(
+                    image, cp_name, text_pos, 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA
+                )
+
         except Exception:
             pass
 
@@ -367,6 +448,56 @@ class HumanArmVisualizer(Node):
 
         # Draw Shortest Distance Line
         self._draw_distance_line(image, image_msg.header.stamp)
+
+        # HUD: INFO PANEL (Horizontal Top Bar)
+        img_h, img_w = image.shape[:2]
+        overlay_box = image.copy()
+        x, y, w, h = 0, 0, img_w, 45 
+        cv2.rectangle(overlay_box, (x, y), (x + w, y + h), (0, 0, 0), -1)
+        
+        # Apply a semi-transparent overlay to the top bar
+        cv2.addWeighted(overlay_box, 0.6, image, 0.4, 0, image)
+
+        # Prepare the string for the Time
+        timestamp_sec = image_msg.header.stamp.sec + image_msg.header.stamp.nanosec * 1e-9
+        time_str = f"Time: {timestamp_sec:.2f} s"
+        
+        # Prepare the string for minimum distance
+        if self.latest_distances and self.latest_distances.links:
+            min_link = min(self.latest_distances.links, key=lambda l: l.distance)
+            dist_str = f"Min Dist: {min_link.distance:.3f} m"
+        else:
+            dist_str = "Min Dist: --"
+            
+        # Prepare the string for joint speeds
+        speeds = [0.0, 0.0, 0.0, 0.0]
+        if self.latest_arm_state:
+            state = self.latest_arm_state
+            if hasattr(state, 'velocities') and len(state.velocities) >= 4:
+                speeds = [np.linalg.norm([v.x, v.y, v.z]) for v in state.velocities]
+            else:
+                vel_fields = [
+                    getattr(state, 'shoulder_vel', getattr(state, 'shoulder_velocity', None)),
+                    getattr(state, 'elbow_vel', getattr(state, 'elbow_velocity', None)),
+                    getattr(state, 'wrist_vel', getattr(state, 'wrist_velocity', None)),
+                    getattr(state, 'hand_vel', getattr(state, 'hand_velocity', None))
+                ]
+                speeds = [np.linalg.norm([v.x, v.y, v.z]) if v else 0.0 for v in vel_fields]
+
+        speeds_str = f"Speeds [m/s]: v_sh {speeds[0]:.2f} | v_el: {speeds[1]:.2f} | v_wr: {speeds[2]:.2f} | v_ha: {speeds[3]:.2f}"
+
+        # Draw the text on the overlay
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        color = (255, 255, 255)
+        thickness = 1
+        
+        # Time and distance
+        cv2.putText(image, f"{time_str}   |   {dist_str}", (10, 18), 
+                    font, font_scale, color, thickness, cv2.LINE_AA)
+        # Speeds
+        cv2.putText(image, speeds_str, (10, 38), 
+                    font, font_scale, color, thickness, cv2.LINE_AA)
         
         # Publish 2D Overlay
         overlay_msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')

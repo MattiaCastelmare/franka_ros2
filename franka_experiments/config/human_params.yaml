@@ -1,5 +1,4 @@
-# Single source of truth for human_tracker and human_visualizer.
-# Both nodes load this file directly through distance_utils.load_robot_config().
+# Single source of truth for human_tracker and human_visualizer
 
 common:
   use_sim_time: false
@@ -20,17 +19,17 @@ human_tracker:
   model_complexity: 1
   min_detection_confidence: 0.40
   min_tracking_confidence: 0.30
-  inference_hz: 15.0           # Allineato alla frequenza reale della sorgente (15 Hz)
-  inference_scale: 1.00        # Riportato a 1.0 per massima risoluzione e precisione 3D
+  inference_hz: 15.0           # Aligned to real source frequency (15 Hz)
+  inference_scale: 1.00        # Max resolution and 3D accuracy
   visibility_threshold: 0.40
   depth_patch_radius: 2
   min_depth_m: 0.10
   max_depth_m: 5.00
-  sync_queue_size: 5           # Ridotto da 10 a 5 per contenere la latenza nei buffer
-  sync_slop_s: 0.025           # Ridotto da 0.05s a 0.025s (25ms) per sincronizzazione stringente
+  sync_queue_size: 5           # To avoid latency in the buffer
+  sync_slop_s: 0.025           # For strict synchronization
 
   # Kalman filter
-  kf_nominal_dt: 0.06666666666666667 # dt nominale aggiornato per 15 Hz (1/15 s)
+  kf_nominal_dt: 0.06666666666666667 # Nominal dt updated for 15 Hz (1/15 s)
   kf_process_accel_std: 2.0
   kf_measurement_std: 0.02
   max_state_age_s: 0.30
@@ -51,7 +50,7 @@ human_visualizer:
   # Overlay behavior
   visibility_threshold: 0.40
   max_hz: 15.0
-  scale: 0.50
+  scale: 1.0
   landmark_hold_s: 0.30
   smoothing_tau_s: 0.12
   draw_labels: true
