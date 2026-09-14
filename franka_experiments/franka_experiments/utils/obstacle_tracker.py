@@ -433,6 +433,33 @@ class TrackManager:
         #: to a different track's centre than to its own.
         self.last_assoc: dict = {}
 
+        # ── Why tracks die (Sep 2026) ───────────────────────────────────────
+        # Raising obstacle_velocity_min_frames stops a two-frame track from
+        # being believed, but it does not stop tracks from being two frames
+        # long — and on hardware they are: 1727 births in 91 s, a MEDIAN life
+        # of 70 ms behind the closest control point. A threshold on the symptom
+        # is a stopgap; these counters are how the disease gets named.
+        #
+        # Three candidates, and they are not distinguishable by watching the
+        # track count alone:
+        #   * max_missed too tight  → tracks reaped while merely occluded, and
+        #     `reaped_young` is then large next to `reaped_mature`;
+        #   * gate_max_m / gate_mahalanobis too tight → clusters land outside
+        #     every gate and start NEW tracks instead of updating one, which
+        #     shows up as `unassociated_clusters` tracking `births`;
+        #   * cluster_min_points too high → the cluster itself flickers in and
+        #     out of existence, which shows up as both at once.
+        #
+        # Cumulative since construction, never reset: a rate matters more than
+        # an instantaneous value, and a consumer can difference them.
+        self.n_births = 0
+        self.n_reaped = 0            # died having been UPDATED >= confirm_hits
+        self.n_reaped_young = 0      # died before it was ever confirmed
+        self.n_unassociated = 0      # clusters that matched no existing track
+        self.n_over_capacity = 0     # clusters dropped because max_tracks was hit
+        self.life_sum = 0            # summed age, in perception frames
+        self.life_n = 0
+
     # ── Query ───────────────────────────────────────────────────────────────
 
     def confirmed_tracks(self) -> list:
@@ -491,8 +518,17 @@ class TrackManager:
         # — otherwise two clusters from one split blob would spawn a track and
         # then immediately feed it, confirming a fragment.
         for ci, zc in enumerate(z):
-            if ci in used_c or len(self.tracks) >= self.max_tracks:
+            if ci in used_c:
                 continue
+            # Counted BEFORE the capacity test, so `unassociated` measures how
+            # often the gate rejected everything and `over_capacity` measures
+            # how often max_tracks was the thing that bit. Conflating the two
+            # would hide a saturated tracker behind a tight gate.
+            self.n_unassociated += 1
+            if len(self.tracks) >= self.max_tracks:
+                self.n_over_capacity += 1
+                continue
+            self.n_births += 1
             born = KalmanTrack(
                 zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
                 sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
@@ -547,11 +583,41 @@ class TrackManager:
         keep = []
         for t in self.tracks:
             if t.missed > self.max_missed:
+                # Classified on the way out, because after the pop there is
+                # nothing left to ask. A track that dies without ever being
+                # confirmed never contributed a velocity to anything — but it
+                # DID consume an id and an association slot, and a high count
+                # here is what says the segmentation is flickering rather than
+                # the gate being tight.
+                if t.track_id in self._confirmed:
+                    self.n_reaped += 1
+                else:
+                    self.n_reaped_young += 1
+                self.life_sum += int(t.frames_seen)
+                self.life_n += 1
                 self._hits.pop(t.track_id, None)
                 self._confirmed.discard(t.track_id)
             else:
                 keep.append(t)
         self.tracks = keep
+
+    def death_stats(self) -> dict:
+        """Cumulative lifecycle counters, for a log line or a bag column.
+
+        ``mean_life`` is in perception FRAMES and counts updates, not wall time:
+        a track coasting through an occlusion ages without accumulating the
+        evidence its velocity is supposed to rest on.
+        """
+        return {
+            'births': self.n_births,
+            'reaped': self.n_reaped,
+            'reaped_young': self.n_reaped_young,
+            'unassociated': self.n_unassociated,
+            'over_capacity': self.n_over_capacity,
+            'mean_life': (self.life_sum / self.life_n) if self.life_n else 0.0,
+            'alive': len(self.tracks),
+            'confirmed': len(self._confirmed),
+        }
 
     def reset(self) -> None:
         """Drop every track and its history (camera restart, resolution change).

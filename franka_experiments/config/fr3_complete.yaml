@@ -303,8 +303,31 @@ tracking:
   # Bounds the association cost, which is O(tracks x clusters). A degenerate
   # frame (the exclusion mask failing, the whole scene reading as obstacle)
   # would otherwise produce hundreds of both.
+  #
+  # max_tracks MUST STAY >= max_clusters. It did not: at 12 against 16, at
+  # least four clusters per frame could never be given a track, BY
+  # CONSTRUCTION. Measured on a 134 s hardware run with one static and one
+  # moving obstacle:
+  #
+  #     births=626  reaped=348/268(mature/young)  unassoc=2205  cap=1579
+  #
+  # 1579 of the 2205 clusters that matched no existing track — 72 % — were
+  # DROPPED because the track table was full. The twelve slots go to whichever
+  # clusters arrive first, fragments and noise included, and a real obstacle
+  # appearing afterwards gets no track, so no velocity: the consumer falls back
+  # to the residual and the tracker contributes nothing where it matters most.
+  #
+  # This is not a tuning preference, it is an arithmetic precondition, and
+  # test_track_lifecycle.py now asserts it so the pair cannot drift apart
+  # again. 20 leaves headroom above the 16 without meaningfully changing the
+  # association cost: the O(T x C) bound is 320 pairs against 192, both
+  # negligible next to the per-frame clustering itself.
+  #
+  # If `cap` returns to zero and the reported velocity is STILL noisy, the
+  # problem has moved upstream: a scene that produces 16 clusters where there
+  # are two obstacles is a segmentation problem, not a capacity one.
   max_clusters: 16
-  max_tracks: 12
+  max_tracks: 20
 
   # [m] slack added to a cluster's radius when deciding whether a control
   # point's closest_point_human belongs to it. Needed because the radius is

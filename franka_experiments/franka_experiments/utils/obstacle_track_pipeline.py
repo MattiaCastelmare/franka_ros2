@@ -295,7 +295,18 @@ class ObstacleTrackPipeline:
         self.last_n_points = 0
 
     def describe(self) -> str:
+        d = self.tracker.death_stats()
+        # births/reaped and the mean life are what say whether the tracker is
+        # TRACKING or just repeatedly re-discovering the scene. A healthy line
+        # has births climbing slowly and mean_life in the tens of frames; a
+        # line with births ~ reaped ~ frames and mean_life near confirm_hits is
+        # a tracker that establishes no identity, and every velocity it reports
+        # is its own prior. See obstacle_velocity_min_frames in fr3_control.yaml.
         return (f'clusters={len(self.last_clusters)} '
                 f'tracks={len(self.tracker.tracks)} '
                 f'confirmed={len(self.tracker.confirmed_tracks())} '
+                f'births={d["births"]} '
+                f'reaped={d["reaped"]}/{d["reaped_young"]}(mature/young) '
+                f'unassoc={d["unassociated"]} cap={d["over_capacity"]} '
+                f'life={d["mean_life"]:.1f}fr '
                 f'dt={self.last_dt * 1e3:.1f}ms')

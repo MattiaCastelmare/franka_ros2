@@ -1057,10 +1057,33 @@ params:
   # trusted in 'tracker' mode. Updates only -- a track coasting through an
   # occlusion does not accumulate evidence it does not have.
   #
-  # 3 matches the tracker's own M-of-N birth rule, so a confirmed track is
-  # trusted immediately and nothing is trusted before confirmation. Below the
-  # gate v_obs is 0, i.e. the static-obstacle assumption, not a guess.
-  obstacle_velocity_min_frames: 3
+  # RAISED 3 -> 8 (Sep 2026, measured). 3 matched the tracker's own M-of-N
+  # birth rule, so a track was trusted the instant it was confirmed. That
+  # reasoning holds only if a confirmed track then LIVES, and on hardware it
+  # does not: in a 91 s run with one static and one moving obstacle the tracker
+  # created 1727 tracks (19/s) and the track behind the closest control point
+  # persisted for a MEDIAN OF 70 ms — about two perception frames, with 69 % of
+  # episodes under 100 ms.
+  #
+  # A Kalman filter that lives two frames has estimated nothing. Its velocity is
+  # dominated by the initial covariance (sigma_v0) and the process noise
+  # (q_jerk), not by accumulated evidence: it reports its own prior, and the
+  # consumer reads that as an obstacle moving. Measured consequence: the
+  # CONDITIONED v_obs — after the 5-frame median, the deadband and the clamp —
+  # still reached 1.54 m/s and spent 2.0 s above 0.5 m/s.
+  #
+  # 8 updates is ~265 ms at 30 Hz. The cost is latency on a GENUINELY NEW
+  # obstacle, and it is paid for by the residual floor below: v_obs =
+  # max(tracker, residual), and the residual needs no identity and no history,
+  # so the gap is covered by an estimator that is worse but immediate.
+  #
+  # This is a threshold on a symptom. The disease is that tracks do not
+  # survive; utils/obstacle_tracker.py now reports why (see `deaths` in
+  # TrackManager.describe()), and when that says which of max_missed /
+  # gate_max_m / cluster_min_points is killing them, fix THAT and lower this
+  # again. Below the gate v_obs is 0 — the static-obstacle assumption, not a
+  # guess.
+  obstacle_velocity_min_frames: 8
 
   # ── Residual floor under the tracked velocity ──────────────────────────────
   # In 'tracker' mode, ALSO run the residual estimator and hand the QP
