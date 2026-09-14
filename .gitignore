@@ -2,6 +2,7 @@
 .idea
 .vscode
 *.pyc
+.pytest_cache/
 COLCON_IGNORE
 AMENT_IGNORE
 cmake-build-*/
