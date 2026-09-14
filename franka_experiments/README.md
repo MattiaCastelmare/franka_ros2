@@ -126,7 +126,7 @@ pentagon_qddot_commander          │
 
 > **Note** — `motion_source` selects the single q̈_nom generator: `pentagon`
 > (default, analytic path + avoidance-first shaping) or `rl` (the ONNX Safe-RL
-> policy from `franka_sim/`, see `../franka_sim_to_real_roadmap.md`).  Both
+> policy from `franka_sim/`, see `../franka_sim_to_real_implementation_status.md`).  Both
 > publish `/NS_1/qddot_nom`, so exactly one runs at a time; everything
 > downstream (CBF filter → torque → controller) is identical:
 >

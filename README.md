@@ -665,7 +665,7 @@ ros2 launch franka_simulation move_group.launch.py spawn_obstacles:=false enable
 
 `franka_sim` is a **standalone MuJoCo training module with no ROS 2 dependency**. It trains a **Safe Reinforcement Learning** policy (SAC, Stable-Baselines3) shielded by the *same* acceleration-level CBF filter that runs on the real robot in `franka_experiments/nodes/cbf_safety_filter.py` — safe exploration in simulation, safe execution on hardware.
 
-Full guide: [`franka_sim/README.md`](./franka_sim/README.md) · roadmap: [`franka_sim_to_real_roadmap.md`](./franka_sim_to_real_roadmap.md) · validation status: [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md).
+Full guide: [`franka_sim/README.md`](./franka_sim/README.md) · architecture, validation status, gotchas and backlog: [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md).
 
 ```
 franka_sim/
@@ -717,10 +717,9 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 | [`franka_experiments/test/README.md`](./franka_experiments/test/README.md) | Test suite: what is checked and how to run it |
 | [`franka_simulation/README.md`](./franka_simulation/README.md) | The four simulation pipelines, controllers, kinematics library |
 | [`franka_sim/README.md`](./franka_sim/README.md) | Training, evaluation, the MuJoCo viewer, sim↔robot sync, gotchas |
-| [`franka_sim_to_real_roadmap.md`](./franka_sim_to_real_roadmap.md) | Sim-to-real architecture and plan |
-| [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md) | What is built and how it was validated |
-| [`CBF_PIPELINE_AUDIT.md`](./CBF_PIPELINE_AUDIT.md) | Audit of the CBF pipeline |
-| [`SAFE_RL_CBF_HANDOVER.md`](./SAFE_RL_CBF_HANDOVER.md) | Safe-RL + CBF handover notes |
+| [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md) | Safe-RL + CBF sim-to-real: the three-step specification, what is built, how it was validated, gotchas and the prioritised backlog |
+| [`franka_experiments/LEGACY.md`](./franka_experiments/LEGACY.md) | Inventory of everything unreachable from the torque stack, with the deletion units |
+| [`franka_experiments/docs/reactivity_evasion_report.md`](./franka_experiments/docs/reactivity_evasion_report.md) | Measured latency budget, retreat authority, and the reactivity/evasion rework (Sep 2026) |
 
 ---
 

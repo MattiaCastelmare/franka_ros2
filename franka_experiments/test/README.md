@@ -131,7 +131,11 @@ rt_torque_controller       →  τ_hw  = τ_filtered             (no g(q) added 
 Franka firmware            →  handles gravity compensation at 1 kHz
 ```
 
-See `refactoring_code.md §10.2` for the full analysis of gravity handling.
+This is by design, not an omission: `rt_torque_controller.cpp` computes no
+gravity term at all, because the Franka firmware balances g(q) in hardware.
+Upstream nodes therefore send the motion component only. In Gazebo the physics
+engine plays the firmware's role, so there is no double-counting either — the
+one requirement is the effort command interface (`gazebo_effort:=true`).
 
 ### Expected results
 
@@ -225,7 +229,7 @@ ros2 topic echo /NS_1/torque_safe --field data
 
 ## Pipeline 4 — Safe-RL / ONNX policy (fake hardware)
 
-Deployment side of `franka_sim_to_real_roadmap.md` Step 3: the SAC policy
+Deployment side of Step 3 in `franka_sim_to_real_implementation_status.md`: the SAC policy
 trained in `franka_sim/` against *this* CBF filter, replayed on the robot by
 `rl_policy_commander`.
 

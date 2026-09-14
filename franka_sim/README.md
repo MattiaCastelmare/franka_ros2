@@ -7,8 +7,7 @@ Function (CBF)** filter that runs on the real FR3 in
 the shield meets the identical safety filter on hardware → *safe exploration*
 in sim, *safe execution* on the robot.
 
-Architecture and roadmap: `../franka_sim_to_real_roadmap.md`.
-What is actually built and how it was validated:
+Architecture, what is built, how it was validated, gotchas and backlog:
 `../franka_sim_to_real_implementation_status.md`.
 
 ---

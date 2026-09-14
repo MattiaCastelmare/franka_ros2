@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """RL policy commander — ONNX Safe-RL policy → /NS_1/qddot_nom (Sim-to-Real).
 
-Step 3 of ``franka_sim_to_real_roadmap.md``: the deployment counterpart of
+Step 3 of ``franka_sim_to_real_implementation_status.md``: the deployment counterpart of
 ``franka_sim``.  A SAC policy trained in MuJoCo *against the same
 acceleration-level CBF shield that runs on this robot* is exported to ONNX by
 ``franka_sim/export_onnx.py``; this node replays it on hardware.

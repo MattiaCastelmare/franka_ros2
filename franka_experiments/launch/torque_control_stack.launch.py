@@ -37,7 +37,7 @@ Examples
     # Fake hardware (simulation):
     ros2 launch franka_experiments torque_control_stack.launch.py use_fake_hardware:=true
 
-    # Safe-RL policy instead of the pentagon path (see franka_sim_to_real_roadmap.md).
+    # Safe-RL policy instead of the pentagon path (see franka_sim_to_real_implementation_status.md).
     # A cautious first run on real hardware: derate the policy to 30% authority.
     ros2 launch franka_experiments torque_control_stack.launch.py \\
         motion_source:=rl start_move_group:=false rl_action_scale:=0.3
@@ -551,7 +551,7 @@ def _launch_all(context):
     # motion_source selects exactly one:
     #   'pentagon' — analytic path + avoidance-first shaping (default)
     #   'rl'       — ONNX Safe-RL policy trained in franka_sim against this same
-    #                CBF filter (franka_sim_to_real_roadmap.md, Step 3)
+    #                CBF filter (franka_sim_to_real_implementation_status.md, Step 3)
     # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
     # identical in both cases: the safety certificate does not depend on who
     # generates the nominal acceleration.

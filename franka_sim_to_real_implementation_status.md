@@ -1,10 +1,12 @@
 # Sim-to-Real Safe RL + CBF — Implementation Status
 
-Companion to `franka_sim_to_real_roadmap.md`: what is actually implemented in
-this repository, where it lives, and how it was validated. The roadmap is the
-specification; this file is the audit against the code.
+The reference document for the Safe RL + CBF sim-to-real work: what is
+implemented, where it lives, how it was validated, and what is left. §1 keeps
+the original three-step specification as a table, so this file is self-contained
+— the separate roadmap and handover documents it used to accompany have been
+removed (their unique content is in §8 and §9).
 
-Last updated: **2026-09-04**.
+Last updated: **2026-09-14**.
 
 ---
 
@@ -354,6 +356,8 @@ its EE.
 
 ## 7. Open items (not blockers)
 
+Prioritised, together with the rest of the backlog, in §9.
+
 * **Train to convergence.** `sac_v2` is a 400 k-step run (≈1 h on the RTX 4070);
   `config.yaml` defaults to 2 M. 14 % success is a working-but-undertrained
   policy, not a broken pipeline — the wiring is complete and validated, and the
@@ -371,3 +375,121 @@ its EE.
   argues the CBF absorbs the dynamics gap.
 * Closed-loop hardware-in-the-loop validation needs either Gazebo or the real
   FR3.
+
+---
+
+## 8. Gotchas and traps
+
+Preserved from the 2026-08-31 implementation handover (that file has been
+removed; the items below are the part that is not recoverable from the code).
+
+1. **Fake hardware does not integrate effort commands.** ROS 2 mock hardware
+   does not simulate torque dynamics, so the arm never moves and the observation
+   stays frozen. Fake-HW tests validate the *command chain* (nodes, topics,
+   rates, controller activation, gating, TF) — **not** closed-loop behaviour.
+   Closed-loop behaviour is validated in MuJoCo. Do not read a fake-HW "success"
+   as motion validation.
+2. **Real `d_min` saturates at 0** (the engine clamps); sim reports negative
+   penetration. Conservative, documented, not "fixed".
+3. **`qpsolvers` and `osqp` must not float.** If the velocity or OSCBF pipeline
+   dies with `SolverNotFound`, check
+   `python3 -c "import qpsolvers; print(qpsolvers.available_solvers)"` **first** —
+   an empty list is this version skew, not a code regression.
+4. **The `qpsolvers` pin is in the `Dockerfile`, but an older image predates
+   it.** The downgrade was once applied live inside a running container, into
+   `/home/user/.local`, which is **not** bind-mounted. Any container recreated
+   from such an image gets qpsolvers 4.13.0 again and the six test failures
+   return. Run `docker compose build` once (it also adds the
+   `assert 'osqp' in qpsolvers.available_solvers` gate to the image smoke test),
+   or patch a fresh container with
+   `pip3 install "qpsolvers[osqp]==4.3.3" "osqp>=0.6.2,<1.0"`.
+5. **Container-local state is disposable; the repo is not.** `docker-compose.yml`
+   mounts `./:/ros2_ws/src`, so source, `build/`, `install/`, `franka_logs/` and
+   `franka_sim/models/` all live on the host and survive container removal.
+   Anything written elsewhere in the container (`/tmp`, pip `--user` installs)
+   does not.
+6. **Never use a MuJoCo actuator's `ctrlrange` as a force limit** unless you know
+   it is a force actuator. For a `<position>` actuator it is the joint *position*
+   range. This is the trap behind the actuation-authority defect in §5.
+7. **`franka_sim` is not a ROS package.** Do not "fix" this by adding a
+   `package.xml` — the whole point is that training does not need ROS. Paths are
+   resolved via a `realpath` walk-up instead.
+8. **The container may hold stray processes between runs.** A leftover
+   `joint_state_publisher` from a previous launch once competed with the smoke
+   test's stimulus and produced a phantom contract failure. Note that
+   `pkill -f "topic pub"` also kills the `docker exec` shell whose command line
+   contains that string — check `ps aux` rather than trusting the kill.
+9. **The training config frozen next to the model is authoritative.**
+   `train.py` copies `config.yaml` into `models/<exp>/`; the node prefers it
+   over `franka_sim/config.yaml`, because that is the config the run actually
+   used.
+
+---
+
+## 9. Improvement backlog (prioritised)
+
+Also preserved from the handover. The first two P0 items and P1 items 5 and 7
+restate §7 above; they are repeated here so the backlog reads as one list.
+
+### P0 — makes the science defensible
+
+1. **Train to convergence.** Run the config default (2 M steps) or longer,
+   ideally with a short hyperparameter sweep. Current: 400 k → 14 % success. The
+   pipeline, logging, checkpointing, eval callback and safety curves are all
+   already in place; this is compute, not code.
+2. **Remove structurally unavoidable collisions from the benchmark.** Either
+   reduce `obstacle.speed` / `obstacle.amplitude` in `config.yaml` (already
+   parameters), or add a reset-time feasibility check that rejects obstacle
+   trajectories intersecting the robot's reachable set. Until then, every safety
+   number must be quoted against the zero-action baseline.
+3. **Report the baseline delta everywhere.** Wire `zero`/`random` into a single
+   benchmark script that emits the comparison table directly, so the paper
+   cannot accidentally quote an absolute collision rate.
+
+### P1 — closes real sim-to-real gaps
+
+4. **Add the 1 kHz `Kd(q̇_des − q̇)` feedback to the sim actuation**, matching
+   `rt_torque_controller`'s `d_gains`. Removes the residual open-loop drift and
+   makes sim and robot dynamically closer. Keep it configurable so the
+   conservative feedforward-only mode remains available.
+5. **Domain randomisation** — link masses, joint friction/damping, sensor noise
+   on `q`/`q̇`, and above all **latency** (the real chain has camera → distance
+   engine → CBF → torque delays that the sim does not model).
+6. **Observation-noise realism.** The sim feeds exact `d_min` and an exact
+   obstacle centre; the robot feeds an LPF'd, EMA-smoothed, occasionally stale
+   estimate from a point cloud. Injecting that noise model in training is
+   probably the single highest-value fidelity improvement after latency.
+7. **Hardware-in-the-loop.** Gazebo (the stack already has a `gazebo` argument
+   for `rt_torque_controller`) would give closed-loop validation without the
+   real FR3.
+
+### P2 — task and reward
+
+8. **Reward shaping review.** Currently
+   `−‖ee−target‖ + success − effort − intervention − slack − jerk − ‖q̇‖²`, with
+   a one-off collision penalty and termination. Candidates: potential-based
+   shaping for the distance term, curriculum on obstacle speed, and
+   reconsidering `terminate_on_success` (episodes end early, so the policy never
+   learns to *hold* a target — relevant because the deployment node supports
+   target sequences with dwell).
+9. **Multi-target episodes in sim**, matching the node's `target_sequence`
+   feature. Today sim trains single-reach but deployment can cycle targets.
+10. **Orientation.** The task is position-only; the observation carries no EE
+    orientation and the reward does not constrain it. Real tasks usually need it.
+
+### P3 — engineering polish
+
+11. **Give `franka_sim` a small pytest suite.** It has scripts (`validate_cbf`,
+    `validate_actuation`) but no `pytest`, so its guards are not part of
+    `colcon test`. Consider a thin ROS-free test package or a CI step.
+12. **CI.** Wiring `colcon build` + `colcon test` + `validate_actuation` +
+    `validate_cbf` into it would have caught the §5 defect and the solver skew.
+13. **`pentagon_qddot_commander` hard-codes**
+    `/ros2_ws/src/franka_experiments/franka_logs`. The RL node's `realpath`
+    approach could be lifted into a shared helper.
+14. **Write `test_oscbf_fake.launch.py`** so the documented Pipeline 3 commands
+    actually work — or drop Pipeline 3 (see `franka_experiments/LEGACY.md`,
+    deletion unit C).
+15. **Address the pre-existing `franka_simulation` linter failures** (49
+    copyright, 747 flake8, 259 pep257) — or explicitly exclude that package from
+    linting so `colcon test` is green and regressions are visible.
