@@ -202,6 +202,8 @@ class ExperimentLogger(Node):
         self._build_kinematics()
 
         # ISO layer, all NaN until their topic publishes.
+        self.last_cbf_v_obs_cond = float("nan")
+        self.last_cbf_v_obs_hdot = float("nan")
         self.last_cbf_n_rows = float("nan")
         self.last_cbf_slack = float("nan")
         self.last_cbf_fault = float("nan")
@@ -409,8 +411,16 @@ class ExperimentLogger(Node):
             # ── Avoidance, per control point (the barrier's own input) ───────
             "cp_n_valid", "cp_n_total",
             "cp_min_distance", "cp_min_link",
-            "cp_v_obs_max",         # [m/s] fastest tracked obstacle
+            "cp_v_obs_max",         # [m/s] fastest tracked obstacle, RAW
             "cp_n_tracked",         # entries carrying a confirmed track
+            # Which track the closest entry belongs to, and how many distinct
+            # objects the tracker is holding. Together these separate the two
+            # mechanisms that fabricate a velocity, which need different fixes:
+            # a track id that CHANGES on the closest entry is an association
+            # swap; a track count that drops while the ids survive is two
+            # clusters merging, and the merged centroid sits between them.
+            "cp_min_track_id",
+            "cp_n_tracks",
             "min_distance",
             "min_h",
             "min_h_link",
@@ -433,6 +443,16 @@ class ExperimentLogger(Node):
             "cbf_fault",
             "cbf_n_violated",
             "cbf_d_min",
+            # ── What the barrier was actually FED (data[9..10]) ───────────
+            # cp_v_obs_max above is the tracker's RAW output off the wire.
+            # These two are the CONDITIONED values, after the 5-frame median,
+            # the deadband and the clamp. Logging only the raw and reasoning
+            # about the barrier is how a filter's artefacts get blamed on the
+            # thing it filters — the raw peaked at 3.84 m/s on a hardware run
+            # while 24 of its 34 excursions lasted one perception frame, which
+            # is exactly what a 5-frame median removes.
+            "cbf_v_obs_cond",
+            "cbf_v_obs_hdot",
             # ── ISO layer ────────────────────────────────────────────────
             # cbf_* are the filter's view (cbf_status data[5..8]); iso_* are the
             # independent monitor's own (/NS_1/iso_safety). Logged SEPARATELY
@@ -546,26 +566,31 @@ class ExperimentLogger(Node):
         from franka_experiments.utils.perception_msgs import labelled_links
         n_valid = n_total = n_tracked = 0
         d_min, d_lbl, v_max = float("inf"), "", 0.0
+        min_tid, tids = 0, set()
         for label, ld in labelled_links(msg):
             n_total += 1
             if not ld.valid:
                 continue
             n_valid += 1
             d = _safe_float(ld.distance)
+            tid = int(getattr(ld, "track_id", 0))
+            if tid > 0:
+                tids.add(tid)
             if math.isfinite(d) and d < d_min:
-                d_min, d_lbl = d, label
+                d_min, d_lbl, min_tid = d, label, tid
             v = math.sqrt(ld.obstacle_velocity.x ** 2
                           + ld.obstacle_velocity.y ** 2
                           + ld.obstacle_velocity.z ** 2)
             if v > v_max:
                 v_max = v
-            if int(getattr(ld, "track_id", 0)) > 0:
+            if tid > 0:
                 n_tracked += 1
         self.cp_stats = {
             "cp_n_valid": n_valid, "cp_n_total": n_total,
             "cp_min_distance": d_min if math.isfinite(d_min) else float("nan"),
             "cp_min_link": d_lbl, "cp_v_obs_max": v_max,
             "cp_n_tracked": n_tracked,
+            "cp_min_track_id": min_tid, "cp_n_tracks": len(tids),
         }
 
     def cbf_status_cb(self, msg: Float64MultiArray):
@@ -583,6 +608,9 @@ class ExperimentLogger(Node):
             self.last_cbf_fault = _safe_float(d[2])
             self.last_cbf_n_viol = _safe_float(d[3])
             self.last_cbf_d_min = _safe_float(d[4])
+        if len(d) >= 11:
+            self.last_cbf_v_obs_cond = _safe_float(d[9])
+            self.last_cbf_v_obs_hdot = _safe_float(d[10])
         if len(d) >= 9:
             self.last_cbf_sp = _safe_float(d[5])
             self.last_cbf_vcap = _safe_float(d[6])
@@ -707,7 +735,8 @@ class ExperimentLogger(Node):
 
         # ── Avoidance, per control point ─────────────────────────────────
         for k in ("cp_n_valid", "cp_n_total", "cp_min_distance",
-                  "cp_v_obs_max", "cp_n_tracked"):
+                  "cp_v_obs_max", "cp_n_tracked", "cp_min_track_id",
+                  "cp_n_tracks"):
             row[k] = self.cp_stats.get(k, np.nan)
         row["cp_min_link"] = self.cp_stats.get("cp_min_link", "")
 
@@ -734,6 +763,8 @@ class ExperimentLogger(Node):
         row["comm_success_min"] = self.comm_success_min
         row["robot_mode"] = self.last_robot_mode
 
+        row["cbf_v_obs_cond"] = self.last_cbf_v_obs_cond
+        row["cbf_v_obs_hdot"] = self.last_cbf_v_obs_hdot
         row["cbf_n_rows"] = self.last_cbf_n_rows
         row["cbf_slack"] = self.last_cbf_slack
         row["cbf_fault"] = self.last_cbf_fault

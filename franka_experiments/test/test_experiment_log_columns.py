@@ -124,6 +124,75 @@ def test_a_nine_element_cbf_status_fills_both_halves():
     assert n.last_cbf_isostop == 1.0
 
 
+def test_the_conditioned_v_obs_is_logged_beside_the_raw():
+    """The raw tracker output and what the barrier was FED are different
+    numbers: a 5-frame median, a deadband and a clamp sit between them.
+    Logging only the raw is how a filter's artefacts get blamed on the thing
+    it filters."""
+    h = header()
+    assert 'cp_v_obs_max' in h            # raw, off the wire
+    assert 'cbf_v_obs_cond' in h          # conditioned, into the barrier
+    assert 'cbf_v_obs_hdot' in h          # signed, into hdot
+
+
+def test_the_track_identity_fields_are_logged():
+    """cp_min_track_id and cp_n_tracks separate the two mechanisms that
+    fabricate a velocity, which need different fixes."""
+    h = header()
+    assert 'cp_min_track_id' in h and 'cp_n_tracks' in h
+
+
+def test_per_link_stats_report_the_closest_entrys_track_and_the_track_count():
+    def pt(x=0.0, y=0.0, z=0.0):
+        return types.SimpleNamespace(x=x, y=y, z=z)
+
+    def ld(d, tid, ph):
+        return types.SimpleNamespace(
+            valid=True, distance=d, track_id=tid, robot_link_name='fr3_link5',
+            closest_point_robot=pt(0.5, 0.0, 0.5),
+            closest_point_human=pt(0.5, ph - 0.25, 0.5),
+            obstacle_velocity=pt())
+
+    node = types.SimpleNamespace(cp_stats={})
+    # three entries, two distinct tracks; the CLOSEST belongs to track 7
+    ExperimentLogger.per_link_cb(node, types.SimpleNamespace(links=[
+        ld(0.30, 4, 0.0), ld(0.12, 7, 0.1), ld(0.44, 4, 0.2)]))
+    assert node.cp_stats['cp_min_track_id'] == 7
+    assert node.cp_stats['cp_n_tracks'] == 2
+
+
+def test_an_untracked_closest_entry_reports_track_id_zero():
+    """0 is 'no track', and it must not be confused with track number 0."""
+    def pt(x=0.0, y=0.0, z=0.0):
+        return types.SimpleNamespace(x=x, y=y, z=z)
+    node = types.SimpleNamespace(cp_stats={})
+    ExperimentLogger.per_link_cb(node, types.SimpleNamespace(links=[
+        types.SimpleNamespace(
+            valid=True, distance=0.2, track_id=0, robot_link_name='fr3_link5',
+            closest_point_robot=pt(0.5, 0.0, 0.5),
+            closest_point_human=pt(0.5, -0.25, 0.5),
+            obstacle_velocity=pt())]))
+    assert node.cp_stats['cp_min_track_id'] == 0
+    assert node.cp_stats['cp_n_tracks'] == 0
+
+
+def test_an_eleven_element_cbf_status_fills_the_conditioned_fields():
+    n = types.SimpleNamespace(**{k: float('nan') for k in (
+        'last_cbf_n_rows', 'last_cbf_slack', 'last_cbf_fault',
+        'last_cbf_n_viol', 'last_cbf_d_min', 'last_cbf_sp', 'last_cbf_vcap',
+        'last_cbf_vcls', 'last_cbf_isostop', 'last_cbf_v_obs_cond',
+        'last_cbf_v_obs_hdot')})
+    ExperimentLogger.cbf_status_cb(n, types.SimpleNamespace(
+        data=[8.0, 0.25, 0.0, 2.0, 0.31, 0.90, 0.05, 1.20, 0.0, 0.42, -0.13]))
+    assert n.last_cbf_v_obs_cond == pytest.approx(0.42)
+    assert n.last_cbf_v_obs_hdot == pytest.approx(-0.13)
+    # a 9-element message must leave them NaN, not zero
+    m = types.SimpleNamespace(**{k: float('nan') for k in vars(n)})
+    ExperimentLogger.cbf_status_cb(m, types.SimpleNamespace(
+        data=[8.0, 0.25, 0.0, 2.0, 0.31, 0.90, 0.05, 1.20, 0.0]))
+    assert math.isnan(m.last_cbf_v_obs_cond)
+
+
 def test_the_summary_only_asks_for_columns_the_logger_writes():
     """The two drifted once: experiment_summary reported "cbf_status not
     recorded" on runs where it was publishing, because it read a column name
@@ -132,7 +201,8 @@ def test_the_summary_only_asks_for_columns_the_logger_writes():
     for c in ('tcp_speed', 'qddot_nom_norm', 'qddot_safe_norm',
               'qddot_delta_norm', 'cp_min_distance', 'cbf_slack',
               'cbf_n_violated', 'cbf_fault', 'iso_stop_latched',
-              'tau_sat_1', 'comm_success_min', 'min_distance'):
+              'tau_sat_1', 'comm_success_min', 'min_distance',
+              'cbf_v_obs_cond'):
         assert c in h, f'experiment_summary reads {c!r} and the header lacks it'
 
 

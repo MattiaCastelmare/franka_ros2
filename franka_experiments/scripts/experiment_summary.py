@@ -205,7 +205,11 @@ def main():
     print(line('closest approach', d_min, t_d, ' m', nd=4))
     if math.isnan(d_min) and not math.isnan(d_leg):
         print(line('  (legacy MultiDistance)', d_leg, t_dleg, ' m', nd=4))
-    print(line('fastest tracked obstacle', v_obs, t_vobs, ' m/s'))
+    v_cond, t_cond = peak(rows, 'cbf_v_obs_cond')
+    print(line('fastest tracked obstacle', v_obs, t_vobs, ' m/s',
+               extra='   RAW, off the wire'))
+    print(line('  after conditioning', v_cond, t_cond, ' m/s',
+               extra='   what the barrier was FED'))
     print(line('peak ‖q̈_safe − q̈_nom‖', bend, t_bend, ' rad/s²',
                extra='   how hard the barrier fought the task'))
     print(line('peak ‖q̈_nom‖', nom, None, ' rad/s²'))
@@ -229,6 +233,8 @@ def main():
         'qddot_safe_norm': 'qddot_safe (is cbf_safety_filter running?)',
         'cp_min_distance': 'per_link_distances (is real_time_distance running?)',
         'cbf_slack': 'cbf_status',
+        'cbf_v_obs_cond': 'cbf_status data[9..10] (a filter older than the '
+                          'conditioned-v_obs fields?)',
         'tau_cmd_1': 'torque_cmd (is qddot_to_torque running?)',
         'tau_sat_1': '/torque_saturation (qddot_to_torque without the ISO layer?)',
         'comm_success_rate': 'franka_robot_state (fake hardware?)',

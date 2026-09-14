@@ -1831,6 +1831,19 @@ params:
   # data[8] iso_stop_latched — 1 while the monitor holds a NON-SAFETY-RATED
   #         stop. NOT a protective stop: that term is reserved for a rated
   #         function and this chain is not one. See SAFETY.md.
+  # data[9] v_obs_cond [m/s] — the largest CONDITIONED closing speed any row
+  #         used, i.e. AFTER obstacle_velocity_median, _track_deadband and
+  #         obstacle_velocity_max. LinkDistance.obstacle_velocity on the wire is
+  #         the raw tracker output; these two are what the barrier was actually
+  #         fed. The distinction is not academic: on a hardware run the raw
+  #         peaked at 3.84 m/s while 24 of its 34 excursions lasted ONE
+  #         perception frame — which a 5-frame median removes by construction.
+  #         Logging only the raw is how a filter's artefacts get attributed to
+  #         the thing it filters.
+  # data[10] v_obs_hdot [m/s] — the signed n̂ᵀv_track of largest magnitude that
+  #         entered ḣ (enable_vobs_in_hdot). Negative = receding.
+  # Both are per-REBUILD (cbf_update_rate_hz) maxima, not per-QP-tick.
+  #
   # [5]-[8] carry the MONITOR's numbers whenever /NS_1/iso_safety is fresh (it
   # is the channel that decides); otherwise the filter's own, from the last
   # constraint rebuild. With the ISO flags off they read 0 / inf / 0 / 0.

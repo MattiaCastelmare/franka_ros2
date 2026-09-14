@@ -302,7 +302,8 @@ class CBFSafetyFilter(Node):
             Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
         self._status_msg = Float64MultiArray()
         self._status_msg.data = [0.0, 0.0, 0.0, 0.0, float('inf'),
-                                 0.0, float('inf'), 0.0, 0.0]
+                                 0.0, float('inf'), 0.0, 0.0,
+                                 0.0, 0.0]
 
         # ── ISO layer: the independent monitor's verdict ─────────────────
         # The filter SHAPES; iso_safety_monitor ENFORCES. When it latches, the
@@ -1370,6 +1371,11 @@ class CBFSafetyFilter(Node):
             data[6] v_cap_min      [m/s] tightest SSM speed cap
             data[7] v_closing_max  [m/s] fastest closing speed of any CP
             data[8] iso_stop_latched
+            data[9]  v_obs_cond     [m/s] largest CONDITIONED closing speed any
+                                    row used (post median / deadband / clamp) —
+                                    the retreat cap's and the evasion's input
+            data[10] v_obs_hdot     [m/s] the signed n̂ᵀv_track of largest
+                                    magnitude that entered ḣ (enable_vobs_in_hdot)
 
         The MONITOR's numbers win when its message is fresh: it is the channel
         that decides, and publishing the filter's own opinion next to a monitor
@@ -1394,9 +1400,26 @@ class CBFSafetyFilter(Node):
                 if obs_rows.any():
                     v_cls = max(float(-np.min(sep[obs_rows])), 0.0)
             latched = 0.0
+        # ── data[9..10]: what the barrier was actually FED ──────────────
+        # The tracker's raw velocity is on the wire (LinkDistance.obstacle_
+        # velocity) and is easy to log, but between it and the barrier sits a
+        # 5-frame median, a deadband and a clamp. Logging only the raw input
+        # and reasoning about the output is how a filter's own artefacts get
+        # attributed to the thing it filters: measured on a hardware run, the
+        # raw tracker peaked at 3.84 m/s while 24 of its 34 excursions lasted a
+        # single perception frame — exactly what a 5-frame median removes by
+        # construction. These two are the CONDITIONED values, so the question
+        # "does the artefact reach the barrier" is answerable from a bag.
+        #
+        # Both are per-REBUILD (50 Hz) maxima, not per-QP-tick: they are the
+        # builder's own diagnostics, and they hold whatever the last rebuild
+        # saw until the next one replaces them.
+        rows = self._rows
         self._status_msg.data = [float(n_c), slack, fault, float(n_act), d_obs,
                                  float(s_p), float(v_cap), float(v_cls),
-                                 float(latched)]
+                                 float(latched),
+                                 float(getattr(rows, 'diag_v_obs', 0.0)),
+                                 float(getattr(rows, 'diag_vobs_hdot', 0.0))]
         self._status_pub.publish(self._status_msg)
 
     def _now(self) -> float:

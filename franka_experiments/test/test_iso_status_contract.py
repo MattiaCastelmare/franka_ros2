@@ -44,7 +44,7 @@ class _StatusStub:
         self._iso_stamp = 100.0 - iso_age
         self._rows = rows if rows is not None else types.SimpleNamespace(
             diag_ssm_sp=0.0, diag_ssm_cap=float('inf'))
-        self._status_msg = types.SimpleNamespace(data=[0.0] * 9)
+        self._status_msg = types.SimpleNamespace(data=[0.0] * 11)
         self._status_pub = _StatusPub()
         self._now = lambda: 100.0
 
@@ -59,8 +59,24 @@ def test_the_first_five_fields_are_unchanged():
     assert row[:5] == [3.0, 0.1, 0.0, 1.0, 0.25]
 
 
-def test_the_message_carries_nine_fields():
-    assert len(_status(_StatusStub())) == 9
+def test_the_message_carries_eleven_fields():
+    """Append-only: data[9..10] carry the CONDITIONED v_obs the barrier was
+    fed, beside the raw tracker output that is already on the wire."""
+    assert len(_status(_StatusStub())) == 11
+
+
+def test_the_conditioned_v_obs_comes_from_the_row_builder():
+    rows = types.SimpleNamespace(diag_ssm_sp=0.0, diag_ssm_cap=float('inf'),
+                                 diag_v_obs=0.42, diag_vobs_hdot=-0.13)
+    row = _status(_StatusStub(rows=rows))
+    assert row[9] == pytest.approx(0.42)
+    assert row[10] == pytest.approx(-0.13)
+
+
+def test_a_builder_without_those_diagnostics_reports_zero_not_a_crash():
+    row = _status(_StatusStub(rows=types.SimpleNamespace(
+        diag_ssm_sp=0.0, diag_ssm_cap=float('inf'))))
+    assert row[9] == 0.0 and row[10] == 0.0
 
 
 def test_with_no_monitor_the_tail_is_the_builders_own_view():
