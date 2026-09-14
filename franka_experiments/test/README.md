@@ -1,29 +1,30 @@
-# franka_experiments — Validation Infrastructure
+# franka_experiments — Test Infrastructure
 
-Validation launch files and scripts for the experiment pipelines.
-Everything here uses `use_fake_hardware:=true` — no physical FR3 required.
+Validation launch files and scripts for the three experiment pipelines.
+All tests use `use_fake_hardware:=true` — no physical FR3 robot required.
 
 ```
 test/
 ├── launch/
 │   ├── test_velocity_fake.launch.py
 │   ├── test_torque_fake.launch.py
+│   ├── test_oscbf_fake.launch.py
 │   └── test_rl_fake.launch.py          # Safe-RL (ONNX policy) accel pipeline
 ├── scripts/
-│   └── check_topics.sh                 # pipeline topic validator
+│   └── check_topics.sh
 ├── config/
 │   └── test_defaults.yaml
-├── e2e_pentagon_moveit.sh              # end-to-end pentagon commander check
+├── smoke_cbf_safety_filter.py          # node-level, no bringup
+├── smoke_rl_policy_commander.py        # node-level, no bringup
+├── test_avoidance.py                   # pytest (pure numpy)
+├── test_cbf_hard_constraints.py
+├── test_cbf_velocity_filter.py
+├── test_rl_policy.py                   # sim↔real observation/action contract
 └── README.md  ← this file
 ```
 
-> The pytest regression suite (48 files, 649 assertions) was removed on
-> 2026-09-12. It is recoverable with:
->
-> ```bash
-> git checkout 2debdff -- franka_experiments/test/
-> ```
-
+Pure-python unit tests run with `pytest test/` (68 tests, no ROS graph
+needed beyond a sourced workspace).
 
 ---
 
@@ -235,6 +236,7 @@ python3 -m franka_sim.scripts.evaluate_policy \
 ### Node-level smoke test (no bringup, ~10 s)
 
 ```bash
+python3 test/smoke_rl_policy_commander.py           # auto-discovers a policy
 ```
 
 Checks the warm-up gate, the 100 Hz rate, `|q̈| ≤ q̈_max`, that the node's
