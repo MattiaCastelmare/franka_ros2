@@ -8,23 +8,30 @@ test/
 ├── launch/
 │   ├── test_velocity_fake.launch.py
 │   ├── test_torque_fake.launch.py
-│   ├── test_oscbf_fake.launch.py
 │   └── test_rl_fake.launch.py          # Safe-RL (ONNX policy) accel pipeline
 ├── scripts/
 │   └── check_topics.sh
 ├── config/
 │   └── test_defaults.yaml
+├── e2e_pentagon_moveit.sh              # end-to-end pentagon commander check
+├── _cbf_builder_harness.py             # headless ConstraintBuilder helper
+├── smoke_cbf_construct.py              # node-level, no bringup
 ├── smoke_cbf_safety_filter.py          # node-level, no bringup
 ├── smoke_rl_policy_commander.py        # node-level, no bringup
 ├── test_avoidance.py                   # pytest (pure numpy)
 ├── test_cbf_hard_constraints.py
 ├── test_cbf_velocity_filter.py
 ├── test_rl_policy.py                   # sim↔real observation/action contract
+├── …                                   # 40 more test_*.py, see `ls test/`
 └── README.md  ← this file
 ```
 
-Pure-python unit tests run with `pytest test/` (68 tests, no ROS graph
-needed beyond a sourced workspace).
+Pure-python unit tests run with `pytest test/`: 44 `test_*.py` files,
+649 test functions, no ROS graph needed beyond a sourced workspace. The
+`smoke_*.py` runners are not collected by pytest — run them directly.
+
+Pipeline 3 (OSCBF) has no `test_oscbf_fake.launch.py`; see the note in
+that section for the manual bring-up.
 
 ---
 
