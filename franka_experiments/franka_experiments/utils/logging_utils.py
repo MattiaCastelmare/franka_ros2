@@ -167,10 +167,21 @@ def _zone_field(con, i: int, w_task, n_rot: int) -> str:
             f'nrot={int(n_rot)} ')
 
 
+def _iso_num(x) -> str:
+    """A finite ISO quantity to 3 decimals, or ``inf`` — never ``inf.000``.
+
+    ``vcap`` is legitimately infinite (no SSM cap in force), and ``%.3f`` on an
+    infinity prints ``inf`` on some platforms and a huge number on others. One
+    spelling, so a log parser has one case to handle.
+    """
+    x = float(x)
+    return 'inf' if x == float('inf') else f'{x:.3f}'
+
+
 def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
                     qddot_safe, qddot_nom, qddot_real, slack, n_active_cps,
                     vel_ratio, vel_bite, slew_bite, cap_age,
-                    w_task=None) -> str:
+                    w_task=None, iso_v_closing=0.0, iso_stop=0.0) -> str:
     """One compact, CSV-like line describing the whole constraint episode.
 
     Field guide, in the order they appear. Units in brackets.
@@ -358,6 +369,22 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         # how many rows. +0.000/0 with the flag off.
         f'vhd={getattr(rows, "diag_vobs_hdot", 0.0):+.3f}/'
         f'{int(getattr(rows, "diag_vobs_hdot_n", 0))} '
+        # ── ISO 10218 layer (roadmap Step 10) ──────────────────────────────
+        # sp     [m]   separation distance the worst control point NEEDS at the
+        #              speed it is actually travelling (ISO 10218-2:2025 Annex
+        #              L). Read it against d_min on the same line: sp > d_min
+        #              is the bound being crossed.
+        # vcap   [m/s] tightest SSM speed cap over the control points. inf with
+        #              iso_ssm_speed_rows off, which is how the line says the
+        #              ISO rows are not driving anything.
+        # vcls   [m/s] fastest closing speed of any control point. vcls > vcap
+        #              is what iso_safety_monitor trips on.
+        # isostop      1 while the monitor has a NON-SAFETY-RATED stop latched.
+        # All four read 0.000/inf/0.000/0 with the ISO flags off.
+        f'sp={_iso_num(getattr(rows, "diag_ssm_sp", 0.0))} '
+        f'vcap={_iso_num(getattr(rows, "diag_ssm_cap", float("inf")))} '
+        f'vcls={_iso_num(iso_v_closing)} '
+        f'isostop={int(iso_stop)} '
         + _zone_field(con, i, w_task, getattr(rows, 'diag_rot_reject', 0)) +
         f'w=[{w_txt}] wq=[{wq_txt}] '
         f'retreat={rtr:+.3f}/{rtr_cap:.3f} vlink={spd:+.3f}/{spd_cap:.3f} '

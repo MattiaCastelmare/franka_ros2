@@ -160,6 +160,27 @@ class DistanceEngine:
         # Pending suspicious-jump state: (seg_idx, cp_idx) → (d_pre, d_susp).
         # Presence of a key ⇒ that CP is awaiting 1-frame confirmation.
         self._pending: Dict[Tuple[int, int], Tuple[float, float]] = {}
+
+        # ── Bounded hold (roadmap Step 7) ────────────────────────────────
+        # When a control point has no finite measurement the LPF holds its last
+        # smoothed value. That hold used to be UNBOUNDED: a CP whose obstacle
+        # left the depth image, or that fell permanently into a mask hole, kept
+        # reporting a distance from an arbitrarily old frame, and the barrier
+        # kept building a row on it. A stale row is worse than no row — it looks
+        # like knowledge.
+        #
+        # Age is accumulated in SECONDS from the real inter-frame dt; with no
+        # stamp (dt is None) it falls back to counting frames at the configured
+        # rate, so the bound still bites. Past iso_distance_hold_max_s the result
+        # is emitted with direction = None, which build_cp_messages already turns
+        # into valid = False — a path that exists and is tested.
+        #
+        # 0 or negative disables the bound, which is the pre-Step-7 behaviour
+        # exactly.
+        self._hold_max_s = float(distance_cfg.get('iso_distance_hold_max_s', 0.0))
+        self._hold_age: Dict[Tuple[int, int], float] = {}
+        self._hold_dt_fallback = 1.0 / max(
+            float(distance_cfg.get('assumed_frame_rate_hz', 30.0)), 1e-6)
         # Timestamp [s] of the previous processed frame, for the REAL dt.
         self._prev_stamp: Optional[float] = None
 
@@ -456,13 +477,25 @@ class DistanceEngine:
             if not np.isfinite(r.distance):
                 # No valid measurement: hold last smoothed value (pending left
                 # intact — it resolves when a finite measurement next arrives).
+                # The hold is BOUNDED: past _hold_max_s the direction is dropped
+                # so the entry is published invalid instead of carrying a stale
+                # distance forward forever. See the note in __init__.
+                age = self._hold_age.get(key, 0.0) + (
+                    dt if dt_valid else self._hold_dt_fallback)
+                self._hold_age[key] = age
+                expired = 0.0 < self._hold_max_s < age
+                if expired and dir_prev is not None:
+                    self._log_hold_expired(r, d_prev, age)
                 smoothed.append(ControlPointResult(
                     point=r.point, seg_idx=r.seg_idx, cp_idx=r.cp_idx,
                     radius=r.radius, start_link=r.start_link, end_link=r.end_link,
-                    distance=d_prev, direction=dir_prev,
+                    distance=d_prev,
+                    direction=None if expired else dir_prev,
                     closest_obstacle_point=None, closest_pixel=None,
                 ))
                 continue
+            # A finite measurement clears the hold clock for this CP.
+            self._hold_age.pop(key, None)
 
             # Direction: always EMA-smoothed to avoid flip discontinuities
             dir_new = self._smooth_direction(dir_prev, r.direction, alpha)
@@ -533,6 +566,19 @@ class DistanceEngine:
             cluster_id=r.cluster_id, extras=r.extras,
         )
 
+    def _log_hold_expired(self, r, d_prev, age):
+        """Fires once per CP per expiry (the flag is edge-triggered by dir_prev
+        going None on the next hold), so it is not throttled: an expiry is a
+        perception dropout long enough to matter and every one is worth a line.
+        """
+        if self._log is None:
+            return
+        self._log.warning(
+            f'RTDDIAG hold expired CP=({r.seg_idx},{r.cp_idx}) held '
+            f'd={d_prev:.3f} m for {age * 1e3:.0f} ms > '
+            f'{self._hold_max_s * 1e3:.0f} ms -> published INVALID. The '
+            f'obstacle left the image, or this CP fell into a mask hole.')
+
     def _log_jump(self, outcome, r, d_prev, d_raw, dt, d_new, v_impl=None):
         """Diagnostic for suspicious-approach events (RTDDIAG, analog to CBFDIAG).
 
@@ -557,6 +603,7 @@ class DistanceEngine:
         """Clear all LPF state (call on camera resolution change)."""
         self._lpf.clear()
         self._pending.clear()
+        self._hold_age.clear()
         self._prev_stamp = None
 
     @staticmethod

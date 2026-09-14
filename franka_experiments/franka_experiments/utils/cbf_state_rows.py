@@ -34,6 +34,8 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 import numpy as np
 
 from franka_experiments.utils.cbf_zones import ladder_from_params, ZONE_ACTIVE
+from franka_experiments.utils.iso_ssm import (
+    protective_separation, ssm_speed_cap)
 from franka_experiments.utils.cbf_evasion import (
     escape_direction,
     evasion_bias,
@@ -1167,6 +1169,12 @@ _ROT_HOLD_MAX = 3
 _IDENT_DT_MAX = 0.2
 
 G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD = 0, 1, 2, 3, 4, 5
+
+#: The link the ISO 'reduced' mode's 250 mm/s row is built on, and the one
+#: ``iso_safety_monitor`` applies its copy of the same cap to (its
+#: ``iso_tcp_link`` parameter defaults to this). Last entry of
+#: ``robot.segment_links`` in fr3_complete.yaml.
+FR3_TCP_LINK = 'fr3_link8'
 N_SLACK = 6
 GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
 NX = NV + N_SLACK   # [qddot(7), s_obs, s_sc, s_qlim, s_sing, s_cap, s_spd]
@@ -1506,6 +1514,11 @@ class ConstraintBuilder:
         self.diag_v_obs_link = ''
         self.diag_vapp = self.diag_hbrake = 0.0
         self.diag_hunc = 0.0
+        # ISO layer (iso_ssm_speed_rows): tightest SSM speed cap and largest
+        # S_p of the last rebuild. inf / 0.0 mean the ISO rows contributed
+        # nothing, which is also their flag-off state.
+        self.diag_ssm_cap = float('inf')
+        self.diag_ssm_sp = 0.0
         self.diag_hlat = 0.0        # largest latency-compensation tightening [m]
         # enable_vobs_in_hdot: the n̂ᵀv_track of largest magnitude that went
         # into ḣ this rebuild (signed, m/s), and on how many rows.
@@ -1563,10 +1576,14 @@ class ConstraintBuilder:
         # the mask is a contiguous tail slice instead of a per-append flag on
         # every one of the four row builders.
         cap_a, cap_val, cap_grp, cap_link = [], [], [], []
-        # (Jp, clearance, label) per kept obstacle control point. The task-space
-        # speed rows are built from these AFTER the self-collision pass, so they
-        # can fold d_sc_min into each point's clearance.
-        spd_pts: list[tuple[np.ndarray, float, str]] = []
+        # (Jp, clearance, label, v_app) per kept obstacle control point. The
+        # task-space speed rows are built from these AFTER the self-collision
+        # pass, so they can fold d_sc_min into each point's clearance. v_app is
+        # the SAME conditioned, clamped closing speed the obstacle row and the
+        # retreat cap consume — carried through rather than recomputed, so the
+        # ISO speed cap cannot end up bounding a different obstacle than the
+        # barrier it is supposed to back up.
+        spd_pts: list[tuple[np.ndarray, float, str, float]] = []
         # Phase-1 RHS feedforward, one entry per OBSTACLE row in append order.
         # Scattered onto the full-length vector via grp == G_OBS at the end, so
         # it survives any future reordering of the row builders.
@@ -1611,6 +1628,11 @@ class ConstraintBuilder:
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
         self.diag_hstand = 0.0
+        # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
+        # inf/0.0 with the flag off, which is how the CBFDIAG line says
+        # 'the ISO rows are not doing anything' without the config open.
+        self.diag_ssm_cap = float('inf')
+        self.diag_ssm_sp = 0.0
         stand_on = bool(getattr(self._P, 'enable_velocity_standoff', False))
         stand_t = float(getattr(self._P, 'velocity_standoff_time_s', 0.20))
         stand_max = float(getattr(self._P, 'velocity_standoff_max', 0.20))
@@ -2039,7 +2061,7 @@ class ConstraintBuilder:
                     cap_grp.append(G_CAP)
                     cap_link.append(f'cap:{lbl}')
                 if self._P.link_speed_rows_enabled:
-                    spd_pts.append((Jp, ob.d, f'spd:{lbl}'))
+                    spd_pts.append((Jp, ob.d, f'spd:{lbl}', v_o))
 
                 # ── Lateral evasion (utils.cbf_evasion) ─────────────────────
                 # "Can this control point still brake out of this?" — answered
@@ -2179,15 +2201,91 @@ class ConstraintBuilder:
         # clearance is min(its own obstacle gap, the closest self-collision
         # gap): a near self-collision is a whole-arm geometric event and must
         # slow every control point, not only the pair that reported it.
-        for Jp_i, clear_i, lbl_i in spd_pts:
+        #
+        # ── ISO 10218-2:2025 Annex L (roadmap Step 5) ───────────────────────
+        # With ``iso_ssm_speed_rows`` the OBSTACLE term is replaced by the
+        # separation-distance bound: the largest speed at which this control
+        # point can still stop before the gap closes to C + Z_d + Z_r, given
+        # the reaction time, the realized deceleration and the human's approach
+        # speed. The requirement (``S >= S_p``) is **[R]**; enforcing it per
+        # control point through a task-space speed row, rather than on "any
+        # hazardous moving part" as a whole, is a conservative reading **[E]**.
+        #
+        # The SELF-COLLISION term is untouched either way: a self-collision gap
+        # is not an ISO separation distance and has no C, no Z_d and no human
+        # in it. The two are still combined with min(), so whichever is tighter
+        # binds.
+        #
+        # And the row stays SLACK-RELAXABLE. A hard row plus the state box can
+        # be infeasible when the arm is already over the cap — which is the one
+        # state where the bound matters most and an infeasible QP is the worst
+        # possible answer. What makes the bound enforced rather than merely
+        # preferred is the independent monitor (iso_safety_monitor), not this
+        # row; the row's job is to shape the command so the monitor never fires.
+        iso_ssm = bool(getattr(self._P, 'iso_enabled', False)) and bool(
+            getattr(self._P, 'iso_ssm_speed_rows', False))
+        for Jp_i, clear_i, lbl_i, v_app_i in spd_pts:
+            if iso_ssm:
+                v_obst = ssm_speed_cap(
+                    clear_i, v_app_i,
+                    t_r=self._P.iso_t_reaction, a_s=self._P.iso_a_stop,
+                    c=self._P.iso_c_intrusion, z_d=self._P.iso_z_depth,
+                    z_r=self._P.iso_z_robot, v_max=self._P.link_speed_max)
+                # Tightest SSM cap this rebuild, for CBFDIAG and cbf_status.
+                if v_obst < self.diag_ssm_cap:
+                    self.diag_ssm_cap = v_obst
+                sp_i = protective_separation(
+                    v_obst, v_app_i,
+                    t_r=self._P.iso_t_reaction, a_s=self._P.iso_a_stop,
+                    c=self._P.iso_c_intrusion, z_d=self._P.iso_z_depth,
+                    z_r=self._P.iso_z_robot)
+                if sp_i > self.diag_ssm_sp:
+                    self.diag_ssm_sp = sp_i
+            else:
+                v_obst = obstacle_link_speed_cap(
+                    clear_i, v_max=self._P.link_speed_max,
+                    d_safe=self._P.d_safe,
+                    v_at_d_safe=self._P.link_speed_v_at_d_safe)
             row = link_speed_row(
                 Jp_i, js.qdot,
-                min(obstacle_link_speed_cap(clear_i, v_max=self._P.link_speed_max,
-                                            d_safe=self._P.d_safe,
-                                            v_at_d_safe=self._P.link_speed_v_at_d_safe),
+                min(v_obst,
                     link_speed_cap(d_sc_min, v_max=self._P.link_speed_max,
                                    reaction_s=self._P.link_speed_reaction_s)),
                 self._P.link_speed_activate_frac, lbl_i)
+            if row is not None:
+                a_s, v_s, lbl_s = row
+                cap_a.append(a_s)
+                cap_val.append(v_s)
+                cap_grp.append(G_SPD)
+                cap_link.append(lbl_s)
+
+        # ── ISO 'reduced' mode: one extra TCP speed row (roadmap Step 9) ────
+        # ISO 10218-1:2025 (5.5.3) / -2:2025 (5.5.6) cap reduced speed at
+        # 250 mm/s and REQUIRE it for manual modes — that number is **[S]**.
+        # Applying it as a cell-wide derate during automatic operation is a
+        # local choice **[E]**, and it is NOT a substitute for a rated
+        # speed-monitoring function: this row is slack-relaxable like every
+        # other, and the QP is single-channel Python.
+        #
+        # Built on the control point of FR3_TCP_LINK — the same link
+        # iso_safety_monitor applies its copy of this cap to, so the two
+        # channels bound the same body. When no control point on that link
+        # reported an obstacle this frame, it falls back to the LAST entry,
+        # which is the one furthest along the kinematic chain that did: capping
+        # the nearest thing to the TCP is the conservative answer, and capping
+        # nothing would be the wrong one.
+        #
+        # The TCP's own SSM row is kept alongside this one. They are different
+        # bounds and min() of the two is what actually binds.
+        iso_reduced = (bool(getattr(self._P, 'iso_enabled', False))
+                       and str(getattr(self._P, 'iso_mode', 'automatic')) == 'reduced')
+        if iso_reduced and spd_pts:
+            tcp_pts = [t for t in spd_pts if FR3_TCP_LINK in t[2]]
+            Jp_t, _clear_t, lbl_t, _v_t = (tcp_pts or spd_pts)[-1]
+            row = link_speed_row(
+                Jp_t, js.qdot,
+                float(getattr(self._P, 'iso_tcp_reduced_speed', 0.25)),
+                self._P.link_speed_activate_frac, f'red:{lbl_t}')
             if row is not None:
                 a_s, v_s, lbl_s = row
                 cap_a.append(a_s)

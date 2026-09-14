@@ -9,6 +9,8 @@ On shutdown it generates plots in the same output folder.
 from __future__ import annotations
 
 import csv
+import json
+import subprocess
 import math
 import os
 import time
@@ -26,7 +28,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from franka_msgs.msg import FrankaRobotState, MultiDistance
+from franka_msgs.msg import (
+    FrankaRobotState, MultiDistance, MultiLinkDistance)
 
 from franka_experiments.utils.math_utils import _safe_float  # noqa: F401
 from franka_experiments.utils.node_runtime import (  # noqa: F401
@@ -34,7 +37,9 @@ from franka_experiments.utils.node_runtime import (  # noqa: F401
     _now_sec,
     _stamp_to_sec,
 )
-from franka_experiments.utils.params import declare_float, declare_int
+from franka_experiments.utils.config import resolve_log_dir
+from franka_experiments.utils.params import (
+    declare_float, declare_int, declare_str)
 
 try:
     from scipy.signal import savgol_filter as _savgol
@@ -51,7 +56,12 @@ PLOT_JOINT_INDICES = range(PLOT_JOINT_START, NUM_JOINTS + 1)
 
 DEFAULT_JOINT_NAMES = [f"fr3_joint{i}" for i in range(1, NUM_JOINTS + 1)]
 
-DEFAULT_OUTPUT_DIR = str(Path.home() / "ros2_experiments")
+# Where a run lands by default. NOT $HOME any more: the container does not
+# mount it, so every run used to end up somewhere the operator could not reach
+# from their own file manager and had to `docker cp` out. resolve_log_dir()
+# prefers the repo's franka_logs/, which IS mounted and IS gitignored.
+# Override with $FRANKA_LOGS_DIR or the output_dir parameter.
+DEFAULT_OUTPUT_DIR = resolve_log_dir()
 
 DEFAULT_EXPERIMENT_NAME = "bag_02_dynamic_test"
 
@@ -67,6 +77,31 @@ DEFAULT_TORQUE_CMD_TOPIC = "/NS_1/torque_cmd"
 # (fastdds_no_shm.xml) every subscriber costs UDP loopback work next to the RT
 # loop.  The callback here is deliberately three assignments long.
 DEFAULT_ROBOT_STATE_TOPIC = "/NS_1/franka_robot_state_broadcaster/robot_state"
+
+# ── ISO 10218 layer (roadmap Step 10) ────────────────────────────────────────
+# Every ISO quantity that exists at runtime has to exist in the bag too, or the
+# only record of a stop is a log line nobody kept. All three are optional: a
+# topic that never publishes leaves its columns NaN, which is how a CSV says
+# "that channel was not running" as distinct from "it was running and read 0".
+DEFAULT_CBF_STATUS_TOPIC = "/NS_1/cbf_status"
+DEFAULT_ISO_SAFETY_TOPIC = "/NS_1/iso_safety"
+DEFAULT_TORQUE_SAT_TOPIC = "/NS_1/torque_saturation"
+
+# ── Acceleration pipeline + Cartesian ────────────────────────────────────────
+# The torque stack publishes q̈, not q̇: pentagon_qddot_commander -> qddot_nom,
+# cbf_safety_filter -> qddot_safe. The qdot_nom_* / qdot_cmd_* columns below are
+# the VELOCITY pipeline's and stay EMPTY in a torque run — they are kept because
+# cbf_velocity_filter still fills them, not because they mean anything here.
+DEFAULT_QDDOT_NOM_TOPIC = "/NS_1/qddot_nom"
+DEFAULT_QDDOT_SAFE_TOPIC = "/NS_1/qddot_safe"
+# The barrier's own input, per control point — richer than the legacy
+# MultiDistance: one entry per CP rather than per link, with the tracked
+# obstacle velocity on it.
+DEFAULT_PER_LINK_TOPIC = "/cbf/per_link_distances"
+#: Frame whose Cartesian pose and speed are logged. The TCP speed is the
+#: quantity ISO limits (reduced speed, v_PFL) and NOTHING in this package logged
+#: it before — joint speed is not a substitute, a folded arm decouples the two.
+DEFAULT_TCP_LINK = "fr3_link8"
 
 
 class ExperimentLogger(Node):
@@ -108,6 +143,13 @@ class ExperimentLogger(Node):
         self.declare_parameter("qdot_cmd_topic", DEFAULT_QDOT_CMD_TOPIC)
         self.declare_parameter("torque_cmd_topic", DEFAULT_TORQUE_CMD_TOPIC)
         self.declare_parameter("robot_state_topic", DEFAULT_ROBOT_STATE_TOPIC)
+        self.declare_parameter("cbf_status_topic", DEFAULT_CBF_STATUS_TOPIC)
+        self.declare_parameter("iso_safety_topic", DEFAULT_ISO_SAFETY_TOPIC)
+        self.declare_parameter("torque_saturation_topic", DEFAULT_TORQUE_SAT_TOPIC)
+        self.declare_parameter("qddot_nom_topic", DEFAULT_QDDOT_NOM_TOPIC)
+        self.declare_parameter("qddot_safe_topic", DEFAULT_QDDOT_SAFE_TOPIC)
+        self.declare_parameter("per_link_distances_topic", DEFAULT_PER_LINK_TOPIC)
+        self.tcp_link = declare_str(self, "tcp_link", DEFAULT_TCP_LINK)
 
         self.output_root = Path(str(self.get_parameter("output_dir").value)).expanduser()
         exp_name = str(self.get_parameter("experiment_name").value)
@@ -148,6 +190,35 @@ class ExperimentLogger(Node):
         self.comm_success_min = float("nan")
         self.comm_degraded_count = 0
 
+        # ── Acceleration pipeline, Cartesian, per-CP avoidance ───────────
+        # NaN until the matching topic publishes: a column of zeros would read
+        # as "measured, and zero", which is a different statement from "that
+        # channel was not running" and the one that misleads.
+        self.last_qddot_nom = np.full(NUM_JOINTS, np.nan)
+        self.last_qddot_safe = np.full(NUM_JOINTS, np.nan)
+        self.cp_stats: Dict[str, object] = {}
+        self._kin = None
+        self._tcp_fid = None
+        self._build_kinematics()
+
+        # ISO layer, all NaN until their topic publishes.
+        self.last_cbf_n_rows = float("nan")
+        self.last_cbf_slack = float("nan")
+        self.last_cbf_fault = float("nan")
+        self.last_cbf_n_viol = float("nan")
+        self.last_cbf_d_min = float("nan")
+        self.last_cbf_sp = float("nan")
+        self.last_cbf_vcap = float("nan")
+        self.last_cbf_vcls = float("nan")
+        self.last_cbf_isostop = float("nan")
+        self.last_iso_latched = float("nan")
+        self.last_iso_reason = float("nan")
+        self.last_iso_sp = float("nan")
+        self.last_iso_vcap = float("nan")
+        self.last_iso_vcls = float("nan")
+        self.last_tau_sat = np.full(NUM_JOINTS, np.nan)
+        self.iso_stop_count = 0
+
         self._prev_qdot: Optional[np.ndarray] = None
         self._prev_js_time: Optional[float] = None
         self._prev_qddot_filt: Optional[np.ndarray] = None
@@ -160,6 +231,7 @@ class ExperimentLogger(Node):
         self.csv_file = open(self.csv_path, "w", newline="")
         self.writer = csv.DictWriter(self.csv_file, fieldnames=self.header)
         self.writer.writeheader()
+        self._write_manifest()
 
         self.create_subscription(
             JointState,
@@ -203,6 +275,23 @@ class ExperimentLogger(Node):
                 QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
             )
 
+        _pl = str(self.get_parameter("per_link_distances_topic").value).strip()
+        if _pl:
+            # BEST_EFFORT depth 1, matching the publisher: this is a ~30 Hz
+            # sensor stream and we only ever want its newest frame.
+            self.create_subscription(
+                MultiLinkDistance, _pl, self.per_link_cb,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+
+        for topic_param, cb in (("cbf_status_topic", self.cbf_status_cb),
+                                ("iso_safety_topic", self.iso_safety_cb),
+                                ("torque_saturation_topic", self.torque_sat_cb),
+                                ("qddot_nom_topic", self.qddot_nom_cb),
+                                ("qddot_safe_topic", self.qddot_safe_cb)):
+            topic = str(self.get_parameter(topic_param).value).strip()
+            if topic:
+                self.create_subscription(Float64MultiArray, topic, cb, 10)
+
         self.timer = self.create_timer(1.0 / self.sample_rate_hz, self.sample)
 
         self.get_logger().info(
@@ -217,14 +306,111 @@ class ExperimentLogger(Node):
             f"  robot_state_topic    : {_rs_topic or '(disabled)'}"
         )
 
+    def _build_kinematics(self) -> None:
+        """Pinocchio, for the Cartesian block. Fails SOFT.
+
+        A missing model must cost the Cartesian columns, not the whole run: by
+        the time this node starts the robot is usually already moving, and a
+        logger that refuses to start is a logger that was not there when it
+        mattered. The columns then stay NaN, which the summary reports as
+        "not recorded" rather than as zero.
+        """
+        try:
+            import pinocchio as pin
+            from franka_experiments.utils.kinematics import (
+                CBFKinematics, build_urdf_no_hand)
+            self._pin = pin
+            self._kin = CBFKinematics(pin.buildModelFromUrdf(build_urdf_no_hand()))
+            self._tcp_fid = self._kin.resolve_frame_id(self.tcp_link)
+            if self._tcp_fid is None:
+                raise RuntimeError(f'frame {self.tcp_link!r} not in the model')
+        except Exception as exc:                       # noqa: BLE001
+            self._kin = self._tcp_fid = None
+            self.get_logger().warn(
+                f'Cartesian block disabled ({exc}) — tcp_* columns stay NaN. '
+                f'Joint speed is NOT a substitute: a folded or near-singular '
+                f'arm decouples joint speed from task speed in both directions.')
+
+    def _write_manifest(self) -> None:
+        """The run's own description, next to its data.
+
+        A CSV of numbers with no record of which configuration produced them is
+        not a measurement, it is a pile of numbers. This is what makes a run
+        readable six months later, and comparable with another one.
+        """
+        def _git(*a):
+            # The installed copy is not a git checkout (colcon copies, it does
+            # not symlink), so try the source tree first and the working
+            # directory second — a run launched from the workspace resolves
+            # there. Provenance is worth two attempts: "which code produced
+            # this run" is the first question anyone asks of a log.
+            for cwd in (os.path.dirname(os.path.abspath(__file__)), os.getcwd()):
+                try:
+                    out = subprocess.run(a, cwd=cwd, capture_output=True,
+                                         text=True, timeout=5)
+                    if out.returncode == 0 and out.stdout.strip():
+                        return out.stdout.strip()
+                except Exception:                      # noqa: BLE001
+                    continue
+            return None
+
+        man = {
+            "schema": "franka_experiments/experiment_log/2",
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "csv": str(self.csv_path),
+            "sample_rate_hz": self.sample_rate_hz,
+            "d_safe": self.d_safe,
+            "tcp_link": self.tcp_link,
+            "cartesian_available": self._kin is not None,
+            "joint_names": list(self.joint_names),
+            "git": {"sha": _git("git", "rev-parse", "HEAD"),
+                    "branch": _git("git", "rev-parse", "--abbrev-ref", "HEAD"),
+                    "dirty": bool(_git("git", "status", "--porcelain"))},
+            "topics": {k: str(self.get_parameter(k).value) for k in (
+                "joint_state_topic", "multi_distance_topic", "per_link_distances_topic",
+                "qdot_nom_topic", "qdot_cmd_topic", "qddot_nom_topic",
+                "qddot_safe_topic", "torque_cmd_topic", "robot_state_topic",
+                "cbf_status_topic", "iso_safety_topic", "torque_saturation_topic")},
+            "note": (
+                "qdot_nom_* and qdot_cmd_* belong to the VELOCITY pipeline and "
+                "stay empty in a torque/acceleration run — the stack publishes "
+                "qddot_nom / qddot_safe instead. NaN means the channel was not "
+                "running; 0 means it was and read zero."),
+        }
+        try:
+            with open(self.run_dir / "run_manifest.json", "w") as fh:
+                json.dump(man, fh, indent=2, sort_keys=True, default=str)
+        except Exception as exc:                       # noqa: BLE001
+            self.get_logger().warn(f"could not write run_manifest.json: {exc}")
+
     def _make_header(self) -> List[str]:
         header = ["t"]
-        for prefix in ["q", "qdot", "qddot", "tau_effort", "tau_cmd", "qdot_nom", "qdot_cmd"]:
+        # qdot_nom / qdot_cmd are the VELOCITY pipeline's and stay empty in a
+        # torque run; qddot_nom / qddot_safe are the acceleration pipeline's and
+        # are the ones that carry the command in this stack.
+        for prefix in ["q", "qdot", "qddot", "tau_effort", "tau_cmd",
+                       "qdot_nom", "qdot_cmd", "qddot_nom", "qddot_safe"]:
             header += [f"{prefix}_{i}" for i in range(1, NUM_JOINTS + 1)]
         header += [
             "qdot_delta_norm",
             "qdot_nom_norm",
             "qdot_cmd_norm",
+            # How hard the barrier bent the commander's intent, in the space
+            # the torque stack actually commands. This is THE avoidance number:
+            # 0 means the CBF passed the task through untouched.
+            "qddot_nom_norm",
+            "qddot_safe_norm",
+            "qddot_delta_norm",
+            # ── Cartesian: what ISO limits, and what joint speed cannot say ──
+            "tcp_x", "tcp_y", "tcp_z",
+            "tcp_qx", "tcp_qy", "tcp_qz", "tcp_qw",
+            "tcp_speed",            # [m/s] linear speed of the TCP
+            "tcp_omega",            # [rad/s] angular speed of the TCP
+            # ── Avoidance, per control point (the barrier's own input) ───────
+            "cp_n_valid", "cp_n_total",
+            "cp_min_distance", "cp_min_link",
+            "cp_v_obs_max",         # [m/s] fastest tracked obstacle
+            "cp_n_tracked",         # entries carrying a confirmed track
             "min_distance",
             "min_h",
             "min_h_link",
@@ -235,7 +421,35 @@ class ExperimentLogger(Node):
             "comm_success_rate",
             "comm_success_min",
             "robot_mode",
+            # ── The barrier's own status, data[0..4] ─────────────────────
+            # These are the avoidance numbers anyone actually reads after a run:
+            # how many rows were in the QP, how much slack the solver paid, was
+            # the chain faulted, how many barriers were VIOLATED, and the
+            # closest gap. They were missing — only the ISO tail below was
+            # logged — so a run recorded that the filter was bending the command
+            # without recording what it was bending it around.
+            "cbf_n_rows",
+            "cbf_slack",
+            "cbf_fault",
+            "cbf_n_violated",
+            "cbf_d_min",
+            # ── ISO layer ────────────────────────────────────────────────
+            # cbf_* are the filter's view (cbf_status data[5..8]); iso_* are the
+            # independent monitor's own (/NS_1/iso_safety). Logged SEPARATELY
+            # and not merged: when the two disagree, that disagreement is the
+            # most interesting thing in the run.
+            "cbf_S_p",
+            "cbf_v_cap_min",
+            "cbf_v_closing_max",
+            "cbf_iso_stop",
+            "iso_stop_latched",
+            "iso_trip_reason",
+            "iso_S_p",
+            "iso_v_cap_min",
+            "iso_v_closing_max",
+            "iso_stop_count",
         ]
+        header += [f"tau_sat_{i}" for i in range(1, NUM_JOINTS + 1)]
         for k in range(1, self.max_cbf_entries + 1):
             header += [
                 f"cbf{k}_link",
@@ -316,6 +530,86 @@ class ExperimentLogger(Node):
     def torque_cmd_cb(self, msg: Float64MultiArray):
         self.last_tau_cmd = _as_list7(msg.data)
 
+    def qddot_nom_cb(self, msg: Float64MultiArray):
+        self.last_qddot_nom = _as_list7(msg.data)
+
+    def qddot_safe_cb(self, msg: Float64MultiArray):
+        self.last_qddot_safe = _as_list7(msg.data)
+
+    def per_link_cb(self, msg: MultiLinkDistance):
+        """The barrier's own input, summarised.
+
+        One entry per CONTROL POINT, not per link, so this counts what the QP
+        actually received — including the entries it dropped as invalid, which
+        is the difference between "nothing was near" and "perception failed".
+        """
+        from franka_experiments.utils.perception_msgs import labelled_links
+        n_valid = n_total = n_tracked = 0
+        d_min, d_lbl, v_max = float("inf"), "", 0.0
+        for label, ld in labelled_links(msg):
+            n_total += 1
+            if not ld.valid:
+                continue
+            n_valid += 1
+            d = _safe_float(ld.distance)
+            if math.isfinite(d) and d < d_min:
+                d_min, d_lbl = d, label
+            v = math.sqrt(ld.obstacle_velocity.x ** 2
+                          + ld.obstacle_velocity.y ** 2
+                          + ld.obstacle_velocity.z ** 2)
+            if v > v_max:
+                v_max = v
+            if int(getattr(ld, "track_id", 0)) > 0:
+                n_tracked += 1
+        self.cp_stats = {
+            "cp_n_valid": n_valid, "cp_n_total": n_total,
+            "cp_min_distance": d_min if math.isfinite(d_min) else float("nan"),
+            "cp_min_link": d_lbl, "cp_v_obs_max": v_max,
+            "cp_n_tracked": n_tracked,
+        }
+
+    def cbf_status_cb(self, msg: Float64MultiArray):
+        """The barrier's status: the core data[0..4] and the ISO tail data[5..8].
+
+        Two separate length guards, not one: a filter built before the ISO layer
+        publishes exactly 5 elements, and gating the whole callback on 9 would
+        have thrown away the core fields too — which is precisely what it did
+        until this was fixed.
+        """
+        d = msg.data
+        if len(d) >= 5:
+            self.last_cbf_n_rows = _safe_float(d[0])
+            self.last_cbf_slack = _safe_float(d[1])
+            self.last_cbf_fault = _safe_float(d[2])
+            self.last_cbf_n_viol = _safe_float(d[3])
+            self.last_cbf_d_min = _safe_float(d[4])
+        if len(d) >= 9:
+            self.last_cbf_sp = _safe_float(d[5])
+            self.last_cbf_vcap = _safe_float(d[6])
+            self.last_cbf_vcls = _safe_float(d[7])
+            self.last_cbf_isostop = _safe_float(d[8])
+
+    def iso_safety_cb(self, msg: Float64MultiArray):
+        """The monitor's own row, and a running count of stops.
+
+        The count lives here rather than in sample() for the same reason
+        comm_success_min does: a stop that latches and is reset between two
+        samples still has to appear in the CSV.
+        """
+        d = msg.data
+        if len(d) >= 5:
+            latched = _safe_float(d[0])
+            if latched >= 1.0 and not (self.last_iso_latched >= 1.0):
+                self.iso_stop_count += 1
+            self.last_iso_latched = latched
+            self.last_iso_reason = _safe_float(d[1])
+            self.last_iso_sp = _safe_float(d[2])
+            self.last_iso_vcap = _safe_float(d[3])
+            self.last_iso_vcls = _safe_float(d[4])
+
+    def torque_sat_cb(self, msg: Float64MultiArray):
+        self.last_tau_sat = _as_list7(msg.data)
+
     def robot_state_cb(self, msg: FrankaRobotState):
         """Runs at 1 kHz — keep it to assignments, no numpy, no logging.
 
@@ -329,6 +623,41 @@ class ExperimentLogger(Node):
             self.comm_degraded_count += 1
         if not (self.comm_success_min <= rate):     # nan-safe: nan <= x is False
             self.comm_success_min = rate
+
+    def _cartesian(self) -> Dict[str, object]:
+        """TCP pose and the two speeds ISO actually limits.
+
+        ``‖J_v q̇‖`` from the Jacobian rather than a finite difference of the
+        position: the derivative of a sampled pose is dominated by differencing
+        noise at 100 Hz, and this number is compared against a 250 mm/s limit.
+        """
+        nan = float("nan")
+        blank = {k: nan for k in ("tcp_x", "tcp_y", "tcp_z", "tcp_qx", "tcp_qy",
+                                  "tcp_qz", "tcp_qw", "tcp_speed", "tcp_omega")}
+        if self._kin is None or not np.all(np.isfinite(self.last_q)):
+            return blank
+        try:
+            qdot = (self.last_qdot if np.all(np.isfinite(self.last_qdot))
+                    else np.zeros(NUM_JOINTS))
+            self._kin.update(self.last_q, qdot, with_jdot=False)
+            oMf = self._kin.data.oMf[self._tcp_fid]
+            p = np.asarray(oMf.translation)
+            quat = self._pin.Quaternion(oMf.rotation)
+            J6 = self._pin.getFrameJacobian(
+                self._kin.model, self._kin.data, self._tcp_fid,
+                self._pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+            v6 = J6 @ qdot
+            return {
+                "tcp_x": float(p[0]), "tcp_y": float(p[1]), "tcp_z": float(p[2]),
+                "tcp_qx": float(quat.x), "tcp_qy": float(quat.y),
+                "tcp_qz": float(quat.z), "tcp_qw": float(quat.w),
+                "tcp_speed": float(np.linalg.norm(v6[:3])),
+                "tcp_omega": float(np.linalg.norm(v6[3:])),
+            }
+        except Exception as exc:                       # noqa: BLE001
+            self.get_logger().warn(f"Cartesian sample failed: {exc}",
+                                   throttle_duration_sec=10.0)
+            return blank
 
     @staticmethod
     def _norm(v: np.ndarray) -> float:
@@ -348,6 +677,8 @@ class ExperimentLogger(Node):
             "tau_cmd": self.last_tau_cmd,
             "qdot_nom": self.last_qdot_nom,
             "qdot_cmd": self.last_qdot_cmd,
+            "qddot_nom": self.last_qddot_nom,
+            "qddot_safe": self.last_qddot_safe,
         }
         for prefix, vec in vectors.items():
             for i in range(NUM_JOINTS):
@@ -360,6 +691,25 @@ class ExperimentLogger(Node):
             row["qdot_delta_norm"] = np.nan
         row["qdot_nom_norm"] = self._norm(self.last_qdot_nom)
         row["qdot_cmd_norm"] = self._norm(self.last_qdot_cmd)
+
+        # ── The acceleration pipeline, and how hard the barrier bent it ──
+        row["qddot_nom_norm"] = self._norm(self.last_qddot_nom)
+        row["qddot_safe_norm"] = self._norm(self.last_qddot_safe)
+        if (np.all(np.isfinite(self.last_qddot_nom))
+                and np.all(np.isfinite(self.last_qddot_safe))):
+            row["qddot_delta_norm"] = self._norm(
+                self.last_qddot_safe - self.last_qddot_nom)
+        else:
+            row["qddot_delta_norm"] = np.nan
+
+        # ── Cartesian ────────────────────────────────────────────────────
+        row.update(self._cartesian())
+
+        # ── Avoidance, per control point ─────────────────────────────────
+        for k in ("cp_n_valid", "cp_n_total", "cp_min_distance",
+                  "cp_v_obs_max", "cp_n_tracked"):
+            row[k] = self.cp_stats.get(k, np.nan)
+        row["cp_min_link"] = self.cp_stats.get("cp_min_link", "")
 
         valid_entries = [e for e in self.cbf_entries if bool(e["valid"])]
         if valid_entries:
@@ -383,6 +733,24 @@ class ExperimentLogger(Node):
         row["comm_success_rate"] = self.last_comm_success
         row["comm_success_min"] = self.comm_success_min
         row["robot_mode"] = self.last_robot_mode
+
+        row["cbf_n_rows"] = self.last_cbf_n_rows
+        row["cbf_slack"] = self.last_cbf_slack
+        row["cbf_fault"] = self.last_cbf_fault
+        row["cbf_n_violated"] = self.last_cbf_n_viol
+        row["cbf_d_min"] = self.last_cbf_d_min
+        row["cbf_S_p"] = self.last_cbf_sp
+        row["cbf_v_cap_min"] = self.last_cbf_vcap
+        row["cbf_v_closing_max"] = self.last_cbf_vcls
+        row["cbf_iso_stop"] = self.last_cbf_isostop
+        row["iso_stop_latched"] = self.last_iso_latched
+        row["iso_trip_reason"] = self.last_iso_reason
+        row["iso_S_p"] = self.last_iso_sp
+        row["iso_v_cap_min"] = self.last_iso_vcap
+        row["iso_v_closing_max"] = self.last_iso_vcls
+        row["iso_stop_count"] = self.iso_stop_count
+        for i in range(NUM_JOINTS):
+            row[f"tau_sat_{i + 1}"] = self.last_tau_sat[i]
 
         for k in range(1, self.max_cbf_entries + 1):
             if k <= len(self.cbf_entries):

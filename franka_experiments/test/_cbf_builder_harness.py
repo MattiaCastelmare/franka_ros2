@@ -166,6 +166,19 @@ class P:
     zone_slack_m_hold = 0.25
     zone_task_priority_cut = 0.5
     zone_resume_s = 0.5
+    # ── ISO 10218 layer — OFF, so every existing test keeps the rows it was
+    # written against. Only iso_enabled + iso_ssm_speed_rows together change
+    # anything; iso_mode == 'reduced' adds the 250 mm/s TCP row.
+    iso_enabled = False
+    iso_mode = 'automatic'
+    iso_ssm_speed_rows = False
+    iso_t_reaction = 0.10
+    iso_a_stop = 4.0
+    iso_v_human = 2.0
+    iso_c_intrusion = 0.10
+    iso_z_depth = 0.06
+    iso_z_robot = 0.01
+    iso_tcp_reduced_speed = 0.25
 
 
 def make_params(**over):

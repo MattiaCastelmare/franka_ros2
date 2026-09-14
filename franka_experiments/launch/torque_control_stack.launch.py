@@ -76,8 +76,11 @@ from launch.actions import (
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
+    Shutdown,
     TimerAction,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -127,6 +130,10 @@ _ALL_PARAMS = [
     'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
     'uncertainty_margin', 'sim_obstacle', 'depth_bag',
     'multi_obstacle_k', 'vobs_in_hdot', 'velocity_standoff',
+    'iso_enabled', 'iso_mode', 'iso_ssm_speed_rows', 'iso_monitor_enabled',
+    'torque_iso_monitor_delay_s', 'link_speed_max', 'retreat_cap_max_speed',
+    'start_iso_evidence_logger', 'torque_iso_evidence_delay_s',
+    'iso_evidence_dir', 'iso_evidence_run_name',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
@@ -141,6 +148,33 @@ _ALL_PARAMS = [
 
 def _as_bool(x: str) -> bool:
     return str(x).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+
+
+def _speed_ceiling_overrides(p) -> list:
+    """The PFL / reduced-speed ceilings, as ROS parameters, or nothing.
+
+    Step 9 of the ISO roadmap bounds the worst case that survives every
+    software layer: ``link_speed_max`` must not exceed ``iso_v_pfl``, and the
+    ordering invariant ``retreat_cap_max_speed < link_speed_max`` has to
+    survive that. ``cbf_safety_filter`` RAISES at construction when the first
+    is violated with ``iso_enabled`` on — it does not clamp silently, because a
+    ceiling that quietly moves is not a ceiling.
+
+    So the two values stay in fr3_control.yaml at their non-ISO numbers (with
+    the flags off, output is bit-identical to before the ISO layer existed) and
+    are overridden HERE, from the command line, when the operator asks for one:
+
+        ros2 launch ... iso_enabled:=true link_speed_max:=0.68 \
+                        retreat_cap_max_speed:=0.60
+
+    An empty string means "leave the YAML alone", which is the default for both.
+    """
+    out = {}
+    for key in ('link_speed_max', 'retreat_cap_max_speed'):
+        raw = str(p.get(key, '')).strip()
+        if raw:
+            out[key] = float(raw)
+    return [out] if out else []
 
 
 def _as_float_list(x: str):
@@ -309,6 +343,39 @@ def _launch_all(context):
                     actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
+
+    # ── [ISO layer] preflight, BEFORE the controller spawner ──────────────────
+    # iso_enabled:=true is a CLAIM — that the separation-distance constants were
+    # measured and that the layers enforcing the bound are running. Every one of
+    # those can be false while the YAML still parses, and the failure mode is
+    # the worst kind: the stack comes up, the logs say ISO, and the numbers are
+    # the placeholders somebody typed as an example.
+    #
+    # Run synchronously, at t = 0, and abort the whole launch on a non-zero
+    # exit. Deliberately BEFORE the spawner: the point is that the RT loop never
+    # starts, not that it starts and is stopped.
+    if _as_bool(p['iso_enabled']):
+        preflight = ExecuteProcess(
+            cmd=['python3',
+                 PathJoinSubstitution([FindPackageShare('franka_experiments'),
+                                       'scripts', 'iso_preflight_check.py']),
+                 '--config',
+                 PathJoinSubstitution([FindPackageShare('franka_experiments'),
+                                       'config', 'fr3_control.yaml'])],
+            output='screen',
+            on_exit=[LogInfo(msg='[torque_stack] [ISO layer]      preflight done')],
+        )
+        actions.insert(0, RegisterEventHandler(OnProcessExit(
+            target_action=preflight,
+            on_exit=lambda event, context: (
+                [] if event.returncode == 0 else
+                [LogInfo(msg='[torque_stack] [ISO layer]      PREFLIGHT FAILED '
+                             '— aborting the launch'),
+                 Shutdown(reason='iso_preflight_check failed')]))))
+        actions.insert(0, preflight)
+        actions.insert(0, LogInfo(
+            msg='[torque_stack] [ISO layer]      iso_preflight_check running '
+                '(iso_enabled:=true)'))
     if rt_pin_cpu:
         # Start alongside the spawner, not after it: the script polls for the
         # FF thread anyway (up to 60 s), so starting early costs nothing. An
@@ -517,6 +584,16 @@ def _launch_all(context):
             'enable_zone_ladder':       _as_bool(p['zone_ladder']),
             'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
             'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
+            # ── ISO 10218-1/-2:2025 layer ────────────────────────────────
+            # All four default FALSE in launch_defaults.yaml: with them off
+            # the filter's numerical output is exactly what it was before
+            # the ISO layer existed. iso_enabled is the master flag; the
+            # other three do nothing without it.
+            'iso_enabled':          _as_bool(p['iso_enabled']),
+            'iso_mode':             str(p['iso_mode']),
+            'iso_ssm_speed_rows':   _as_bool(p['iso_ssm_speed_rows']),
+            'iso_monitor_enabled':  _as_bool(p['iso_monitor_enabled']),
+        }, *_speed_ceiling_overrides(p), {
             # A launch BOOL onto a threshold parameter: the guard's "off" state
             # is 0.0 rad, and exposing the angle on the command line would
             # invite tuning a number whose right value is a property of the
@@ -545,6 +622,68 @@ def _launch_all(context):
                                actions=[cbf_node, qddot_to_torque_node]))
     actions.append(LogInfo(msg=['[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque'
                                 ' (delay=', str(dynamics_delay), 's)']))
+
+    # ── [ISO layer] iso_safety_monitor ────────────────────────────────────────
+    # The SECOND channel: it watches the same geometry the QP does, from outside
+    # the QP, and latches a NON-SAFETY-RATED stop when a control point crosses
+    # its separation-distance bound. The filter brakes on it and the commander
+    # holds the phase on it; this node publishes no command of its own.
+    #
+    # Started AFTER real_time_distance so the first tick already has distances,
+    # and with the same single-thread BLAS env as every other numpy node in the
+    # stack — an OpenBLAS that spawns a thread per core turns a 100 Hz Python
+    # loop into a scheduling problem (see tools/rt-tuning).
+    if _as_bool(p['iso_monitor_enabled']):
+        if not _as_bool(p['iso_enabled']):
+            raise RuntimeError(
+                'iso_monitor_enabled:=true needs iso_enabled:=true — the monitor '
+                'reads the same iso_* block the filter does, and starting it '
+                'against a filter that is ignoring that block gives two channels '
+                'with two different ideas of where the bound is.')
+        iso_monitor_node = Node(
+            package='franka_experiments',
+            executable='iso_safety_monitor',
+            name='iso_safety_monitor',
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{
+                'iso_enabled':         True,
+                'iso_mode':            str(p['iso_mode']),
+                'iso_monitor_enabled': True,
+            }, *_speed_ceiling_overrides(p)],
+        )
+        actions.append(TimerAction(period=float(p['torque_iso_monitor_delay_s']),
+                                   actions=[iso_monitor_node]))
+        actions.append(LogInfo(msg=[
+            '[torque_stack] [ISO layer]      iso_safety_monitor ENABLED '
+            '(delay=', str(p['torque_iso_monitor_delay_s']), 's) — NON-SAFETY-RATED, '
+            'see franka_experiments/SAFETY.md']))
+    else:
+        actions.append(LogInfo(
+            msg='[torque_stack] [ISO layer]      iso_safety_monitor DISABLED'))
+
+    # ── [ISO layer] iso_evidence_logger ───────────────────────────────────────
+    # A passive observer: it subscribes, computes and writes, and publishes
+    # nothing, so it cannot affect the control path. Independent of iso_enabled
+    # on purpose — with the layer off it still records what the CURRENT system
+    # would and would not have satisfied, which is the only way to find out.
+    if _as_bool(p['start_iso_evidence_logger']):
+        evidence_node = Node(
+            package='franka_experiments',
+            executable='iso_evidence_logger',
+            name='iso_evidence_logger',
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{
+                'output_dir': str(p['iso_evidence_dir']),
+                'run_name':   str(p['iso_evidence_run_name']),
+            }, *_speed_ceiling_overrides(p)],
+        )
+        actions.append(TimerAction(period=float(p['torque_iso_evidence_delay_s']),
+                                   actions=[evidence_node]))
+        actions.append(LogInfo(msg=[
+            '[torque_stack] [ISO layer]      iso_evidence_logger ENABLED -> ',
+            str(p['iso_evidence_dir'])]))
 
     # ── [Motion generation] one q̈_nom source — never two ─────────────────────
     # Both sources publish /NS_1/qddot_nom and would fight for the topic, so
@@ -792,6 +931,78 @@ def generate_launch_description():
                             'estimated closing speed: d_safe + time_s * v_app '
                             '(cbf_safety_filter enable_velocity_standoff). '
                             'Watch hstd= in CBFDIAG'),
+
+            # ── ISO 10218-1/-2:2025 layer ─────────────────────────────────────
+            # Every one of these is FALSE by default. The ISO layer adds no
+            # behaviour and changes no number until iso_enabled is asked for;
+            # see SAFETY.md for what is and is not claimed when it is.
+            DeclareLaunchArgument(
+                'iso_enabled',
+                default_value=str(_DEFAULTS.get('iso_enabled', 'false')),
+                description='Master flag for the ISO 10218 layer: the d_safe '
+                            'floor (C+Z_d+Z_r), the PFL speed ceiling, the '
+                            'braking-authority fault and the ISO fields on '
+                            'cbf_status. NOT a certified safety function — '
+                            'read franka_experiments/SAFETY.md first'),
+            DeclareLaunchArgument(
+                'iso_mode',
+                default_value=str(_DEFAULTS.get('iso_mode', 'automatic')),
+                description="'automatic' or 'reduced'. 'reduced' adds a TCP "
+                            'speed row at iso_tcp_reduced_speed (250 mm/s). '
+                            'Needs iso_enabled:=true'),
+            DeclareLaunchArgument(
+                'iso_ssm_speed_rows',
+                default_value=str(_DEFAULTS.get('iso_ssm_speed_rows', 'false')),
+                description='Drive the task-space speed rows from the ISO '
+                            '10218-2 Annex L separation-distance bound instead '
+                            'of the heuristic gap/blind-time cap. Needs '
+                            'iso_enabled:=true'),
+            DeclareLaunchArgument(
+                'iso_monitor_enabled',
+                default_value=str(_DEFAULTS.get('iso_monitor_enabled', 'false')),
+                description='Start iso_safety_monitor: an independent SSM '
+                            'channel that latches a NON-SAFETY-RATED stop when '
+                            'a control point exceeds its separation-distance '
+                            'speed cap. Needs iso_enabled:=true'),
+            DeclareLaunchArgument(
+                'torque_iso_monitor_delay_s',
+                default_value=str(_DEFAULTS.get('torque_iso_monitor_delay_s', '3.0')),
+                description='Seconds before launching iso_safety_monitor '
+                            '(after real_time_distance)'),
+            DeclareLaunchArgument(
+                'start_iso_evidence_logger',
+                default_value=str(_DEFAULTS.get('start_iso_evidence_logger', 'false')),
+                description='Record ISO evidence (TCP/control-point speed, '
+                            'separation margin d-S_p, stop timing, saturation) '
+                            'to a run directory. Passive: it subscribes and '
+                            'writes, it publishes nothing, and it evaluates the '
+                            'ISO criteria whether or not iso_enabled is true'),
+            DeclareLaunchArgument(
+                'torque_iso_evidence_delay_s',
+                default_value=str(_DEFAULTS.get('torque_iso_evidence_delay_s', '3.0')),
+                description='Seconds before launching iso_evidence_logger'),
+            DeclareLaunchArgument(
+                'iso_evidence_dir',
+                default_value=str(_DEFAULTS.get('iso_evidence_dir',
+                                                '~/franka_iso_evidence')),
+                description='Root directory for ISO evidence runs'),
+            DeclareLaunchArgument(
+                'iso_evidence_run_name',
+                default_value=str(_DEFAULTS.get('iso_evidence_run_name', 'run')),
+                description='Name appended to the evidence run directory'),
+            DeclareLaunchArgument(
+                'link_speed_max',
+                default_value=str(_DEFAULTS.get('link_speed_max', '')),
+                description='[m/s] override the flat task-space speed ceiling '
+                            'from fr3_control.yaml. Empty = leave the YAML '
+                            'alone. With iso_enabled:=true the filter REFUSES '
+                            'to start unless this is <= iso_v_pfl'),
+            DeclareLaunchArgument(
+                'retreat_cap_max_speed',
+                default_value=str(_DEFAULTS.get('retreat_cap_max_speed', '')),
+                description='[m/s] override the retreat-cap ceiling from '
+                            'fr3_control.yaml. Empty = leave the YAML alone. '
+                            'Must stay strictly below link_speed_max'),
             DeclareLaunchArgument(
                 'obstacle_velocity_normal_guard',
                 default_value=str(_DEFAULTS.get(

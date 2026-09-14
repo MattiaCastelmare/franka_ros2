@@ -44,12 +44,13 @@ from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS
 from franka_experiments.utils.cbf_utils import load_robot_config
+from franka_experiments.utils.config import load_franka_joint_limits
 from franka_experiments.utils.kinematics import (
     generate_urdf_from_xacro,
     load_pinocchio_model,
     resolve_arm_joint_ids,
 )
-from franka_experiments.utils.params import declare_str
+from franka_experiments.utils.params import declare_bool, declare_float, declare_str
 from franka_experiments.utils.node_runtime import run_node_main
 
 
@@ -67,6 +68,40 @@ class QddotToTorqueNode(Node):
         torque_out_topic = declare_str(
             self, 'torque_out_topic',
             topics.get('torque_cmd', '/NS_1/torque_cmd'))
+
+        # ── ISO layer: command feasibility (roadmap Step 8) ───────────────
+        # S_p assumes a_s is actually DELIVERED. This chain is open-loop —
+        # tau = M q̈ + C q̇, no PD, no friction model — so the first thing to
+        # establish is that the torque it asks for is a torque the robot can
+        # produce. effort_max comes from franka_description's own
+        # joint_limits.yaml (the file the URDF is generated from), not from a
+        # copy that can drift.
+        #
+        # rt_torque_controller ALREADY clips. What is new here is that the
+        # clipping becomes OBSERVABLE: /NS_1/torque_saturation carries one flag
+        # per joint, published on EVERY command whatever the flags say, because
+        # observability changes no number and a stopping-distance claim made
+        # against a silently saturating actuator is worth nothing.
+        #
+        # The clip and the rate limit are APPLIED only under iso_enabled, so
+        # with the flag off the torque on the wire is bit-identical to what it
+        # was before this block existed.
+        params = cfg.get('params', {}) or {}
+        self._iso_enabled = declare_bool(
+            self, 'iso_enabled', bool(params.get('iso_enabled', False)))
+        self._tau_rate_max = declare_float(
+            self, 'iso_tau_rate_max',
+            float(params.get('iso_tau_rate_max', 40.0)),
+            positive=True, maximum=1000.0)
+        jl = load_franka_joint_limits(
+            [f'joint{i}' for i in range(1, NUM_JOINTS + 1)])
+        self._effort_max = jl['effort_max']
+        self._tau_prev = None            # None until the first command goes out
+        self._sat_pub = self.create_publisher(
+            Float64MultiArray,
+            topics.get('torque_saturation', '/NS_1/torque_saturation'), 10)
+        self._sat_msg = Float64MultiArray()
+        self._sat_msg.data = [0.0] * NUM_JOINTS
 
         # ── Pinocchio dynamics model (hand:=true — matches rt_torque_controller) ─
         self.get_logger().info('Building dynamics model via xacro …')
@@ -175,10 +210,66 @@ class QddotToTorqueNode(Node):
             return
 
         tau = self._compute_tau(q, qdot, qddot_nom)
+        tau = self._limit_and_report(tau)
 
         out = Float64MultiArray()
         out.data = tau.tolist()
         self._pub.publish(out)
+
+    def _limit_and_report(self, tau: np.ndarray) -> np.ndarray:
+        """Effort clip + torque-rate limit, and the saturation flags. [E]
+
+        Two bounds, in this order:
+
+        * ``|tau| <= effort_max`` — the manufacturer's per-joint effort limit.
+        * ``|tau - tau_prev| <= iso_tau_rate_max`` per tick. A torque STEP is
+          not a torque the arm delivers: the drive current ramps, and the
+          difference between commanded and realized shows up as exactly the
+          ``qdd_cmd_rad`` / ``qdd_real_rad`` gap the CBFDIAG line reports. The
+          rate limit makes the command something the actuator can follow, so
+          that ``a_s`` means what ``S_p`` assumes it means.
+
+        The flags are computed and published UNCONDITIONALLY. The limits are
+        applied only with ``iso_enabled``; otherwise the returned torque is the
+        input, unchanged, and the topic is pure diagnosis.
+
+        Not a rated function. The rated analogues are *stopping time limiting*
+        and *stopping distance limiting* (ISO 10218-1:2025, 5.5.6 / 5.5.7), and
+        this is neither.
+        """
+        hit_effort = np.abs(tau) > self._effort_max
+        tau_clipped = np.clip(tau, -self._effort_max, self._effort_max)
+
+        if self._tau_prev is None:
+            hit_rate = np.zeros(NUM_JOINTS, dtype=bool)
+            tau_limited = tau_clipped
+        else:
+            step = tau_clipped - self._tau_prev
+            hit_rate = np.abs(step) > self._tau_rate_max
+            tau_limited = self._tau_prev + np.clip(
+                step, -self._tau_rate_max, self._tau_rate_max)
+
+        sat = np.logical_or(hit_effort, hit_rate)
+        self._sat_msg.data = [1.0 if b else 0.0 for b in sat]
+        self._sat_pub.publish(self._sat_msg)
+        if sat.any():
+            self.get_logger().warn(
+                'torque saturation on joint(s) '
+                + ', '.join(str(i + 1) for i in np.flatnonzero(sat))
+                + f' — effort={np.round(np.abs(tau), 1).tolist()} vs '
+                f'{self._effort_max.tolist()} N*m'
+                + (f', rate limit {self._tau_rate_max:.0f} N*m/tick'
+                   if hit_rate.any() else '')
+                + ('' if self._iso_enabled
+                   else ' (DIAGNOSTIC ONLY: iso_enabled is false, the command '
+                        'goes out unclipped and rt_torque_controller clips it)'),
+                throttle_duration_sec=1.0)
+
+        out = tau_limited if self._iso_enabled else tau
+        # tau_prev tracks what ACTUALLY went out, so the next tick's rate limit
+        # is centred on the real command and not on one that was never sent.
+        self._tau_prev = np.array(out, copy=True)
+        return out
 
     # ── Dynamics ──────────────────────────────────────────────────────────────
 

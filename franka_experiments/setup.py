@@ -48,6 +48,8 @@ setup(
             'rl_policy_commander = franka_experiments.nodes.rl_policy_commander:main',
             'qddot_to_torque = franka_experiments.nodes.qddot_to_torque:main',
             'cbf_safety_filter = franka_experiments.nodes.cbf_safety_filter:main',
+            'iso_safety_monitor = franka_experiments.nodes.iso_safety_monitor:main',
+            'iso_evidence_logger = franka_experiments.nodes.iso_evidence_logger:main',
             # === Torque pipeline 2 (OSCBF torque-level) ===
             'pentagon_torque_commander = franka_experiments.nodes.pentagon_torque_commander:main',
             'cbf_oscbf_filter = franka_experiments.nodes.cbf_OSCBF_filter:main',

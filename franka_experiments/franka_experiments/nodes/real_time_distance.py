@@ -126,6 +126,13 @@ class RealTimeDistance(Node):
         self._publish_empty_per_link     = declare_bool(
             self, 'publish_empty_per_link',
             self.distance_cfg.get('publish_empty_per_link', True))
+        # Fail-closed perception (roadmap Step 7): publish the per-link topic
+        # whenever anything is finite and within max_thresh, not only when
+        # something sits inside [min_thresh, max_thresh]. See the long note next
+        # to `publish_contact_regime` in fr3_complete.yaml.
+        self._publish_contact_regime     = declare_bool(
+            self, 'publish_contact_regime',
+            self.distance_cfg.get('publish_contact_regime', True))
 
         # ── Camera intrinsics (populated by camera_info_callback) ────────
         self.bridge    = CvBridge()
@@ -213,6 +220,19 @@ class RealTimeDistance(Node):
         # the engine's labels, so there is one labelling, not two.
         self.distance_cfg['multi_obstacle_depth_jump_m'] = float(
             trk_cfg.get('cluster_depth_jump_m', 0.10))
+        # ── Fail-closed perception (roadmap Step 7) ───────────────────────
+        # The hold bound is an ISO-layer constant and lives with the rest of
+        # them in fr3_control.yaml's params: block, not in the perception config
+        # — one file owns the iso_* numbers, and CBF_PARAM_SPEC validates them
+        # there. Forwarded onto the engine's config the same way multi_obstacle_k
+        # is. Missing (an older control config) -> 0.0 -> the bound is off and
+        # the hold behaves exactly as it did before.
+        self.distance_cfg['iso_distance_hold_max_s'] = float(
+            (ctrl_cfg.get('params', {}) or {}).get('iso_distance_hold_max_s', 0.0))
+        self.get_logger().info(
+            f'distance hold bound: '
+            f'{self.distance_cfg["iso_distance_hold_max_s"] * 1e3:.0f} ms '
+            f'(0 = unbounded, the pre-ISO behaviour)')
 
         self.distance_engine = DistanceEngine(
             distance_cfg=self.distance_cfg,
@@ -519,21 +539,55 @@ class RealTimeDistance(Node):
                     f'obstacle tracking skipped this frame: {exc}',
                     throttle_duration_sec=2.0)
 
-        valid = [
+        # ── Two different questions, two different lists (roadmap Step 7) ──
+        # `in_band` is the LEGACY one and decides the MultiDistance / fallback /
+        # logging path: "is there an obstacle in the band this node reports on".
+        #
+        # `publishable` decides whether the SAFETY topic goes out, and it drops
+        # the lower bound. The two used to be one list, which put a hole in the
+        # barrier exactly where it matters: in a frame where EVERY control point
+        # is closer than min_thresh (0.08 m) — the contact regime — the single
+        # list was empty, the function returned here, and the only thing on
+        # /cbf/per_link_distances was an empty heartbeat. The CBF then ran with
+        # ZERO obstacle rows at the closest the arm ever gets to something.
+        #
+        # Entries below min_thresh are not dropped now, they are FLAGGED:
+        # build_cp_messages publishes them with confidence = 0.5, which is above
+        # the filter's min_confidence and below anything a clean measurement
+        # scores. The self-detection concern that motivated the lower bound is
+        # answered by the flag rather than by silence.
+        in_band = [
             r for r in cp_results
             if np.isfinite(r.distance)
             and thresholds['min_thresh'] <= r.distance <= thresholds['max_thresh']
         ]
+        publishable = ([r for r in cp_results
+                        if np.isfinite(r.distance)
+                        and r.distance <= thresholds['max_thresh']]
+                       if self._publish_contact_regime else in_band)
         now = time.monotonic()
-        if not valid:
+        if not publishable:
             if self._tlog_no_obs.due(now):
                 self._tlog_no_obs.debug(
                     f'No near obstacle (CP mode). Fallback={fallback_distance} m')
             self._publish_fallback(fallback_distance, stamp)
             self._publish_per_link_heartbeat(stamp)
             return
+        if not in_band:
+            # Contact regime: nothing in the reporting band, but something
+            # closer than its lower edge. The legacy fallback still goes out
+            # (its consumers expect one per frame), and the per-link topic now
+            # goes out too.
+            self._publish_fallback(fallback_distance, stamp)
+            self.get_logger().warn(
+                f'CONTACT REGIME: every control point is closer than '
+                f'min_thresh={thresholds["min_thresh"]:.3f} m '
+                f'(nearest {min(r.distance for r in publishable):.3f} m) — '
+                f'publishing per-link distances with confidence 0.5 instead of '
+                f'an empty heartbeat',
+                throttle_duration_sec=1.0)
 
-        best_cp          = min(valid, key=lambda r: r.distance)
+        best_cp          = min(in_band or publishable, key=lambda r: r.distance)
         min_dist         = best_cp.distance
         closest_obs_pt   = best_cp.closest_obstacle_point
         closest_robot_pt = best_cp.point

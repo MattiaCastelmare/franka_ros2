@@ -108,6 +108,14 @@ from franka_experiments.utils.logging_utils import (
 from franka_experiments.utils.perception_msgs import labelled_links
 
 
+#: Slack price of the task-space speed family once the SSM rows drive it
+#: (roadmap Step 5, **[E]**). Above ``rho_slack`` (1000.0) on purpose: below it
+#: the obstacle rows could relax the separation-distance cap by paying for it.
+#: Not a YAML parameter — it is a fixed relation to ``rho_slack``, and exposing
+#: it would invite tuning the one number that has to stay on the correct side.
+_ISO_RHO_SLACK_SPEED = 2000.0
+
+
 class CBFSafetyFilter(Node):
 
     # ═════════════════════════════════════════════════════════════════════
@@ -123,6 +131,13 @@ class CBFSafetyFilter(Node):
         # range. A missing key is a startup failure naming the key.
         topics, P = load_cbf_config(self)
         self.P = P
+        # ── 1a. ISO 10218 layer ─────────────────────────────────────────
+        # Entirely inert with iso_enabled: false, which is the shipped default.
+        # Everything it does — the d_safe floor, the S_h parameterisation, the
+        # PFL ceiling, the SSM rows' slack price — is applied HERE, on P, before
+        # anything reads it, so there is exactly one place to look for "what did
+        # the flag change".
+        self._iso_configure(P)
 
         # ── 2. State limits, straight from franka_description ───────────
         # NOT from the joint_limits: block at the bottom of fr3_control.yaml —
@@ -150,13 +165,28 @@ class CBFSafetyFilter(Node):
         # single shared slack let a joint-limit row in RADIANS relax every
         # self-collision row in METRES by the same amount, until the firmware
         # fired its own reflex.
+        #
+        # ISO layer (roadmap Step 5): with the SSM rows on, the speed family's
+        # slack is priced ABOVE the obstacle family's (2000 vs rho_slack=1000)
+        # so the barrier can no longer buy its way past the separation-distance
+        # cap with slack. Still a PRICE, not a hard row: a hard speed row plus
+        # the state box can be infeasible exactly when the arm is already over
+        # the cap. What makes the bound enforced rather than preferred is
+        # iso_safety_monitor, one channel over. [E]
+        rho_spd = P.rho_slack_link_speed
+        if P.iso_enabled and P.iso_ssm_speed_rows:
+            rho_spd = max(rho_spd, _ISO_RHO_SLACK_SPEED)
+            self.get_logger().info(
+                f'ISO SSM speed rows ON: rho_slack_link_speed '
+                f'{P.rho_slack_link_speed:.0f} -> {rho_spd:.0f} '
+                f'(above rho_slack={P.rho_slack:.0f})')
         P_mat = np.eye(NX)
         for g, rho in ((G_OBS,  P.rho_slack),
                        (G_SC,   P.rho_slack_self_collision),
                        (G_QLIM, P.rho_slack_joint_limit),
                        (G_SING, P.rho_slack_singularity),
                        (G_CAP,  P.rho_slack_retreat),
-                       (G_SPD,  P.rho_slack_link_speed)):
+                       (G_SPD,  rho_spd)):
             P_mat[NV + g, NV + g] = rho
         self._P_csc = sparse.csc_matrix(P_mat)
         self._qvec = np.zeros(NX)
@@ -271,7 +301,37 @@ class CBFSafetyFilter(Node):
         self._status_pub = self.create_publisher(
             Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
         self._status_msg = Float64MultiArray()
-        self._status_msg.data = [0.0, 0.0, 0.0, 0.0, float('inf')]
+        self._status_msg.data = [0.0, 0.0, 0.0, 0.0, float('inf'),
+                                 0.0, float('inf'), 0.0, 0.0]
+
+        # ── ISO layer: the independent monitor's verdict ─────────────────
+        # The filter SHAPES; iso_safety_monitor ENFORCES. When it latches, the
+        # filter stops filtering and brakes — the rows are not consulted at all,
+        # because the situation the monitor found is precisely one the rows were
+        # already failing to prevent.
+        #
+        # Subscribed unconditionally (the topic simply never arrives when the
+        # monitor is off) so the wiring does not depend on a flag read at
+        # construction. _iso_stop_active() is where the flag is honoured.
+        # Empty-frame run (roadmap Step 7). A distance frame with no valid entry
+        # is normal when nothing is nearby and a FAULT when something was close
+        # a moment ago: the difference is what the last non-empty frame said.
+        # Braking-authority fault (roadmap Step 8): consecutive ticks on which
+        # the REALIZED acceleration delivered less than iso_brake_frac_min of
+        # the commanded one, while an obstacle row was active.
+        self._brake_frac_run = 0
+        self._brake_frac_warned = False
+        self._diag_brake_frac = 1.0
+        self._empty_since = None    # monotonic start of the current empty run
+        self._empty_close = False   # was the last non-empty frame inside the zone
+        self._empty_faulted = False # edge detector for the log line
+        self._iso = None            # last [latched, reason, S_p, v_cap, v_cls]
+        self._iso_stamp = 0.0
+        self._iso_start = self._now()
+        self._iso_was_latched = False
+        self.create_subscription(
+            Float64MultiArray, topics.get('iso_safety', '/NS_1/iso_safety'),
+            self._on_iso_safety, QoSProfile(depth=1), callback_group=grp_io)
 
         # ── 8. Start ────────────────────────────────────────────────────
         # Warm-up FIRST: the one-shot lazy costs (Pinocchio's first FK, OSQP's
@@ -297,6 +357,128 @@ class CBFSafetyFilter(Node):
             f'  limits from franka_description: q margin={P.position_margin_rad} rad, '
             f'brake_eta={P.position_brake_eta}, qdot at {P.velocity_box_margin:.0%}, '
             f'qddot +-{np.round(self._ub, 2).tolist()} rad/s^2')
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  ISO 10218-1/-2:2025 layer — configuration-time, before anything reads P
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _iso_configure(self, P) -> None:
+        """Apply and CHECK the ISO layer. No-op when ``iso_enabled`` is false.
+
+        Three things happen here, in this order, and all three RAISE rather than
+        clamp. A safety envelope that quietly moves when it cannot be met is
+        worse than no envelope: it reads like a guarantee and is not one.
+
+        1. **The d_safe floor** (roadmap Step 4). ISO 10218-2:2025 Annex L makes
+           ``S_p`` the sum of three motion terms plus ``C + Z_d + Z_r``. The
+           motion terms are velocity-dependent and are enforced elsewhere (the
+           velocity standoff carries ``S_h``, the SSM speed cap carries
+           ``S_r + S_s``); ``C + Z_d + Z_r`` is the IRREDUCIBLE part, the
+           distance that is required even from a standstill, and that is what
+           ``d_safe`` has to be. Splitting the terms across those mechanisms
+           rather than putting all of ``S_p`` into one is **[E]**, a design
+           choice; the requirement ``S >= S_p`` itself is **[R]**.
+
+           With the conformant ``iso_c_intrusion = 0.85`` (ISO 13855:2024 body
+           detection, which is what an unrated depth pipeline with no
+           demonstrated detection capability gets) the floor is 0.92 m and this
+           check WILL fail on this cell. That is the correct outcome, not a bug.
+           There is no bypass flag and there will not be one. The three
+           admissible resolutions are in the message.
+
+        2. **S_h** (Step 4). ``velocity_standoff_time_s`` becomes
+           ``T_r + v_h/a_s``: the existing speed-proportional standoff then
+           moves the barrier out by ``v_app * (T_r + T_s)``, which IS ``S_h``.
+           **[S]** structure, **[E]** parameterisation.
+
+        3. **The PFL ceiling** (Step 9). ``link_speed_max`` must not exceed
+           ``iso_v_pfl``, and ``retreat_cap_max_speed`` must stay strictly below
+           ``link_speed_max``.
+        """
+        if not P.iso_enabled:
+            return
+
+        # ── 1. d_safe >= C + Z_d + Z_r ──────────────────────────────────
+        d_floor = P.iso_c_intrusion + P.iso_z_depth + P.iso_z_robot
+        if P.d_safe < d_floor:
+            msg = (
+                f'ISO 10218-2:2025 Annex L: d_safe={P.d_safe:.3f} m is below the '
+                f'irreducible part of the protective separation distance, '
+                f'C + Z_d + Z_r = {P.iso_c_intrusion:.3f} + {P.iso_z_depth:.3f} '
+                f'+ {P.iso_z_robot:.3f} = {d_floor:.3f} m.\n'
+                f'  This is not a tuning problem. The three admissible '
+                f'resolutions, in order:\n'
+                f'  (a) demonstrate a detection capability d <= 40 mm for the '
+                f'depth pipeline (scripts/iso_constants_measure.py detection) '
+                f'and set iso_c_intrusion = 8*(d-14) mm;\n'
+                f'  (b) raise d_safe to {d_floor:.3f} m — note this exceeds the '
+                f'FR3 reach at the conformant C = 0.85 m, i.e. conformant SSM is '
+                f'not achievable in this workspace;\n'
+                f'  (c) record a research deviation in franka_experiments/'
+                f'SAFETY.md and run with iso_enabled: false, making no ISO '
+                f'claim.\n'
+                f'  There is no bypass flag. See {P.config_path}')
+            self.get_logger().error(msg)
+            raise ValueError(msg)
+
+        # ── 2. S_h through the existing velocity standoff ───────────────
+        # T_s = v_h/a_s here rather than v_r/a_s: the standoff is evaluated once
+        # per rebuild against the OBSTACLE's closing speed, and bounding the
+        # robot's own stopping time by the human approach speed is the roadmap's
+        # [E] parameterisation, not a term of the standard.
+        t_stand = P.iso_t_reaction + P.iso_v_human / max(P.iso_a_stop, 1e-9)
+        t_max = 5.0                       # CBF_PARAM_SPEC velocity_standoff_time_s
+        m_max = 2.0                       # CBF_PARAM_SPEC velocity_standoff_max
+        s_h_max = P.iso_v_human * t_stand
+        if t_stand > t_max or s_h_max > m_max:
+            self.get_logger().warn(
+                f'ISO S_h clamped: T_r + v_h/a_s = {t_stand:.2f} s and '
+                f'v_h*(T_r+T_s) = {s_h_max:.2f} m exceed the declared ranges '
+                f'({t_max} s / {m_max} m). The standoff will carry LESS than '
+                f'S_h — record the shortfall in SAFETY.md.')
+        P.enable_velocity_standoff = True
+        P.velocity_standoff_time_s = min(t_stand, t_max)
+        P.velocity_standoff_max = min(s_h_max, m_max)
+
+        # ── 3. PFL / reduced-speed ceilings (Step 9) ────────────────────
+        if P.link_speed_max > P.iso_v_pfl:
+            msg = (
+                f'ISO 10218-2:2025 Annex M: link_speed_max='
+                f'{P.link_speed_max:.3f} m/s exceeds iso_v_pfl='
+                f'{P.iso_v_pfl:.3f} m/s, the power-and-force-limited speed. The '
+                f'ceiling is not clamped silently — relaunch with '
+                f'link_speed_max:={P.iso_v_pfl:.2f} '
+                f'retreat_cap_max_speed:={0.9 * P.iso_v_pfl:.2f}, or lower both '
+                f'in {P.config_path}. Keep retreat_cap_max_speed strictly below '
+                f'link_speed_max.')
+            self.get_logger().error(msg)
+            raise ValueError(msg)
+        if P.retreat_cap_max_speed >= P.link_speed_max:
+            msg = (
+                f'retreat_cap_max_speed={P.retreat_cap_max_speed:.3f} must stay '
+                f'strictly below link_speed_max={P.link_speed_max:.3f}: the '
+                f'retreat cap is the inner bound, the speed row the outer one, '
+                f'and inverting them makes the outer row unreachable.')
+            self.get_logger().error(msg)
+            raise ValueError(msg)
+
+        # ── 4. Report what the flag actually changed ────────────────────
+        self.get_logger().warn(
+            f'ISO 10218 layer ACTIVE (mode={P.iso_mode}) — this is an '
+            f'ISO-ALIGNED research configuration, NOT a certified safety '
+            f'function. See franka_experiments/SAFETY.md.\n'
+            f'  d_safe={P.d_safe:.3f} m >= C+Z_d+Z_r={d_floor:.3f} m '
+            f'(C={P.iso_c_intrusion:.3f} Z_d={P.iso_z_depth:.3f} '
+            f'Z_r={P.iso_z_robot:.3f})\n'
+            f'  S_h via velocity standoff: time_s={P.velocity_standoff_time_s:.3f} s '
+            f'max={P.velocity_standoff_max:.3f} m '
+            f'(T_r={P.iso_t_reaction:.3f} s, v_h={P.iso_v_human:.2f} m/s, '
+            f'a_s={P.iso_a_stop:.2f} m/s^2)\n'
+            f'  S_r+S_s via SSM speed rows: '
+            f'{"ON" if P.iso_ssm_speed_rows else "off"}\n'
+            f'  independent monitor: '
+            f'{"ON" if P.iso_monitor_enabled else "off"}  '
+            f'link_speed_max={P.link_speed_max:.3f} <= v_PFL={P.iso_v_pfl:.3f} m/s')
 
     def _warmup(self) -> None:
         """Run every per-tick code path once with dummy data, results discarded.
@@ -478,6 +660,26 @@ class CBFSafetyFilter(Node):
         self._diag_cap_age = age
         self._obs = ObstacleSnap(items, now, t_cap)
 
+        # ── Empty-frame run (roadmap Step 7) ────────────────────────────
+        # Perception keeps publishing (the heartbeat is deliberate — it is how a
+        # consumer tells "nothing near" from "perception dead"), so an empty
+        # frame does NOT age `obs` and does NOT trip the staleness check. That
+        # is correct when nothing is nearby and wrong when something was: the
+        # arm then runs with zero obstacle rows against an obstacle that was
+        # inside the active zone one frame ago, and nothing anywhere says so.
+        #
+        # The memory is what makes this cheap: remember whether the last
+        # NON-EMPTY frame was close, and fault only on a run of empty frames
+        # that follows one. An empty run after a far-away frame is just an empty
+        # scene and costs nothing.
+        if items:
+            self._empty_since = None
+            self._empty_faulted = False
+            d_min = min((ob.d for ob in items), default=float('inf'))
+            self._empty_close = d_min < P.zone_r_active * P.d_safe
+        elif self._empty_since is None:
+            self._empty_since = now
+
     @staticmethod
     def _latency_fields(ld) -> dict:
         """The three latency-compensation fields of a LinkDistance, or an empty
@@ -558,6 +760,43 @@ class CBFSafetyFilter(Node):
             return
         now = self._now()
 
+        # ── STEP 0: the ISO layer's stop, above every other branch ──────
+        # Ahead of the staleness policy on purpose: when the independent monitor
+        # says the separation-distance bound was crossed, there is nothing for
+        # the rows to contribute — they are the mechanism that just failed to
+        # keep the arm on the right side of it. So the rows are skipped entirely
+        # and the arm brakes on q̇ with the stop profile's own time constant,
+        # through the SAME box_only_solve the QP fallback ladder uses, so the
+        # state box still clips it to ±decel_max.
+        #
+        # NOT zeros. q̈ = 0 reads as "hold this velocity" all the way down the
+        # chain, and with gravity added by the firmware a zero TORQUE is
+        # coasting: the arm would sail through the stop it was just told to make.
+        # This is the same lesson the joint-state-stale branch below records,
+        # and it has been measured twice on this hardware.
+        if self._iso_stop_active(now):
+            if not self._iso_was_latched:
+                self._iso_was_latched = True
+                self.get_logger().error(
+                    'ISO SSM stop active → braking on q̈ = −q̇/iso_stop_tau '
+                    f'(tau={P.iso_stop_tau:.3f} s), CBF rows skipped. '
+                    'NON-SAFETY-RATED: this is not a protective stop.')
+            qddot_stop = np.clip(-js.qdot / P.iso_stop_tau, self._lb, self._ub)
+            self._qvec[:NV] = -qddot_stop
+            self._box_lb[:NV], self._box_ub[:NV] = self._lb, self._ub
+            x = box_only_solve(self._P_csc, self._qvec, self._box_lb,
+                               self._box_ub, max_iter=P.osqp_max_iter)
+            if x is None:
+                x = np.concatenate([qddot_stop, np.zeros(N_SLACK)])
+            self._fallback_count[OSQP_LEVEL_BRAKE] += 1
+            self._last_level = OSQP_LEVEL_BRAKE
+            self._publish(x[:NV])
+            self._publish_status(0, 0.0, fault=1.0, n_act=0)
+            return
+        if self._iso_was_latched:
+            self._iso_was_latched = False
+            self.get_logger().warn('ISO SSM stop cleared → filtering resumed')
+
         # ── STEP 1: is the state usable at all? ─────────────────────────
         # Both failures degrade to braking on the last known q̇. Zeros would
         # NOT: q̈ = 0 reads as "hold this velocity" all the way down the chain,
@@ -593,8 +832,20 @@ class CBFSafetyFilter(Node):
         G = h_qp = None
         n_c = n_active = 0
         fault = 0.0
+        # Checked BEFORE the row branch, not after: with joint-limit rows on, a
+        # run of empty distance frames still produces a non-empty, perfectly
+        # fresh snapshot — of joint-limit rows only. That snapshot would take
+        # the first branch and the filter would sail past the fault with no
+        # obstacle row in the QP, which is the exact state this detects.
+        empty_fault = self._empty_frame_fault(now)
         if js_frozen:
             fault = 1.0                             # blind: no rows, brake
+        elif empty_fault:
+            # Same degradation as a stale frame, for the same reason: the
+            # barrier has no obstacle geometry and must not pass the nominal
+            # through.
+            qddot_nom = -P.k_brake * qdot
+            fault = 1.0
         elif con is not None and now - con.t_dist < P.distance_timeout:
             n_c, G = con.A.shape[0], con.G
             n_active = int(np.count_nonzero(con.h_bar < 0.0))
@@ -816,9 +1067,12 @@ class CBFSafetyFilter(Node):
             np.subtract(qddot_safe, self._qddot_prev, out=self._diag_slew_step)
             np.greater(np.abs(self._diag_slew_step), P.max_qddot_delta - 1e-6,
                        out=self._diag_slew_bite)
+        if self._brake_authority_fault(qddot_safe, n_active):
+            fault = 1.0
         self._publish(qddot_safe)
         self._publish_status(n_c, slack, fault, n_active,
-                             con.d_obs_min if con is not None else float('inf'))
+                             con.d_obs_min if con is not None else float('inf'),
+                             qdot=qdot, con=con)
         self._report(now, con, h_qp, n_c, n_active, qdot, qddot_safe,
                      qddot_nom, slack, solve_ms, res)
 
@@ -966,11 +1220,128 @@ class CBFSafetyFilter(Node):
                 qddot_real=self._diag_qddot_real, slack=self._diag_slack,
                 n_active_cps=n_active, vel_ratio=self._diag_vel_ratio,
                 vel_bite=self._diag_vel_bite, slew_bite=self._diag_slew_bite,
-                cap_age=self._diag_cap_age, w_task=self._diag_w_task))
+                cap_age=self._diag_cap_age, w_task=self._diag_w_task,
+                iso_v_closing=float(self._status_msg.data[7])
+                if len(self._status_msg.data) > 7 else 0.0,
+                iso_stop=float(self._status_msg.data[8])
+                if len(self._status_msg.data) > 8 else 0.0))
 
     # ═════════════════════════════════════════════════════════════════════
     #  Output
     # ═════════════════════════════════════════════════════════════════════
+
+    def _brake_authority_fault(self, qddot_cmd, n_active: int) -> bool:
+        """Is the arm actually DOING what the barrier told it to? [E]
+
+        ``S_p`` assumes ``a_s`` is delivered. The q̈ → τ chain here is pure
+        feed-forward (``M q̈ + C q̇``, no PD, no friction model), so "commanded"
+        and "realized" are two different numbers and the gap between them is
+        already visible on hardware as ``qdd_cmd_rad`` vs ``qdd_real_rad`` in the
+        CBFDIAG line. If the realized acceleration is consistently a fraction of
+        the commanded one while a barrier row is pushing, then every stopping
+        distance computed from ``a_s`` is optimistic by exactly that fraction.
+
+        ``frac = (q̈_real · q̈_cmd) / ‖q̈_cmd‖²`` — the PROJECTION, not the norm
+        ratio: what matters is how much of the commanded direction is being
+        delivered, and a large realized acceleration in some other direction is
+        not braking authority.
+
+        DIAGNOSTIC ONLY, and deliberately so until the fault rate is known on
+        hardware: it raises ``fault_braking`` on cbf_status and logs, and does
+        not stop. A stop on an unvalidated threshold in the q̈ → τ chain would
+        fire on model error, not on danger.
+        """
+        P = self.P
+        if not P.iso_enabled or n_active <= 0:
+            self._brake_frac_run = 0
+            return False
+        n2 = float(qddot_cmd @ qddot_cmd)
+        if n2 <= 0.25:                      # ‖q̈_cmd‖ <= 0.5 rad/s²: nothing asked
+            self._brake_frac_run = 0
+            return False
+        frac = float(self._diag_qddot_real @ qddot_cmd) / n2
+        self._diag_brake_frac = frac
+        if frac >= P.iso_brake_frac_min:
+            self._brake_frac_run = 0
+            self._brake_frac_warned = False
+            return False
+        self._brake_frac_run += 1
+        if self._brake_frac_run < P.iso_brake_frac_ticks:
+            return False
+        if not self._brake_frac_warned:
+            self._brake_frac_warned = True
+            self.get_logger().error(
+                f'BRAKING AUTHORITY: realized/commanded acceleration = '
+                f'{frac:.2f} < {P.iso_brake_frac_min:.2f} for '
+                f'{self._brake_frac_run} ticks with {n_active} obstacle row(s) '
+                f'violated. Every stopping distance derived from '
+                f'iso_a_stop={P.iso_a_stop:.2f} m/s^2 is optimistic by about '
+                f'this factor.\n'
+                f'  q̈_cmd  = {np.round(qddot_cmd, 2).tolist()}\n'
+                f'  q̈_real = {np.round(self._diag_qddot_real, 2).tolist()}\n'
+                f'  Diagnostic only — no stop. Re-measure a_s with '
+                f'scripts/iso_constants_measure.py stop.')
+        return True
+
+    def _empty_frame_fault(self, now: float) -> bool:
+        """A run of empty distance frames that began while something was close.
+
+        Returns True once the run exceeds ``iso_empty_frame_max_s``. Gated on
+        ``iso_enabled``: the fault is an ISO-layer addition, and with the flag
+        off an empty frame behaves exactly as it did before (no rows, no fault).
+        """
+        P = self.P
+        if not P.iso_enabled or not self._empty_close or self._empty_since is None:
+            return False
+        run = now - self._empty_since
+        if run <= P.iso_empty_frame_max_s:
+            return False
+        if not self._empty_faulted:
+            self._empty_faulted = True
+            self.get_logger().error(
+                f'EMPTY distance frames for {run:.3f} s > '
+                f'{P.iso_empty_frame_max_s:.3f} s, and the last frame that was '
+                f'not empty had an obstacle inside '
+                f'{P.zone_r_active * P.d_safe:.3f} m → braking, CBF rows '
+                f'dropped. Perception is alive (it is still heartbeating) but '
+                f'it has stopped SEEING something it was seeing.')
+        return True
+
+    def _on_iso_safety(self, msg: Float64MultiArray) -> None:
+        if len(msg.data) >= 5:
+            self._iso = [float(v) for v in msg.data]
+            self._iso_stamp = self._now()
+
+    def _iso_stop_active(self, now: float) -> bool:
+        """Is the ISO layer demanding a stop right now?
+
+        Two ways to answer yes, and the second is the one worth reading twice:
+
+        * the monitor has LATCHED — the separation-distance bound was crossed;
+        * the monitor's topic is STALE (or has never arrived). With
+          ``iso_monitor_enabled`` the monitor is part of the safety chain, and a
+          missing channel in a safety chain is a fault, not a quiet absence. The
+          age is measured from node construction when nothing has ever arrived,
+          so a monitor that never starts trips this within one
+          ``distance_timeout`` rather than never.
+
+        ``scripts/iso_preflight_check.py`` is what turns that into a startup
+        failure instead of a braking robot; this is the runtime backstop.
+        """
+        P = self.P
+        if not (P.iso_enabled and P.iso_monitor_enabled):
+            return False
+        if self._iso is not None and self._iso[0] >= 1.0:
+            return True
+        age = now - (self._iso_stamp if self._iso is not None else self._iso_start)
+        if age > P.distance_timeout:
+            self.get_logger().error(
+                f'iso_safety stale ({age:.2f} s > {P.distance_timeout:.2f} s) '
+                f'with iso_monitor_enabled → braking. The monitor is part of '
+                f'the chain; a missing channel is a fault.',
+                throttle_duration_sec=2.0)
+            return True
+        return False
 
     def _publish(self, qddot_safe) -> None:
         """Send q̈_safe, and remember it: the NEXT tick's slew box is centred on
@@ -980,8 +1351,9 @@ class CBFSafetyFilter(Node):
         msg.data = qddot_safe.tolist()
         self._pub.publish(msg)
 
-    def _publish_status(self, n_c, slack, fault, n_act, d_obs=float('inf')) -> None:
-        """/cbf_status = [n_rows, max slack, fault_braking, n_violated, d_min].
+    def _publish_status(self, n_c, slack, fault, n_act, d_obs=float('inf'),
+                        qdot=None, con=None) -> None:
+        """/cbf_status = [n_rows, slack, fault, n_violated, d_min, + ISO tail].
 
         ``fault_braking`` marks a SAFETY-CHAIN fault (state stale or frozen,
         perception stale, QP failed) — distinct from n_c = 0 during normal
@@ -989,8 +1361,42 @@ class CBFSafetyFilter(Node):
         the commander's phase governor reads: slowing on genuine proximity is
         safe, slowing on tracking error deadlocks (error grows → phase freezes →
         reference parked on the blocked pose → the CBF keeps blocking).
+
+        ISO tail (roadmap Step 10), APPENDED so every existing consumer keeps
+        working — both of them (frame_grabber, rl_policy_commander) index
+        positionally behind a ``len()`` guard::
+
+            data[5] S_p_min        [m] separation distance the worst CP needs
+            data[6] v_cap_min      [m/s] tightest SSM speed cap
+            data[7] v_closing_max  [m/s] fastest closing speed of any CP
+            data[8] iso_stop_latched
+
+        The MONITOR's numbers win when its message is fresh: it is the channel
+        that decides, and publishing the filter's own opinion next to a monitor
+        that disagrees would make the log unreadable at exactly the moment it
+        matters. With no monitor running, the fields fall back to what the row
+        builder computed this rebuild, and ``v_closing_max`` is measured here
+        from the obstacle rows directly.
         """
-        self._status_msg.data = [float(n_c), slack, fault, float(n_act), d_obs]
+        iso = self._iso
+        fresh = (iso is not None
+                 and (self._now() - self._iso_stamp) < self.P.distance_timeout)
+        if fresh:
+            s_p, v_cap, v_cls, latched = iso[2], iso[3], iso[4], iso[0]
+        else:
+            rows = self._rows
+            s_p = float(getattr(rows, 'diag_ssm_sp', 0.0))
+            v_cap = float(getattr(rows, 'diag_ssm_cap', float('inf')))
+            v_cls = 0.0
+            if con is not None and qdot is not None and con.A.shape[0]:
+                sep = con.A @ qdot          # + = separating, so closing is -sep
+                obs_rows = con.group == G_OBS
+                if obs_rows.any():
+                    v_cls = max(float(-np.min(sep[obs_rows])), 0.0)
+            latched = 0.0
+        self._status_msg.data = [float(n_c), slack, fault, float(n_act), d_obs,
+                                 float(s_p), float(v_cap), float(v_cls),
+                                 float(latched)]
         self._status_pub.publish(self._status_msg)
 
     def _now(self) -> float:

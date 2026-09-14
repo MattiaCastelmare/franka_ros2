@@ -169,6 +169,41 @@ multi_obstacle_k: 2
 # Needs obstacle_tracking. Watch vhd= in CBFDIAG.
 vobs_in_hdot: true
 
+# ── ISO 10218-1/-2:2025 layer (torque_control_stack) ──────────────────
+# ALL FALSE. The ISO layer adds no behaviour and changes no number until
+# iso_enabled is asked for on the command line; with these off the filter's
+# output is bit-identical to what it was before the layer existed.
+#
+# Before turning iso_enabled on, read franka_experiments/SAFETY.md: with the
+# conformant intrusion distance C = 0.85 m the ISO-required d_safe floor is
+# 0.92 m, which exceeds this arm's reach — conformant SSM is NOT achievable in
+# this cell, and the filter will refuse to start rather than pretend otherwise.
+# Nothing here is a certified safety function.
+iso_enabled: false
+iso_mode: automatic            # automatic | reduced (adds the 250 mm/s TCP row)
+iso_ssm_speed_rows: false      # SSM bound drives the task-space speed rows
+iso_monitor_enabled: false     # start iso_safety_monitor (independent channel)
+torque_iso_monitor_delay_s: 3.0  # [s] iso_safety_monitor start (after real_time_distance)
+
+# Evidence recorder for an ISO assessment: TCP and control-point speed, the
+# separation margin d - S_p per sample, stop timing, torque saturation, plus a
+# manifest carrying the thresholds the run was judged against. Passive — it
+# publishes nothing. Independent of iso_enabled: with the layer off it records
+# what the CURRENT system would and would not have satisfied.
+# Read the run back with scripts/iso_evidence_report.py <run_dir>.
+start_iso_evidence_logger: false
+torque_iso_evidence_delay_s: 3.0  # [s] iso_evidence_logger start
+iso_evidence_dir: "~/franka_iso_evidence"
+iso_evidence_run_name: "run"
+
+# Empty = use the value in fr3_control.yaml. Set BOTH when running with
+# iso_enabled:=true, so link_speed_max <= iso_v_pfl and retreat_cap_max_speed
+# stays strictly below it (the filter raises otherwise, it does not clamp):
+#   link_speed_max: 0.68
+#   retreat_cap_max_speed: 0.60
+link_speed_max: ""
+retreat_cap_max_speed: ""
+
 # Speed-proportional standoff (cbf_safety_filter enable_velocity_standoff):
 # d_safe_eff = d_safe + 0.20 s * closing speed (max +0.20 m). A fast obstacle
 # is avoided from further away, a static one keeps plain d_safe.

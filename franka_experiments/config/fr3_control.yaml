@@ -33,10 +33,21 @@ topics:
   cbf_status:         /NS_1/cbf_status
   multi_distance:     /human_robot/multi_distance
   per_link_distances: /cbf/per_link_distances
+  # Per-joint saturation state of the torque command, 1.0 = that joint is on
+  # the effort limit or on the rate limit this tick (qddot_to_torque). The
+  # RT controller has always clipped; this makes the clipping OBSERVABLE,
+  # which is what a stopping-distance claim needs (roadmap Step 8).
+  torque_saturation:  /NS_1/torque_saturation
+  # ── ISO layer (iso_safety_monitor) ───────────────────────────────────────
+  # Published EVERY tick whether or not anything is wrong, so a consumer can
+  # tell 'nothing to report' from 'not running' by the message's own age.
+  # data = [stop_latched, trip_reason, S_p, v_cap_min, v_closing_max].
+  iso_safety:         /NS_1/iso_safety
+  safety_reset:       /NS_1/safety_reset
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
-  d_safe: 0.10          # minimum safe distance from obstacles [m]
+  d_safe: 0.15          # minimum safe distance from obstacles [m]
                         # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
                         # h = LinkDistance.distance - d_safe, i.e. measured from
                         # the capsule SURFACE. It used to be rebuilt as
@@ -48,8 +59,107 @@ params:
                         # 6-16 cm at the same numeric value. Re-tune against
                         # hardware before assuming 0.20 still behaves as before;
                         # it is now honest, not equivalent.
+                        #
+                        # ── ISO 10218-2:2025 Annex L (roadmap Step 4) ─────────
+                        # Under `iso_enabled: true` d_safe must carry the
+                        # IRREDUCIBLE part of the protective separation
+                        # distance — the part that is required even at zero
+                        # speed:
+                        #     d_floor = C + Z_d + Z_r
+                        #             = 0.85 + 0.06 + 0.01 = 0.92 m
+                        # with the conformant C for a device that has no
+                        # demonstrated detection capability (ISO 13855:2024,
+                        # body detection). cbf_safety_filter._iso_configure
+                        # RAISES when d_safe < d_floor; there is no bypass flag.
+                        #
+                        # THIS CELL TAKES RESOLUTION (c): d_safe stays at 0.15 m
+                        # and `iso_enabled` stays FALSE, the deviation is
+                        # recorded in franka_experiments/SAFETY.md, and NO ISO
+                        # conformance is claimed. (b) — raising d_safe to 0.92 m
+                        # — is not physically available: 0.92 m exceeds the FR3's
+                        # 0.855 m reach, so conformant SSM is unachievable in
+                        # this workspace, which is the honest finding and not a
+                        # tuning failure. (a) — demonstrating d <= 40 mm with
+                        # scripts/iso_constants_measure.py detection, giving
+                        # C = 8*(d-14) mm — is the only route to an ISO-shaped
+                        # answer here, and it is still not enough on its own:
+                        # the depth pipeline has no IEC/TS 61496-4-3 assessment
+                        # and is not a rated protective device.
+                        #
+                        # 0.15 m is therefore a RESEARCH value, tuned against
+                        # hardware, and not an ISO-derived one. It is also the
+                        # value franka_sim/config.yaml carries, which is what
+                        # keeps test_rl_policy's config-sync check green.
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
   d_safe_default: 0.1  # alias kept for backward compatibility
+
+  # ── ISO 10218-1/-2:2025 layer ─────────────────────────────────────────────
+  # Tags: [R] required by the standard, [S] value/formula from the standard,
+  #       [E] engineering assumption made here.
+  #
+  # NOTHING HERE IS A CERTIFIED SAFETY FUNCTION. The CBF chain is single-channel
+  # Python over best-effort DDS; the FR3 itself is certified to EN ISO
+  # 10218-1:2011, not to the 2025 editions. See SAFETY.md for the claim table
+  # and the deviation register.
+  #
+  # Placeholders below must be overwritten from scripts/iso_constants_measure.py.
+  # scripts/iso_preflight_check.py refuses to launch with iso_enabled: true while
+  # any of them is unchanged.
+  iso_enabled: false            # [E] master flag for steps 4-9
+  iso_mode: automatic           # [E] automatic | reduced (see iso_tcp_reduced_speed)
+  iso_t_reaction: 0.10          # [E] T_r, measured (Step 1 `reaction`)
+  iso_a_stop: 1.0               # [E] a_s, MEASURED realized Cartesian decel (Step 1 `stop`)
+
+  # [S] ISO 13855:2024 approach speeds: 2.0 m/s for a hand/arm reach toward the
+  # hazard, 1.6 m/s for a whole-body walking approach. A benchtop FR3 is reached
+  # INTO, so 2.0 is the applicable value here. Lowering it requires a validated
+  # measurement of the operator's directed speed, which this cell does not have.
+  iso_v_human: 2.0              # [m/s]
+
+  # [R] C is the intrusion distance defined by ISO 13855:2024 and is NOT a free
+  # parameter: with detection capability d (Step 1 `detection`),
+  #     d <= 40 mm  ->  C = 8*(d - 14) mm
+  #     d >  40 mm  ->  C = 850 mm   (body detection only)
+  # The depth pipeline has no demonstrated detection capability and is not a
+  # rated protective device (IEC/TS 61496-4-3), so 0.85 m is the conformant
+  # value until `detection` says otherwise. STATE THIS HONESTLY: at C = 0.85 m
+  # the protective separation distance exceeds this arm's reach, i.e.
+  # ISO-conformant SSM is not achievable in this cell. Any smaller value is a
+  # documented research deviation and must be recorded in SAFETY.md.
+  iso_c_intrusion: 0.85         # [m]
+
+  iso_z_depth: 0.06             # [E] Z_d, depth+calibration position uncertainty
+  iso_z_robot: 0.01             # [E] Z_r, robot position accuracy (FR3 manual)
+  # iso_z_robot source: Franka Research 3 product manual, "worst case safe
+  # Cartesian position accuracy for stopping functions". Record the manual
+  # revision here when the datasheet figure is transcribed; 0.01 m is the
+  # placeholder until then.
+
+  # [E] derived from [S] inputs; see scripts/iso_pfl_speed.py. Recompute per
+  # body region and per payload; PFL compliance requires MEASUREMENT (ISO
+  # 10218-2:2025 6.3.3 and Annex N), never this calculation alone.
+  iso_v_pfl: 0.68               # [m/s]
+
+  # [S] ISO 10218-1:2025 (5.5.3) / -2:2025 (5.5.6) reduced speed = max 250 mm/s,
+  # required for manual modes. Using it as a cell-wide derate is [E].
+  iso_tcp_reduced_speed: 0.25   # [m/s]
+
+  iso_ssm_speed_rows: false     # [E] SSM cap drives the task-space speed rows
+  iso_monitor_enabled: false    # [E] independent SSM monitor + non-safety-rated stop
+  iso_speed_tol: 0.05           # [E] monitor tolerance above the cap
+  iso_monitor_ticks: 3          # [E] consecutive violating ticks before a trip
+  iso_stop_tau: 0.05            # [E] braking time constant of the stop profile
+  # [E] SSM PERMITS motion to resume automatically once S >= S_p; latching is a
+  # local choice for supervised experiments, consistent with the start/restart
+  # interlock and reset function (ISO 10218-1:2025, 5.5.2) but not required.
+  iso_stop_requires_reset: true
+  iso_distance_hold_max_s: 0.10 # [E] max age of a HELD per-CP distance before it
+                                #     is emitted as invalid (fail-closed perception)
+  iso_empty_frame_max_s: 0.20   # [E] max run of empty distance frames, after a
+                                #     close previous frame, before it is a fault
+  iso_brake_frac_min: 0.5       # [E] realized/commanded braking fraction floor
+  iso_brake_frac_ticks: 10      # [E] consecutive ticks below it before FAULT
+  iso_tau_rate_max: 40.0        # [E] N*m per 100 Hz tick, torque rate limit
 
   # ── QP solver: one slack per constraint FAMILY ─────────────────────────────
   # A single shared slack couples families that are not even in the same units.
@@ -102,14 +212,27 @@ params:
   # every qdot rounded to the same zero), so the check must not fire.
   joint_state_freeze_min_speed: 0.05
   min_confidence: 0.2         # per-link distance confidence threshold.
-                              # INERT on the per-CP path: build_cp_messages sets
+                              # LIVE AGAIN since roadmap Step 7. It used to be
+                              # inert: build_cp_messages set
                               # LinkDistance.confidence = 1.0 unconditionally, so
-                              # `ob.conf < min_confidence` never drops a row.
-                              # Only the legacy MultiDistance topic carries a
-                              # real find_pt_confidence() score. Left in place —
-                              # it is the intended hook if per-CP confidence is
-                              # ever populated — but do not tune it expecting an
-                              # effect today.
+                              # `ob.conf < min_confidence` never dropped a row,
+                              # and only the legacy MultiDistance topic carried a
+                              # real score. Per-CP entries now carry
+                              # find_pt_confidence(distance, n_pts), with one
+                              # exception: an entry in the CONTACT REGIME (gap
+                              # below distance.min_thresh, 0.08 m) is published
+                              # at a flat 0.5, marking it as possible
+                              # self-detection without dropping the most urgent
+                              # measurement in the frame.
+                              #
+                              # 0.2 DROPS NOTHING TODAY, by construction:
+                              # find_pt_confidence floors its pixel-count term at
+                              # 0.2 and its range term at 1.0 below 2 m, and the
+                              # per-CP band ends at 0.7 m — so every entry scores
+                              # exactly 0.2 or better. Raising this above 0.2
+                              # WILL start dropping rows on sparse frames; that
+                              # is now a real effect and not a no-op, so re-check
+                              # the row count on hardware before touching it.
 
   # DEPRECATED: ema_alpha was used to smooth the QP output in cbf_velocity_filter.
   # Post-QP smoothing invalidates CBF safety guarantees — do not re-introduce.
@@ -415,7 +538,12 @@ params:
   max_qddot_delta: 5.0
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
-  # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: none | flagged: 2026-09-01
+  # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: iso_tau_rate_max (qddot_to_torque, post-dynamics) | flagged: 2026-09-01
+  # STILL DEAD, deliberately. The live torque-rate limit is `iso_tau_rate_max`
+  # above, applied in qddot_to_torque AFTER the dynamics — which is where a
+  # torque rate can actually be limited, the QP having no torque row to put it
+  # in. Not deleted and not renamed: this key is the record of a constraint that
+  # was documented but never existed, and the two numbers mean different things.
   max_tau_delta: 15.0
 
   # Braking gain for QP-fail fallback: qddot = -k_brake * qdot
@@ -1693,6 +1821,20 @@ params:
   #         the CP is inside d_safe). This is the honest "how many control
   #         points triggered". > 1 is expected on an angled approach and is the
   #         signal that multi-CP activation is working.
+  # data[5] S_p_min [m] — the separation distance the worst control point NEEDS
+  #         at the speed it is actually travelling (ISO 10218-2:2025 Annex L).
+  #         Read against data[4]: S_p_min > d_min is the bound being crossed.
+  # data[6] v_cap_min [m/s] — tightest SSM speed cap over the control points.
+  #         inf when iso_ssm_speed_rows is off.
+  # data[7] v_closing_max [m/s] — fastest closing speed of any control point.
+  #         v_closing_max > v_cap_min is what iso_safety_monitor trips on.
+  # data[8] iso_stop_latched — 1 while the monitor holds a NON-SAFETY-RATED
+  #         stop. NOT a protective stop: that term is reserved for a rated
+  #         function and this chain is not one. See SAFETY.md.
+  # [5]-[8] carry the MONITOR's numbers whenever /NS_1/iso_safety is fresh (it
+  # is the channel that decides); otherwise the filter's own, from the last
+  # constraint rebuild. With the ISO flags off they read 0 / inf / 0 / 0.
+  #
   # Consumers (frame_grabber, rl_policy_commander) index positionally behind a
   # len() guard, so appending further elements stays backward compatible.
 

@@ -230,7 +230,28 @@ def build_cp_messages(
             # Z = 2 m.  Zero is a valid, maximally-urgent measurement — only a
             # non-finite distance or a missing direction is not.
             ld.valid      = math.isfinite(d) and d >= 0.0 and di is not None
-            ld.confidence = 1.0
+            # ── Confidence: the real one, not a constant (roadmap Step 7) ──
+            # This used to be 1.0 unconditionally, which made the filter's
+            # ``min_confidence`` gate INERT: a threshold that every entry passes
+            # by construction is not a threshold. It now carries the same
+            # figure the MultiDistance path has always carried — pixel count and
+            # range, via find_pt_confidence — so a control point backed by four
+            # depth samples at the far end of the range is distinguishable from
+            # one backed by five hundred.
+            #
+            # The exception is the CONTACT REGIME, below min_thresh. Those
+            # entries are the most urgent measurements in the frame and must not
+            # be dropped, but they are also where self-detection lives (the
+            # arm's own body read as an obstacle at a few centimetres). They are
+            # published with a flat 0.5: above the shipped min_confidence (0.2)
+            # so the row survives, below anything a clean measurement scores, so
+            # it is visibly marked. This is the self-detection guard the old
+            # code implemented by DROPPING the frame — same intent, without the
+            # blind spot.
+            if math.isfinite(d) and d < min_thresh:
+                ld.confidence = 0.5
+            else:
+                ld.confidence = float(find_pt_confidence(d, n_pts))
             ld.zone       = get_safety_zone(d, zones)
             link_entries.append(ld)
             link_cluster_ids.append(cid)

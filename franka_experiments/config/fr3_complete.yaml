@@ -122,10 +122,12 @@ distance: # in meters
   # publishes nothing and leaves the QP with no rows. Adjacent CPs on a link sit
   # ~0.1-0.15 m apart, so in practice one of them lands in the band and rescues
   # the frame — but the hole is real and lives exactly in the contact regime.
-  # Closing it means separating "is this CP self-detection?" from "should this
-  # frame publish?", which is a change inside real_time_distance. Watch for it
-  # on hardware before touching this number: lowering min_thresh toward 0
-  # re-exposes mask leakage as emergency braking.
+  # THAT HOLE IS NOW CLOSED (roadmap Step 7, publish_contact_regime below):
+  # "is this CP self-detection?" and "should this frame publish?" are separate
+  # questions, and an entry below min_thresh is FLAGGED (confidence 0.5) rather
+  # than silencing the frame. min_thresh keeps its old meaning for the legacy
+  # MultiDistance path and for the logging, so lowering it toward 0 still
+  # re-exposes mask leakage as emergency braking — do not.
   #
   # max_thresh gates publishing only. CPs beyond it are still published (as long
   # as some other CP is in band) and are then trimmed by cbf_obstacle_horizon
@@ -143,6 +145,21 @@ distance: # in meters
   # range, so consumers tell "no obstacle near" from "perception dead"; false =
   # legacy gated behaviour. Authoritative source is the ROS param of the same name.
   publish_empty_per_link: true
+
+  # ── Fail-closed perception (roadmap Step 7) ───────────────────────────────
+  # Publish /cbf/per_link_distances whenever ANY control point is finite and
+  # within max_thresh, instead of requiring one inside [min_thresh, max_thresh].
+  # Without this, a frame where every CP is in the CONTACT REGIME (closer than
+  # min_thresh) publishes only an empty heartbeat and the QP runs with zero
+  # obstacle rows at the closest the arm ever gets to something. Entries below
+  # min_thresh are published with confidence = 0.5 — above the filter's
+  # min_confidence so the row survives, below a clean measurement so it is
+  # visibly marked as possible self-detection.
+  #
+  # TRUE by default: this closes a hole, it does not add a behaviour, and the
+  # rows it adds are ones the barrier should always have had. Set false to get
+  # the pre-Step-7 gating back.
+  publish_contact_regime: true
 
   # offset for control point on ee
   ee_tip_offset: 0.10
