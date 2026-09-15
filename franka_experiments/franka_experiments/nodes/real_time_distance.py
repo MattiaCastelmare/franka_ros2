@@ -227,6 +227,18 @@ class RealTimeDistance(Node):
         # there. Forwarded onto the engine's config the same way multi_obstacle_k
         # is. Missing (an older control config) -> 0.0 -> the bound is off and
         # the hold behaves exactly as it did before.
+        # Depth-gated exclusion: lives in the mask: block because it is a
+        # property of the mask, and is read by the engine because that is where
+        # the pixels are filtered.
+        self.distance_cfg['depth_gate_tol_m'] = float(
+            self.mask_cfg.get('depth_gate_tol_m', 0.0))
+        self.get_logger().info(
+            'robot mask: ' + (
+                f'DEPTH-GATED, tol={self.distance_cfg["depth_gate_tol_m"]:.3f} m '
+                f'— an obstacle more than that in front of the arm is SEEN'
+                if self.distance_cfg['depth_gate_tol_m'] > 0.0 else
+                '2D silhouette only — anything inside the robot outline is '
+                'invisible whatever its depth (set mask.depth_gate_tol_m)'))
         self.distance_cfg['iso_distance_hold_max_s'] = float(
             (ctrl_cfg.get('params', {}) or {}).get('iso_distance_hold_max_s', 0.0))
         self.get_logger().info(
@@ -515,6 +527,12 @@ class RealTimeDistance(Node):
                 ee_source_mask=self.mask_builder.ee_source_mask,
                 dilation_margins_px=self.mask_builder.dilation_margins_px,
                 frame_stamp=stamp.sec + stamp.nanosec * 1e-9,  # REAL dt for approach rate-limit
+                # The robot's own depth per pixel. With it, the exclusion mask
+                # stops being a silhouette that hides whatever is in front of
+                # the arm and starts distinguishing the arm from an obstacle
+                # standing before it. None (or a zero tolerance) falls back to
+                # the pure 2D mask exactly.
+                robot_depth=self.mask_builder.robot_depth,
             )
         if cp_results is None:
             self._publish_per_link_heartbeat(stamp)

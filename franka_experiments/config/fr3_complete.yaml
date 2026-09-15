@@ -182,6 +182,35 @@ distance: # in meters
   vis_rate_hz: 10.0
 
 mask: # in pixels
+  # ── Depth-gated exclusion ─────────────────────────────────────────────────
+  # THE MASK IS A SILHOUETTE. Without this, a pixel inside the robot outline is
+  # discarded whatever its depth — so a hand held IN FRONT of the arm is not
+  # seen at all. The blind halo is the dilation margin: with these radii and
+  # mask_downsample 4 the code computes int(px)//ds and then x ds, giving 12 px
+  # around the body and 24 px around the end effector at full resolution —
+  # about 4 cm and 8 cm at 1.5 m on a D455 at 848x480. Smaller than it looks,
+  # but it sits on the one approach direction the camera exists to cover, and
+  # it applies at EVERY depth: a hand a metre in front of the arm is as
+  # invisible as one touching it.
+  #
+  # With MaskBuilder.robot_depth the two cases separate: a pixel is the robot
+  # only if it sits AT the robot's surface, and anything more than this
+  # tolerance IN FRONT of it is kept as an obstacle.
+  #
+  # SIZED BY CALIBRATION, NOT BY SENSOR NOISE. The extrinsic on this cell
+  # measures ~4 cm of disagreement between the projected model and the measured
+  # depth (see calibration_check). A tolerance below that would start
+  # classifying the arm itself as an obstacle wherever the calibration is worst
+  # — which is the 0.9 cm phantom on fr3_link6 all over again. 0.06 m leaves
+  # headroom above the measured residual.
+  #
+  # The cost is a 6 cm blind shell on the arm's SURFACE, in depth — and it
+  # BUYS the halo back: with the gate on, the 12/24 px margins no longer hide
+  # anything that is not at the arm's own range.
+  #
+  # 0 disables the gate and restores the pure 2D silhouette exactly.
+  depth_gate_tol_m: 0.06
+
   robot_mask_dilate_px: 2
   ee_mask_dilate_px: 18
   search_exclusion_extra_px: 8

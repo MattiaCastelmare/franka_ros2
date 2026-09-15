@@ -128,6 +128,13 @@ class ObstacleCloud:
     labels: Optional[np.ndarray] = None
 
 
+#: Depth images on this stack are uint16 MILLIMETRES. One constant, used by
+#: both the projection and the depth gate: the two comparing depths on
+#: different scales would make the gate silently classify every pixel as "in
+#: front", i.e. disable the robot mask entirely.
+_DEPTH_TO_M = np.float32(0.001)
+
+
 class DistanceEngine:
     """Depth-space per-CP distance engine with conservative LPF output."""
 
@@ -150,6 +157,12 @@ class DistanceEngine:
         self._v_max_approach       = float(distance_cfg.get('lpf_v_max_approach', 2.0))
         self._outlier_recover_frac = float(distance_cfg.get('lpf_outlier_recover_frac', 0.10))
         self._outlier_recover_abs  = float(distance_cfg.get('lpf_outlier_recover_abs', 0.03))
+
+        # ── Depth-gated exclusion (mask.depth_gate_*) ───────────────────
+        # 0 disables the gate and restores the pure 2D silhouette exactly, which
+        # is the pre-change behaviour and the fallback when no depth buffer is
+        # supplied.
+        self._depth_gate_tol = float(distance_cfg.get('depth_gate_tol_m', 0.0))
 
         self._grid_roi: Optional[tuple] = None
         self._grid_ug:  Optional[np.ndarray] = None
@@ -219,6 +232,7 @@ class DistanceEngine:
         ee_source_mask: Optional[np.ndarray] = None,            # bool (H, W)
         dilation_margins_px: Optional[Tuple[int, int]] = None,  # (margin_body_px, margin_ee_px)
         frame_stamp: Optional[float] = None,                    # frame time [s] for REAL dt
+        robot_depth: Optional[np.ndarray] = None,               # (H, W) float, +inf off-robot
     ) -> Tuple[Optional[List[ControlPointResult]], int]:
         """Depth-space CP distance pipeline with LPF smoothing.
 
@@ -255,7 +269,42 @@ class DistanceEngine:
 
         # ── Step 2: search exclusion mask ────────────────────────────────
         if search_exclusion_mask is not None:
-            keep   = ~search_exclusion_mask[vg, ug]
+            excluded = search_exclusion_mask[vg, ug]
+            if robot_depth is not None and self._depth_gate_tol > 0.0:
+                # ── Depth-gated exclusion ───────────────────────────────────
+                # The silhouette says WHERE the robot is on the sensor; it says
+                # nothing about how far away it is, so a 2D mask discards a
+                # hand held in front of the arm exactly as readily as the arm
+                # itself. That is not a corner case: it is the approach
+                # direction the camera exists to cover, and the halo applies at
+                # EVERY depth — a hand a metre in front of the arm is as
+                # invisible as one touching it. (12 px body / 24 px EE at the
+                # shipped radii, about 4 cm / 8 cm at 1.5 m.)
+                #
+                # With the robot's own depth per pixel the two separate
+                # cleanly. A pixel is only the robot if it is AT the robot's
+                # surface; anything clearly IN FRONT of it is an obstacle and
+                # is kept:
+                #
+                #     keep if   depth  <  robot_depth − tol
+                #
+                # Note the asymmetry. Only what is in front survives; a pixel
+                # at the surface or BEHIND it stays excluded. Behind is
+                # unobservable anyway (the robot is opaque), and treating it as
+                # an obstacle would turn every hole in the sparse depth buffer
+                # into a phantom at the arm's own position — which is the
+                # failure this is meant to remove, not reintroduce.
+                #
+                # tol is sized by the CALIBRATION residual, not by sensor
+                # noise: the extrinsic on this cell measures ~4 cm of
+                # disagreement between the projected model and the depth, and a
+                # tolerance under that would classify the arm as an obstacle
+                # wherever the calibration is worst.
+                z_rob = robot_depth[vg, ug]
+                depth_here = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
+                in_front = (depth_here > 0) & (depth_here < z_rob - self._depth_gate_tol)
+                excluded = excluded & ~in_front
+            keep   = ~excluded
             ug, vg = ug[keep], vg[keep]
 
         # Sample the EE-vs-body provenance with the SAME (vg, ug) indices used
@@ -263,7 +312,7 @@ class DistanceEngine:
         ee_src = ee_source_mask[vg, ug] if ee_source_mask is not None else None
 
         # ── Step 3: depth filter ──────────────────────────────────────────
-        Z     = depth[vg, ug].astype(np.float32) * np.float32(0.001)
+        Z     = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
         valid = (Z >= self.min_depth) & (Z <= self.max_depth)
         ug, vg, Z = ug[valid], vg[valid], Z[valid]
         if ee_src is not None:
