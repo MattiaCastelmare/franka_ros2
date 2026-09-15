@@ -161,8 +161,13 @@ _ACC = np.full(_N, 10.0)
 _VMAX = np.full(_N, 2.0)
 _QMIN = np.full(_N, -2.5)
 _QMAX = np.full(_N, 2.5)
+# firmware_envelope=False: these limits are synthetic (+/-2.5 rad, 2.0 rad/s) and
+# exercise the GENERIC box arithmetic. The FR3 envelope is keyed to the real
+# joint ranges -- q=0 is not even inside joint6's -- and has its own test file,
+# test_fr3_velocity_envelope.py.
 _KW = dict(acc_lb=-_ACC, acc_ub=_ACC, qdot_max=_VMAX, v_margin=0.9,
-           q_min=_QMIN, q_max=_QMAX, q_margin=0.05, brake_eta=0.7, dt=0.01)
+           q_min=_QMIN, q_max=_QMAX, q_margin=0.05, brake_eta=0.7, dt=0.01,
+           firmware_envelope=False)
 
 
 def test_box_far_from_limits_is_static():
