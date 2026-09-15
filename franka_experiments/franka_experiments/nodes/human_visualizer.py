@@ -24,6 +24,7 @@ from rclpy.qos import (
 from sensor_msgs.msg import Image, PointCloud, CameraInfo
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Point
 from std_msgs.msg import ColorRGBA
 from franka_msgs.msg import HumanArmState, MultiLinkDistance, HumanArmPrediction
 
@@ -336,6 +337,52 @@ class HumanArmVisualizer(Node):
                     dist_marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
                     
                 marker_array.markers.append(dist_marker)
+
+        # 4. --- VELOCITY VECTORS (ARROWS AT KEYPOINTS) ---
+        if self.latest_arm_state is not None:
+            state = self.latest_arm_state
+            pts_valid = state.keypoint_valid
+            keypoints = [state.shoulder, state.elbow, state.wrist, state.hand]
+            
+            # Extraction of velocities with backward compatibility
+            if hasattr(state, 'velocities') and len(state.velocities) >= 4:
+                vels = state.velocities
+            else:
+                vels = [
+                    getattr(state, 'shoulder_vel', getattr(state, 'shoulder_velocity', None)),
+                    getattr(state, 'elbow_vel', getattr(state, 'elbow_velocity', None)),
+                    getattr(state, 'wrist_vel', getattr(state, 'wrist_velocity', None)),
+                    getattr(state, 'hand_vel', getattr(state, 'hand_velocity', None))
+                ]
+            
+            for i, (pt, v) in enumerate(zip(keypoints, vels)):
+                if pts_valid[i] and v is not None:
+                    vel_marker = Marker()
+                    vel_marker.header.frame_id = base_frame
+                    vel_marker.header.stamp = timestamp
+                    vel_marker.ns = "velocities"
+                    vel_marker.id = i + 200  # offset to avoid ID conflicts
+                    vel_marker.type = Marker.ARROW
+                    vel_marker.action = Marker.ADD
+                    
+                    # Origin: current position of the keypoint
+                    vel_marker.points.append(pt)
+                    
+                    # Destination: Position + (Velocity * Temporal Scale)
+                    end_pt = Point()
+                    vel_scale = 0.3  # Scale factor for visibility
+                    end_pt.x = pt.x + v.x * vel_scale
+                    end_pt.y = pt.y + v.y * vel_scale
+                    end_pt.z = pt.z + v.z * vel_scale
+                    vel_marker.points.append(end_pt)
+                    
+                    # Dimensions of the arrow
+                    vel_marker.scale.x = 0.015  # thickness of the arrow shaft
+                    vel_marker.scale.y = 0.030  # largeness of the arrowhead
+                    vel_marker.scale.z = 0.030  # length of the arrowhead
+                    vel_marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)  # Green for velocity
+                    
+                    marker_array.markers.append(vel_marker)
 
         self.marker_pub.publish(marker_array)
 

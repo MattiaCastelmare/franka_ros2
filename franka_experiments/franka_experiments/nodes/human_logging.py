@@ -4,10 +4,8 @@ import time
 from pathlib import Path
 import rclpy
 from rclpy.node import Node
-
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32, String
-
 from franka_msgs.msg import HumanArmState, HumanArmPrediction
 
 
@@ -251,15 +249,14 @@ class ExperimentLoggerNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = ExperimentLoggerNode()
-
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         node.get_logger().info("Experiment logger stopped by user.")
     finally:
         node.destroy_node()
-        rclpy.shutdown()
-
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
