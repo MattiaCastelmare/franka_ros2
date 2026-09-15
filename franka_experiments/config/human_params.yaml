@@ -24,17 +24,17 @@ human_tracker:
   visibility_threshold: 0.40
   depth_patch_radius: 2
   min_depth_m: 0.10
-  max_depth_m: 5.00
+  max_depth_m: 3.00
   sync_queue_size: 5           # To avoid latency in the buffer
   sync_slop_s: 0.025           # For strict synchronization
 
   # Kalman filter
   kf_nominal_dt: 0.06666666666666667 # Nominal dt updated for 15 Hz (1/15 s)
-  kf_process_accel_std: 2.0
-  kf_measurement_std: 0.02
+  kf_process_accel_std: 1.0
+  kf_measurement_std: 0.05
   max_state_age_s: 0.30
   reset_after_s: 0.50
-  max_speed_m_s: 3.0
+  max_speed_m_s: 1.5
 
   # Constant-velocity prediction
   publish_prediction: true
