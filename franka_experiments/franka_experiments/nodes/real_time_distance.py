@@ -149,6 +149,70 @@ class RealTimeDistance(Node):
             mask_cfg=self.mask_cfg,
             logger=self.get_logger(),
         )
+        # ── Obstacle tracking (optional) ──────────────────────────────────
+        # Config lives in the `tracking:` block of the robot config, so every
+        # perception knob is in one file. The export flag is set on the COPY
+        # handed to the engine and only when tracking is on, so with tracking
+        # off the engine stores nothing and costs nothing.
+        trk_cfg = self.config.get('tracking', {}) or {}
+        self.tracking_enabled = bool(trk_cfg.get('enabled', False))
+        self.distance_cfg = dict(self.distance_cfg)
+        self.distance_cfg['export_obstacle_cloud'] = self.tracking_enabled
+
+        # ── Multi-obstacle rows (perception.multi_obstacle_k) ─────────────
+        # The flag and the cbf_obstacle_horizon it prunes against live in the
+        # CONTROL config (fr3_control.yaml), not in robot_config_path, so that
+        # file is read here. Unreadable -> k = 1, i.e. today's output.
+        ctrl_path = (self.declare_parameter('control_config_path', '').value
+                     or os.path.join(get_package_share_directory('franka_experiments'),
+                                     'config', 'fr3_control.yaml'))
+        try:
+            with open(ctrl_path) as f:
+                ctrl_cfg = yaml.safe_load(f) or {}
+        except Exception as exc:
+            self.get_logger().warn(
+                f'control config {ctrl_path!r} not read ({exc}); multi_obstacle_k=1')
+            ctrl_cfg = {}
+        perc_cfg = ctrl_cfg.get('perception', {}) or {}
+        # ROS parameter override (launch arg multi_obstacle_k); 0 = use the YAML.
+        k_param = int(self.declare_parameter('multi_obstacle_k', 0).value)
+        self.multi_k = max(1, k_param if k_param > 0
+                           else int(perc_cfg.get('multi_obstacle_k', 1)))
+        self.distance_cfg['multi_obstacle_k'] = self.multi_k
+        self.distance_cfg['multi_obstacle_max_rows'] = int(
+            perc_cfg.get('multi_obstacle_max_rows', 24))
+        self.distance_cfg['multi_obstacle_horizon'] = float(
+            (ctrl_cfg.get('params', {}) or {}).get('cbf_obstacle_horizon', float('inf')))
+        # Same depth_jump as the tracker: with k > 1 the tracker clusters on
+        # the engine's labels, so there is one labelling, not two.
+        self.distance_cfg['multi_obstacle_depth_jump_m'] = float(
+            trk_cfg.get('cluster_depth_jump_m', 0.10))
+        # ── Fail-closed perception (roadmap Step 7) ───────────────────────
+        # The hold bound is an ISO-layer constant and lives with the rest of
+        # them in fr3_control.yaml's params: block, not in the perception config
+        # — one file owns the iso_* numbers, and CBF_PARAM_SPEC validates them
+        # there. Forwarded onto the engine's config the same way multi_obstacle_k
+        # is. Missing (an older control config) -> 0.0 -> the bound is off and
+        # the hold behaves exactly as it did before.
+        # Depth-gated exclusion: lives in the mask: block because it is a
+        # property of the mask, and is read by the engine because that is where
+        # the pixels are filtered.
+        self.distance_cfg['depth_gate_tol_m'] = float(
+            self.mask_cfg.get('depth_gate_tol_m', 0.0))
+        self.get_logger().info(
+            'robot mask: ' + (
+                f'DEPTH-GATED, tol={self.distance_cfg["depth_gate_tol_m"]:.3f} m '
+                f'— an obstacle more than that in front of the arm is SEEN'
+                if self.distance_cfg['depth_gate_tol_m'] > 0.0 else
+                '2D silhouette only — anything inside the robot outline is '
+                'invisible whatever its depth (set mask.depth_gate_tol_m)'))
+        self.distance_cfg['iso_distance_hold_max_s'] = float(
+            (ctrl_cfg.get('params', {}) or {}).get('iso_distance_hold_max_s', 0.0))
+        self.get_logger().info(
+            f'distance hold bound: '
+            f'{self.distance_cfg["iso_distance_hold_max_s"] * 1e3:.0f} ms '
+            f'(0 = unbounded, the pre-ISO behaviour)')
+
         self.distance_engine = DistanceEngine(
             distance_cfg=self.distance_cfg,
             logger=self.get_logger(),
@@ -332,6 +396,12 @@ class RealTimeDistance(Node):
                 ee_source_mask=self.mask_builder.ee_source_mask,
                 dilation_margins_px=self.mask_builder.dilation_margins_px,
                 frame_stamp=stamp.sec + stamp.nanosec * 1e-9,  # REAL dt for approach rate-limit
+                # The robot's own depth per pixel. With it, the exclusion mask
+                # stops being a silhouette that hides whatever is in front of
+                # the arm and starts distinguishing the arm from an obstacle
+                # standing before it. None (or a zero tolerance) falls back to
+                # the pure 2D mask exactly.
+                robot_depth=self.mask_builder.robot_depth,
             )
         if cp_results is None:
             self._publish_per_link_heartbeat(stamp)
