@@ -143,6 +143,7 @@ class HumanDistance(Node):
             ld = LinkDistance()
             
             ld.robot_link_name = link_name
+            ld.human_capsule = str(info['human_capsule'])
             ld.distance = float(info['distance'])
             
             if ld.distance < global_min_dist:

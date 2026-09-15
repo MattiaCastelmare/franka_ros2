@@ -5,8 +5,8 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float32, String
-from franka_msgs.msg import HumanArmState, HumanArmPrediction
+from std_msgs.msg import String
+from franka_msgs.msg import HumanArmState, HumanArmPrediction, MultiLinkDistance
 
 
 class BaseLogger:
@@ -32,6 +32,7 @@ class BaseLogger:
 
 class HumanRawLogger(BaseLogger):
     """Logger for raw 3D positions before Kalman Filtering."""
+
     def __init__(self, base_path: str):
         headers = ['timestamp']
         for kp in ['shoulder', 'elbow', 'wrist', 'hand']:
@@ -141,10 +142,10 @@ class ExperimentLoggerNode(Node):
             HumanArmPrediction, '/human/arm_prediction', self.human_prediction_callback, 10)
 
         self.joint_state_sub = self.create_subscription(
-            JointState, '/joint_states', self.robot_state_callback, 10)
+            JointState, '/NS_1/joint_states', self.robot_state_callback, 10)
 
         self.min_dist_sub = self.create_subscription(
-            Float32, '/human_robot_distance/min_distance', self.min_distance_callback, 10)
+            MultiLinkDistance, '/cbf/per_link_distances', self.min_distance_callback, 10)
 
         self.mux_sub = self.create_subscription(
             String, '/controller_mux/active_controller', self.active_controller_callback, 10)
@@ -223,11 +224,28 @@ class ExperimentLoggerNode(Node):
 
         self.robot_logger.log(row)
 
-    def min_distance_callback(self, msg: Float32):
-        """Log minimum human-robot clearance distance."""
+    def min_distance_callback(self, msg: MultiLinkDistance):
+        """Log minimum human-robot clearance distance and closest points from CBF data."""
+        if not msg.links:
+            return
+
         t = self.get_clock().now().nanoseconds / 1e9
-        # Simplified row format (expand with closest point data if using custom distance msg)
-        row = [t, msg.data, "", 0.0, 0.0, 0.0, "", 0.0, 0.0, 0.0]
+        
+        # Find global minimum
+        min_link = min(msg.links, key=lambda l: l.distance)
+
+        row = [
+            t, 
+            min_link.distance, 
+            min_link.robot_link_name, 
+            min_link.closest_point_robot.x, 
+            min_link.closest_point_robot.y, 
+            min_link.closest_point_robot.z,
+            min_link.human_capsule,
+            min_link.closest_point_human.x, 
+            min_link.closest_point_human.y, 
+            min_link.closest_point_human.z
+        ]
         self.distance_logger.log(row)
 
     def active_controller_callback(self, msg: String):

@@ -68,6 +68,7 @@ class HumanTracker(Node):
         if self.pose_side not in ("left", "right"):
             raise ValueError("pose_side must be 'left' or 'right'.")
 
+        # Inference and filtering parameters
         self.inference_hz = max(1.0, float(config["inference_hz"]))
         self.inference_scale = float(config["inference_scale"])
         self.inference_scale = float(np.clip(self.inference_scale, 0.1, 1.0))
@@ -110,6 +111,7 @@ class HumanTracker(Node):
         self.R_camera_to_base = None
         self.t_camera_to_base = None
 
+        # --- MediaPipe pose estimation ---
         model_complexity = int(
             np.clip(config["model_complexity"], 0, 2)
         )
@@ -126,6 +128,7 @@ class HumanTracker(Node):
             ),
         )
 
+        # --- Kalman filter for 3D keypoints ---
         self.arm_kf = ArmKalmanFilter(
             dt=float(config["kf_nominal_dt"]),
             process_accel_std=float(config["kf_process_accel_std"]),
@@ -138,6 +141,7 @@ class HumanTracker(Node):
         depth_topic = str(config["depth_topic"])
         camera_info_topic = str(config["camera_info_topic"])
 
+        # --- Subscribers and Synchronizer ---
         self.color_sub = Subscriber(
             self, Image, color_topic, qos_profile=qos_profile_sensor_data
         )
@@ -158,6 +162,7 @@ class HumanTracker(Node):
             qos_profile_sensor_data,
         )
 
+        # --- Publishers ---
         latest_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,

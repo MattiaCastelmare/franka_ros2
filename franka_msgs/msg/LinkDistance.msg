@@ -10,6 +10,12 @@
 # closest_point_robot.
 string robot_link_name
 
+# Human capsule containing the human control point. NOT unique within a
+# MultiLinkDistance: a human can have several capsules and each gets its own
+# entry. Consumers use it only to resolve a kinematic frame; the point itself is
+# closest_point_human.
+string human_capsule
+
 # The control point, on the segment AXIS (base frame).
 geometry_msgs/Point closest_point_robot
 
