@@ -586,6 +586,68 @@ params:
 
   velocity_box_margin: 0.9   # fraction of the official qdot_max actually allowed
 
+  # [rad/s^2] Ceiling on the per-joint acceleration authority the QP may use.
+  #
+  # The box above is built from deceleration_limit, which is what the robot
+  # publishes for braking and the only q̈-scale number in joint_limits.yaml. Used
+  # symmetrically it reads 17 rad/s^2 on joints 5 and 7 — 70% above libfranka's
+  # kMaxJointAcceleration, which is 10 on every joint. The arm cannot deliver
+  # 17, and the barrier's ḧ >= -k1·ḣ - k0·h is written in the q̈ the QP CHOOSES:
+  # it holds only as far as that q̈ is the one the joints produce.
+  #
+  # Measured on 20260915_080123: with an obstacle at 13 mm and 9 rows violated
+  # at once, q̈_safe saturated at ±17 on the wrist and flipped sign every few
+  # ticks at the slew limit. joint5 went 0.4 -> 3.0 rad/s in 150 ms and trk_err
+  # (commanded minus realised q̈) reached 18 rad/s^2. The QP was writing cheques
+  # the arm could not cash, and doing it at full amplitude.
+  #
+  # 10.0 costs braking authority on joints 5 and 7 and nothing on the rest
+  # (their deceleration_limit is already below it). Raise to 17.0 to restore the
+  # previous behaviour exactly.
+  qddot_max_abs: 10.0
+
+  # ── State governor: slow the TASK down before a state limit is a reflex ────
+  #
+  # The zone ladder fades the trajectory as an OBSTACLE closes; it has no
+  # opinion about the arm. This one fades it on the arm's own state — proximity
+  # to the FR3 velocity envelope, to a singularity, to a self-collision — and
+  # takes the worst of the three. See utils/state_governor.py for why it fades
+  # into braking rather than into zero, why it cannot deadlock, and why the
+  # weight is deliberately NOT published to the commander's phase governor.
+  #
+  # It attenuates the TASK only. The CBF rows keep their full authority, exactly
+  # as under the zone ladder's hold rung: this removes the demand, never the
+  # defence.
+  state_governor_enabled: true
+
+  # [rad/s] Headroom below the velocity envelope over which the task fades from
+  # full to suspended, worst joint wins, measured in the direction of travel.
+  #
+  # Floor set by one tick of authority: at qddot_max_abs = 10 and qp_rate_hz =
+  # 100 a joint gains 0.1 rad/s per tick, so a band below that cannot act before
+  # the hard box clamps and the governor is decoration. 0.30 gives three ticks.
+  governor_qdot_band: 0.30
+
+  # Width of the sigma_min fade above singularity_sigma_floor (0.05). The
+  # governor and the singularity row therefore agree on where the wall is and
+  # differ only in what they do about it: the row pushes, this stops asking.
+  governor_sigma_band: 0.04
+
+  # [m] Width of the self-collision fade above self_collision_row_margin (0.02).
+  # Matches self_collision_row_horizon (0.08) at roughly half, so the task has
+  # already given way by the time the row is at full strength.
+  governor_sc_band: 0.04
+
+  # [s] Time to climb back to full task once the margins recover. Falls
+  # instantly. Same value and same asymmetry as zone_resume_s.
+  governor_resume_s: 0.5
+
+  # Fraction of the firmware velocity envelope the governor measures against.
+  # MUST NOT exceed velocity_box_margin (0.9), or the hard box clamps before the
+  # governor has faded anything and the ordering the governor exists to create
+  # is inverted. 0.85 leaves it half a band of lead.
+  governor_envelope_margin: 0.85
+
   # [s] Approach horizon for the velocity and position caps in the box.
   #
   # The one-step form (relax = dt = 0.01) only engages in the last q̈_max·dt

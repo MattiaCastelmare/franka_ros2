@@ -74,6 +74,20 @@ import numpy as np
 FR3_VEL_LIMIT = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
 """[rad/s] flat per-joint velocity limit (the min(·) branch)."""
 
+FR3_MAX_JOINT_ACCEL = 10.0
+"""[rad/s²] the FR3's rated joint acceleration limit, all seven joints.
+
+libfranka's ``kMaxJointAcceleration`` (rate_limiting.h), and the only number the
+robot publishes for q̈ — ``joint_limits.yaml`` has no ``acceleration`` field, so
+``deceleration_limit`` had been standing in for it. That substitution is exact
+in the braking direction (it IS the braking authority) and wrong in the other:
+it reads 17 rad/s² on joints 5 and 7, 70% above what the arm can deliver.
+
+Commanding what the arm cannot deliver is not a free optimism. The barrier's
+ḧ ≥ −k1ḣ − k0h is written in the q̈ the QP CHOOSES, and holds only insofar as
+that q̈ is the one the joints produce; ``trk_err`` in CBFDIAG is the measured
+gap, and it reached 18 rad/s² on the run this constant was added for."""
+
 FR3_VEL_OFFSET = np.array([0.30, 0.20, 0.20, 0.30, 0.35, 0.35, 0.35])
 """[rad/s] v_off, SUBTRACTED from the square root — a penalty, not a bonus."""
 

@@ -141,9 +141,67 @@ def format_velocity_summary(
 
 # ── CBF episode diagnostic ───────────────────────────────────────────────────
 
+def _zone_field(con, i: int, w_task, n_rot: int) -> str:
+    """The ``zone=``/``nrot=`` fields, or the empty string when the ladder is off.
+
+    Empty rather than a placeholder: a log line that changes WIDTH when a flag
+    is toggled is easier to grep than one whose meaning changes silently, and
+    every downstream parser in scripts/ splits on ``key=`` rather than on
+    position for exactly this reason.
+    """
+    k0r = getattr(con, 'k0_row', None)
+    if k0r is None or w_task is None:
+        return ''
+    k1r = getattr(con, 'k1_row', None)
+    zr = getattr(con, 'zone_row', None)
+    name = '?'
+    if zr is not None and i < len(zr):
+        z = int(zr[i])
+        if 0 <= z < len(ZONE_NAMES):
+            name = ZONE_NAMES[z]
+    k0i = float(k0r[i]) if i < len(k0r) else float('nan')
+    k1i = float(k1r[i]) if (k1r is not None and i < len(k1r)) else float('nan')
+    return (f'zone={name} k={k0i:.1f}/{k1i:.1f} task={float(w_task):.2f} '
+            f'nrot={int(n_rot)} ')
+
+
+def _iso_num(x) -> str:
+    """A finite ISO quantity to 3 decimals, or ``inf`` — never ``inf.000``.
+
+    ``vcap`` is legitimately infinite (no SSM cap in force), and ``%.3f`` on an
+    infinity prints ``inf`` on some platforms and a huge number on others. One
+    spelling, so a log parser has one case to handle.
+    """
+    x = float(x)
+    return 'inf' if x == float('inf') else f'{x:.3f}'
+
+
+def _gov_field(gov) -> str:
+    """The ``gov=`` field, or the empty string when the state governor is off.
+
+    ``gov=<w>/<binding>:<margin>`` — the weight the task was multiplied by, the
+    term that set it, and that term's raw margin in its own unit (rad/s for
+    ``vel``, dimensionless for ``sing``, metres for ``sc``). ``-`` as the
+    binding term means every margin was full, which is the normal case and the
+    one that must be visible at a glance so a suspicious ``task=`` can be
+    attributed to the zone ladder rather than to this.
+
+    Empty when the governor is disabled, matching :func:`_zone_field`: a line
+    that changes WIDTH with a flag is greppable, one whose meaning changes
+    silently is not.
+    """
+    if gov is None:
+        return ''
+    i = {'vel': 0, 'sing': 1, 'sc': 2}.get(gov.binding)
+    m = '' if i is None else f':{gov.margins[i]:+.3f}'
+    return f'gov={gov.w:.2f}/{gov.binding}{m} '
+
+
 def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
                     qddot_safe, qddot_nom, qddot_real, slack, n_active_cps,
-                    vel_ratio, vel_bite, slew_bite, cap_age) -> str:
+                    vel_ratio, vel_bite, slew_bite, cap_age,
+                    w_task=None, iso_v_closing=0.0, iso_stop=0.0,
+                    gov=None) -> str:
     """One compact, CSV-like line describing the whole constraint episode.
 
     Field guide, in the order they appear. Units in brackets.
@@ -238,6 +296,41 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'd_sc={con.d_sc_min:.3f} sigma={rows.diag_sigma:.3f} '
         f'capage={cap_age:.3f} '
         f'vapp={rows.diag_vapp:.3f} hbrake={rows.diag_hbrake:.4f} '
+        # Phase-3 / evasion terms. hunc is the barrier tightening bought by
+        # the tracker's admitted uncertainty; esc is the largest evasion
+        # urgency in [0, 1], where 1.0 means the acceleration box says this
+        # closing rate CANNOT be nulled before the gap reaches zero. Both
+        # read 0.0000/0.00 with their flags off, which is the whole point:
+        # the line says whether a term is doing anything without needing the
+        # config open next to it.
+        f'hunc={getattr(rows, "diag_hunc", 0.0):.4f} '
+        f'esc={getattr(rows, "diag_esc_w", 0.0):.2f} '
+        f'outr={getattr(rows, "diag_outrun_r", 0.0):.2f}/{getattr(rows, "diag_outrun_w", 0.0):.2f} '
+        f'hlat={getattr(rows, "diag_hlat", 0.0):.4f} '
+        # enable_velocity_standoff: largest speed-proportional standoff [m].
+        f'hstd={getattr(rows, "diag_hstand", 0.0):.4f} '
+        # enable_vobs_in_hdot: largest-magnitude n̂ᵀv_track put into ḣ, and on
+        # how many rows. +0.000/0 with the flag off.
+        f'vhd={getattr(rows, "diag_vobs_hdot", 0.0):+.3f}/'
+        f'{int(getattr(rows, "diag_vobs_hdot_n", 0))} '
+        # ── ISO 10218 layer (roadmap Step 10) ──────────────────────────────
+        # sp     [m]   separation distance the worst control point NEEDS at the
+        #              speed it is actually travelling (ISO 10218-2:2025 Annex
+        #              L). Read it against d_min on the same line: sp > d_min
+        #              is the bound being crossed.
+        # vcap   [m/s] tightest SSM speed cap over the control points. inf with
+        #              iso_ssm_speed_rows off, which is how the line says the
+        #              ISO rows are not driving anything.
+        # vcls   [m/s] fastest closing speed of any control point. vcls > vcap
+        #              is what iso_safety_monitor trips on.
+        # isostop      1 while the monitor has a NON-SAFETY-RATED stop latched.
+        # All four read 0.000/inf/0.000/0 with the ISO flags off.
+        f'sp={_iso_num(getattr(rows, "diag_ssm_sp", 0.0))} '
+        f'vcap={_iso_num(getattr(rows, "diag_ssm_cap", float("inf")))} '
+        f'vcls={_iso_num(iso_v_closing)} '
+        f'isostop={int(iso_stop)} '
+        + _zone_field(con, i, w_task, getattr(rows, 'diag_rot_reject', 0))
+        + _gov_field(gov) +
         f'w=[{w_txt}] wq=[{wq_txt}] '
         f'retreat={rtr:+.3f}/{rtr_cap:.3f} vlink={spd:+.3f}/{spd_cap:.3f} '
         f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} '

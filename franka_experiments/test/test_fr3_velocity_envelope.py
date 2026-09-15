@@ -166,3 +166,21 @@ def test_box_mid_range_unaffected_by_the_envelope():
     kw = _box_kw()
     assert np.allclose(hard_accel_box(q, qdot, firmware_envelope=False, **kw),
                        hard_accel_box(q, qdot, firmware_envelope=True, **kw))
+
+
+# ── acceleration authority ───────────────────────────────────────────────────
+
+def test_accel_authority_cap_only_touches_the_wrist():
+    """qddot_max_abs = 10 is libfranka's rated q̈; only j5/j7 were above it.
+
+    franka_description has no acceleration field, so the filter had been using
+    deceleration_limit symmetrically. That is exact in braking and 70% optimistic
+    in the other direction on joints 5 and 7 (17 against a rated 10).
+    """
+    from franka_experiments.utils.cbf_hard_limits import FR3_MAX_JOINT_ACCEL
+    jl = load_franka_joint_limits([f'joint{i}' for i in range(1, _N + 1)])
+    capped = np.minimum(jl['decel_max'], FR3_MAX_JOINT_ACCEL)
+    changed = ~np.isclose(capped, jl['decel_max'])
+    assert list(np.flatnonzero(changed)) == [4, 6], 'only joints 5 and 7'
+    assert np.all(capped <= FR3_MAX_JOINT_ACCEL)
+    assert np.allclose(capped[~changed], jl['decel_max'][~changed])

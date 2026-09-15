@@ -67,6 +67,8 @@ from franka_experiments.utils.cbf_qp_assembly import (
     pad_rows_to_block,
     tangential_bias,
 )
+from franka_experiments.utils.state_governor import governor_from_params
+from franka_experiments.utils.livelock import LivelockDetector, ProgressWindow
 from franka_experiments.utils.cbf_state_rows import (
     FR3_JOINT_KEYS,
     FR3_JOINTS,
@@ -120,7 +122,13 @@ class CBFSafetyFilter(Node):
         # NOT from the joint_limits: block at the bottom of fr3_control.yaml —
         # that one is read by four other nodes and the two can drift.
         jl = load_franka_joint_limits(FR3_JOINT_KEYS)
-        self._lb, self._ub = -jl['decel_max'], jl['decel_max']
+        # Acceleration authority, capped at what the arm can actually produce.
+        # decel_max is the braking number and the only q̈ scale joint_limits.yaml
+        # carries; symmetrically it claims 17 rad/s² on joints 5 and 7 against a
+        # rated 10 (libfranka kMaxJointAcceleration). See qddot_max_abs in
+        # fr3_control.yaml for the measurement that made this necessary.
+        qdd_cap = np.minimum(jl['decel_max'], P.qddot_max_abs)
+        self._lb, self._ub = -qdd_cap, qdd_cap
         self._qdot_max = jl['qdot_max']
 
         # EFFECTIVE position limits, not the mechanical ones. The firmware's
@@ -172,6 +180,25 @@ class CBFSafetyFilter(Node):
         self._prev_nc = -1
         self._qp_fail_count = 0
         self._dt_qp = 1.0 / P.qp_rate_hz
+        # Zone ladder for the TASK SWITCH only. The constraint builder owns a
+        # second instance for the row gains: two rates, two pieces of state,
+        # one factory (utils.cbf_zones.ladder_from_params) so they cannot drift
+        # apart in configuration. None when the flag is off.
+        self._zones = ladder_from_params(P, self.get_logger())
+        if self._zones is not None:
+            self.get_logger().info(
+                f'zone ladder (x d_safe={P.d_safe} m): {self._zones.describe()}')
+        self._zone_held = False     # edge detector for the hold-zone log line
+        self._diag_w_task = 1.0     # last task weight, for CBFDIAG
+        # State governor: the SECOND task switch, keyed on the arm's own state
+        # (velocity envelope, sigma_min, self-collision gap) rather than on the
+        # obstacle gap. Composes multiplicatively with the ladder's weight —
+        # they attenuate the same thing for independent reasons, so the tighter
+        # of the two must win and a product of two [0, 1] scalars gives that
+        # without either needing to know about the other.
+        self._gov = governor_from_params(P, self.get_logger())
+        self._gov_held = False      # edge detector for the suspension log line
+        self._diag_gov = None       # last GovernorState, for CBFDIAG
 
         # ── 5. Shared state (lock-free: one immutable snapshot per producer,
         #       published by a single atomic attribute assignment) ────────
@@ -549,6 +576,110 @@ class CBFSafetyFilter(Node):
             self.get_logger().warn('distance stale → braking fallback (CBF inactive)',
                                    throttle_duration_sec=2.0)
 
+        # ── STEP 3a: the zone ladder's task switch ──────────────────────
+        # Below zone_r_priority*d_safe the trajectory starts giving way, and
+        # below zone_r_hold*d_safe it gives way entirely: the nominal is faded into a
+        # braking command so the arm sheds its speed and holds station instead
+        # of pursuing a path that leads into something.
+        #
+        # Faded into BRAKING, not into zero. A zero nominal makes the QP
+        # minimise ‖q̈‖², whose unconstrained solution is q̈ = 0 — "hold this
+        # velocity", i.e. the arm coasts into the obstacle at whatever speed it
+        # already had. That is the exact failure the joint-state-stale branch
+        # above documents, and it is why "stop" here is a command and not an
+        # absence of one.
+        #
+        # This is NOT a freeze. The CBF rows are untouched and keep their full
+        # authority, so an obstacle that goes on closing is still pushed away
+        # from; only the TASK is switched off. That distinction is load-bearing
+        # for a 5 cm boundary read by a depth sensor whose calibration residual
+        # measured 4.2 cm with 4.2 cm of spread: a latch there would fire on
+        # noise, and a frozen arm is the wrong answer to a limb still moving.
+        #
+        # Placed BEFORE the three evasion biases on purpose. Those biases are
+        # avoidance, not task, and attenuating them in the zone where avoidance
+        # matters most would be precisely backwards.
+        w_task = 1.0
+        if self._zones is not None:
+            # Global gap, not per row: there is one trajectory to switch off.
+            # inf on every braking path — n_c is 0 there while `con` still
+            # holds the last snapshot, and the nominal is ALREADY the braking
+            # command, so a second opinion off stale geometry would only fight
+            # it. The ramp still advances, so the task fades back in normally
+            # once rows return.
+            d_zone = (float(con.d_obs_min) if (n_c > 0 and con is not None)
+                      else float('inf'))
+            w_task = self._zones.task_weight(d_zone, self._dt_qp)
+            if w_task < 1.0:
+                qddot_nom = (w_task * qddot_nom
+                             + (1.0 - w_task) * (-P.k_brake * qdot))
+                if w_task <= 0.0 and not self._zone_held:
+                    self.get_logger().warn(
+                        f'ZONE hold: obstacle at {d_zone:.3f} m < '
+                        f'{self._zones.bounds[0]:.3f} m → trajectory suspended, barrier '
+                        f'rows keep full authority (resumes over '
+                        f'{P.zone_resume_s:.1f} s once it clears)')
+                    self._zone_held = True
+            if w_task >= 1.0 and self._zone_held:
+                self.get_logger().info('ZONE hold released → trajectory resumed')
+                self._zone_held = False
+
+        # ── STEP 3a+: the state governor's task switch ──────────────────
+        # Same lever as 3a, different reason. The ladder asks "is something
+        # coming at me"; this asks "can I still do what I am being told". A
+        # joint about to cross its firmware velocity envelope, a collapsing
+        # sigma_min, a closing self-collision gap: each makes the nominal
+        # infeasible on its own, with no obstacle involved, and the answer to an
+        # infeasible demand is to stop making it — not to push harder against
+        # the constraint that is refusing it.
+        #
+        # Multiplied into w_task rather than min()'d with it: the two switches
+        # are independent and a product is the only combination where each
+        # keeps its full effect regardless of the other's state.
+        #
+        # Placed with 3a and BEFORE the evasion biases, for the reason 3a gives:
+        # those are avoidance, not task, and attenuating avoidance is backwards.
+        # Note what this does NOT do: it does not touch the rows, the slack
+        # prices, or /cbf_status. See utils/state_governor.py.
+        if self._gov is not None:
+            # sigma and d_sc come from the 50 Hz rebuild; the velocity margin is
+            # computed here from THIS tick's state. Gated on n_c > 0, the same
+            # test the ladder uses for d_zone and for the same reason: on every
+            # braking path `con` still holds the last snapshot, and governing off
+            # geometry the QP itself has already refused to use would only add a
+            # second opinion formed on stale data. The velocity term is ungated —
+            # it reads js, which STEP 1 has already established is fresh.
+            #
+            # Note the fade is arithmetically inert on those paths anyway: the
+            # nominal IS -k_brake*qdot there, and fading a braking command into a
+            # braking command is the identity. The gate is about the ramp state
+            # and the diagnostic, not about the command.
+            snap = con if n_c > 0 and con is not None else None
+            gov = self._gov.weight(
+                q=js.q, qdot=qdot,
+                sigma=(getattr(self._rows, 'diag_sigma', None)
+                       if snap is not None else None),
+                d_sc=(snap.d_sc_min if snap is not None else None),
+                dt=self._dt_qp)
+            self._diag_gov = gov
+            if gov.w < 1.0:
+                qddot_nom = (gov.w * qddot_nom
+                             + (1.0 - gov.w) * (-P.k_brake * qdot))
+                w_task *= gov.w
+                if gov.w <= 0.0 and not self._gov_held:
+                    self.get_logger().warn(
+                        f'GOVERNOR hold: {gov.binding} margin exhausted '
+                        f'(vel={gov.margins[0]:+.3f} rad/s, '
+                        f'sigma={gov.margins[1]:+.3f}, '
+                        f'd_sc={gov.margins[2]:+.3f} m) → trajectory suspended, '
+                        f'rows keep full authority '
+                        f'(resumes over {P.governor_resume_s:.1f} s)')
+                    self._gov_held = True
+            if gov.w >= 1.0 and self._gov_held:
+                self.get_logger().info('GOVERNOR hold released → trajectory resumed')
+                self._gov_held = False
+        self._diag_w_task = w_task
+
         # ── STEP 3b: steer around, not just away from, a close obstacle ─
         # Bias only, on the QP's TARGET — every G/h row above is untouched, so
         # this cannot loosen the safety guarantee, only shift which feasible
@@ -745,7 +876,12 @@ class CBFSafetyFilter(Node):
                 qddot_real=self._diag_qddot_real, slack=self._diag_slack,
                 n_active_cps=n_active, vel_ratio=self._diag_vel_ratio,
                 vel_bite=self._diag_vel_bite, slew_bite=self._diag_slew_bite,
-                cap_age=self._diag_cap_age))
+                cap_age=self._diag_cap_age, w_task=self._diag_w_task,
+                gov=self._diag_gov,
+                iso_v_closing=float(self._status_msg.data[7])
+                if len(self._status_msg.data) > 7 else 0.0,
+                iso_stop=float(self._status_msg.data[8])
+                if len(self._status_msg.data) > 8 else 0.0))
 
     # ═════════════════════════════════════════════════════════════════════
     #  Output
