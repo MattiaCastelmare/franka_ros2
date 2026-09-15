@@ -75,6 +75,7 @@ from franka_experiments.utils.cbf_qp_assembly import (
     pad_rows_to_block,
     tangential_bias,
 )
+from franka_experiments.utils.state_governor import governor_from_params
 from franka_experiments.utils.livelock import LivelockDetector, ProgressWindow
 from franka_experiments.utils.cbf_state_rows import (
     FR3_JOINT_KEYS,
@@ -145,7 +146,13 @@ class CBFSafetyFilter(Node):
         # NOT from the joint_limits: block at the bottom of fr3_control.yaml —
         # that one is read by four other nodes and the two can drift.
         jl = load_franka_joint_limits(FR3_JOINT_KEYS)
-        self._lb, self._ub = -jl['decel_max'], jl['decel_max']
+        # Acceleration authority, capped at what the arm can actually produce.
+        # decel_max is the braking number and the only q̈ scale joint_limits.yaml
+        # carries; symmetrically it claims 17 rad/s² on joints 5 and 7 against a
+        # rated 10 (libfranka kMaxJointAcceleration). See qddot_max_abs in
+        # fr3_control.yaml for the measurement that made this necessary.
+        qdd_cap = np.minimum(jl['decel_max'], P.qddot_max_abs)
+        self._lb, self._ub = -qdd_cap, qdd_cap
         self._qdot_max = jl['qdot_max']
 
         # EFFECTIVE position limits, not the mechanical ones. The firmware's
@@ -234,6 +241,15 @@ class CBFSafetyFilter(Node):
                 f'zone ladder (x d_safe={P.d_safe} m): {self._zones.describe()}')
         self._zone_held = False     # edge detector for the hold-zone log line
         self._diag_w_task = 1.0     # last task weight, for CBFDIAG
+        # State governor: the SECOND task switch, keyed on the arm's own state
+        # (velocity envelope, sigma_min, self-collision gap) rather than on the
+        # obstacle gap. Composes multiplicatively with the ladder's weight —
+        # they attenuate the same thing for independent reasons, so the tighter
+        # of the two must win and a product of two [0, 1] scalars gives that
+        # without either needing to know about the other.
+        self._gov = governor_from_params(P, self.get_logger())
+        self._gov_held = False      # edge detector for the suspension log line
+        self._diag_gov = None       # last GovernorState, for CBFDIAG
 
         # ── 5. Shared state (lock-free: one immutable snapshot per producer,
         #       published by a single atomic attribute assignment) ────────
@@ -931,6 +947,61 @@ class CBFSafetyFilter(Node):
             if w_task >= 1.0 and self._zone_held:
                 self.get_logger().info('ZONE hold released → trajectory resumed')
                 self._zone_held = False
+
+        # ── STEP 3a+: the state governor's task switch ──────────────────
+        # Same lever as 3a, different reason. The ladder asks "is something
+        # coming at me"; this asks "can I still do what I am being told". A
+        # joint about to cross its firmware velocity envelope, a collapsing
+        # sigma_min, a closing self-collision gap: each makes the nominal
+        # infeasible on its own, with no obstacle involved, and the answer to an
+        # infeasible demand is to stop making it — not to push harder against
+        # the constraint that is refusing it.
+        #
+        # Multiplied into w_task rather than min()'d with it: the two switches
+        # are independent and a product is the only combination where each
+        # keeps its full effect regardless of the other's state.
+        #
+        # Placed with 3a and BEFORE the evasion biases, for the reason 3a gives:
+        # those are avoidance, not task, and attenuating avoidance is backwards.
+        # Note what this does NOT do: it does not touch the rows, the slack
+        # prices, or /cbf_status. See utils/state_governor.py.
+        if self._gov is not None:
+            # sigma and d_sc come from the 50 Hz rebuild; the velocity margin is
+            # computed here from THIS tick's state. Gated on n_c > 0, the same
+            # test the ladder uses for d_zone and for the same reason: on every
+            # braking path `con` still holds the last snapshot, and governing off
+            # geometry the QP itself has already refused to use would only add a
+            # second opinion formed on stale data. The velocity term is ungated —
+            # it reads js, which STEP 1 has already established is fresh.
+            #
+            # Note the fade is arithmetically inert on those paths anyway: the
+            # nominal IS -k_brake*qdot there, and fading a braking command into a
+            # braking command is the identity. The gate is about the ramp state
+            # and the diagnostic, not about the command.
+            snap = con if n_c > 0 and con is not None else None
+            gov = self._gov.weight(
+                q=js.q, qdot=qdot,
+                sigma=(getattr(self._rows, 'diag_sigma', None)
+                       if snap is not None else None),
+                d_sc=(snap.d_sc_min if snap is not None else None),
+                dt=self._dt_qp)
+            self._diag_gov = gov
+            if gov.w < 1.0:
+                qddot_nom = (gov.w * qddot_nom
+                             + (1.0 - gov.w) * (-P.k_brake * qdot))
+                w_task *= gov.w
+                if gov.w <= 0.0 and not self._gov_held:
+                    self.get_logger().warn(
+                        f'GOVERNOR hold: {gov.binding} margin exhausted '
+                        f'(vel={gov.margins[0]:+.3f} rad/s, '
+                        f'sigma={gov.margins[1]:+.3f}, '
+                        f'd_sc={gov.margins[2]:+.3f} m) → trajectory suspended, '
+                        f'rows keep full authority '
+                        f'(resumes over {P.governor_resume_s:.1f} s)')
+                    self._gov_held = True
+            if gov.w >= 1.0 and self._gov_held:
+                self.get_logger().info('GOVERNOR hold released → trajectory resumed')
+                self._gov_held = False
         self._diag_w_task = w_task
 
         # ── STEP 3b: steer around, not just away from, a close obstacle ─
@@ -1239,6 +1310,7 @@ class CBFSafetyFilter(Node):
                 n_active_cps=n_active, vel_ratio=self._diag_vel_ratio,
                 vel_bite=self._diag_vel_bite, slew_bite=self._diag_slew_bite,
                 cap_age=self._diag_cap_age, w_task=self._diag_w_task,
+                gov=self._diag_gov,
                 iso_v_closing=float(self._status_msg.data[7])
                 if len(self._status_msg.data) > 7 else 0.0,
                 iso_stop=float(self._status_msg.data[8])

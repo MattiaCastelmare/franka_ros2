@@ -178,10 +178,32 @@ def _iso_num(x) -> str:
     return 'inf' if x == float('inf') else f'{x:.3f}'
 
 
+def _gov_field(gov) -> str:
+    """The ``gov=`` field, or the empty string when the state governor is off.
+
+    ``gov=<w>/<binding>:<margin>`` — the weight the task was multiplied by, the
+    term that set it, and that term's raw margin in its own unit (rad/s for
+    ``vel``, dimensionless for ``sing``, metres for ``sc``). ``-`` as the
+    binding term means every margin was full, which is the normal case and the
+    one that must be visible at a glance so a suspicious ``task=`` can be
+    attributed to the zone ladder rather than to this.
+
+    Empty when the governor is disabled, matching :func:`_zone_field`: a line
+    that changes WIDTH with a flag is greppable, one whose meaning changes
+    silently is not.
+    """
+    if gov is None:
+        return ''
+    i = {'vel': 0, 'sing': 1, 'sc': 2}.get(gov.binding)
+    m = '' if i is None else f':{gov.margins[i]:+.3f}'
+    return f'gov={gov.w:.2f}/{gov.binding}{m} '
+
+
 def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
                     qddot_safe, qddot_nom, qddot_real, slack, n_active_cps,
                     vel_ratio, vel_bite, slew_bite, cap_age,
-                    w_task=None, iso_v_closing=0.0, iso_stop=0.0) -> str:
+                    w_task=None, iso_v_closing=0.0, iso_stop=0.0,
+                    gov=None) -> str:
     """One compact, CSV-like line describing the whole constraint episode.
 
     Field guide, in the order they appear. Units in brackets.
@@ -385,7 +407,8 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'vcap={_iso_num(getattr(rows, "diag_ssm_cap", float("inf")))} '
         f'vcls={_iso_num(iso_v_closing)} '
         f'isostop={int(iso_stop)} '
-        + _zone_field(con, i, w_task, getattr(rows, 'diag_rot_reject', 0)) +
+        + _zone_field(con, i, w_task, getattr(rows, 'diag_rot_reject', 0))
+        + _gov_field(gov) +
         f'w=[{w_txt}] wq=[{wq_txt}] '
         f'retreat={rtr:+.3f}/{rtr_cap:.3f} vlink={spd:+.3f}/{spd_cap:.3f} '
         f'dq_rad={dq_rad:+.3f} dq_ort={dq_ort:.3f} '

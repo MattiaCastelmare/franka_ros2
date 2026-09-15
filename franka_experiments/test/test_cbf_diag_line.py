@@ -29,7 +29,7 @@ class _Rows:
     diag_w = diag_wq = None
 
 
-def _line(con, qdot, rows=None):
+def _line(con, qdot, rows=None, gov=None):
     n = con.A.shape[0]
     return format_cbf_diag(
         now=1.0, con=con, rows=rows if rows is not None else _Rows(),
@@ -37,7 +37,8 @@ def _line(con, qdot, rows=None):
         h_qp=np.zeros(n), qdot=qdot, qdot_cbf=qdot,
         qddot_safe=np.zeros(NV), qddot_nom=np.zeros(NV), qddot_real=np.zeros(NV),
         slack=np.zeros(N_SLACK), n_active_cps=0, vel_ratio=np.zeros(NV),
-        vel_bite=np.zeros(NV, bool), slew_bite=np.zeros(NV, bool), cap_age=0.0)
+        vel_bite=np.zeros(NV, bool), slew_bite=np.zeros(NV, bool), cap_age=0.0,
+        gov=gov)
 
 
 def _vel(line):
@@ -134,3 +135,57 @@ def test_the_identity_reset_counter_is_on_the_line_whatever_the_flags():
     line = _line(con, np.zeros(NV), rows=b)
     assert 'zone=' not in line
     assert int(_field(line, 'nid')) == 0
+
+
+# ── the state governor's field ───────────────────────────────────────────────
+
+def _con_qdot():
+    qdot = np.full(NV, 0.05)
+    con = run(make_builder(), [make_obstacle(d=0.25, pr=PR, ph=PH)],
+              n_frames=5, qdot=0.05)
+    return con, qdot
+
+
+def test_gov_field_is_absent_when_the_governor_is_off():
+    """Off means the field does not exist, not that it reads 1.00.
+
+    Same contract as zone=: a line that changes WIDTH with a flag is greppable.
+    """
+    con, qdot = _con_qdot()
+    assert 'gov=' not in _line(con, qdot)
+
+
+def test_gov_field_reports_weight_binding_term_and_margin():
+    from franka_experiments.utils.state_governor import StateGovernor
+    from franka_experiments.utils.cbf_hard_limits import (
+        FR3_VEL_Q_REF_LOWER, FR3_VEL_Q_REF_UPPER)
+
+    g = StateGovernor(qdot_band=0.30, sigma_floor=0.05, sigma_band=0.04,
+                      sc_margin=0.02, sc_band=0.04, resume_s=0.5,
+                      envelope_margin=0.85)
+    q = 0.5 * (FR3_VEL_Q_REF_UPPER + FR3_VEL_Q_REF_LOWER)
+    st = g.weight(q=q, qdot=np.zeros(NV), sigma=0.06, d_sc=0.5, dt=0.01)
+
+    con, qdot = _con_qdot()
+    tok = [t for t in _line(con, qdot, gov=st).split() if t.startswith('gov=')]
+    assert len(tok) == 1
+    w, rest = tok[0].split('=')[1].split('/')
+    term, margin = rest.split(':')
+    assert term == 'sing'
+    assert abs(float(w) - st.w) < 5e-3
+    assert abs(float(margin) - 0.01) < 5e-4      # sigma 0.06 over a 0.05 floor
+
+
+def test_gov_field_has_no_margin_suffix_when_nothing_binds():
+    from franka_experiments.utils.state_governor import StateGovernor
+    from franka_experiments.utils.cbf_hard_limits import (
+        FR3_VEL_Q_REF_LOWER, FR3_VEL_Q_REF_UPPER)
+
+    g = StateGovernor(qdot_band=0.30, sigma_floor=0.05, sigma_band=0.04,
+                      sc_margin=0.02, sc_band=0.04, resume_s=0.5,
+                      envelope_margin=0.85)
+    q = 0.5 * (FR3_VEL_Q_REF_UPPER + FR3_VEL_Q_REF_LOWER)
+    st = g.weight(q=q, qdot=np.zeros(NV), sigma=0.9, d_sc=0.9, dt=0.01)
+    con, qdot = _con_qdot()
+    tok = [t for t in _line(con, qdot, gov=st).split() if t.startswith('gov=')]
+    assert tok == ['gov=1.00/-']
