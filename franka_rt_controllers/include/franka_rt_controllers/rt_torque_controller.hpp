@@ -111,10 +111,13 @@ class RtTorqueController : public controller_interface::ControllerInterface {
   // I valori di default sono quelli di franka_description/robots/fr3/
   // joint_limits.yaml. qdot_margin_ <= 0 disattiva il tetto.
   std::array<double, kNumJoints> qdot_max_{};   // |q̇| ufficiale [rad/s]
+  // TODO[LEGACY]: letti dai parametri ma non piu usati da qdotCeiling/qdotFloor, che ora ancorano l'inviluppo a q_ref_hi_/q_ref_lo_ (libfranka) | confidence: high | superseded-by: q_ref_hi_ / q_ref_lo_ | flagged: 2026-09-15
   std::array<double, kNumJoints> q_min_{};      // limite posizione inferiore [rad]
   std::array<double, kNumJoints> q_max_{};      // limite posizione superiore [rad]
   std::array<double, kNumJoints> v_offset_{};   // offset inviluppo firmware [rad/s]
   std::array<double, kNumJoints> decel_{};      // autorità di frenata [rad/s²]
+  std::array<double, kNumJoints> q_ref_hi_{};   // q_ref inviluppo, lato alto [rad]
+  std::array<double, kNumJoints> q_ref_lo_{};   // q_ref inviluppo, lato basso [rad]
   double qdot_margin_{0.95};                    // frazione di q̇_max concessa
   // [rad/s] ampiezza della banda entro cui τ_ff sfuma a zero contro
   // l'inviluppo di velocità. <= 0 disattiva il gate (comportamento

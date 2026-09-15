@@ -225,9 +225,16 @@ def test_row_acts_while_the_box_is_still_wide_open():
 def test_row_demands_hard_braking_once_on_the_box_curve():
     """Deep in the approach the row and the box agree on the sign.
 
-    Same state the hardware log captured (joint4 exactly on its curve). The box
-    alone permits qddot4 = 0 — coasting into the limit at 1.07 rad/s. The row
-    computes a strictly POSITIVE demand, i.e. actually retreat.
+    Same state the hardware log captured (joint4 exactly on its curve). Both
+    layers demand a strictly POSITIVE q̈, i.e. actually retreat, and the row
+    demands strictly more than the box.
+
+    This test used to assert the box collapsed to ``lb = 0`` — coast only — and
+    that the row was the only thing asking for retreat. That hole is closed:
+    the box now also carries the FR3 firmware velocity envelope, which at this
+    state (q4 = −2.787 rad) admits −1.031 rad/s against the −1.074 here. The row
+    still leads, which is the property worth keeping: it engages earlier and the
+    QP can trade it against the other joints, while the box can only clamp.
     """
     J = 3
     h_curve = 0.240
@@ -240,7 +247,7 @@ def test_row_demands_hard_braking_once_on_the_box_curve():
     box_lb, _ = hard_accel_box(
         q, qdot, acc_lb=-QDD, acc_ub=QDD, qdot_max=QD, v_margin=0.9,
         q_min=Q_MIN, q_max=Q_MAX, q_margin=0.05, brake_eta=0.6, dt=0.01)
-    assert abs(box_lb[J]) < 1e-6, 'the box has collapsed to lb = 0: coast only'
+    assert box_lb[J] > 0.0, 'the box must demand retreat, not permit coasting'
 
     (a, h, jdq, lbl), = joint_limit_rows(q, Q_MIN, Q_MAX, 0.10, 0.60, NV)
     assert lbl == 'q4-'

@@ -55,6 +55,8 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.cbf_hard_limits import (
+    FR3_VEL_Q_REF_LOWER,
+    FR3_VEL_Q_REF_UPPER,
     apply_slew_limit,
     position_velocity_accel_box,
 )
@@ -114,13 +116,28 @@ class CBFSafetyFilter(Node):
         topics, P = load_cbf_config(self)
         self.P = P
 
-        # ── 2. State limits, straight from franka_description ───────────
+        # ── 2. State limits: franka_description, then the firmware ──────
         # NOT from the joint_limits: block at the bottom of fr3_control.yaml —
         # that one is read by four other nodes and the two can drift.
         jl = load_franka_joint_limits(FR3_JOINT_KEYS)
         self._lb, self._ub = -jl['decel_max'], jl['decel_max']
         self._qdot_max = jl['qdot_max']
-        self._q_min, self._q_max = jl['q_min'], jl['q_max']
+
+        # EFFECTIVE position limits, not the mechanical ones. The firmware's
+        # velocity envelope reaches zero at a reference position that lies
+        # INSIDE the mechanical stop — 4.5205 rad on joint6 against a 4.6216
+        # limit, −3.0481 on joint4 against −3.0770 — so the last 0.03…0.10 rad
+        # of every joint admit no motion at all: enter them moving and the
+        # answer is `joint_velocity_violation`, not a soft landing.
+        #
+        # Anchoring the joint-limit ROWS at the mechanical limit therefore put
+        # the barrier behind the wall. Run 20260915_080040 is the demonstration:
+        # joint6 aborted at 4.4644 rad and +0.489 rad/s, where the firmware
+        # admitted +0.435 — and the row, measuring h against 4.6216, saw 0.157
+        # rad of headroom and never fired. Rows and box now share the same wall
+        # as the hard envelope in cbf_hard_limits, and it is the real one.
+        self._q_min = np.maximum(jl['q_min'], FR3_VEL_Q_REF_LOWER)
+        self._q_max = np.minimum(jl['q_max'], FR3_VEL_Q_REF_UPPER)
 
         # ── 3. Kinematics and the row builders ──────────────────────────
         kin = CBFKinematics(pin.buildModelFromUrdf(build_urdf_no_hand()))
