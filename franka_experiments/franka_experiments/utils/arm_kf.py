@@ -77,6 +77,10 @@ class ArmKalmanFilter:
         self.dt = 0.0
         self.F = np.eye(self.STATE_SIZE) # shape (6, 6)
         self.Q = np.zeros((self.STATE_SIZE, self.STATE_SIZE), dtype=float) # shape (6, 6)
+
+        self.innovation = np.zeros((self.num_keypoints, self.MEASUREMENT_SIZE), dtype=float)
+        self.p_trace = np.zeros(self.num_keypoints, dtype=float)
+
         self._set_dt(float(dt))
 
     def _set_dt(self, dt: float) -> None:
@@ -127,6 +131,7 @@ class ArmKalmanFilter:
             return True
 
         innovation = position - self.H @ self.x[index]
+        self.innovation[index] = innovation
         innovation_covariance = self.H @ self.P[index] @ self.H.T + self.R
 
         # --- INNOVATION GATE (Mahalanobis Distance) ---
@@ -197,6 +202,9 @@ class ArmKalmanFilter:
         if dt is not None:
             self._set_dt(float(dt))
 
+        # Reset innovations to zero at the start of the step (predict-only implies 0 innovation)
+        self.innovation.fill(0.0)
+
         finite_measurement = np.all(np.isfinite(positions_array), axis=1)
         valid_mask = (
             finite_measurement
@@ -216,6 +224,9 @@ class ArmKalmanFilter:
                 if not accepted:
                     valid_mask[index] = False
 
+            # Compute the trace of the covariance matrix for diagnostics
+            self.p_trace[index] = np.trace(self.P[index])
+
         filtered_positions, filtered_velocities = self.get_estimates()
 
         return filtered_positions, filtered_velocities, valid_mask
@@ -229,11 +240,9 @@ class ArmKalmanFilter:
         velocities[self.initialized] = self.x[self.initialized, 3:6]
         return positions, velocities
 
-    def get_states(self) -> np.ndarray:
-        """Return a copy of the four complete 6D states."""
-        states = np.full_like(self.x, np.nan)
-        states[self.initialized] = self.x[self.initialized]
-        return states
+    def get_diagnostics(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the latest innovation vector and the trace of the covariance matrix."""
+        return self.innovation.copy(), self.p_trace.copy()
 
     def reset(self, keypoint: int | str | None = None) -> None:
         """Reset one keypoint or the complete filter bank."""

@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MultiLinkDistance.msg"
   "msg/HumanArmState.msg"
   "msg/HumanArmPrediction.msg"
+  "msg/KalmanDiagnostics.msg"
   "srv/SetCartesianStiffness.srv"
   "srv/SetTCPFrame.srv"
   "srv/SetForceTorqueCollisionBehavior.srv"

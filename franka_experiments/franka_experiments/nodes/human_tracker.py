@@ -25,8 +25,9 @@ from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, PointCloud
 from tf2_ros import Buffer, TransformListener
+from geometry_msgs.msg import Vector3
 
-from franka_msgs.msg import HumanArmPrediction, HumanArmState
+from franka_msgs.msg import HumanArmPrediction, HumanArmState, KalmanDiagnostics
 from franka_experiments.utils.arm_kf import ArmKalmanFilter
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
@@ -186,6 +187,11 @@ class HumanTracker(Node):
             PointCloud,
             str(config["landmarks_2d_topic"]),
             qos_profile_sensor_data,
+        )
+        self.kf_diag_pub = self.create_publisher(
+            KalmanDiagnostics,
+            "/human/kf_diagnostics",
+            latest_qos,
         )
 
         self.worker_thread = threading.Thread(
@@ -426,6 +432,20 @@ class HumanTracker(Node):
             & (age >= 0.0)
             & (age <= self.max_state_age_s)
         )
+
+        # Publish KF Diagnostics
+        innovations, p_traces = self.arm_kf.get_diagnostics()
+        diag_msg = KalmanDiagnostics()
+        diag_msg.header = self.image_header
+        
+        for i in range(4):
+            vec = Vector3()
+            vec.x = float(innovations[i, 0])
+            vec.y = float(innovations[i, 1])
+            vec.z = float(innovations[i, 2])
+            diag_msg.innovations.append(vec)
+            diag_msg.p_traces.append(float(p_traces[i]))
+        self.kf_diag_pub.publish(diag_msg)
 
         # Sanity Check: discard any keypoint whose speed exceeds a reasonable threshold
         speed = np.linalg.norm(filtered_vel, axis=1)

@@ -6,7 +6,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
-from franka_msgs.msg import HumanArmState, HumanArmPrediction, MultiLinkDistance
+from franka_msgs.msg import HumanArmState, HumanArmPrediction, MultiLinkDistance, KalmanDiagnostics
 
 
 class BaseLogger:
@@ -96,6 +96,19 @@ class SafetyDistanceLogger(BaseLogger):
         super().__init__(f"{base_path}_safety_distance.csv", headers)
 
 
+class KalmanDiagnosticsLogger(BaseLogger):
+    """Logger for Kalman Filter internal diagnostics (Whiteness Test and Covariance Trace)."""
+
+    def __init__(self, base_path: str):
+        headers = ['timestamp']
+        keypoints = ['shoulder', 'elbow', 'wrist', 'hand']
+        
+        for kp in keypoints:
+            headers.extend([f'{kp}_inn_x', f'{kp}_inn_y', f'{kp}_inn_z', f'{kp}_p_trace'])
+            
+        super().__init__(f"{base_path}_kf_diagnostics.csv", headers)
+
+
 class ControllerDiagnosticsLogger(BaseLogger):
     """Logger for CBF vs MPC operational metrics and solve times."""
 
@@ -126,6 +139,7 @@ class ExperimentLoggerNode(Node):
         self.human_pred_logger = HumanPredictionLogger(base_log_path)
         self.robot_logger = RobotStateLogger(base_log_path)
         self.distance_logger = SafetyDistanceLogger(base_log_path)
+        self.kf_diag_logger = KalmanDiagnosticsLogger(base_log_path)
         self.diag_logger = ControllerDiagnosticsLogger(base_log_path)
 
         # State cache for diagnostics
@@ -146,6 +160,9 @@ class ExperimentLoggerNode(Node):
 
         self.min_dist_sub = self.create_subscription(
             MultiLinkDistance, '/cbf/per_link_distances', self.min_distance_callback, 10)
+
+        self.kf_diag_sub = self.create_subscription(
+            KalmanDiagnostics, '/human/kf_diagnostics', self.kf_diag_callback, 10)
 
         self.mux_sub = self.create_subscription(
             String, '/controller_mux/active_controller', self.active_controller_callback, 10)
@@ -228,7 +245,6 @@ class ExperimentLoggerNode(Node):
         """Log minimum human-robot clearance distance and closest points from CBF data."""
         if not msg.links:
             return
-
         t = self.get_clock().now().nanoseconds / 1e9
         
         # Find global minimum
@@ -248,6 +264,17 @@ class ExperimentLoggerNode(Node):
         ]
         self.distance_logger.log(row)
 
+    def kf_diag_callback(self, msg: KalmanDiagnostics):
+        """Log KF innovations and covariance traces."""
+        t = self.get_clock().now().nanoseconds / 1e9
+        row = [t]
+        
+        for i in range(4):
+            inn = msg.innovations[i]
+            row.extend([inn.x, inn.y, inn.z, msg.p_traces[i]])
+            
+        self.kf_diag_logger.log(row)
+
     def active_controller_callback(self, msg: String):
         """Track which controller (CBF or MPC) is currently driving the robot."""
         self.current_controller = msg.data
@@ -260,6 +287,7 @@ class ExperimentLoggerNode(Node):
         self.human_pred_logger.close()
         self.robot_logger.close()
         self.distance_logger.close()
+        self.kf_diag_logger.close()
         self.diag_logger.close()
         super().destroy_node()
 
