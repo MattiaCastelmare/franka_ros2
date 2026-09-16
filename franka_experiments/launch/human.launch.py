@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import time
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -10,7 +11,7 @@ from launch.actions import (
     ExecuteProcess,
     LogInfo,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -66,6 +67,9 @@ def generate_launch_description():
     translation = extrinsics['translation']
     rotation = extrinsics['rotation']
     play_bag = LaunchConfiguration('play_bag')
+    rosbag_record = LaunchConfiguration('rosbag_record')
+    run_name = LaunchConfiguration('run_name')
+    default_run_name = time.strftime("%Y%m%d_%H%M%S")
 
     use_sim_time = ParameterValue(
         play_bag,
@@ -135,6 +139,22 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
+    record_bag = ExecuteProcess(
+        condition=IfCondition(rosbag_record),
+        cmd=[
+            'ros2', 'bag', 'record',
+            '-o', ['recorded_bags/', run_name],
+            '/NS_1/joint_states',
+            '/camera/camera/aligned_depth_to_color/camera_info',
+            '/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/color/camera_info',
+            '/camera/camera/color/image_raw',
+            '/tf', 
+            '/tf_static'
+        ],
+        output='screen'
+    )
+
     bag_player = TimerAction(
         period=2.0,
         actions=[OpaqueFunction(function=create_bag_player)],
@@ -147,8 +167,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('play_bag', default_value='false'),
+        DeclareLaunchArgument('rosbag_record', default_value='false'),
         DeclareLaunchArgument('bag_path', default_value=DEFAULT_BAG_PATH),
         DeclareLaunchArgument('publish_camera_tf', default_value='true'),
+        DeclareLaunchArgument('run_name', default_value=default_run_name),
         camera_tf_delayed,
         tracker,
         distance,
@@ -156,4 +178,5 @@ def generate_launch_description():
         visualizer,
         rviz,
         bag_player,
+        record_bag,
     ])

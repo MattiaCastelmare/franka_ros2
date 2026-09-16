@@ -128,7 +128,9 @@ class ExperimentLoggerNode(Node):
 
         # Create timestamped experiment output folder
         session_time = time.strftime("%Y%m%d_%H%M%S")
-        base_log_dir = Path(f"experiment_logs/{session_time}")
+        self.declare_parameter('run_name', session_time)
+        run_name = self.get_parameter('run_name').get_parameter_value().string_value
+        base_log_dir = Path(f"experiment_logs/{run_name}")
         base_log_path = str(base_log_dir / "experiment")
 
         self.get_logger().info(f"Initializing logging node. Target directory: {base_log_dir}")
