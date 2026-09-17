@@ -348,6 +348,7 @@ class HumanTracker(Node):
 
         # Compute 3D positions of the keypoints in the robot base frame
         camera_tf = self.get_camera_to_base_transform()
+        speed_logs = []
 
         # Iterate on each active side (left/right) and process the keypoints
         for side in self.active_sides:
@@ -483,14 +484,18 @@ class HumanTracker(Node):
 
             # Log the KF speed for each keypoint
             values = [speed[i] if keypoint_valid[i] else np.nan for i in range(4)]
-            self.get_logger().info(
-                f"{log_prefix}KF speed [m/s]: "
-                f"SH={values[0]:.3f}, EL={values[1]:.3f}, "
-                f"WR={values[2]:.3f}, HA={values[3]:.3f}",
-                throttle_duration_sec=1.0,
+            speed_logs.append(
+                f"{log_prefix}SH={values[0]:.3f}, EL={values[1]:.3f}, "
+                f"WR={values[2]:.3f}, HA={values[3]:.3f}"
             )
 
         self.last_update_time = current_time
+
+        if speed_logs:
+            self.get_logger().info(
+                " | ".join(speed_logs),
+                throttle_duration_sec=1.0,
+            )
 
     def stop_worker(self):
         self.stop_event.set()

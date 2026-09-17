@@ -98,8 +98,9 @@ class HumanArmVisualizer(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # --- Subscriptions ---
+        latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.dist_sub = self.create_subscription(
-            MultiLinkDistance, '/cbf/per_link_distances', self.dist_cb, 10
+            MultiLinkDistance, '/cbf/per_link_distances', self.dist_cb, latest_qos
         )
         self.camera_info_sub = self.create_subscription(
             CameraInfo, camera_info_topic, self.camera_info_cb, 10

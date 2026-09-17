@@ -22,7 +22,7 @@ from franka_experiments.utils.capsule_geometry import HumanArmGeometry, RobotGeo
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
     extract_human_keypoints, init_pinocchio_from_xacro, 
-    define_control_points, format_topic
+    define_control_points, format_topic, get_side
 )
 
 
@@ -30,7 +30,7 @@ class HumanDistance(Node):
     def __init__(self):
         super().__init__('human_distance_node')
 
-        self.distance_loop_rate = 30.0
+        self.distance_loop_rate = 15.0
 
         # Configs
         config_path = os.path.join(
@@ -95,7 +95,7 @@ class HumanDistance(Node):
             )
 
         # Publishers
-        latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+        latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.per_link_pub = self.create_publisher(MultiLinkDistance, '/cbf/per_link_distances', latest_qos)
         self.global_dist_pub = self.create_publisher(Float32, '/human_robot/distance', 10)
 
@@ -190,6 +190,7 @@ class HumanDistance(Node):
                     links_dict[link_name] = best_dist_info
         
         global_min_dist = float('inf')
+        closest_capsule_name = ""
 
         # Populate CBF Message
         for link_name, info in links_dict.items():
@@ -201,6 +202,7 @@ class HumanDistance(Node):
             
             if ld.distance < global_min_dist:
                 global_min_dist = ld.distance
+                closest_capsule_name = ld.human_capsule
 
             # Closest point on the robot
             ld.closest_point_robot.x = float(info['robot_position'][0])
@@ -236,8 +238,9 @@ class HumanDistance(Node):
             dist_msg.data = global_min_dist
             self.global_dist_pub.publish(dist_msg)
 
+        side_prefix = get_side(self.active_sides, closest_capsule_name)
         self.get_logger().info(
-            f"Global min: {global_min_dist:.3f} m "
+            f"{side_prefix}Global min: {global_min_dist:.3f} m "
             f"(tracking {valid_arms_count} arms, "
             f"avg confidence: {avg_confidence:.2f})",
             throttle_duration_sec=1.0

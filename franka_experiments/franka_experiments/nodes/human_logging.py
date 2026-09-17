@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
@@ -196,11 +197,12 @@ class ExperimentLoggerNode(Node):
                 KalmanDiagnostics, format_topic('/human/kf_diagnostics', prefix), partial(self.kf_diag_callback, side=side), 10)
 
         # Global subscriptions
+        latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.joint_state_sub = self.create_subscription(
             JointState, '/NS_1/joint_states', self.robot_state_callback, 10)
 
         self.min_dist_sub = self.create_subscription(
-            MultiLinkDistance, '/cbf/per_link_distances', self.min_distance_callback, 10)
+            MultiLinkDistance, '/cbf/per_link_distances', self.min_distance_callback, latest_qos)
 
         self.mux_sub = self.create_subscription(
             String, '/controller_mux/active_controller', self.active_controller_callback, 10)

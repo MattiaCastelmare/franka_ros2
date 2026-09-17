@@ -64,6 +64,16 @@ def format_topic(topic, prefix: str = None) -> str:
     return '/'.join(parts)
 
 
+def get_side(active_sides: list, closest_capsule_name: str = "") -> str:
+    side_prefix = ""
+    if len(active_sides) > 1 and closest_capsule_name:
+        if "left_" in closest_capsule_name:
+            side_prefix = "[LEFT] "
+        elif "right_" in closest_capsule_name:
+            side_prefix = "[RIGHT] "
+    return side_prefix
+
+
 def extract_arm_landmarks(
     pose_landmarks,
     image_shape,
