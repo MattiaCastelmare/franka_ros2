@@ -49,6 +49,7 @@ franka_experiments/
 │   ├── fr3_distance.yaml         # per-link distance thresholds
 │   ├── launch_defaults.yaml      # shared launch argument defaults
 │   ├── oscbf_params.yaml         # OSCBF QP weights and tuning
+│   ├── safety/                   # watchman_profile.md (rated envelope, applied by a person)
 │   └── ...                       # camera intrinsics/extrinsics, RViz config
 ├── franka_experiments/
 │   ├── nodes/                    # all ROS2 node entry-points
@@ -59,7 +60,9 @@ franka_experiments/
 │   ├── thales.launch.py                     # production velocity pipeline + rosbag
 │   ├── handeye_calibration_bringup.launch.py
 │   └── minimal.launch.py
+├── scripts/                      # offline tools (latency budget, ISO constants, reports)
 ├── test/
+├── SAFETY.md                     # what the ISO layer claims, and what it does not
 └── setup.py
 ```
 
@@ -79,6 +82,8 @@ franka_experiments/
 | `cbf_velocity_filter` | `nodes/cbf_velocity_filter.py` | Velocity | `/NS_1/tracking_qdot`, `/human_robot/multi_distance`, `/NS_1/joint_states` | `/NS_1/qdot_cmd` (Float64MultiArray, 7) | Velocity-level CBF QP; param `bypass_cbf` for Phase 1 pass-through |
 | `real_time_distance` | `nodes/real_time_distance.py` | Shared | Depth image, `/NS_1/joint_states`, TF tree | `/cbf/per_link_distances` (MultiLinkDistance), `/human_robot/multi_distance` | Flacco depth-space human-robot distance estimator; multithreaded compute/visualize |
 | `experiment_logger` | `nodes/experiment_logger.py` | Shared | `/NS_1/joint_states`, `/NS_1/torque_cmd`, CBF topics | — | CSV + plot logger for joint states, torques, CBF values |
+| `iso_safety_monitor` | `nodes/iso_safety_monitor.py` | Torque (ISO) | `/NS_1/joint_states`, `/cbf/per_link_distances`, `/NS_1/cbf_status` | `/NS_1/iso_safety` (Float64MultiArray, 5), service `/NS_1/safety_reset` (`std_srvs/Trigger`) | Independent SSM channel: recomputes the per-control-point speed cap with its own `CBFKinematics`, its own clock and its own copy of the `iso_*` constants, and latches a **non-safety-rated stop** when the separation bound is crossed. Publishes no command — the filter brakes and the commander zeroes `q̈_nom` off `/NS_1/iso_safety`. Started only with `iso_monitor_enabled:=true` (which requires `iso_enabled:=true`) |
+| `iso_evidence_logger` | `nodes/iso_evidence_logger.py` | Shared | `/NS_1/joint_states`, `/cbf/per_link_distances`, `/NS_1/cbf_status`, `/NS_1/iso_safety`, `/NS_1/qddot_nom`, `/NS_1/qddot_safe`, `/NS_1/torque_saturation` | — (passive: writes files, publishes nothing) | Records what a run did against the limits its own configuration claims, **whether or not the ISO layer is on**. Writes one directory per run: `iso_manifest.json` (the whole `iso_*` block, the limits, topics, git SHA), `iso_evidence.csv` (rate-sampled, default 100 Hz) and `iso_events.csv` (sparse, so a 30 ms excursion is not lost to sampling). Read back with `scripts/iso_evidence_report.py`. Started with `start_iso_evidence_logger:=true` |
 | `capsule_overlay_node` | `nodes/capsule_overlay_node.py` | Shared | TF tree, robot model | Marker array (RViz) | Publishes capsule geometry for robot-body visualisation in RViz |
 | `handeye_calibration_node` | `nodes/handeye_calibration_node.py` | Shared | TF tree, camera images | — | Interactive hand-eye calibration tool |
 
@@ -261,11 +266,70 @@ ros2 launch franka_experiments thales.launch.py \
 
 ---
 
+## ISO 10218 alignment layer
+
+A set of **ISO-alignment measures**, not a compliant system: nothing here is
+certified, and nothing in the chain is a *safety function* in the sense of
+ISO 10218 / ISO 13849-1 (single-channel Python over best-effort DDS cannot reach
+the PL d / SIL 2 that a Class II robot's safety functions require).
+**`SAFETY.md` is the authoritative statement** of what is and is not claimed,
+per requirement, plus the deviation register — read it before touching any flag.
+
+**Every `iso_*` flag ships `false`.** With them off, the filter's numerical
+output is identical to what it was before the layer existed;
+`test/test_iso_flags_off_identical.py` enforces that rather than asserting it in
+prose. The constants in the `iso_*` block of `fr3_control.yaml` are
+**placeholders** until measured on this cell, and
+`scripts/iso_preflight_check.py` refuses an `iso_enabled:=true` launch that still
+carries them.
+
+### What the layer adds when enabled
+
+| Mechanism | Where | Flag |
+|---|---|---|
+| SSM closed forms `S_p`, `ssm_speed_cap`, `pfl_speed` (ISO 10218-2:2025 Annex L / Annex M) | `utils/iso_ssm.py` | — (pure math) |
+| `d_safe` floor `C + Z_d + Z_r`, `S_h` through the velocity standoff, PFL ceiling — all three **raise, never clamp** | `cbf_safety_filter._iso_configure` | `iso_enabled` |
+| SSM cap drives the task-space speed rows (obstacle term only; self-collision untouched) | `utils/cbf_state_rows.py` | `iso_ssm_speed_rows` |
+| Independent monitor + non-safety-rated stop | `nodes/iso_safety_monitor.py` | `iso_monitor_enabled` |
+| Fail-closed perception: contact-regime publish, bounded distance hold, live confidence gate, empty-frame fault | `real_time_distance`, `distance_engine`, `perception_msgs`, `cbf_safety_filter` | `iso_enabled` |
+| Torque clip + rate limit, `/NS_1/torque_saturation`, braking-authority check (diagnostic only) | `qddot_to_torque`, `cbf_safety_filter` | `iso_enabled` |
+| 250 mm/s TCP row | `cbf_state_rows` + the monitor | `iso_mode:=reduced` |
+| ISO tail on `/NS_1/cbf_status` (`data[5..8]`) and in CBFDIAG (`sp= vcap= vcls= isostop=`) | `cbf_safety_filter._publish_status`, `logging_utils` | always |
+
+### Scripts
+
+| Script | What it does |
+|---|---|
+| `scripts/iso_constants_measure.py` | `reaction` (`T_r`), `stop` (the Annex H 33/66/100 % grid → `a_s`, `T_s`, `S_s`; refuses without `--i-am-supervising`), `detection` (detection capability `d` → `C` per ISO 13855:2024), `uncertainty` (`Z_d`), `yaml` (paste-ready block, flagging every value still at its placeholder) |
+| `scripts/iso_pfl_speed.py` | `v_PFL` from the Annex M biomechanical limits; prints every input, and the warning that claiming PFL needs **measurement** with a PFMD (ISO 10218-2:2025 6.3.3 / Annex N), not this calculation |
+| `scripts/iso_preflight_check.py` | Refuses a launch that cannot deliver: placeholder constants, a lowered `C` with no detection record, `d_safe < C+Z_d+Z_r`, `link_speed_max > iso_v_pfl`, a silent `/NS_1/iso_safety`. The launch file runs it before the controller spawner and `Shutdown`s on a non-zero exit |
+| `scripts/iso_evidence_report.py` | Turns one `iso_evidence_logger` run directory into a verdict per check: **PASS / FAIL / INCONCLUSIVE / STRUCTURAL / NOT FROM LOGS**, each with its clause and tag, plus an explicit list of what logs can never settle (PL d, PFMD measurement, detection capability, Cat 0/1 stopping data, the risk assessment) |
+| `scripts/experiment_summary.py` | One-screen digest of an `experiment_logger` run (motion, torque, avoidance, health) with peaks and their timestamps, naming every channel that was **not** recording |
+
+`config/safety/watchman_profile.md` is the rated envelope to be applied on the
+robot through Franka Desk by a person (SLS-J, SLD/SLP-J, safe inputs, Annex H
+stopping data) and validated by a Safety Operator. **It is a specification, not
+a configuration** — nothing in this repository touches Watchman.
+
+### Two rules the logs live by
+
+- **`NaN` means the channel was not running; `0` means it was and read zero.**
+  Collapsing the two is what makes a reader conclude the arm was stationary when
+  in fact nothing was recording it. Both loggers write `NaN` until the first
+  message on each optional channel, and both reports name the missing channels
+  instead of scoring them as fine.
+- **A channel that never published reads `INCONCLUSIVE`, not `PASS`**, and a
+  check that cannot pass in this cell for a structural reason (see `SAFETY.md`
+  D1: `C + Z_d + Z_r = 0.92 m` against a 0.855 m reach) reads **`STRUCTURAL`**
+  rather than `FAIL`, so it cannot bury the findings that are about the run.
+
+---
+
 ## Configuration files
 
 | File | Purpose | Key parameters |
 |---|---|---|
-| `fr3_control.yaml` | CBF tuning for the torque and velocity stacks | `d_safe` (min obstacle distance, m), `k0_cbf` / `k1_cbf` (HOCBF class-K gains), `gamma` (velocity-CBF class-K), `rho_slack` (QP slack penalty), `distance_ema_alpha`, `max_qddot_delta`, `max_tau_delta`, `k_brake` |
+| `fr3_control.yaml` | CBF tuning for the torque and velocity stacks | `d_safe` (min obstacle distance, m), `k0_cbf` / `k1_cbf` (HOCBF class-K gains), `gamma` (velocity-CBF class-K), `rho_slack` (QP slack penalty), `distance_ema_alpha`, `max_qddot_delta`, `max_tau_delta`, `k_brake`, plus the `iso_*` block (see *ISO 10218 alignment layer*; all flags ship `false`) |
 | `oscbf_params.yaml` | OSCBF QP weights and CBF gains | `w_j` / `w_o` (null-space / task-space cost weights), `alpha1` / `alpha2` (HOCBF decay rates), `tau_max[7]`, `joint_limit_margin`, `enable_vel_cbf`, `enable_ws_cbf`, `enable_obstacle_cbf` |
 | `fr3_complete.yaml` | Robot geometry for `real_time_distance` | Control points per link, mesh paths, distance thresholds, TF frame names |
 | `fr3_distance.yaml` | Per-link distance thresholds | Link-specific `d_safe` overrides used by the velocity CBF filter |

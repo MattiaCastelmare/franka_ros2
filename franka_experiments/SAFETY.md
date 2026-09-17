@@ -93,9 +93,10 @@ separation distance exceeds the arm's own reach, so there is no configuration in
 which the robot can both do its task and satisfy `S ≥ S_p` under a conformant
 `C`. This is a property of the cell, not a bug and not a tuning failure.
 
-**What is done instead.** Resolution **(c)** of the three the roadmap allows:
-`d_safe` stays at its tuned research value of **0.15 m**, `iso_enabled` stays
-**false**, and **no ISO conformance is claimed**. `cbf_safety_filter` raises a
+**What is done instead.** Resolution **(c)** of the three: `d_safe` stays at its
+tuned research value of **0.10 m** (`config/fr3_control.yaml`), `iso_enabled`
+stays **false**, and **no ISO conformance is claimed**. The shortfall against
+the floor is therefore **0.82 m**, not a tuning distance. `cbf_safety_filter` raises a
 `ValueError` naming all three terms if anyone turns the flag on without moving
 one of the numbers, and there is deliberately **no bypass flag**.
 
@@ -109,8 +110,17 @@ pipeline a rated protective device.
 
 ### D2 — `d_safe` is a tuned value, not an ISO-derived one
 
-**Deviation.** `d_safe = 0.15 m` was tuned against hardware. Under the ISO layer
+**Deviation.** `d_safe = 0.10 m` was tuned against hardware. Under the ISO layer
 it would have to be at least `C + Z_d + Z_r`. See D1 for why it is not.
+
+**Not a stable number.** It has moved four times (0.20 → 0.15 → 0.10 → 0.15 →
+0.10, most recently in `5569259`), and the barrier's meaning changed underneath
+it once: `h` is now measured from the capsule **surface**, so the effective
+standoff grew 6-16 cm at an unchanged numeric value. Any statement about
+`d_safe` in this file is a statement about the value in `fr3_control.yaml` at
+the time of writing — check it, do not quote it. It is also **out of sync with
+`franka_sim/config.yaml` (0.15 m)**, which is a real divergence between the
+policy's training envelope and the robot's, not only a failing test.
 
 **Consequence.** The barrier offset carries no ISO meaning while `iso_enabled`
 is false. The zone ladder, whose rungs are multiples of `d_safe`, inherits that.
@@ -167,7 +177,7 @@ standard-conformant**.
 
 ---
 
-## 3. Residual gaps no step in this roadmap can close
+## 3. Residual gaps no amount of software can close
 
 **G1 — the chain cannot be a safety function.** Single-channel Python over
 best-effort DDS cannot meet the **PL d / SIL 2** required of a Class II robot's
@@ -185,6 +195,16 @@ note is not a statement of compatibility. If SLS-J turns out to be incompatible
 with FCI, the "rated backstop underneath the software" described throughout this
 package **does not exist during operation**, and this section is where that has
 to be written down.
+
+Two further findings, recorded in `config/safety/watchman_profile.md` §1: at
+today's `velocity_box_margin = 0.9` the "SLS-J 20 % above the software cap" rule
+is **unachievable** — the target exceeds the FR3's own `qdot_max` on every joint,
+so either the margin drops to ≤ 0.83 or SLS-J collapses onto the firmware limit;
+and since commit `f5a59f8` the bound the filter enforces is the flat cap
+**intersected with the position-based velocity envelope**, a curve a per-joint
+scalar SLS-J cannot represent. Near an end stop — which is where the five
+`joint_velocity_violation` aborts happened — the software envelope is the only
+layer shaped like the hazard.
 
 **G3 — the safe set is not forward-invariant.** Obstacle rows remain
 slack-relaxable, and the QP will pay slack rather than return infeasible. The
@@ -245,3 +265,38 @@ The flags exist so the layer can be validated, not so it can be left on. Before
 
 With every flag `false` — the shipped state — the filter's numerical output is
 identical to what it was before this layer existed, and no ISO claim is made.
+
+---
+
+## 5. "roadmap Step N" in the code comments
+
+About twenty comments and docstrings across the package cite *roadmap Step N*.
+The roadmap itself was a point-in-time plan, fully executed in commit
+`51dab09` ("Add the ISO 10218 alignment layer, behind flags that ship off") and
+deleted afterwards; it is recoverable with
+`git show 51dab09:franka_experiments/ISO_COMPLIANCE_ROADMAP.md`, together with
+the implementation report of the same commit
+(`git show 51dab09:franka_experiments/ISO_IMPLEMENTATION_REPORT.md`).
+This table is what the surviving references mean, so they stay readable without
+it:
+
+| Step | Subject | Principal location |
+|---|---|---|
+| 1 | Measure the ISO input constants (`T_r`, `a_s`, `d` → `C`, `Z_d`) | `scripts/iso_constants_measure.py` |
+| 2 | The declared `iso_*` parameter block and its validation spec | `config/fr3_control.yaml`, `utils/config.py` |
+| 3 | The SSM / PFL closed forms | `utils/iso_ssm.py` |
+| 4 | `d_safe` floor = `C + Z_d + Z_r`; `S_h` through the velocity standoff | `cbf_safety_filter._iso_configure` |
+| 5 | The SSM cap drives the task-space speed rows | `utils/cbf_state_rows.py`, `_ISO_RHO_SLACK_SPEED` |
+| 6 | Independent monitor + non-safety-rated stop | `nodes/iso_safety_monitor.py` |
+| 7 | Fail-closed perception (contact regime, bounded hold, confidence, empty frames) | `real_time_distance`, `distance_engine`, `perception_msgs`, `cbf_safety_filter._empty_frame_fault` |
+| 8 | Command feasibility: torque clip / rate limit, braking authority | `qddot_to_torque._limit_and_report`, `cbf_safety_filter._brake_authority_fault` |
+| 9 | Absolute ceilings: PFL and the 250 mm/s reduced-speed derate | `scripts/iso_pfl_speed.py`, `cbf_state_rows`, `_iso_configure` |
+| 10 | Status contract, diagnostics, logging | `cbf_safety_filter._publish_status`, `logging_utils`, `experiment_logger` |
+| 11 | Hardware safety layer and the preflight gate | `config/safety/watchman_profile.md`, `scripts/iso_preflight_check.py` |
+| 12 | This file | `SAFETY.md` |
+
+Two things were added after Step 12 and belong to no step:
+`nodes/iso_evidence_logger.py` with `scripts/iso_evidence_report.py` (record a
+run, then read it back as a verdict per check), and the Cartesian /
+acceleration / avoidance columns of `experiment_logger` with
+`scripts/experiment_summary.py`. Both are described in the package `README.md`.

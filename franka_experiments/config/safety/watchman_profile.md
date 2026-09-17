@@ -38,18 +38,47 @@ Set each joint's safe speed limit **~20 % above** the software cap, i.e. above
 `velocity_box_margin * qdot_max` from `config/fr3_control.yaml` and
 `franka_description/robots/fr3/joint_limits.yaml`.
 
-| joint | `qdot_max` [rad/s] | software cap (×0.6) | SLS-J target (+20 %) |
-|---|---|---|---|
-| 1 | 2.62 | 1.57 | 1.89 |
-| 2 | 2.62 | 1.57 | 1.89 |
-| 3 | 2.62 | 1.57 | 1.89 |
-| 4 | 2.62 | 1.57 | 1.89 |
-| 5 | 5.26 | 3.16 | 3.79 |
-| 6 | 4.18 | 2.51 | 3.01 |
-| 7 | 5.26 | 3.16 | 3.79 |
+**At today's `velocity_box_margin = 0.9`, that rule has no room left.** The +20 %
+target lands above the FR3's own flat `qdot_max` on **every joint**, and a safe
+limit cannot be set above the limit the firmware already enforces:
+
+| joint | `qdot_max` [rad/s] | software cap (×0.9) | +20 % target | admissible? |
+|---|---|---|---|---|
+| 1 | 2.62 | 2.36 | 2.83 | **no** — above `qdot_max` |
+| 2 | 2.62 | 2.36 | 2.83 | **no** |
+| 3 | 2.62 | 2.36 | 2.83 | **no** |
+| 4 | 2.62 | 2.36 | 2.83 | **no** |
+| 5 | 5.26 | 4.73 | 5.68 | **no** |
+| 6 | 4.18 | 3.76 | 4.51 | **no** |
+| 7 | 5.26 | 4.73 | 5.68 | **no** |
+
+The headroom exists only for `velocity_box_margin <= 1/1.2 = 0.83`. Two
+admissible resolutions, and they are a choice, not a formality:
+
+- **(a)** lower `velocity_box_margin` to **0.83 or below** and derive SLS-J as
+  `1.2 · margin · qdot_max`. At 0.8 that is 2.52 / 2.52 / 2.52 / 2.52 / 5.05 /
+  4.01 / 5.05 rad/s, all inside `qdot_max`, and the design intent holds: the
+  software bites first with a real margin.
+- **(b)** keep 0.9 and set **SLS-J = `qdot_max`**. The rated layer then
+  coincides with the flat firmware limit rather than sitting above the software
+  cap, so the backstop is 11 % away from the software cap instead of 20 % — and
+  SLS-J stops being an independent envelope, because the firmware enforces that
+  same number anyway. **[E]** Acceptable only if the risk assessment says 11 %
+  is enough.
+
+**A second, larger caveat since commit `f5a59f8`.** The bound the filter
+enforces is no longer flat: it is `velocity_box_margin · qdot_max`
+**intersected** with the FR3's *position-based* velocity envelope
+(`utils/cbf_hard_limits.fr3_velocity_envelope`, from
+`position_based_velocity_limits` in `joint_limits.yaml`). Near an end stop the
+firmware allows far less than the flat limit — five hardware aborts with
+`joint_velocity_violation` sat at 0.85 of the flat limit or below. A per-joint
+scalar SLS-J cannot represent that curve; it bounds only the flat part. In the
+region where the violations actually happened, the software envelope, not SLS-J,
+is the only thing shaped like the hazard.
 
 Re-derive the middle column from the `velocity_box_margin` actually in the YAML
-at the time of configuration — it has moved before.
+at the time of configuration — it has moved before (0.6 → 0.9).
 
 Recorded value applied: _______________   date: __________  by: __________
 
