@@ -33,7 +33,7 @@ from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
     deproject, depth_patch_median, extract_arm_landmarks,
     measurement_age, quaternion_to_rotation, build_arm_state_msg,
-    build_prediction_msg, build_2d_landmarks_msg,
+    build_prediction_msg, build_2d_landmarks_msg, format_topic
 )
 
 
@@ -66,8 +66,9 @@ class HumanTracker(Node):
 
         self.base_frame = str(config["base_frame"])
         self.pose_side = str(config["pose_side"]).lower()
-        if self.pose_side not in ("left", "right"):
-            raise ValueError("pose_side must be 'left' or 'right'.")
+        if self.pose_side not in ("left", "right", "both"):
+            raise ValueError("pose_side must be 'left' or 'right' or 'both'.")
+        self.active_sides = ["left", "right"] if self.pose_side == "both" else [self.pose_side]
 
         # Inference and filtering parameters
         self.inference_hz = max(1.0, float(config["inference_hz"]))
@@ -112,7 +113,7 @@ class HumanTracker(Node):
         self.R_camera_to_base = None
         self.t_camera_to_base = None
 
-        # --- MediaPipe pose estimation ---
+        # MediaPipe pose estimation
         model_complexity = int(
             np.clip(config["model_complexity"], 0, 2)
         )
@@ -129,20 +130,24 @@ class HumanTracker(Node):
             ),
         )
 
-        # --- Kalman filter for 3D keypoints ---
-        self.arm_kf = ArmKalmanFilter(
-            dt=float(config["kf_nominal_dt"]),
-            process_accel_std=float(config["kf_process_accel_std"]),
-            measurement_std=float(config["kf_measurement_std"]),
-            visibility_threshold=self.visibility_threshold,
-        )
-        self.last_valid_time = np.full(4, np.nan, dtype=float)
+        # Kalman filter for 3D keypoints
+        self.kfs = {}
+        self.last_valid_time = {}
+        
+        for side in self.active_sides:
+            self.kfs[side] = ArmKalmanFilter(
+                dt=float(config["kf_nominal_dt"]),
+                process_accel_std=float(config["kf_process_accel_std"]),
+                measurement_std=float(config["kf_measurement_std"]),
+                visibility_threshold=self.visibility_threshold,
+            )
+            self.last_valid_time[side] = np.full(4, np.nan, dtype=float)
 
         color_topic = str(config["color_topic"])
         depth_topic = str(config["depth_topic"])
         camera_info_topic = str(config["camera_info_topic"])
 
-        # --- Subscribers and Synchronizer ---
+        # Subscribers and Synchronizer
         self.color_sub = Subscriber(
             self, Image, color_topic, qos_profile=qos_profile_sensor_data
         )
@@ -163,36 +168,29 @@ class HumanTracker(Node):
             qos_profile_sensor_data,
         )
 
-        # --- Publishers ---
-        latest_qos = QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-        )
-        self.state_pub = self.create_publisher(
-            HumanArmState,
-            str(config["state_topic"]),
-            latest_qos,
-        )
-        self.raw_state_pub = self.create_publisher(
-            HumanArmState,
-            str(config["raw_state_topic"]),
-            latest_qos,
-        )
-        self.prediction_pub = self.create_publisher(
-            HumanArmPrediction,
-            str(config["prediction_topic"]),
-            latest_qos,
-        )
-        self.landmarks_2d_pub = self.create_publisher(
-            PointCloud,
-            str(config["landmarks_2d_topic"]),
-            qos_profile_sensor_data,
-        )
-        self.kf_diag_pub = self.create_publisher(
-            KalmanDiagnostics,
-            "/human/kf_diagnostics",
-            latest_qos,
-        )
+        # Dynamic Publishers
+        latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+        
+        self.state_pubs = {}
+        self.raw_state_pubs = {}
+        self.prediction_pubs = {}
+        self.landmarks_2d_pubs = {}
+        self.kf_diag_pubs = {}
+
+        for side in self.active_sides:
+            prefix = f"{side}_" if self.pose_side == "both" else ""
+
+            s_topic = format_topic(str(config["state_topic"]), prefix)
+            rs_topic = format_topic(str(config["raw_state_topic"]), prefix)
+            p_topic = format_topic(str(config["prediction_topic"]), prefix)
+            l2d_topic = format_topic(str(config["landmarks_2d_topic"]), prefix)
+            diag_topic = f"/human/{prefix}kf_diagnostics"
+
+            self.state_pubs[side] = self.create_publisher(HumanArmState, s_topic, latest_qos)
+            self.raw_state_pubs[side] = self.create_publisher(HumanArmState, rs_topic, latest_qos)
+            self.prediction_pubs[side] = self.create_publisher(HumanArmPrediction, p_topic, latest_qos)
+            self.landmarks_2d_pubs[side] = self.create_publisher(PointCloud, l2d_topic, qos_profile_sensor_data)
+            self.kf_diag_pubs[side] = self.create_publisher(KalmanDiagnostics, diag_topic, latest_qos)
 
         self.worker_thread = threading.Thread(
             target=self.processing_loop,
@@ -323,13 +321,14 @@ class HumanTracker(Node):
 
     def compute_dt(self, current_time):
         if self.last_update_time is None:
-            return self.arm_kf.dt
+            return list(self.kfs.values())[0].dt
 
         dt = current_time - self.last_update_time
         if dt <= 0.0:
-            self.arm_kf.reset()
-            self.last_valid_time[:] = np.nan
-            return self.arm_kf.dt
+            for side in self.active_sides:
+                self.kfs[side].reset()
+                self.last_valid_time[side][:] = np.nan
+            return list(self.kfs.values())[0].dt
         return float(np.clip(dt, 1e-3, 0.2))
 
     # ------------------------------------------------------------------
@@ -342,145 +341,156 @@ class HumanTracker(Node):
         # Run MediaPipe pose estimation on the latest RGB image and extract 2D keypoints
         image_rgb = cv2.cvtColor(self.last_image, cv2.COLOR_BGR2RGB)
         result = self.pose.process(image_rgb)
-        self.latest_arm_landmarks = extract_arm_landmarks(
-            result.pose_landmarks, self.last_image.shape, self.pose_side, self.KEYPOINT_NAMES
-        )
-
-        # Publish 2D landmarks for visualization/debugging
-        landmarks_msg = build_2d_landmarks_msg(
-            self.latest_arm_landmarks, self.KEYPOINT_NAMES, self.image_header
-        )
-        self.landmarks_2d_pub.publish(landmarks_msg)
 
         # Compute the time delta since the last update
         current_time = self.current_image_time.nanoseconds * 1e-9
         dt = self.compute_dt(current_time)
 
         # Compute 3D positions of the keypoints in the robot base frame
-        positions = np.full((4, 3), np.nan, dtype=float)
-        visibilities = np.zeros(4, dtype=float)
-        depths = np.zeros(4, dtype=float)
         camera_tf = self.get_camera_to_base_transform()
 
-        if self.latest_arm_landmarks is not None and camera_tf is not None:
-            rotation, translation = camera_tf
-
-            for i, name in enumerate(self.KEYPOINT_NAMES):
-                # Skip keypoints that are not visible enough or have no valid depth
-                landmark = self.latest_arm_landmarks[name]
-                visibility = landmark["visibility"]
-                visibilities[i] = visibility
-                if visibility < self.visibility_threshold:
-                    continue
-
-                u = int(round(landmark["x_px"]))
-                v = int(round(landmark["y_px"]))
-
-                # Get the median depth in a small patch around the keypoint, ignoring invalid pixels
-                depth_m = depth_patch_median(
-                    self.last_depth,
-                    u,
-                    v,
-                    self.depth_patch_radius,
-                    self.min_depth_m,
-                    self.max_depth_m,
-                )
-                if depth_m is None:
-                    continue
-
-                # Deproject the 2D pixel to 3D in the camera frame and transform to the robot base frame
-                point_camera = deproject(
-                    u, v, depth_m, self.fx, self.fy, self.cx, self.cy
-                )
-                point_base = rotation @ point_camera + translation
-                if np.all(np.isfinite(point_base)):
-                    positions[i] = point_base
-                    depths[i] = depth_m
-
-        # Publish raw data for KF post-comparison
-        raw_msg = build_arm_state_msg(
-            positions=positions, velocities=np.zeros((4, 3)), visibilities=visibilities, 
-            measured=np.ones(4, dtype=bool), keypoint_valid=np.ones(4, dtype=bool), 
-            age=np.zeros(4), header=self.image_header, base_frame=self.base_frame
-        )
-        self.raw_state_pub.publish(raw_msg)
-
-        # --- Kalman Filter Update ---
-        filtered_pos, filtered_vel, measured = self.arm_kf.step(
-            positions=positions,
-            visibilities=visibilities,
-            depths=depths,
-            dt=dt,
-        )
-
-        self.last_valid_time[measured] = current_time
-        age = measurement_age(self.last_valid_time, current_time)
-
-        # Reset any keypoint whose latest valid measurement is too old
-        for i in range(4):
-            if self.arm_kf.initialized[i] and age[i] > self.reset_after_s:
-                self.arm_kf.reset(i)
-                self.last_valid_time[i] = np.nan
-                filtered_pos[i] = np.nan
-                filtered_vel[i] = np.nan
-                age[i] = -1.0
-
-        # Determine which keypoints are valid for publication
-        keypoint_valid = (
-            self.arm_kf.initialized
-            & np.all(np.isfinite(filtered_pos), axis=1)
-            & (age >= 0.0)
-            & (age <= self.max_state_age_s)
-        )
-
-        # Publish KF Diagnostics
-        innovations, p_traces = self.arm_kf.get_diagnostics()
-        diag_msg = KalmanDiagnostics()
-        diag_msg.header = self.image_header
-        
-        for i in range(4):
-            vec = Vector3()
-            vec.x = float(innovations[i, 0])
-            vec.y = float(innovations[i, 1])
-            vec.z = float(innovations[i, 2])
-            diag_msg.innovations.append(vec)
-            diag_msg.p_traces.append(float(p_traces[i]))
-        self.kf_diag_pub.publish(diag_msg)
-
-        # Sanity Check: discard any keypoint whose speed exceeds a reasonable threshold
-        speed = np.linalg.norm(filtered_vel, axis=1)
-        for i in range(4):
-            if keypoint_valid[i] and speed[i] > self.max_speed_m_s:
-                self.get_logger().warn(
-                    f"Anomalous velocity for {self.KEYPOINT_NAMES[i]}: {speed[i]:.2f} m/s. Discard data."
-                )
-                keypoint_valid[i] = False
-                self.arm_kf.reset(i)
-
-        # Publish the filtered state
-        state_msg = build_arm_state_msg(
-            positions=filtered_pos, velocities=filtered_vel, visibilities=visibilities, measured=measured, 
-            keypoint_valid=keypoint_valid, age=age, header=self.image_header, base_frame=self.base_frame
-        )
-        self.state_pub.publish(state_msg)
-
-        # Publish the constant-velocity prediction if enabled
-        if self.publish_prediction_enabled:
-            pred_msg = build_prediction_msg(
-                filtered_pos, filtered_vel, keypoint_valid, age, self.prediction_dt, 
-                self.prediction_steps, self.image_header, self.base_frame
+        # Iterate on each active side (left/right) and process the keypoints
+        for side in self.active_sides:
+            landmarks = extract_arm_landmarks(
+                result.pose_landmarks, self.last_image.shape, side, self.KEYPOINT_NAMES
             )
-            self.prediction_pub.publish(pred_msg)
+
+            # Publish 2D landmarks for visualization
+            landmarks_msg = build_2d_landmarks_msg(
+                landmarks, self.KEYPOINT_NAMES, self.image_header
+            )
+            self.landmarks_2d_pubs[side].publish(landmarks_msg)
+
+            log_prefix = f"[{side.upper()}] " if len(self.active_sides) > 1 else ""
+            positions = np.full((4, 3), np.nan, dtype=float)
+            visibilities = np.zeros(4, dtype=float)
+            depths = np.zeros(4, dtype=float)
+
+            if landmarks is not None and camera_tf is not None:
+                rotation, translation = camera_tf
+                valid_depths = []
+                landmark_pixels = {}
+
+                for i, name in enumerate(self.KEYPOINT_NAMES):
+                    # Skip keypoints that are not visible enough or have no valid depth
+                    landmark = landmarks[name]
+                    visibility = landmark["visibility"]
+                    visibilities[i] = visibility
+                    if visibility < self.visibility_threshold:
+                        continue
+
+                    u = int(round(landmark["x_px"]))
+                    v = int(round(landmark["y_px"]))
+                    landmark_pixels[i] = (u, v)
+
+                    # Get the median depth in a small patch around the keypoint, ignoring invalid pixels
+                    depth_m = depth_patch_median(
+                        self.last_depth, u, v, self.depth_patch_radius,
+                        self.min_depth_m, self.max_depth_m,
+                    )
+                    if depth_m is not None:
+                        depths[i] = depth_m
+                        valid_depths.append(depth_m)
+
+                fallback_depth = None
+                if len(valid_depths) >= 2:
+                    ref_median = float(np.median(valid_depths))
+                    consistent = [d for d in valid_depths if abs(d - ref_median) <= 0.20]
+                    if len(consistent) >= 2:
+                        fallback_depth = float(np.median(consistent))
+
+                for i in range(4):
+                    if i not in landmark_pixels:
+                        continue
+                    d = depths[i] if depths[i] > 0.0 else fallback_depth
+                    if d is None:
+                        continue
+                    u, v = landmark_pixels[i]
+
+                    # Deproject the 2D pixel to 3D in the camera frame and transform to the robot base frame
+                    point_camera = deproject(u, v, d, self.fx, self.fy, self.cx, self.cy)
+                    point_base = rotation @ point_camera + translation
+                    if np.all(np.isfinite(point_base)):
+                        positions[i] = point_base
+
+            # Publish raw data for KF post-comparison
+            raw_msg = build_arm_state_msg(
+                positions=positions, velocities=np.zeros((4, 3)), visibilities=visibilities, 
+                measured=np.ones(4, dtype=bool), keypoint_valid=np.ones(4, dtype=bool), 
+                age=np.zeros(4), header=self.image_header, base_frame=self.base_frame
+            )
+            self.raw_state_pubs[side].publish(raw_msg)
+
+            # --- Kalman Filter Update ---
+            filtered_pos, filtered_vel, measured = self.kfs[side].step(
+                positions=positions, visibilities=visibilities, depths=depths, dt=dt
+            )
+
+            # Update the last valid time for each keypoint
+            self.last_valid_time[side][measured] = current_time
+            age = measurement_age(self.last_valid_time[side], current_time)
+
+            # Reset any keypoint whose latest valid measurement is too old
+            for i in range(4):
+                if self.kfs[side].initialized[i] and age[i] > self.reset_after_s:
+                    self.kfs[side].reset(i)
+                    self.last_valid_time[side][i] = np.nan
+                    filtered_pos[i] = np.nan
+                    filtered_vel[i] = np.nan
+                    age[i] = -1.0
+
+            # Determine which keypoints are valid for publication
+            keypoint_valid = (
+                self.kfs[side].initialized & np.all(np.isfinite(filtered_pos), axis=1)
+                & (age >= 0.0) & (age <= self.max_state_age_s)
+            )
+
+            # Publish KF Diagnostics
+            innovations, p_traces = self.kfs[side].get_diagnostics()
+            diag_msg = KalmanDiagnostics()
+            diag_msg.header = self.image_header
+            for i in range(4):
+                vec = Vector3()
+                vec.x, vec.y, vec.z = float(innovations[i, 0]), float(innovations[i, 1]), float(innovations[i, 2])
+                diag_msg.innovations.append(vec)
+                diag_msg.p_traces.append(float(p_traces[i]))
+            self.kf_diag_pubs[side].publish(diag_msg)
+
+            # Sanity Check: discard any keypoint whose speed exceeds a reasonable threshold
+            speed = np.linalg.norm(filtered_vel, axis=1)
+            for i in range(4):
+                if keypoint_valid[i] and speed[i] > self.max_speed_m_s:
+                    self.get_logger().warn(
+                        f"{log_prefix}Anomalous velocity for {self.KEYPOINT_NAMES[i]}: {speed[i]:.2f} m/s. Discard data."
+                    )
+                    keypoint_valid[i] = False
+                    self.kfs[side].reset(i)
+
+            # Publish Filtered State
+            state_msg = build_arm_state_msg(
+                positions=filtered_pos, velocities=filtered_vel, visibilities=visibilities, measured=measured, 
+                keypoint_valid=keypoint_valid, age=age, header=self.image_header, base_frame=self.base_frame
+            )
+            self.state_pubs[side].publish(state_msg)
+
+            # Publish Constant-Velocity Prediction if enabled
+            if self.publish_prediction_enabled:
+                pred_msg = build_prediction_msg(
+                    filtered_pos, filtered_vel, keypoint_valid, age, self.prediction_dt, 
+                    self.prediction_steps, self.image_header, self.base_frame
+                )
+                self.prediction_pubs[side].publish(pred_msg)
+
+            # Log the KF speed for each keypoint
+            values = [speed[i] if keypoint_valid[i] else np.nan for i in range(4)]
+            self.get_logger().info(
+                f"{log_prefix}KF speed [m/s]: "
+                f"SH={values[0]:.3f}, EL={values[1]:.3f}, "
+                f"WR={values[2]:.3f}, HA={values[3]:.3f}",
+                throttle_duration_sec=1.0,
+            )
 
         self.last_update_time = current_time
-
-        values = [speed[i] if keypoint_valid[i] else np.nan for i in range(4)]
-        self.get_logger().info(
-            "KF speed [m/s]: "
-            f"shoulder={values[0]:.3f}, elbow={values[1]:.3f}, "
-            f"wrist={values[2]:.3f}, hand={values[3]:.3f}",
-            throttle_duration_sec=1.0,
-        )
 
     def stop_worker(self):
         self.stop_event.set()

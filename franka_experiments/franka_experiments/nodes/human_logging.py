@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
+import os
 import csv
 import time
+from functools import partial
 from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
+from ament_index_python.packages import get_package_share_directory
 from franka_msgs.msg import HumanArmState, HumanArmPrediction, MultiLinkDistance, KalmanDiagnostics
+from franka_experiments.utils.distance_utils import load_robot_config
+from franka_experiments.utils.human_utils import format_topic
 
 
 class BaseLogger:
@@ -126,60 +131,90 @@ class ExperimentLoggerNode(Node):
     def __init__(self):
         super().__init__('human_logger')
 
+        config_path = os.path.join(
+            get_package_share_directory('franka_experiments'),
+            'config',
+            'human_params.yaml',
+        )
+        full_config = load_robot_config(config_path)
+        tracker_config = full_config.get('human_tracker', {})
+        self.pose_side = str(tracker_config["pose_side"]).lower()
+        self.active_sides = ["left", "right"] if self.pose_side == "both" else [self.pose_side]
+
         # Create timestamped experiment output folder
         session_time = time.strftime("%Y%m%d_%H%M%S")
-        self.declare_parameter('run_name', session_time)
+        if not self.has_parameter('run_name'):
+            self.declare_parameter('run_name', session_time)
         run_name = self.get_parameter('run_name').get_parameter_value().string_value
         base_log_dir = Path(f"experiment_logs/{run_name}")
         base_log_path = str(base_log_dir / "experiment")
 
-        self.get_logger().info(f"Initializing logging node. Target directory: {base_log_dir}")
+        self.get_logger().info(f"Initializing logging node. Target directory: {base_log_dir}, mode: {self.pose_side}")
 
-        # Instantiate loggers
-        self.human_raw_logger = HumanRawLogger(base_log_path)
-        self.human_state_logger = HumanStateLogger(base_log_path)
-        self.human_pred_logger = HumanPredictionLogger(base_log_path)
+        # Instantiate Global Loggers
         self.robot_logger = RobotStateLogger(base_log_path)
         self.distance_logger = SafetyDistanceLogger(base_log_path)
-        self.kf_diag_logger = KalmanDiagnosticsLogger(base_log_path)
         self.diag_logger = ControllerDiagnosticsLogger(base_log_path)
 
         # State cache for diagnostics
         self.current_controller = "CBF"
+        
+        # Instantiate Dictionaries for Human Loggers
+        self.human_raw_loggers = {}
+        self.human_state_loggers = {}
+        self.human_pred_loggers = {}
+        self.kf_diag_loggers = {}
+        
+        # Subscriptions Dictionaries
+        self.human_raw_subs = {}
+        self.human_state_subs = {}
+        self.human_pred_subs = {}
+        self.kf_diag_subs = {}
 
-        # --- Subscriptions ---
-        self.human_raw_sub = self.create_subscription(
-            HumanArmState, '/human/raw_state', self.human_raw_callback, 10)
+        for side in self.active_sides:
+            # Add side prefix to files only if tracking both arms, else keep standard name
+            side_path = f"{base_log_path}_{side}" if len(self.active_sides) > 1 else base_log_path
+            
+            self.human_raw_loggers[side] = HumanRawLogger(side_path)
+            self.human_state_loggers[side] = HumanStateLogger(side_path)
+            self.human_pred_loggers[side] = HumanPredictionLogger(side_path)
+            self.kf_diag_loggers[side] = KalmanDiagnosticsLogger(side_path)
 
-        self.human_state_sub = self.create_subscription(
-                    HumanArmState, '/human/arm_state', self.human_state_callback, 10)
+            # Topic formatting
+            prefix = f"{side}_" if self.pose_side == "both" else ""
 
-        self.human_pred_sub = self.create_subscription(
-            HumanArmPrediction, '/human/arm_prediction', self.human_prediction_callback, 10)
+            self.human_raw_subs[side] = self.create_subscription(
+                HumanArmState, format_topic('/human/raw_state', prefix), partial(self.human_raw_callback, side=side), 10)
+            
+            self.human_state_subs[side] = self.create_subscription(
+                HumanArmState, format_topic('/human/arm_state', prefix), partial(self.human_state_callback, side=side), 10)
 
+            self.human_pred_subs[side] = self.create_subscription(
+                HumanArmPrediction, format_topic('/human/arm_prediction', prefix), partial(self.human_prediction_callback, side=side), 10)
+
+            self.kf_diag_subs[side] = self.create_subscription(
+                KalmanDiagnostics, format_topic('/human/kf_diagnostics', prefix), partial(self.kf_diag_callback, side=side), 10)
+
+        # Global subscriptions
         self.joint_state_sub = self.create_subscription(
             JointState, '/NS_1/joint_states', self.robot_state_callback, 10)
 
         self.min_dist_sub = self.create_subscription(
             MultiLinkDistance, '/cbf/per_link_distances', self.min_distance_callback, 10)
 
-        self.kf_diag_sub = self.create_subscription(
-            KalmanDiagnostics, '/human/kf_diagnostics', self.kf_diag_callback, 10)
-
         self.mux_sub = self.create_subscription(
             String, '/controller_mux/active_controller', self.active_controller_callback, 10)
 
 
-    def human_raw_callback(self, msg: HumanArmState):
+    def human_raw_callback(self, msg: HumanArmState, side: str):
         t = self.get_clock().now().nanoseconds / 1e9
         row = [t]
-        # Extract only the positions
         keypoints = [msg.shoulder, msg.elbow, msg.wrist, msg.hand]
         for pt in keypoints:
             row.extend([pt.x, pt.y, pt.z])
-        self.human_raw_logger.log(row)
+        self.human_raw_loggers[side].log(row)
         
-    def human_state_callback(self, msg: HumanArmState):
+    def human_state_callback(self, msg: HumanArmState, side: str):
         """Log incoming filtered human joint state and perception metrics."""
         t = self.get_clock().now().nanoseconds / 1e9
         row = [t]
@@ -202,9 +237,9 @@ class ExperimentLoggerNode(Node):
 
         # Overall confidence and status flags
         row.extend([msg.confidence, int(msg.valid), int(msg.occluded)])
-        self.human_state_logger.log(row)
+        self.human_state_loggers[side].log(row)
 
-    def human_prediction_callback(self, msg: HumanArmPrediction):
+    def human_prediction_callback(self, msg: HumanArmPrediction, side: str):
         """Log multi-step trajectory prediction summary."""
         t = self.get_clock().now().nanoseconds / 1e9
         horizon = msg.num_steps * msg.step_dt
@@ -226,7 +261,16 @@ class ExperimentLoggerNode(Node):
             int(msg.keypoint_valid[2]),
             int(msg.keypoint_valid[3])
         ]
-        self.human_pred_logger.log(row)
+        self.human_pred_loggers[side].log(row)
+
+    def kf_diag_callback(self, msg: KalmanDiagnostics, side: str):
+        """Log KF innovations and covariance traces."""
+        t = self.get_clock().now().nanoseconds / 1e9
+        row = [t]
+        for i in range(4):
+            inn = msg.innovations[i]
+            row.extend([inn.x, inn.y, inn.z, msg.p_traces[i]])
+        self.kf_diag_loggers[side].log(row)
 
     def robot_state_callback(self, msg: JointState):
         """Log robot joint positions, velocities, and torques."""
@@ -266,17 +310,6 @@ class ExperimentLoggerNode(Node):
         ]
         self.distance_logger.log(row)
 
-    def kf_diag_callback(self, msg: KalmanDiagnostics):
-        """Log KF innovations and covariance traces."""
-        t = self.get_clock().now().nanoseconds / 1e9
-        row = [t]
-        
-        for i in range(4):
-            inn = msg.innovations[i]
-            row.extend([inn.x, inn.y, inn.z, msg.p_traces[i]])
-            
-        self.kf_diag_logger.log(row)
-
     def active_controller_callback(self, msg: String):
         """Track which controller (CBF or MPC) is currently driving the robot."""
         self.current_controller = msg.data
@@ -284,12 +317,14 @@ class ExperimentLoggerNode(Node):
     def destroy_node(self):
         """Safely close all open CSV file writers upon node exit."""
         self.get_logger().info("Closing all experiment log files...")
-        self.human_raw_logger.close()
-        self.human_state_logger.close()
-        self.human_pred_logger.close()
+        for side in self.active_sides:
+            self.human_raw_loggers[side].close()
+            self.human_state_loggers[side].close()
+            self.human_pred_loggers[side].close()
+            self.kf_diag_loggers[side].close()
+            
         self.robot_logger.close()
         self.distance_logger.close()
-        self.kf_diag_logger.close()
         self.diag_logger.close()
         super().destroy_node()
 

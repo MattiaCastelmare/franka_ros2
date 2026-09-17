@@ -1,14 +1,17 @@
+#!/usr/bin/env python3
 """Lightweight ROS 2 visualizer for human-arm landmarks.
 
 The node renders the newest camera frame only. Landmark detections are held for
 short dropouts and smoothly interpolated between updates, so the overlay does
 not disappear whenever MediaPipe misses a single frame.
+Supports both single arm tracking and dual arm ('both') tracking dynamically.
 """
 
 import os
 import cv2
 import numpy as np
 import rclpy
+from functools import partial
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.duration import Duration
@@ -31,7 +34,7 @@ from franka_msgs.msg import HumanArmState, MultiLinkDistance, HumanArmPrediction
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
     draw_landmarks, landmarks_are_recent, stamp_to_ns,
-    update_display_points, quaternion_to_rotation,
+    update_display_points, quaternion_to_rotation, format_topic
 )
 
 
@@ -55,9 +58,13 @@ class HumanArmVisualizer(Node):
         )
 
         color_topic = str(config['color_topic'])
-        landmarks_topic = str(config['landmarks_topic'])
         overlay_topic = str(config['overlay_topic'])
         camera_info_topic = str(config.get('camera_info_topic', '/camera/camera/color/camera_info'))
+
+        # Fetch pose_side from tracker config to know if we are in single or dual mode
+        tracker_config = full_config.get('human_tracker', {})
+        self.pose_side = str(tracker_config.get('pose_side', 'right')).lower()
+        self.active_sides = ["left", "right"] if self.pose_side == "both" else [self.pose_side]
 
         self.visibility_threshold = float(config['visibility_threshold'])
         self.max_hz = max(1.0, float(config['max_hz']))
@@ -71,40 +78,33 @@ class HumanArmVisualizer(Node):
         self.latest_image_msg: Image | None = None
         self.last_rendered_stamp_ns: int | None = None
 
-        self.target_points: np.ndarray | None = None
-        self.display_points: np.ndarray | None = None
-        self.visibilities = np.zeros(len(self.LANDMARK_NAMES), dtype=np.float32)
-        self.last_valid_landmark_stamp_ns: int | None = None
-        self.last_render_monotonic_ns: int | None = None
+        # --- Dictionaries for 2D states ---
+        self.target_points = {side: None for side in self.active_sides}
+        self.display_points = {side: None for side in self.active_sides}
+        self.visibilities = {side: np.zeros(len(self.LANDMARK_NAMES), dtype=np.float32) for side in self.active_sides}
+        self.last_valid_landmark_stamp_ns = {side: None for side in self.active_sides}
+        self.last_render_monotonic_ns = {side: None for side in self.active_sides}
 
         # --- Camera Intrinsics ---
         self.fx = self.fy = self.cx = self.cy = None
         self.camera_frame = None
 
         # --- 3D Visualization State ---
-        self.latest_arm_state = None
+        self.latest_arm_states = {side: None for side in self.active_sides}
+        self.latest_arm_predictions = {side: None for side in self.active_sides}
         self.latest_distances = None
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # --- Subscriptions ---
-        self.arm_state_sub = self.create_subscription(
-            HumanArmState, '/human/arm_state', self.arm_state_cb, 10
-        )
         self.dist_sub = self.create_subscription(
             MultiLinkDistance, '/cbf/per_link_distances', self.dist_cb, 10
         )
         self.camera_info_sub = self.create_subscription(
             CameraInfo, camera_info_topic, self.camera_info_cb, 10
         )
-        self.pred_sub = self.create_subscription(
-            HumanArmPrediction, '/human/arm_prediction', self.pred_cb, 10
-        )
 
-        # --- Publishers ---
-        self.marker_pub = self.create_publisher(MarkerArray, '/human_robot/markers', 10)
-        
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -115,10 +115,30 @@ class HumanArmVisualizer(Node):
         self.image_sub = self.create_subscription(
             Image, color_topic, self.image_cb, sensor_qos
         )
-        self.landmarks_sub = self.create_subscription(
-            PointCloud, landmarks_topic, self.landmarks_cb, sensor_qos
-        )
 
+        # --- Dynamic Subscriptions for Arms ---
+        self.arm_state_subs = {}
+        self.pred_subs = {}
+        self.landmarks_subs = {}
+
+        for side in self.active_sides:
+            prefix = f"{side}_" if self.pose_side == "both" else ""
+
+            s_topic = format_topic('/human/arm_state', prefix)
+            p_topic = format_topic('/human/arm_prediction', prefix)
+            l2d_topic = format_topic(str(config['landmarks_topic']), prefix)
+
+            self.arm_state_subs[side] = self.create_subscription(
+                HumanArmState, s_topic, partial(self.arm_state_cb, side=side), 10
+            )
+            self.pred_subs[side] = self.create_subscription(
+                HumanArmPrediction, p_topic, partial(self.pred_cb, side=side), 10
+            )
+            self.landmarks_subs[side] = self.create_subscription(
+                PointCloud, l2d_topic, partial(self.landmarks_cb, side=side), sensor_qos
+            )
+
+        # --- Publishers ---    
         overlay_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -126,11 +146,11 @@ class HumanArmVisualizer(Node):
             depth=1,
         )
         self.overlay_pub = self.create_publisher(Image, overlay_topic, overlay_qos)
-
+        self.marker_pub = self.create_publisher(MarkerArray, '/human_robot/markers', 10)
         self.render_timer = self.create_timer(1.0 / self.max_hz, self.render_latest)
 
         self.get_logger().info(
-            f'HumanArmVisualizer ready: image={color_topic}, max_hz={self.max_hz:.1f}'
+            f'HumanArmVisualizer ready: image={color_topic}, max_hz={self.max_hz:.1f}, mode={self.pose_side}'
         )
 
     def camera_info_cb(self, msg: CameraInfo):
@@ -146,13 +166,13 @@ class HumanArmVisualizer(Node):
     def image_cb(self, msg: Image) -> None:
         self.latest_image_msg = msg
 
-    def arm_state_cb(self, msg: HumanArmState) -> None:
-        self.latest_arm_state = msg
+    def arm_state_cb(self, msg: HumanArmState, side: str) -> None:
+        self.latest_arm_states[side] = msg
 
-    def pred_cb(self, msg: HumanArmPrediction) -> None:
-        self.latest_arm_prediction = msg
+    def pred_cb(self, msg: HumanArmPrediction, side: str) -> None:
+        self.latest_arm_predictions[side] = msg
 
-    def landmarks_cb(self, msg: PointCloud) -> None:
+    def landmarks_cb(self, msg: PointCloud, side: str) -> None:
         """Accept complete MediaPipe detections."""
         if len(msg.points) < len(self.LANDMARK_NAMES):
             return
@@ -169,182 +189,107 @@ class HumanArmVisualizer(Node):
                     visibilities[:count] = np.asarray(channel.values[:count], dtype=np.float32)
                 break
 
-        if self.target_points is None:
-            self.target_points = points.copy()
+        if self.target_points[side] is None:
+            self.target_points[side] = points.copy()
         else:
             trusted = visibilities >= self.visibility_threshold
-            self.target_points[trusted] = points[trusted]
+            self.target_points[side][trusted] = points[trusted]
 
-        self.visibilities = visibilities
-        self.last_valid_landmark_stamp_ns = stamp_to_ns(msg)
+        self.visibilities[side] = visibilities
+        self.last_valid_landmark_stamp_ns[side] = stamp_to_ns(msg)
 
-        if self.display_points is None:
-            self.display_points = self.target_points.copy()
+        if self.display_points[side] is None:
+            self.display_points[side] = self.target_points[side].copy()
 
     # -------------------------------------------------------------------------
     # 3D Marker Generation
     # -------------------------------------------------------------------------
     def publish_3d_markers(self) -> None:
         """Generates and publishes human arm and distance arrows for RViz."""
-        if self.latest_arm_state is None:
+        
+        base_frame = None
+        for side in self.active_sides:
+            if self.latest_arm_states[side] is not None:
+                base_frame = self.latest_arm_states[side].header.frame_id
+                break
+        
+        if base_frame is None:
             return
 
         marker_array = MarkerArray()
-        base_frame = self.latest_arm_state.header.frame_id
         timestamp = self.get_clock().now().to_msg()
 
-        # 1. --- HUMAN ARM MARKER ---
-        arm_marker = Marker()
-        arm_marker.header.frame_id = base_frame
-        arm_marker.header.stamp = timestamp
-        arm_marker.ns = "human_arm"
-        arm_marker.id = 0
-        arm_marker.type = Marker.LINE_STRIP
-        arm_marker.action = Marker.ADD
-        arm_marker.scale.x = 0.12 
-        arm_marker.color = ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.5)
-
-        state = self.latest_arm_state
-        pts_valid = state.keypoint_valid
-        keypoints = [state.shoulder, state.elbow, state.wrist, state.hand]
-        
-        for i, pt in enumerate(keypoints):
-            if pts_valid[i]:
-                arm_marker.points.append(pt)
+        # Iterate over all tracked arms to draw segments, velocity vectors and ghosts
+        for side in self.active_sides:
+            state = self.latest_arm_states[side]
+            if state is None:
+                continue
                 
-        marker_array.markers.append(arm_marker)
-
-        # 2. --- HUMAN ARM PREDICTION (FADING GHOST ARMS WITH JOINTS) ---
-        if self.latest_arm_prediction is not None:
-            pred = self.latest_arm_prediction
-            pts_valid = pred.keypoint_valid
-            
-            # Limit the trail to the first 4 future steps to avoid visual clutter
-            max_display_steps = 10
-            display_steps = min(max_display_steps, pred.num_steps)
-            
-            # Iterate through each future step to create a "ghost arm"
-            for step in range(display_steps):
-                # Calculate fading alpha (transparency) based on the step index
-                alpha = max(0.05, 0.4 - (0.15 * step))
-                
-                # Use Red color for prediction to indicate future danger zones
-                pred_color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=alpha)
-                
-                # Extract the 3D pose of the arm at this specific future instant
-                keypoints_future = [
-                    pred.shoulder[step], 
-                    pred.elbow[step], 
-                    pred.wrist[step], 
-                    pred.hand[step]
-                ]
-                
-                # Gather only the valid keypoints
-                valid_points = []
-                for i, pt in enumerate(keypoints_future):
-                    if pts_valid[i]:
-                        valid_points.append(pt)
-                
-                if len(valid_points) > 0:
-                    # --- A. Ghost Arm Segments (LINE_STRIP) ---
-                    lines_marker = Marker()
-                    lines_marker.header.frame_id = base_frame
-                    lines_marker.header.stamp = timestamp
-                    lines_marker.ns = "human_prediction_lines"
-                    lines_marker.id = step + 10  # Unique ID per step
-                    lines_marker.type = Marker.LINE_STRIP
-                    lines_marker.action = Marker.ADD
-                    
-                    # Line thickness (thinner than the actual blue arm)
-                    lines_marker.scale.x = 0.04  
-                    lines_marker.color = pred_color
-                    lines_marker.points = valid_points
-                    
-                    marker_array.markers.append(lines_marker)
-                    
-                    # --- B. Ghost Arm Joints (SPHERE_LIST) ---
-                    joints_marker = Marker()
-                    joints_marker.header.frame_id = base_frame
-                    joints_marker.header.stamp = timestamp
-                    joints_marker.ns = "human_prediction_joints"
-                    joints_marker.id = step + 50  # Unique ID per step (offset to avoid conflicts)
-                    joints_marker.type = Marker.SPHERE_LIST
-                    joints_marker.action = Marker.ADD
-                    
-                    # Sphere size (slightly larger than the line thickness to pop out)
-                    joints_marker.scale.x = 0.06
-                    joints_marker.scale.y = 0.06
-                    joints_marker.scale.z = 0.06
-                    joints_marker.color = pred_color
-                    joints_marker.points = valid_points
-                    
-                    marker_array.markers.append(joints_marker)
-
-        # 3. --- ROBOT CPs & DISTANCE ARROWS ---
-        if self.latest_distances is not None and self.latest_distances.links:
-
-            # Draw a sphere for each control point on the robot
-            for i, link in enumerate(self.latest_distances.links):
-                sphere = Marker()
-                sphere.header.frame_id = base_frame
-                sphere.header.stamp = timestamp
-                sphere.ns = "robot_points"
-                sphere.id = i
-                sphere.type = Marker.SPHERE
-                sphere.action = Marker.ADD
-                sphere.pose.position = link.closest_point_robot
-                sphere.scale.x = 0.06
-                sphere.scale.y = 0.06
-                sphere.scale.z = 0.06
-                sphere.color = ColorRGBA(r=1.0, g=0.8, b=0.0, a=0.8) # Yellow
-                marker_array.markers.append(sphere)
-
-            # Find the absolute minimum distance link to highlight it
-            min_link = min(self.latest_distances.links, key=lambda l: l.distance)
-            
-            # Draw an arrow for each link
-            for i, link in enumerate(self.latest_distances.links):
-                dist_marker = Marker()
-                dist_marker.header.frame_id = base_frame
-                dist_marker.header.stamp = timestamp
-                dist_marker.ns = "distances"
-                dist_marker.id = i
-                dist_marker.type = Marker.ARROW
-                dist_marker.action = Marker.ADD
-                
-                # Arrow points: from Human to Robot
-                dist_marker.points.append(link.closest_point_human)
-                dist_marker.points.append(link.closest_point_robot)
-                
-                is_min = (link == min_link)
-                
-                if is_min:
-                    # Highlight absolute minimum distance
-                    dist_marker.scale.x = 0.02  # Shaft
-                    dist_marker.scale.y = 0.04  # Head
-                    dist_marker.scale.z = 0.04
-                    if link.zone == 'critical':
-                        dist_marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
-                    elif link.zone == 'danger':
-                        dist_marker.color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=1.0)
-                    else:
-                        dist_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
-                else:
-                    # Secondary distances
-                    dist_marker.scale.x = 0.005
-                    dist_marker.scale.y = 0.010
-                    dist_marker.scale.z = 0.010
-                    dist_marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
-                    
-                marker_array.markers.append(dist_marker)
-
-        # 4. --- VELOCITY VECTORS (ARROWS AT KEYPOINTS) ---
-        if self.latest_arm_state is not None:
-            state = self.latest_arm_state
             pts_valid = state.keypoint_valid
             keypoints = [state.shoulder, state.elbow, state.wrist, state.hand]
+
+            # 1. --- HUMAN ARM MARKER ---
+            arm_marker = Marker()
+            arm_marker.header.frame_id = base_frame
+            arm_marker.header.stamp = timestamp
+            arm_marker.ns = f"human_arm_{side}"
+            arm_marker.id = 0
+            arm_marker.type = Marker.LINE_STRIP
+            arm_marker.action = Marker.ADD
+            arm_marker.scale.x = 0.12 
+            arm_marker.color = ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.5)
             
-            # Extraction of velocities with backward compatibility
+            for i, pt in enumerate(keypoints):
+                if pts_valid[i]:
+                    arm_marker.points.append(pt)
+                    
+            marker_array.markers.append(arm_marker)
+
+            # 2. --- HUMAN ARM PREDICTION (FADING GHOST ARMS) ---
+            pred = self.latest_arm_predictions[side]
+            if pred is not None:
+                pred_pts_valid = pred.keypoint_valid
+                display_steps = min(10, pred.num_steps)
+                
+                for step in range(display_steps):
+                    alpha = max(0.05, 0.4 - (0.15 * step))
+                    pred_color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=alpha)
+                    
+                    keypoints_future = [
+                        pred.shoulder[step], pred.elbow[step], 
+                        pred.wrist[step], pred.hand[step]
+                    ]
+                    valid_points = [pt for i, pt in enumerate(keypoints_future) if pred_pts_valid[i]]
+                    
+                    if len(valid_points) > 0:
+                        lines_marker = Marker()
+                        lines_marker.header.frame_id = base_frame
+                        lines_marker.header.stamp = timestamp
+                        lines_marker.ns = f"human_prediction_lines_{side}"
+                        lines_marker.id = step + 10
+                        lines_marker.type = Marker.LINE_STRIP
+                        lines_marker.action = Marker.ADD
+                        lines_marker.scale.x = 0.04  
+                        lines_marker.color = pred_color
+                        lines_marker.points = valid_points
+                        marker_array.markers.append(lines_marker)
+                        
+                        joints_marker = Marker()
+                        joints_marker.header.frame_id = base_frame
+                        joints_marker.header.stamp = timestamp
+                        joints_marker.ns = f"human_prediction_joints_{side}"
+                        joints_marker.id = step + 50
+                        joints_marker.type = Marker.SPHERE_LIST
+                        joints_marker.action = Marker.ADD
+                        joints_marker.scale.x = 0.06
+                        joints_marker.scale.y = 0.06
+                        joints_marker.scale.z = 0.06
+                        joints_marker.color = pred_color
+                        joints_marker.points = valid_points
+                        marker_array.markers.append(joints_marker)
+
+            # 3. --- VELOCITY VECTORS (ARROWS AT KEYPOINTS) ---
+            vels = []
             if hasattr(state, 'velocities') and len(state.velocities) >= 4:
                 vels = state.velocities
             else:
@@ -360,29 +305,77 @@ class HumanArmVisualizer(Node):
                     vel_marker = Marker()
                     vel_marker.header.frame_id = base_frame
                     vel_marker.header.stamp = timestamp
-                    vel_marker.ns = "velocities"
-                    vel_marker.id = i + 200  # offset to avoid ID conflicts
+                    vel_marker.ns = f"velocities_{side}"
+                    vel_marker.id = i + 200
                     vel_marker.type = Marker.ARROW
                     vel_marker.action = Marker.ADD
                     
-                    # Origin: current position of the keypoint
                     vel_marker.points.append(pt)
                     
-                    # Destination: Position + (Velocity * Temporal Scale)
                     end_pt = Point()
-                    vel_scale = 0.3  # Scale factor for visibility
+                    vel_scale = 0.3  
                     end_pt.x = pt.x + v.x * vel_scale
                     end_pt.y = pt.y + v.y * vel_scale
                     end_pt.z = pt.z + v.z * vel_scale
                     vel_marker.points.append(end_pt)
                     
-                    # Dimensions of the arrow
-                    vel_marker.scale.x = 0.015  # thickness of the arrow shaft
-                    vel_marker.scale.y = 0.030  # largeness of the arrowhead
-                    vel_marker.scale.z = 0.030  # length of the arrowhead
-                    vel_marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)  # Green for velocity
+                    vel_marker.scale.x = 0.015
+                    vel_marker.scale.y = 0.030
+                    vel_marker.scale.z = 0.030
+                    vel_marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)
                     
                     marker_array.markers.append(vel_marker)
+
+        # 4. --- ROBOT CPs & DISTANCE ARROWS ---
+        if self.latest_distances is not None and self.latest_distances.links:
+            for i, link in enumerate(self.latest_distances.links):
+                sphere = Marker()
+                sphere.header.frame_id = base_frame
+                sphere.header.stamp = timestamp
+                sphere.ns = "robot_points"
+                sphere.id = i
+                sphere.type = Marker.SPHERE
+                sphere.action = Marker.ADD
+                sphere.pose.position = link.closest_point_robot
+                sphere.scale.x = 0.06
+                sphere.scale.y = 0.06
+                sphere.scale.z = 0.06
+                sphere.color = ColorRGBA(r=1.0, g=0.8, b=0.0, a=0.8)
+                marker_array.markers.append(sphere)
+
+            min_link = min(self.latest_distances.links, key=lambda l: l.distance)
+            
+            for i, link in enumerate(self.latest_distances.links):
+                dist_marker = Marker()
+                dist_marker.header.frame_id = base_frame
+                dist_marker.header.stamp = timestamp
+                dist_marker.ns = "distances"
+                dist_marker.id = i
+                dist_marker.type = Marker.ARROW
+                dist_marker.action = Marker.ADD
+                
+                dist_marker.points.append(link.closest_point_human)
+                dist_marker.points.append(link.closest_point_robot)
+                
+                is_min = (link == min_link)
+                
+                if is_min:
+                    dist_marker.scale.x = 0.02
+                    dist_marker.scale.y = 0.04
+                    dist_marker.scale.z = 0.04
+                    if link.zone == 'critical':
+                        dist_marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
+                    elif link.zone == 'danger':
+                        dist_marker.color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=1.0)
+                    else:
+                        dist_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
+                else:
+                    dist_marker.scale.x = 0.005
+                    dist_marker.scale.y = 0.010
+                    dist_marker.scale.z = 0.010
+                    dist_marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
+                    
+                marker_array.markers.append(dist_marker)
 
         self.marker_pub.publish(marker_array)
 
@@ -394,7 +387,6 @@ class HumanArmVisualizer(Node):
         p_base = np.array([point_msg.x, point_msg.y, point_msg.z])
         p_cam = R @ p_base + t
         
-        # Check if the point is physically in front of the camera (Z > 0)
         if p_cam[2] > 0.01:
             u = int((p_cam[0] / p_cam[2]) * self.fx + self.cx)
             v = int((p_cam[1] / p_cam[2]) * self.fy + self.cy)
@@ -412,7 +404,6 @@ class HumanArmVisualizer(Node):
         try:
             min_link = min(self.latest_distances.links, key=lambda l: l.distance)
             
-            # Lookup TF from robot base to camera optical frame
             tf_msg = self.tf_buffer.lookup_transform(
                 self.camera_frame, 
                 'fr3_link0', 
@@ -428,7 +419,6 @@ class HumanArmVisualizer(Node):
                 tf_msg.transform.translation.z
             ])
             
-            # Project exact geometric centers to 2D
             uv_robot = self._project_point(min_link.closest_point_robot, R, t)
             uv_human = self._project_point(min_link.closest_point_human, R, t)
             
@@ -437,19 +427,16 @@ class HumanArmVisualizer(Node):
                     uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
                     uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
                 
-                # Draw the shortest distance line and the exact collision points
                 cv2.line(image, uv_robot, uv_human, (255, 255, 255), 2)
-                cv2.circle(image, uv_robot, 6, (0, 255, 255), -1)  # Yellow for robot
-                cv2.circle(image, uv_human, 6, (0, 0, 255), -1)    # Red for human 
+                cv2.circle(image, uv_robot, 6, (0, 255, 255), -1)
+                cv2.circle(image, uv_human, 6, (0, 0, 255), -1)
 
-                # Add the Control Point name next to the robot point
                 cp_name = min_link.robot_link_name
                 text_pos = (uv_robot[0] + 8, uv_robot[1] - 8)
                 cv2.putText(
                     image, cp_name, text_pos, 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA
                 )
-
         except Exception:
             pass
 
@@ -469,82 +456,75 @@ class HumanArmVisualizer(Node):
         if image_stamp_ns == self.last_rendered_stamp_ns:
             return
 
-        # Convert Image
         try:
             image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8').copy()
         except Exception as exc:
             self.get_logger().warn(f'Image conversion failed: {exc}', throttle_duration_sec=2.0)
             return
 
-        # Resize
         if self.scale < 1.0:
             image = cv2.resize(
                 image, dsize=None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA
             )
 
-        # Draw Human Landmarks
-        if landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns, self.landmark_hold_s):
-            self.display_points, self.last_render_monotonic_ns = update_display_points(
-                self.target_points, self.display_points, self.smoothing_tau_s, self.max_hz, self.last_render_monotonic_ns
-            )
-            if self.display_points is not None:
-                draw_landmarks(
-                    image, self.display_points, self.visibilities, self.LANDMARK_NAMES, 
-                    self.visibility_threshold, self.scale, self.draw_labels
+        # Draw Human Landmarks for each active arm
+        for side in self.active_sides:
+            if landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns[side], self.landmark_hold_s):
+                self.display_points[side], self.last_render_monotonic_ns[side] = update_display_points(
+                    self.target_points[side], self.display_points[side], self.smoothing_tau_s, self.max_hz, self.last_render_monotonic_ns[side]
                 )
+                if self.display_points[side] is not None:
+                    draw_landmarks(
+                        image, self.display_points[side], self.visibilities[side], self.LANDMARK_NAMES, 
+                        self.visibility_threshold, self.scale, self.draw_labels
+                    )
 
-        # Draw Shortest Distance Line
         self._draw_distance_line(image, image_msg.header.stamp)
 
-        # HUD: INFO PANEL (Horizontal Top Bar)
+        # HUD: INFO PANEL (Dynamic Height)
         img_h, img_w = image.shape[:2]
         overlay_box = image.copy()
-        x, y, w, h = 0, 0, img_w, 45 
-        cv2.rectangle(overlay_box, (x, y), (x + w, y + h), (0, 0, 0), -1)
         
-        # Apply a semi-transparent overlay to the top bar
+        # Increase the box height by 20px if both arms are tracked
+        h_bar = 45 + 20 * (len(self.active_sides) - 1)
+        cv2.rectangle(overlay_box, (0, 0), (img_w, h_bar), (0, 0, 0), -1)
+        
         cv2.addWeighted(overlay_box, 0.6, image, 0.4, 0, image)
 
-        # Prepare the string for the Time
+        # Draw Time and Min Distance
         timestamp_sec = image_msg.header.stamp.sec + image_msg.header.stamp.nanosec * 1e-9
         time_str = f"Time: {timestamp_sec:.2f} s"
-        
-        # Prepare the string for minimum distance
         if self.latest_distances and self.latest_distances.links:
             min_link = min(self.latest_distances.links, key=lambda l: l.distance)
             dist_str = f"Min Dist: {min_link.distance:.3f} m"
         else:
             dist_str = "Min Dist: --"
             
-        # Prepare the string for joint speeds
-        speeds = [0.0, 0.0, 0.0, 0.0]
-        if self.latest_arm_state:
-            state = self.latest_arm_state
-            if hasattr(state, 'velocities') and len(state.velocities) >= 4:
-                speeds = [np.linalg.norm([v.x, v.y, v.z]) for v in state.velocities]
-            else:
-                vel_fields = [
-                    getattr(state, 'shoulder_vel', getattr(state, 'shoulder_velocity', None)),
-                    getattr(state, 'elbow_vel', getattr(state, 'elbow_velocity', None)),
-                    getattr(state, 'wrist_vel', getattr(state, 'wrist_velocity', None)),
-                    getattr(state, 'hand_vel', getattr(state, 'hand_velocity', None))
-                ]
-                speeds = [np.linalg.norm([v.x, v.y, v.z]) if v else 0.0 for v in vel_fields]
-
-        speeds_str = f"Speeds [m/s]: v_sh {speeds[0]:.2f} | v_el: {speeds[1]:.2f} | v_wr: {speeds[2]:.2f} | v_ha: {speeds[3]:.2f}"
-
-        # Draw the text on the overlay
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.5
-        color = (255, 255, 255)
-        thickness = 1
+        cv2.putText(image, f"{time_str}   |   {dist_str}", (10, 18), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         
-        # Time and distance
-        cv2.putText(image, f"{time_str}   |   {dist_str}", (10, 18), 
-                    font, font_scale, color, thickness, cv2.LINE_AA)
-        # Speeds
-        cv2.putText(image, speeds_str, (10, 38), 
-                    font, font_scale, color, thickness, cv2.LINE_AA)
+        # Draw Speeds for each tracked arm
+        y_offset = 38
+        for side in self.active_sides:
+            speeds = [0.0, 0.0, 0.0, 0.0]
+            if self.latest_arm_states[side]:
+                state = self.latest_arm_states[side]
+                if hasattr(state, 'velocities') and len(state.velocities) >= 4:
+                    speeds = [np.linalg.norm([v.x, v.y, v.z]) for v in state.velocities]
+                else:
+                    vel_fields = [
+                        getattr(state, 'shoulder_vel', getattr(state, 'shoulder_velocity', None)),
+                        getattr(state, 'elbow_vel', getattr(state, 'elbow_velocity', None)),
+                        getattr(state, 'wrist_vel', getattr(state, 'wrist_velocity', None)),
+                        getattr(state, 'hand_vel', getattr(state, 'hand_velocity', None))
+                    ]
+                    speeds = [np.linalg.norm([v.x, v.y, v.z]) if v else 0.0 for v in vel_fields]
+
+            prefix_lbl = f"{side.upper()[:1]}: " if len(self.active_sides) > 1 else ""
+            speeds_str = f"Speeds [{prefix_lbl}m/s]: sh {speeds[0]:.2f} | el {speeds[1]:.2f} | wr {speeds[2]:.2f} | ha {speeds[3]:.2f}"
+            
+            cv2.putText(image, speeds_str, (10, y_offset), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            y_offset += 20
         
         # Publish 2D Overlay
         overlay_msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')

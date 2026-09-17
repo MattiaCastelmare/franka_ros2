@@ -57,6 +57,13 @@ def init_pinocchio_from_xacro(node: Any, with_hand: bool = True) -> tuple[bool, 
         return False, None, None
 
 
+def format_topic(topic, prefix: str = None) -> str:
+    if not prefix: return topic
+    parts = topic.split('/')
+    parts[-1] = f"{prefix}{parts[-1]}"
+    return '/'.join(parts)
+
+
 def extract_arm_landmarks(
     pose_landmarks,
     image_shape,
