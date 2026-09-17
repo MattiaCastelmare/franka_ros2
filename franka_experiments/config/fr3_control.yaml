@@ -48,6 +48,44 @@ params:
                         # 6-16 cm at the same numeric value. Re-tune against
                         # hardware before assuming 0.20 still behaves as before;
                         # it is now honest, not equivalent.
+                        #
+                        # ── ISO 10218-2:2025 Annex L (roadmap Step 4) ─────────
+                        # Under `iso_enabled: true` d_safe must carry the
+                        # IRREDUCIBLE part of the protective separation
+                        # distance — the part that is required even at zero
+                        # speed:
+                        #     d_floor = C + Z_d + Z_r
+                        #             = 0.85 + 0.06 + 0.01 = 0.92 m
+                        # with the conformant C for a device that has no
+                        # demonstrated detection capability (ISO 13855:2024,
+                        # body detection). cbf_safety_filter._iso_configure
+                        # RAISES when d_safe < d_floor; there is no bypass flag.
+                        #
+                        # THIS CELL TAKES RESOLUTION (c): d_safe stays at its
+                        # tuned research value (0.10 m, above) and
+                        # `iso_enabled` stays FALSE, the deviation is
+                        # recorded in franka_experiments/SAFETY.md, and NO ISO
+                        # conformance is claimed. (b) — raising d_safe to 0.92 m
+                        # — is not physically available: 0.92 m exceeds the FR3's
+                        # 0.855 m reach, so conformant SSM is unachievable in
+                        # this workspace, which is the honest finding and not a
+                        # tuning failure. (a) — demonstrating d <= 40 mm with
+                        # scripts/iso_constants_measure.py detection, giving
+                        # C = 8*(d-14) mm — is the only route to an ISO-shaped
+                        # answer here, and it is still not enough on its own:
+                        # the depth pipeline has no IEC/TS 61496-4-3 assessment
+                        # and is not a rated protective device.
+                        #
+                        # 0.10 m is therefore a RESEARCH value, tuned against
+                        # hardware, and not an ISO-derived one.
+                        #
+                        # OUT OF SYNC WITH SIM: franka_sim/config.yaml carries
+                        # 0.15 m, so test_rl_policy::test_real_configs_are_in_sync
+                        # FAILS at this value. That test is the divergence alarm
+                        # working as designed, not a broken test: the policy was
+                        # trained behind a 0.15 m barrier and the robot runs a
+                        # 0.10 m one. Fix it by moving one of the two values, not
+                        # by dropping d_safe from the test's key list.
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
   d_safe_default: 0.1  # alias kept for backward compatibility
 
