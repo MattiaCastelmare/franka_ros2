@@ -30,8 +30,6 @@ class HumanDistance(Node):
     def __init__(self):
         super().__init__('human_distance_node')
 
-        self.distance_loop_rate = 15.0
-
         # Configs
         config_path = os.path.join(
             get_package_share_directory("franka_experiments"), 
@@ -53,6 +51,7 @@ class HumanDistance(Node):
         self.declare_parameter('mode', 'capsules')
         self.mode = self.get_parameter('mode').value
         self.tracker_config = load_robot_config(tracker_path)['human_tracker']
+        self.distance_loop_rate = float(self.tracker_config["inference_hz"])
         self.pose_side = str(self.tracker_config["pose_side"]).lower()
         self.active_sides = ["left", "right"] if self.pose_side == "both" else [self.pose_side]
 

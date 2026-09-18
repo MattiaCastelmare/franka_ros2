@@ -19,7 +19,7 @@ human_tracker:
   model_complexity: 1
   min_detection_confidence: 0.40
   min_tracking_confidence: 0.30
-  inference_hz: 15.0           # Aligned to real source frequency (15 Hz)
+  inference_hz: 30.0           # Aligned to real source frequency (15 Hz)
   inference_scale: 1.00        # Max resolution and 3D accuracy
   visibility_threshold: 0.40
   depth_patch_radius: 2
