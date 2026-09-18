@@ -57,11 +57,13 @@ setup(
             'capsule_overlay_node = franka_experiments.nodes.capsule_overlay_node:main',
             'handeye_calibration_node = franka_experiments.nodes.handeye_calibration_node:main',
             'frame_grabber = franka_experiments.nodes.frame_grabber:main',
+            # === Human Arm Prediction ===
             'human_tracker = franka_experiments.nodes.human_tracker:main',
             'human_distance = franka_experiments.nodes.human_distance:main',
             'human_visualizer = franka_experiments.nodes.human_visualizer:main',
             'human_logging = franka_experiments.nodes.human_logging:main',
             'pick_place_velocity_commander = franka_experiments.nodes.pick_place_velocity_commander:main',
+            'pick_place_qddot_commander = franka_experiments.nodes.pick_place_qddot_commander:main',
         ],
     },
 )
