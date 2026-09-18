@@ -5,7 +5,7 @@ Thin wrapper around the CANONICAL ``torque_control_stack.launch.py`` — it only
 pins the fake-hardware / no-perception arguments, so there is exactly one
 definition of the pipeline and this file can never drift from it.
 
-Pipeline under test (franka_sim_to_real_roadmap.md, Step 3):
+Pipeline under test (franka_sim_to_real_implementation_status.md, Step 3):
 
     rl_policy_commander   (ONNX policy, obs rebuilt from /NS_1/joint_states)
         → /NS_1/qddot_nom

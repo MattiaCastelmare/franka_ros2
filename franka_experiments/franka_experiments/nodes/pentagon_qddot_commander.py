@@ -54,6 +54,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS, AUTO_SENTINEL
+from franka_experiments.utils.config import load_package_yaml, resolve_log_dir
 from franka_experiments.utils.node_runtime import (
     get_namespace_from_config,
     run_node_main,
@@ -151,8 +152,11 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('kp_rot',               5.0)
         self.declare_parameter('kd_rot',               6.0)
         # High-rate CSV logging: output directory + measured-effort source topic.
-        self.declare_parameter('log_dir',
-                               '/ros2_ws/src/franka_experiments/franka_logs')
+        # Was hardcoded to /ros2_ws/src/... — correct in this container and
+        # wrong everywhere else. resolve_log_dir() finds the same directory by
+        # locating the package source, and falls back to $HOME when there is
+        # none (an installed-only deployment).
+        self.declare_parameter('log_dir', resolve_log_dir())
         self.declare_parameter('joint_effort_topic', '/NS_1/joint_states')
 
         # ── Robustness / stability parameters (control-theoretic review) ──
@@ -163,6 +167,19 @@ class PentagonQddotCommander(Node):
         # Two-level anti-windup on Cartesian error: soft → blend, hard → snap.
         self.declare_parameter('soft_reset_thr',   0.02)
         self.declare_parameter('hard_reset_thr',   0.05)
+        # [m] Obstacle gap below which a large Cartesian error is EXPECTED
+        # rather than a fault, so the anti-windup blends instead of snapping.
+        #
+        # It used to be governor_d_full * 4.0 = 0.20 m, which is simply the
+        # wrong number: the CBF's barrier engages at
+        # d_safe + h_unc + (k1/k0)*|hdot| — 0.23 m on hardware at a 0.12 m/s
+        # approach — and with its zone ladder on, the outermost rung opens at
+        # 0.30 m. That left a band where the filter was steering hard while
+        # this node logged "no obstacle nearby" and treated the resulting error
+        # as windup. Must stay >= the CBF's outer rung, zone_r_notice * d_safe
+        # in fr3_control.yaml (0.30 m at d_safe=0.20); raise it if d_safe goes
+        # above that.
+        self.declare_parameter('avoid_near_m',     0.30)
         self.declare_parameter('soft_reset_alpha', 0.95)
         # Null-space secondary task: posture regulation toward the start pose.
         self.declare_parameter('k_null',           5.0)
@@ -181,15 +198,28 @@ class PentagonQddotCommander(Node):
         # reverted in 4d4d450). Distance is self-releasing: as the CBF pushes
         # the arm clear, d grows and the phase resumes on its own.
         #
-        # Above governor_d_full the trajectory runs at full speed and the CBF
-        # handles avoidance on its own (it starts acting at d_safe = 0.20 m).
-        # Only below that does the path itself slow down.
+        # Above governor_r_full * d_safe the trajectory runs at full speed and
+        # the CBF handles avoidance on its own. Only below that does the path
+        # itself slow down. RATIOS of the CBF's d_safe, read from the same
+        # fr3_control.yaml the filter loads, so lowering d_safe lets the path
+        # run closer too. 0.25 / 0.10 give the old 0.05 / 0.02 m at d_safe=0.20.
         self.declare_parameter('governor_enabled',   True)
-        self.declare_parameter('governor_d_full',    0.05)  # [m] sigma = 1 above
-        self.declare_parameter('governor_d_stop',    0.02)  # [m] sigma = min below
+        self.declare_parameter('governor_r_full',    0.25)  # [x d_safe] sigma = 1 above
+        self.declare_parameter('governor_r_stop',    0.10)  # [x d_safe] sigma = min below
         self.declare_parameter('governor_sigma_min', 0.05)  # never exactly 0
         self.declare_parameter('governor_timeout',   0.5)   # [s] stale -> sigma=1
         self.declare_parameter('cbf_status_topic',   '/NS_1/cbf_status')
+        # ── ISO layer: the independent monitor's stop ────────────────────
+        # While iso_safety_monitor has a stop latched the commander publishes
+        # q̈_nom = 0 and HOLDS THE PHASE. Holding the phase is the half that
+        # matters: a stopped arm whose reference keeps running comes back to
+        # a path position it never reached, and the catch-up command after a
+        # reset is exactly the 'enormous command to rejoin the path' that
+        # cart_err_max exists to bound. Zero is safe HERE (unlike in the
+        # filter, where q̈ = 0 means 'hold this velocity'): the filter is
+        # braking on the same signal, and its braking command overrides this
+        # one anyway.
+        self.declare_parameter('iso_safety_topic',   '/NS_1/iso_safety')
 
         # [m] Cap on the Cartesian error fed to the PD. The task law is
         # xddot = a_d + Kp*e + Kd*edot, so Kp*e grows without bound as the CBF
@@ -261,6 +291,7 @@ class PentagonQddotCommander(Node):
         self.k_sync_vel       = float(self.get_parameter('k_sync_vel').value)
         self.soft_reset_thr   = float(self.get_parameter('soft_reset_thr').value)
         self.hard_reset_thr   = float(self.get_parameter('hard_reset_thr').value)
+        self.avoid_near_m     = float(self.get_parameter('avoid_near_m').value)
         self.soft_reset_alpha = float(self.get_parameter('soft_reset_alpha').value)
         self.k_null           = float(self.get_parameter('k_null').value)
         self.d_null           = float(self.get_parameter('d_null').value)
@@ -268,8 +299,13 @@ class PentagonQddotCommander(Node):
         self._lambda_sq_max   = float(self.get_parameter('lambda_sq_max').value)
         self._manip_thr       = float(self.get_parameter('manip_thr').value)
         self.gov_on      = bool(self.get_parameter('governor_enabled').value)
-        self.gov_d_full  = float(self.get_parameter('governor_d_full').value)
-        self.gov_d_stop  = float(self.get_parameter('governor_d_stop').value)
+        d_safe = float(load_package_yaml(
+            'franka_experiments', 'config/fr3_control.yaml')['params']['d_safe'])
+        self.gov_d_full  = float(self.get_parameter('governor_r_full').value) * d_safe
+        self.gov_d_stop  = float(self.get_parameter('governor_r_stop').value) * d_safe
+        self.get_logger().info(
+            f'governor: full speed above {self.gov_d_full:.3f} m, floor below '
+            f'{self.gov_d_stop:.3f} m (x d_safe={d_safe} m)')
         self.gov_s_min   = float(self.get_parameter('governor_sigma_min').value)
         self.gov_timeout = float(self.get_parameter('governor_timeout').value)
         self.cart_err_max = float(self.get_parameter('cart_err_max').value)
@@ -278,6 +314,9 @@ class PentagonQddotCommander(Node):
         self._cbf_stamp  = 0.0
         self._gov_sigma  = 1.0
         self._gov_slow_since = None
+        # ISO monitor latch, and the edge detector for its two log lines.
+        self._iso_stop   = False
+        self._iso_was    = False
         self._diag_cart_err  = 0.0
 
         self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
@@ -522,6 +561,10 @@ class PentagonQddotCommander(Node):
             Float64MultiArray,
             str(self.get_parameter('cbf_status_topic').value),
             self._cbf_status_cb, 10)
+        self._iso_sub = self.create_subscription(
+            Float64MultiArray,
+            str(self.get_parameter('iso_safety_topic').value),
+            self._iso_safety_cb, 10)
 
         # Measured-effort subscription (configurable; used only for logging)
         self._eff_sub = self.create_subscription(
@@ -606,12 +649,23 @@ class PentagonQddotCommander(Node):
             self._cbf_dmin  = float(msg.data[4])
             self._cbf_stamp = time.monotonic()
 
+    def _iso_safety_cb(self, msg) -> None:
+        """iso_safety data[0] — the independent SSM monitor's stop latch.
+
+        A topic that is absent (monitor off, or not built) leaves this False
+        forever, which is the pre-ISO behaviour exactly. The commander does NOT
+        fail closed on a missing monitor: cbf_safety_filter already does, one
+        node downstream, and it is the node that owns the torque.
+        """
+        if len(msg.data) >= 1:
+            self._iso_stop = float(msg.data[0]) >= 1.0
+
     def _governor_sigma(self, now_mono: float) -> float:
         """Phase-rate scale in [sigma_min, 1] from the nearest obstacle distance.
 
-        1 above ``governor_d_full`` (trajectory at full speed; the CBF alone
-        handles avoidance — it already engages at d_safe = 0.20 m), ramping down
-        to ``governor_sigma_min`` at ``governor_d_stop``.
+        1 above ``governor_r_full * d_safe`` (trajectory at full speed; the CBF
+        alone handles avoidance), ramping down to ``governor_sigma_min`` at
+        ``governor_r_stop * d_safe``.
 
         Driven by DISTANCE, never by tracking error. An error-driven governor has
         a stable fixed point at zero motion: the CBF blocks, the error grows, the
@@ -760,6 +814,28 @@ class PentagonQddotCommander(Node):
         # CBF is holding back. Scaling dt (not s_dot afterwards) keeps the
         # timing law's own soft-start and its s_ddot consistent.
         self._gov_sigma = self._governor_sigma(time.monotonic())
+        if self._iso_stop:
+            # Hard zero, BELOW the governor_sigma_min floor. That floor exists
+            # so a fixed obstacle on the path gets walked past instead of
+            # deadlocked against; an ISO stop is the opposite situation — the
+            # bound was crossed and creeping is the one thing that must not
+            # happen — so it is bypassed here and only here.
+            self._gov_sigma = 0.0
+            if not self._iso_was:
+                self._iso_was = True
+                self.get_logger().error(
+                    'ISO SSM stop latched → q̈_nom = 0, phase HELD. Clear it '
+                    'with /NS_1/safety_reset once the condition is gone; the '
+                    'reference resumes through the soft-reset blend, so it '
+                    'does not step.')
+            self.pub.publish(self._zero_msg)
+            return
+        if self._iso_was:
+            self._iso_was = False
+            self.get_logger().warn(
+                'ISO SSM stop cleared → phase resumed (the soft-reset blend '
+                'pulls the reference back toward the measured state over '
+                f'alpha={self.soft_reset_alpha}, so the command does not step)')
         if self._gov_sigma < 0.999:
             if self._gov_slow_since is None:
                 self._gov_slow_since = t
@@ -889,31 +965,47 @@ class PentagonQddotCommander(Node):
         # far the arm really is. Using the capped value would blind it exactly
         # when windup is largest.
         ee_err = self._diag_cart_err
-        if ee_err > self.hard_reset_thr:
+        # An error this size is EXPECTED while the CBF is steering around
+        # something, and "expected" has to change the ACTION, not just the log
+        # line. It used not to: both branches below snapped q_d and dq_d, and
+        # the only difference was which sentence came out. Since the logger is
+        # throttled to 1 Hz while the reset ran on every 100 Hz tick, a
+        # hardware log showed one "HARD reset" per second and hid the fact that
+        # the reference was being discarded a hundred times a second for six
+        # seconds straight, with the Cartesian error reaching 0.48 m. That is
+        # what made qddot_nom_norm swing between 0.33 and 7.85 rad/s²: the
+        # commander was fighting itself, upstream of any barrier.
+        #
+        # Near an obstacle the anti-windup therefore BLENDS instead of
+        # snapping. Windup is still bounded, and not by this branch: q_d is
+        # already clamped to q ± q_des_max_error and dq_d to ± dq_des_max a few
+        # lines above, so the snap was never the thing keeping the reference
+        # physical — it was only the thing throwing away the path progress the
+        # arm needs in order to come back once the obstacle leaves.
+        near = (math.isfinite(self._cbf_dmin)
+                and self._cbf_dmin < self.avoid_near_m)
+        if ee_err > self.hard_reset_thr and not near:
             np.copyto(self._q_d,  js['q'])          # full synchronisation
             np.copyto(self._dq_d, qdot)
             if self._tlog.due(t):
-                # An error this size is EXPECTED while the CBF is steering
-                # around something — say so, instead of reporting a fault.
-                near = (math.isfinite(self._cbf_dmin)
-                        and self._cbf_dmin < self.gov_d_full * 4.0)
-                if near:
-                    self.get_logger().info(
-                        f'reference resync: EE error {ee_err:.3f} m while '
-                        f'avoiding an obstacle at {self._cbf_dmin:.3f} m '
-                        f'(expected — the CBF is steering)')
-                else:
-                    self.get_logger().warn(
-                        f'HARD reset: EE error {ee_err:.3f} m > '
-                        f'{self.hard_reset_thr} m with no obstacle nearby')
+                self.get_logger().warn(
+                    f'HARD reset: EE error {ee_err:.3f} m > '
+                    f'{self.hard_reset_thr} m with no obstacle nearby')
         elif ee_err > self.soft_reset_thr:
             a = self.soft_reset_alpha               # blend toward measured state
             self._q_d  *= a; self._q_d  += (1.0 - a) * js['q']
             self._dq_d *= a; self._dq_d += (1.0 - a) * qdot
             if self._tlog.due(t):
-                self.get_logger().info(
-                    f'soft reset: EE error {ee_err:.3f} m > {self.soft_reset_thr} m '
-                    f'(blend α={a})')
+                if near and ee_err > self.hard_reset_thr:
+                    self.get_logger().info(
+                        f'reference blending: EE error {ee_err:.3f} m while '
+                        f'avoiding an obstacle at {self._cbf_dmin:.3f} m '
+                        f'(expected — the CBF is steering; α={a}, the reference '
+                        f'is pulled toward the measured state, not discarded)')
+                else:
+                    self.get_logger().info(
+                        f'soft reset: EE error {ee_err:.3f} m > '
+                        f'{self.soft_reset_thr} m (blend α={a})')
 
         # ── Publish Float64MultiArray (legacy / CBF filter path) ─────────────
         for i in range(NUM_JOINTS):

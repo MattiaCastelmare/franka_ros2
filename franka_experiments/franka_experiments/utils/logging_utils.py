@@ -18,6 +18,8 @@ from typing import Optional
 
 import numpy as np
 
+from franka_experiments.utils.cbf_zones import ZONE_NAMES
+
 
 class ThrottledLogger:
     """Rate-limited logging wrapper.
@@ -224,7 +226,28 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
     ``h_qp``     [m/s²] that row's bound. More positive ⇒ looser. Negative means
                  the row is demanding positive ``aᵀq̈``, i.e. retreat.
     ``hhold``    [m] largest barrier RECOVERY the asymmetric smoothing held back.
-    ``vobs``     [m/s] fastest approaching obstacle this rebuild.
+    ``vobs``     [m/s] fastest approaching obstacle this rebuild, over ALL
+                 rows — not this row's. Use ``vel[...]`` for that.
+    ``vel[obs/rob/rel]``  [m/s] the three speeds of the row this line is
+                 about, along its normal n̂, all directly comparable:
+
+                 * ``obs`` — the OBSTACLE's closing speed, the same
+                   (conditioned, clamped) number the barrier and the retreat
+                   cap consume. Positive means closing in.
+                 * ``rob`` — the ROBOT's own speed at that control point,
+                   i.e. how fast it is getting away. Positive means
+                   separating. This is the avoidance speed. Identical to
+                   ``hdot``'s raw value, printed here so the three read as
+                   one balance.
+                 * ``rel`` — their difference ``rob − obs``, which is ḣ, the
+                   rate the gap is ACTUALLY changing. Positive means the gap
+                   is opening. This is the number that says whether the robot
+                   is winning: ``rel`` ≥ 0 with a positive gap means the
+                   situation is under control however alarming ``obs`` looks.
+
+                 The fastest separation over all control points is the first
+                 number of ``retreat``, so a jerk on a point OTHER than the
+                 one labelling the line shows up there.
     ``dnorm``    [rad/s²] ‖q̈_safe − q̈_nom‖ — how hard the QP bends the nominal.
     ``s[...]``   the six per-family slacks. One exploding while the others stay
                  small is exactly what a shared slack used to hide. ``s[cap]``
@@ -239,6 +262,39 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
                  while a track is under its minimum frame count, or flag off).
     ``hbrake``   [m] largest braking-distance tightening applied. 0 with the
                  flag off — this is the field that makes that flag visible.
+    ``outr``     Phase-2 outrun test: largest closing/outrunnable ratio this
+                 rebuild (> 1 = some point cannot outrun its obstacle along
+                 n̂) / largest lateral blend weight actually applied.
+    ``zone``     which rung of the gap ladder this row is on, the scheduled
+                 gains it is being driven with, and how much of the TASK
+                 survives — ``zone=active k=25.0/10.5 task=1.00``. Only
+                 present when ``enable_zone_ladder`` is on.
+
+                 The rung name is the argmax of the blend weights and is a
+                 LABEL: every actual decision uses the blended gains printed
+                 next to it, so seeing ``active`` with k = 18.5/8.75 is not a
+                 contradiction, it is the notice/active transition band.
+
+                 ``task`` is the fraction of the commander's q̈_nom that
+                 survived. 1.00 is normal, 0.50 is the priority rung giving
+                 way, 0.00 is the hold rung: the trajectory is suspended and
+                 the nominal has become a braking command, while every barrier
+                 row keeps full authority. It falls instantly and climbs over
+                 ``zone_resume_s``, so a value between 0 and 1 with the gap
+                 already clear is the RESUME ramp, not a fault.
+
+    ``nrot``     count of residual frames discarded because n̂ rotated further
+                 than ``obstacle_velocity_normal_rot_max`` between them, i.e.
+                 the nearest obstacle point hopped to another surface patch and
+                 ``aᵀq̇ − ḋ`` stopped being an obstacle velocity. CUMULATIVE
+                 since the node started. A number that climbs steadily while a
+                 STATIC obstacle is in view is the guard doing its job; one
+                 that never moves means the fabricated closing speed on a
+                 static obstacle comes from somewhere else and the hypothesis
+                 behind the guard is wrong.
+
+    ``hlat``     [m] largest latency-compensation tightening (prediction +
+                 propagated position uncertainty). 0 with the flag off.
     ``w=[..]``   per-OBSTACLE-row slack weight. 1.00 = relaxes as it does with
                  the weighting off; ``w_max`` = treated as maximally critical.
     ``wq=[..]``  per-JOINT-LIMIT-row weight, LABELLED by row because which
@@ -274,6 +330,14 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
     dq_ort = float(np.linalg.norm(dq - dq_rad * a_hat))
     link_i = con.links[i] if i < len(con.links) else '?'
 
+    # ── The three velocities of the row this line is about, in m/s ──────────
+    # a_i is n̂ᵀJ_p with n̂ a unit vector, so aᵀq̇ IS the control point's speed
+    # along the normal — no scaling needed, and the numbers are directly
+    # comparable with d_min and with each other.
+    v_rob_i = float(a_i @ qdot)                 # + = the robot is separating
+    v_obs_i = float(con.v_obs[i]) if i < con.v_obs.size else 0.0
+    v_rel_i = v_rob_i - v_obs_i                 # + = the gap is opening
+
     w_txt = ('-' if rows.diag_w is None or rows.diag_w.size == 0
              else '/'.join(f'{x:.2f}' for x in rows.diag_w))
     if rows.diag_wq is None or rows.diag_wq.size == 0:
@@ -289,6 +353,20 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'link={link_i} hdot={float(a_i @ qdot_cbf):+.3f}'
         f'(raw{float(a_i @ qdot):+.3f}) h_qp={float(h_qp[i]):+.3f} '
         f'hhold={rows.diag_h_hold:.4f} vobs={rows.diag_v_obs:+.3f} '
+        # WHICH control point reported that maximum. vobs is a max over ALL
+        # rows and vel[obs/...] below belongs to the row holding d_min, so with
+        # two obstacles in the scene the two fields legitimately disagree — and
+        # a line reading `vobs=+1.850 vel[obs/...]=+0.067/...` with no way to
+        # tell which row the 1.850 came from is unreadable. Kept as its own
+        # key rather than appended to vobs= so a parser doing float() on the
+        # value still works. '-' when no row reported an approach.
+        f'vobs_cp={getattr(rows, "diag_v_obs_link", "") or "-"} '
+        # Cumulative count of control points whose closing-speed state was
+        # discarded because their nearest obstacle changed identity. Outside
+        # _zone_field on purpose: unlike nrot= this has nothing to do with the
+        # zone ladder and must be visible whatever the flags.
+        f'nid={int(getattr(rows, "diag_ident_reset", 0))} '
+        f'vel[obs/rob/rel]={v_obs_i:+.3f}/{v_rob_i:+.3f}/{v_rel_i:+.3f} '
         f'dnorm={float(np.linalg.norm(dq)):.3f} '
         f's[obs/sc/qlim/sing/cap/spd]={slack[G_OBS]:.3f}/{slack[G_SC]:.3f}/'
         f'{slack[G_QLIM]:.3f}/{slack[G_SING]:.3f}/{slack[G_CAP]:.3f}/'

@@ -6,10 +6,11 @@ Feeds synthetic /joint_states (100 Hz), /qddot_nom (50 Hz) and
 
   1. qddot_safe published at ~ qp_rate_hz and all-finite
   2. CBF active (output deviates from passthrough when obstacle close)
-  3. distance stream stopped -> filter falls back to passthrough
+  3. distance stream stopped -> BRAKING fallback, not passthrough
   4. qddot_nom stopped -> braking fallback (output ~ -k_brake * qdot = 0 here)
 """
 
+import threading
 import time
 
 import numpy as np
@@ -37,7 +38,15 @@ class Stimulus(Node):
         self.received = []
         self.t_recv = []
 
-        self.pub_js = self.create_publisher(JointState, '/NS_1/joint_states', 10)
+        # joint_states_FAST, matching topics['joint_states_fast'] in
+        # fr3_control.yaml. The filter stopped subscribing to /NS_1/joint_states
+        # when that key was added — that topic is a 30 Hz Python republisher of
+        # cached values — and this script kept publishing to the old one, so the
+        # filter never saw a joint state, `_qp_tick` returned early on every
+        # tick and the run failed with an empty output array instead of saying
+        # what was wrong.
+        self.pub_js = self.create_publisher(
+            JointState, '/NS_1/franka/joint_states', 10)
         self.pub_nom = self.create_publisher(Float64MultiArray, '/NS_1/qddot_nom', 10)
         self.pub_dist = self.create_publisher(
             MultiLinkDistance, '/cbf/per_link_distances',
@@ -92,10 +101,15 @@ def main():
     ex.add_node(flt)
     ex.add_node(stim)
 
+    # A real spin, on its own thread. `spin_once` in a loop services ONE work
+    # item per call, and with two nodes, three timers and two subscriptions
+    # between them it could not keep the 100 Hz joint-state timer fed, let
+    # alone deliver the output messages this script counts.
+    th = threading.Thread(target=ex.spin, daemon=True)
+    th.start()
+
     def run(sec):
-        end = time.monotonic() + sec
-        while time.monotonic() < end:
-            ex.spin_once(timeout_sec=0.02)
+        time.sleep(sec)
 
     failures = []
 
@@ -111,21 +125,38 @@ def main():
         dev = np.abs(out - stim.qddot_nom).max()
         print(f'phase1: n={n1}  rate={rate:.0f} Hz  finite={np.isfinite(out).all()}  '
               f'max|out-nom|={dev:.3f}')
-        if not (150 <= rate <= 260):
-            failures.append(f'phase1: rate {rate:.0f} Hz not ~200')
+        # Against the CONFIGURED rate rather than a literal: this said
+        # "~200 Hz" long after qp_rate_hz became 100, so the script could only
+        # ever fail on a correctly running filter.
+        want = float(flt.P.qp_rate_hz)
+        if not (0.75 * want <= rate <= 1.3 * want):
+            failures.append(f'phase1: rate {rate:.0f} Hz not ~{want:.0f}')
         if not np.isfinite(out).all():
             failures.append('phase1: non-finite output')
         if dev < 1e-3:
             failures.append('phase1: CBF constraint did not bind (expected clipping)')
 
-    # Phase 2: stop distances -> passthrough after distance_timeout (0.5 s)
+    # Phase 2: stop distances -> BRAKING after distance_timeout (0.5 s).
+    #
+    # This used to expect PASSTHROUGH, and passthrough is what the node did
+    # when the script was written. It no longer does, deliberately: a failure
+    # of the channel that feeds the barrier must degrade toward more
+    # conservative, so the nominal becomes -k_brake*q̇ and `fault` is raised
+    # (see the `distance stale` branch of _qp_tick). With q̇ = 0 here that is
+    # an output of ~0 against a nominal of 5.0 — which the old assertion read
+    # as a failure, so this script could only pass on the unsafe behaviour.
     stim.send_dist = False
     run(1.5)
+    if not stim.received:
+        print('FAIL:\n  no qddot_safe at all — check the topic names against '
+              'the `topics:` block of fr3_control.yaml')
+        raise SystemExit(1)
     out = np.array(stim.received[-20:])
-    dev = np.abs(out - stim.qddot_nom).max()
-    print(f'phase2: max|out-nom|={dev:.2e} (expect ~0, passthrough)')
-    if dev > 1e-4:
-        failures.append(f'phase2: not passthrough after stale distances (dev={dev:.2e})')
+    print(f'phase2: max|out|={np.abs(out).max():.2e} '
+          f'(expect ~0: braking with qdot=0, NOT passthrough)')
+    if np.abs(out).max() > 1e-4:
+        failures.append('phase2: no braking fallback after stale distances '
+                        f'(max|out|={np.abs(out).max():.2e})')
 
     # Phase 3: stop nominal -> braking fallback (qdot=0 -> output ~0)
     stim.send_nom = False

@@ -8,6 +8,7 @@ into a plain Python ``dict`` / array:
 * :func:`load_package_config`  — ``config/fr3_<name>.yaml`` from the package share
 * :func:`load_config_file`     — any YAML file, by absolute path
 * :func:`load_launch_defaults` — ``config/launch_defaults.yaml``
+* :func:`resolve_log_dir`      — where a run's logs are written
 * :func:`load_franka_config_defaults` — ``franka_bringup/config/franka.config.yaml``
 * :func:`load_extrinsics`      — camera extrinsic calibration → (R, t)
 * :func:`load_camera_info_yaml` — ``sensor_msgs/CameraInfo`` dumps (multi-document)
@@ -38,6 +39,55 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import yaml
 from ament_index_python.packages import get_package_share_directory
+
+
+def resolve_log_dir(fallback: str = 'ros2_experiments') -> str:
+    """Default directory a node writes its run logs into.
+
+    Resolution order, first hit wins:
+
+    1. ``$FRANKA_LOGS_DIR`` — the escape hatch, for a run whose logs belong
+       somewhere specific (a bag directory, a USB stick, a CI artifact path).
+    2. ``<package source>/franka_logs`` — the repo's own log directory. This is
+       the one that matters in the normal setup: the container mounts the repo
+       at ``/ros2_ws/src``, so a file written here is visible **on the host**
+       immediately, with no ``docker cp``. ``$HOME`` inside the container is not
+       mounted, so the old default put every run somewhere the operator could
+       not reach from their own file manager. It is also already in
+       ``.gitignore``, so runs do not pollute ``git status``.
+    3. ``~/<fallback>`` — when the source tree is not there (an installed-only
+       deployment, or a copy install), which is the pre-existing behaviour.
+
+    The source tree is identified by ``package.xml`` sitting next to the
+    candidate, not by the path shape: under a COPY install this module lives in
+    ``site-packages`` and the relative walk would otherwise invent a directory
+    three levels up from nowhere.
+
+    Never raises: an unwritable candidate falls through to the next one, because
+    a logger that refuses to start is a logger that was not there when it
+    mattered.
+    """
+    import pathlib
+
+    candidates = []
+    env = os.environ.get('FRANKA_LOGS_DIR', '').strip()
+    if env:
+        candidates.append(pathlib.Path(env).expanduser())
+    pkg_root = pathlib.Path(__file__).resolve().parents[2]
+    if (pkg_root / 'package.xml').is_file():
+        candidates.append(pkg_root / 'franka_logs')
+    candidates.append(pathlib.Path.home() / fallback)
+
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / '.write_test'
+            probe.touch()
+            probe.unlink()
+            return str(cand)
+        except Exception:                              # noqa: BLE001
+            continue
+    return str(pathlib.Path.home() / fallback)
 
 
 def load_package_config(name: str) -> dict:
@@ -390,6 +440,66 @@ CBF_PARAM_SPEC = {
     'obstacle_velocity_enabled': ('bool', dict()),
     'obstacle_velocity_alpha': ('float', dict(minimum=0.0, maximum=0.95)),
     'obstacle_velocity_max': ('float', dict(positive=True, maximum=10.0)),
+    'obstacle_velocity_source': ('str', dict(choices=('residual', 'tracker'))),
+    'obstacle_velocity_min_frames': ('int', dict(minimum=1, maximum=100)),
+    'obstacle_velocity_residual_floor': ('bool', dict()),
+    'obstacle_velocity_median': ('int', dict(minimum=1, maximum=15)),
+    'obstacle_velocity_track_deadband': ('float', dict(minimum=0.0, maximum=1.0)),
+    'obstacle_velocity_residual_floor_gap': ('float', dict(minimum=0.0, maximum=2.0)),
+    'enable_uncertainty_margin': ('bool', dict()),
+    'uncertainty_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
+    'uncertainty_margin_alpha': ('float', dict(minimum=0.0, maximum=0.99)),
+    'enable_lateral_evasion': ('bool', dict()),
+    'lateral_evasion_gain': ('float', dict(minimum=0.0, maximum=50.0)),
+    'lateral_evasion_max_bias': ('float', dict(positive=True, maximum=100.0)),
+    'lateral_evasion_authority': ('float', dict(positive=True, maximum=1.0)),
+    'lateral_evasion_engage_ratio': ('float', dict(minimum=0.0, maximum=1.0)),
+    'lateral_evasion_v_min': ('float', dict(positive=True, maximum=2.0)),
+    'enable_outrun_evasion': ('bool', dict()),
+    'outrun_evasion_margin': ('float', dict(positive=True, maximum=2.0)),
+    'outrun_evasion_ramp_start': ('float', dict(minimum=0.0, maximum=1.0)),
+    'outrun_evasion_accel': ('float', dict(minimum=0.0, maximum=20.0)),
+    'outrun_evasion_gain': ('float', dict(minimum=0.0, maximum=50.0)),
+    'outrun_evasion_v_ref': ('float', dict(positive=True, maximum=5.0)),
+    'outrun_evasion_v_min': ('float', dict(positive=True, maximum=2.0)),
+    'outrun_evasion_max_bias': ('float', dict(minimum=0.0, maximum=100.0)),
+    'outrun_evasion_filter_alpha': ('float', dict(minimum=0.0, maximum=0.99)),
+    'outrun_evasion_engage_gap': ('float', dict(minimum=0.0, maximum=2.0)),
+    'outrun_evasion_v_avail_floor': ('float', dict(minimum=0.0, maximum=5.0)),
+    'enable_livelock_escape': ('bool', dict()),
+    'livelock_stall_s': ('float', dict(positive=True, maximum=30.0)),
+    'livelock_ramp_s': ('float', dict(positive=True, maximum=10.0)),
+    'livelock_max_s': ('float', dict(positive=True, maximum=30.0)),
+    'livelock_cooldown_s': ('float', dict(minimum=0.0, maximum=60.0)),
+    'livelock_progress_window_s': ('float', dict(positive=True, maximum=5.0)),
+    'livelock_progress_thr': ('float', dict(positive=True, maximum=5.0)),
+    'livelock_dnorm_thr': ('float', dict(positive=True, maximum=50.0)),
+    'livelock_gain': ('float', dict(minimum=0.0, maximum=20.0)),
+    'livelock_engage_gap': ('float', dict(minimum=0.0, maximum=2.0)),
+    'livelock_nominal_min': ('float', dict(minimum=0.0, maximum=20.0)),
+    'enable_zone_ladder': ('bool', dict()),
+    # Ladder boundaries and blend width as MULTIPLES of d_safe, not metres.
+    'zone_r_notice': ('float', dict(positive=True, maximum=10.0)),
+    'zone_r_active': ('float', dict(positive=True, maximum=10.0)),
+    'zone_r_priority': ('float', dict(positive=True, maximum=10.0)),
+    'zone_r_hold': ('float', dict(positive=True, maximum=10.0)),
+    'zone_blend_r': ('float', dict(minimum=0.0, maximum=5.0)),
+    'zone_k0_notice': ('float', dict(positive=True, maximum=500.0)),
+    'zone_k1_notice': ('float', dict(positive=True, maximum=100.0)),
+    'zone_k0_priority': ('float', dict(positive=True, maximum=500.0)),
+    'zone_k1_priority': ('float', dict(positive=True, maximum=100.0)),
+    'zone_slack_m_priority': ('float', dict(positive=True, maximum=1.0)),
+    'zone_slack_m_hold': ('float', dict(positive=True, maximum=1.0)),
+    'zone_task_priority_cut': ('float', dict(minimum=0.0, maximum=1.0)),
+    'zone_resume_s': ('float', dict(minimum=0.0, maximum=10.0)),
+    'obstacle_velocity_normal_rot_max': ('float', dict(minimum=0.0, maximum=1.6)),
+    'obstacle_velocity_identity_jump': ('float', dict(minimum=0.0, maximum=1.0)),
+    'accept_inaccurate_qp': ('bool', dict()),
+    'accel_box_clip_to_limits': ('bool', dict()),
+    'enable_latency_compensation': ('bool', dict()),
+    'latency_t_blind': ('float', dict(minimum=0.0, maximum=1.0)),
+    'latency_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
+    'latency_margin_max': ('float', dict(positive=True, maximum=1.0)),
     'distance_capture_age_max': ('float', dict(positive=True, maximum=10.0)),
     'distance_capture_skew_tol': ('float', dict(positive=True, maximum=1.0)),
     'enable_velocity_feedforward': ('bool', dict()),
@@ -397,6 +507,19 @@ CBF_PARAM_SPEC = {
     'velocity_feedforward_gain': ('float', dict(minimum=0.0, maximum=50.0)),
     'velocity_braking_margin_max': ('float', dict(positive=True, maximum=1.0)),
     'velocity_feedforward_min_frames': ('int', dict(minimum=1, maximum=100)),
+    'enable_vobs_in_hdot': ('bool', dict()),
+    'vobs_hdot_max': ('float', dict(positive=True, maximum=10.0)),
+    'enable_velocity_standoff': ('bool', dict()),
+    # Ranges WIDENED (2.0 -> 5.0 s, 1.0 -> 2.0 m) so the ISO parameterisation
+    # fits inside them: with iso_enabled the filter sets time_s = T_r + v_h/a_s
+    # and max = v_h*(T_r+T_s), which at the placeholder constants is 2.1 s and
+    # 4.2 m. The YAML values are unchanged; this is validation, not
+    # configuration, and a bound that rejects the standard's own arithmetic is
+    # the wrong bound. cbf_safety_filter._iso_configure WARNS when the ISO
+    # values still have to be clamped to these.
+    'velocity_standoff_time_s': ('float', dict(minimum=0.0, maximum=5.0)),
+    'velocity_standoff_max': ('float', dict(positive=True, maximum=2.0)),
+    'velocity_standoff_alpha': ('float', dict(minimum=0.0, maximum=0.99)),
     'enable_weighted_slack': ('bool', dict()),
     'slack_weight_max': ('float', dict(minimum=1.0, maximum=100.0)),
     'slack_weight_rho': ('float', dict(positive=True, maximum=3.0)),
@@ -413,6 +536,7 @@ CBF_PARAM_SPEC = {
     'link_speed_rows_enabled': ('bool', dict()),
     'link_speed_max': ('float', dict(positive=True, maximum=5.0)),
     'link_speed_reaction_s': ('float', dict(positive=True, maximum=2.0)),
+    'link_speed_v_at_d_safe': ('float', dict(positive=True, maximum=5.0)),
     'link_speed_horizon_s': ('float', dict(positive=True, maximum=2.0)),
     'link_speed_activate_frac': ('float', dict(minimum=0.0, maximum=1.0)),
     'cbf_h_recovery_alpha': ('float', dict(minimum=0.0, maximum=0.95)),
@@ -427,6 +551,35 @@ CBF_PARAM_SPEC = {
     'diag_disable_gc': ('bool', dict()),
     'diag_qddot_alpha': ('float', dict(minimum=0.0, maximum=1.0)),
     'tick_gap_warn_factor': ('float', dict(positive=True)),
+
+    # ── ISO 10218-1/-2:2025 layer ────────────────────────────────────────────
+    # Values, tags and derivations live in config/fr3_control.yaml; only the
+    # type and the validation range are here, as for every other key. Distances
+    # cap at 2.0 m, speeds at 5.0 m/s, times at 5.0 s — wide enough for any
+    # cell this package can plausibly describe, narrow enough that a decimal
+    # slip in the YAML is a startup failure rather than a silent derating of
+    # the barrier.
+    'iso_enabled': ('bool', dict()),
+    'iso_mode': ('str', dict(choices=('automatic', 'reduced'))),
+    'iso_t_reaction': ('float', dict(positive=True, maximum=5.0)),
+    'iso_a_stop': ('float', dict(positive=True, maximum=20.0)),
+    'iso_v_human': ('float', dict(positive=True, maximum=5.0)),
+    'iso_c_intrusion': ('float', dict(minimum=0.0, maximum=2.0)),
+    'iso_z_depth': ('float', dict(minimum=0.0, maximum=2.0)),
+    'iso_z_robot': ('float', dict(minimum=0.0, maximum=2.0)),
+    'iso_v_pfl': ('float', dict(positive=True, maximum=5.0)),
+    'iso_tcp_reduced_speed': ('float', dict(positive=True, maximum=5.0)),
+    'iso_ssm_speed_rows': ('bool', dict()),
+    'iso_monitor_enabled': ('bool', dict()),
+    'iso_speed_tol': ('float', dict(minimum=0.0, maximum=5.0)),
+    'iso_monitor_ticks': ('int', dict(positive=True, maximum=1000)),
+    'iso_stop_tau': ('float', dict(positive=True, maximum=5.0)),
+    'iso_stop_requires_reset': ('bool', dict()),
+    'iso_distance_hold_max_s': ('float', dict(positive=True, maximum=5.0)),
+    'iso_empty_frame_max_s': ('float', dict(positive=True, maximum=5.0)),
+    'iso_brake_frac_min': ('float', dict(minimum=0.0, maximum=1.0)),
+    'iso_brake_frac_ticks': ('int', dict(positive=True, maximum=1000)),
+    'iso_tau_rate_max': ('float', dict(positive=True, maximum=1000.0)),
 }
 
 #: Read straight from the YAML onto the namespace, without declaring them as

@@ -37,10 +37,34 @@ Examples
     # Fake hardware (simulation):
     ros2 launch franka_experiments torque_control_stack.launch.py use_fake_hardware:=true
 
-    # Safe-RL policy instead of the pentagon path (see franka_sim_to_real_roadmap.md).
+    # Safe-RL policy instead of the pentagon path (see franka_sim_to_real_implementation_status.md).
     # A cautious first run on real hardware: derate the policy to 30% authority.
     ros2 launch franka_experiments torque_control_stack.launch.py \\
         motion_source:=rl start_move_group:=false rl_action_scale:=0.3
+
+    # ── Obstacle PREDICTION: avoid proportionally to the obstacle's speed ──
+    # Tracking publishes the 3D velocity; the CBF consumes it instead of the
+    # scalar residual. Each switch alone is a no-op, so both are needed.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        obstacle_tracking:=true obstacle_velocity_source:=tracker
+
+    # ── Everything on: prediction + uncertainty margin + lateral evasion ──
+    # With lateral_evasion the arm steps SIDEWAYS out of the swept volume when
+    # its own acceleration box says it cannot null the closing rate in time.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        obstacle_tracking:=true obstacle_velocity_source:=tracker \\
+        lateral_evasion:=true uncertainty_margin:=true
+
+    # ── END-TO-END SIMULATION, no robot and no camera ──────────────────────
+    # Fake hardware, depth replayed from a bag, and a synthetic sphere shuttled
+    # through the workspace so the whole avoidance chain actually fires. The
+    # arm moves away from something that is not there -- never run this with a
+    # person nearby.
+    ros2 launch franka_experiments torque_control_stack.launch.py \\
+        use_fake_hardware:=true enable_camera:=false \\
+        depth_bag:=$(ros2 pkg prefix franka_experiments)/../../src/franka_experiments/rosbag/arm_complex \\
+        sim_obstacle:=true obstacle_tracking:=true \\
+        obstacle_velocity_source:=tracker lateral_evasion:=true
 """
 
 import yaml
@@ -52,8 +76,11 @@ from launch.actions import (
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
+    Shutdown,
     TimerAction,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -96,7 +123,17 @@ _ALL_PARAMS = [
     'gazebo', 'lpf_alpha', 'tau_max_scale',
     'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
+    'camera_depth_profile',
     'start_real_time_distance',
+    'obstacle_tracking', 'obstacle_velocity_source', 'lateral_evasion', 'outrun_evasion',
+    'livelock_escape', 'latency_compensation',
+    'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
+    'uncertainty_margin', 'sim_obstacle', 'depth_bag',
+    'multi_obstacle_k', 'vobs_in_hdot', 'velocity_standoff',
+    'iso_enabled', 'iso_mode', 'iso_ssm_speed_rows', 'iso_monitor_enabled',
+    'torque_iso_monitor_delay_s', 'link_speed_max', 'retreat_cap_max_speed',
+    'start_iso_evidence_logger', 'torque_iso_evidence_delay_s',
+    'iso_evidence_dir', 'iso_evidence_run_name',
     'start_experiment_logger', 'experiment_logger_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
@@ -113,12 +150,97 @@ def _as_bool(x: str) -> bool:
     return str(x).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
 
 
+def _speed_ceiling_overrides(p) -> list:
+    """The PFL / reduced-speed ceilings, as ROS parameters, or nothing.
+
+    Step 9 of the ISO roadmap bounds the worst case that survives every
+    software layer: ``link_speed_max`` must not exceed ``iso_v_pfl``, and the
+    ordering invariant ``retreat_cap_max_speed < link_speed_max`` has to
+    survive that. ``cbf_safety_filter`` RAISES at construction when the first
+    is violated with ``iso_enabled`` on — it does not clamp silently, because a
+    ceiling that quietly moves is not a ceiling.
+
+    So the two values stay in fr3_control.yaml at their non-ISO numbers (with
+    the flags off, output is bit-identical to before the ISO layer existed) and
+    are overridden HERE, from the command line, when the operator asks for one:
+
+        ros2 launch ... iso_enabled:=true link_speed_max:=0.68 \
+                        retreat_cap_max_speed:=0.60
+
+    An empty string means "leave the YAML alone", which is the default for both.
+    """
+    out = {}
+    for key in ('link_speed_max', 'retreat_cap_max_speed'):
+        raw = str(p.get(key, '')).strip()
+        if raw:
+            out[key] = float(raw)
+    return [out] if out else []
+
+
 def _as_float_list(x: str):
     """Parse ``'[0.4, 0.0, 0.45]'`` / ``'0.4,0.0,0.45'`` → list[float] ([] if empty)."""
     s = str(x).strip().strip('[]')
     if not s:
         return []
     return [float(v) for v in s.replace(';', ',').split(',') if v.strip()]
+
+
+def _rtd_config_with_overrides(path: str, *, tracking: bool,
+                               sim_obstacle: bool) -> str:
+    """Return ``path``, or a copy of it with the two perception switches forced.
+
+    ``real_time_distance`` reads its perception configuration from a YAML rather
+    than from ROS parameters — the blocks are nested dictionaries that
+    ``utils.params`` cannot express. That is the right shape for the file and
+    the wrong shape for a launch argument, so this bridges the two.
+
+    Returns the ORIGINAL path when neither switch is set, so the common case
+    touches no filesystem and the node reads exactly the installed file.
+    """
+    if not (tracking or sim_obstacle):
+        return path
+    import os
+    import tempfile
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    if tracking:
+        cfg.setdefault('tracking', {})['enabled'] = True
+    if sim_obstacle:
+        cfg.setdefault('sim_obstacle', {})['enabled'] = True
+    out = os.path.join(tempfile.gettempdir(),
+                       f'fr3_complete_launch_{os.getpid()}.yaml')
+    with open(out, 'w') as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    return out
+
+
+def _depth_bag_player(bag: str, cfg_path: str):
+    """``ros2 bag play`` restricted to the DEPTH stream, or ``None``.
+
+    Only the depth image and its camera_info are played, and both are remapped
+    onto the topics the config names. TF and joint states are deliberately NOT
+    replayed: they must come from the robot that is actually running, or the
+    mask would be built for one pose while the arm is in another — which is not
+    a degraded measurement, it is a wrong one, and it is wrong in the direction
+    of thinking the workspace is emptier than it is.
+
+    ``--loop`` because the point is to keep the depth stream alive for as long
+    as the stack runs, not to reproduce one recording end to end.
+    """
+    if not bag:
+        return None
+    with open(cfg_path) as f:
+        topics = (yaml.safe_load(f) or {}).get('topics', {}) or {}
+    depth = topics.get('depth_image', '/camera/camera/depth/image_rect_raw')
+    info = topics.get('depth_camera_info', '/camera/camera/depth/camera_info')
+    # The bags in this repo carry the ALIGNED depth stream under its own name.
+    src_depth = '/camera/camera/aligned_depth_to_color/image_raw'
+    src_info = '/camera/camera/aligned_depth_to_color/camera_info'
+    return ExecuteProcess(
+        cmd=['ros2', 'bag', 'play', bag, '--loop',
+             '--topics', src_depth, src_info,
+             '--remap', f'{src_depth}:={depth}', f'{src_info}:={info}'],
+        output='screen')
 
 
 def _launch_all(context):
@@ -221,6 +343,39 @@ def _launch_all(context):
                     actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
     ]
+
+    # ── [ISO layer] preflight, BEFORE the controller spawner ──────────────────
+    # iso_enabled:=true is a CLAIM — that the separation-distance constants were
+    # measured and that the layers enforcing the bound are running. Every one of
+    # those can be false while the YAML still parses, and the failure mode is
+    # the worst kind: the stack comes up, the logs say ISO, and the numbers are
+    # the placeholders somebody typed as an example.
+    #
+    # Run synchronously, at t = 0, and abort the whole launch on a non-zero
+    # exit. Deliberately BEFORE the spawner: the point is that the RT loop never
+    # starts, not that it starts and is stopped.
+    if _as_bool(p['iso_enabled']):
+        preflight = ExecuteProcess(
+            cmd=['python3',
+                 PathJoinSubstitution([FindPackageShare('franka_experiments'),
+                                       'scripts', 'iso_preflight_check.py']),
+                 '--config',
+                 PathJoinSubstitution([FindPackageShare('franka_experiments'),
+                                       'config', 'fr3_control.yaml'])],
+            output='screen',
+            on_exit=[LogInfo(msg='[torque_stack] [ISO layer]      preflight done')],
+        )
+        actions.insert(0, RegisterEventHandler(OnProcessExit(
+            target_action=preflight,
+            on_exit=lambda event, context: (
+                [] if event.returncode == 0 else
+                [LogInfo(msg='[torque_stack] [ISO layer]      PREFLIGHT FAILED '
+                             '— aborting the launch'),
+                 Shutdown(reason='iso_preflight_check failed')]))))
+        actions.insert(0, preflight)
+        actions.insert(0, LogInfo(
+            msg='[torque_stack] [ISO layer]      iso_preflight_check running '
+                '(iso_enabled:=true)'))
     if rt_pin_cpu:
         # Start alongside the spawner, not after it: the script polls for the
         # FF thread anyway (up to 60 s), so starting early costs nothing. An
@@ -300,12 +455,26 @@ def _launch_all(context):
     if start_camera:
         cam_delay = float(p['camera_delay_s'])
 
+        # Depth profile PINNED. With no profile rs_launch.py lets librealsense
+        # pick, and on this rig it picked 15 fps: the July bags and today's
+        # live tracker lines both show dt=66.7 ms. That is one frame period of
+        # extra sampling wait and a 62 ms camera hop (measured, scripts/
+        # latency_budget.py) against 13 ms at 30 fps — the single largest item
+        # in the blind time a fast obstacle can exploit. Empty = leave the
+        # driver's choice alone.
+        cam_args = {}
+        profile = str(p['camera_depth_profile']).strip()
+        if profile:
+            cam_args['depth_module.depth_profile'] = profile
         realsense_driver = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([
                 FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
             ]).perform(context)),
+            launch_arguments=cam_args.items(),
         )
         actions.append(TimerAction(period=cam_delay, actions=[realsense_driver]))
+        actions.append(LogInfo(msg=f'[torque_stack] [Perception]      RealSense depth profile: '
+                                   f'{profile or "driver default"}'))
 
         image_republisher = Node(
             package='franka_simulation',
@@ -351,7 +520,20 @@ def _launch_all(context):
 
     # ── [Distance estimation] real_time_distance ──────────────────────────────
     if start_rtd:
-        rtd_config = p['robot_config_yaml']
+        # The tracking / sim switches live in the ROBOT CONFIG (one file for
+        # every perception knob), but a launch argument has to be able to flip
+        # them without editing an installed YAML. So when either is asked for,
+        # the config is rewritten ONCE into the log directory with those two
+        # keys overridden and the node is pointed at the copy.
+        #
+        # A copy rather than an in-place edit, and only when a switch is
+        # actually set: the shipped file must stay the thing that describes the
+        # default behaviour, and `git diff` after a launch must be empty.
+        rtd_config = _rtd_config_with_overrides(
+            p['robot_config_yaml'],
+            tracking=_as_bool(p['obstacle_tracking']),
+            sim_obstacle=_as_bool(p['sim_obstacle']),
+        )
         real_time_distance_node = Node(
             package='franka_experiments',
             executable='real_time_distance',
@@ -361,9 +543,20 @@ def _launch_all(context):
             parameters=[{
                 'robot_config_path':      rtd_config,
                 'camera_extrinsics_path': p['camera_extrinsics_yaml'],
+                # Obstacle rows per control point, one per cluster; overrides
+                # perception.multi_obstacle_k in fr3_control.yaml (0 = YAML).
+                'multi_obstacle_k':       int(p['multi_obstacle_k']),
             }],
         )
         actions.append(TimerAction(period=rtd_delay, actions=[real_time_distance_node]))
+        bag_player = _depth_bag_player(p['depth_bag'], p['robot_config_yaml'])
+        if bag_player is not None:
+            # After the node, so no frame is published into the void while
+            # trimesh is still loading.
+            actions.append(TimerAction(period=rtd_delay + 3.0,
+                                       actions=[bag_player]))
+            actions.append(LogInfo(msg=['[torque_stack] [Perception]      '
+                                        'DEPTH FROM BAG: ', p['depth_bag']]))
         actions.append(LogInfo(msg=['[torque_stack] [Distance est.]   real_time_distance ENABLED '
                                     '(delay=', str(rtd_delay), 's)']))
     else:
@@ -378,6 +571,43 @@ def _launch_all(context):
         name='cbf_safety_filter',
         output='screen',
         additional_env=_SINGLE_THREAD_BLAS,
+        # These three are ordinary ROS parameters, so they override the YAML
+        # without rewriting it — declare_from_spec reads the parameter back
+        # after declaring it with the YAML value as the default.
+        parameters=[{
+            'obstacle_velocity_source': p['obstacle_velocity_source'],
+            'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
+            'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
+            'enable_livelock_escape':   _as_bool(p['livelock_escape']),
+            'enable_latency_compensation': _as_bool(p['latency_compensation']),
+            'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
+            'enable_zone_ladder':       _as_bool(p['zone_ladder']),
+            'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
+            'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
+            # ── ISO 10218-1/-2:2025 layer ────────────────────────────────
+            # All four default FALSE in launch_defaults.yaml: with them off
+            # the filter's numerical output is exactly what it was before
+            # the ISO layer existed. iso_enabled is the master flag; the
+            # other three do nothing without it.
+            'iso_enabled':          _as_bool(p['iso_enabled']),
+            'iso_mode':             str(p['iso_mode']),
+            'iso_ssm_speed_rows':   _as_bool(p['iso_ssm_speed_rows']),
+            'iso_monitor_enabled':  _as_bool(p['iso_monitor_enabled']),
+        }, *_speed_ceiling_overrides(p), {
+            # A launch BOOL onto a threshold parameter: the guard's "off" state
+            # is 0.0 rad, and exposing the angle on the command line would
+            # invite tuning a number whose right value is a property of the
+            # depth sensor, not of the run. 0.15 rad is derived in
+            # fr3_control.yaml; change it there if the hardware says so.
+            'obstacle_velocity_normal_rot_max':
+                (0.15 if _as_bool(p['obstacle_velocity_normal_guard']) else 0.0),
+            # Same bool-onto-a-threshold shape, and for the same reason: the
+            # guard's "off" state is 0.0 m, and the right value of the jump
+            # floor is a property of the depth sensor's argmin noise, not of
+            # the run. 0.10 m is derived in fr3_control.yaml.
+            'obstacle_velocity_identity_jump':
+                (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
+        }],
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
     # acceleration) and converts it to torque — no remap needed.
@@ -393,12 +623,74 @@ def _launch_all(context):
     actions.append(LogInfo(msg=['[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque'
                                 ' (delay=', str(dynamics_delay), 's)']))
 
+    # ── [ISO layer] iso_safety_monitor ────────────────────────────────────────
+    # The SECOND channel: it watches the same geometry the QP does, from outside
+    # the QP, and latches a NON-SAFETY-RATED stop when a control point crosses
+    # its separation-distance bound. The filter brakes on it and the commander
+    # holds the phase on it; this node publishes no command of its own.
+    #
+    # Started AFTER real_time_distance so the first tick already has distances,
+    # and with the same single-thread BLAS env as every other numpy node in the
+    # stack — an OpenBLAS that spawns a thread per core turns a 100 Hz Python
+    # loop into a scheduling problem (see tools/rt-tuning).
+    if _as_bool(p['iso_monitor_enabled']):
+        if not _as_bool(p['iso_enabled']):
+            raise RuntimeError(
+                'iso_monitor_enabled:=true needs iso_enabled:=true — the monitor '
+                'reads the same iso_* block the filter does, and starting it '
+                'against a filter that is ignoring that block gives two channels '
+                'with two different ideas of where the bound is.')
+        iso_monitor_node = Node(
+            package='franka_experiments',
+            executable='iso_safety_monitor',
+            name='iso_safety_monitor',
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{
+                'iso_enabled':         True,
+                'iso_mode':            str(p['iso_mode']),
+                'iso_monitor_enabled': True,
+            }, *_speed_ceiling_overrides(p)],
+        )
+        actions.append(TimerAction(period=float(p['torque_iso_monitor_delay_s']),
+                                   actions=[iso_monitor_node]))
+        actions.append(LogInfo(msg=[
+            '[torque_stack] [ISO layer]      iso_safety_monitor ENABLED '
+            '(delay=', str(p['torque_iso_monitor_delay_s']), 's) — NON-SAFETY-RATED, '
+            'see franka_experiments/SAFETY.md']))
+    else:
+        actions.append(LogInfo(
+            msg='[torque_stack] [ISO layer]      iso_safety_monitor DISABLED'))
+
+    # ── [ISO layer] iso_evidence_logger ───────────────────────────────────────
+    # A passive observer: it subscribes, computes and writes, and publishes
+    # nothing, so it cannot affect the control path. Independent of iso_enabled
+    # on purpose — with the layer off it still records what the CURRENT system
+    # would and would not have satisfied, which is the only way to find out.
+    if _as_bool(p['start_iso_evidence_logger']):
+        evidence_node = Node(
+            package='franka_experiments',
+            executable='iso_evidence_logger',
+            name='iso_evidence_logger',
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{
+                'output_dir': str(p['iso_evidence_dir']),
+                'run_name':   str(p['iso_evidence_run_name']),
+            }, *_speed_ceiling_overrides(p)],
+        )
+        actions.append(TimerAction(period=float(p['torque_iso_evidence_delay_s']),
+                                   actions=[evidence_node]))
+        actions.append(LogInfo(msg=[
+            '[torque_stack] [ISO layer]      iso_evidence_logger ENABLED -> ',
+            str(p['iso_evidence_dir'])]))
+
     # ── [Motion generation] one q̈_nom source — never two ─────────────────────
     # Both sources publish /NS_1/qddot_nom and would fight for the topic, so
     # motion_source selects exactly one:
     #   'pentagon' — analytic path + avoidance-first shaping (default)
     #   'rl'       — ONNX Safe-RL policy trained in franka_sim against this same
-    #                CBF filter (franka_sim_to_real_roadmap.md, Step 3)
+    #                CBF filter (franka_sim_to_real_implementation_status.md, Step 3)
     # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
     # identical in both cases: the safety certificate does not depend on who
     # generates the nominal acceleration.
@@ -506,6 +798,11 @@ def generate_launch_description():
                 default_value=str(_DEFAULTS.get('camera_delay_s', '0.0')),
                 description='Seconds before launching camera pipeline'),
             DeclareLaunchArgument(
+                'camera_depth_profile',
+                default_value=str(_DEFAULTS.get('camera_depth_profile', '')),
+                description='RealSense depth_module.depth_profile, e.g. 848x480x30. '
+                            'Empty = driver default (measured to fall back to 15 fps)'),
+            DeclareLaunchArgument(
                 'start_real_time_distance',
                 default_value=_DEFAULTS.get('start_real_time_distance', 'true'),
                 description='Start real_time_distance node'),
@@ -564,6 +861,199 @@ def generate_launch_description():
                 ]),
                 description='Path to fr3_complete.yaml (robot/mesh/distance config '
                             'loaded by real_time_distance)'),
+            # ── Obstacle tracking / prediction / evasion ──────────
+            # One switch each, all defaulting to today's behaviour, so a run
+            # that names none of them is byte-for-byte the pre-tracker stack.
+            DeclareLaunchArgument(
+                'obstacle_tracking',
+                default_value=str(_DEFAULTS.get('obstacle_tracking', 'false')),
+                description='Cluster + Kalman-track obstacles in '
+                            'real_time_distance and publish their 3D velocity '
+                            'on LinkDistance. On its own it only adds fields '
+                            'nobody reads - pair it with '
+                            'obstacle_velocity_source:=tracker'),
+            DeclareLaunchArgument(
+                'obstacle_velocity_source',
+                default_value=str(_DEFAULTS.get('obstacle_velocity_source',
+                                                'residual')),
+                description='Where the CBF v_obs comes from: residual (the '
+                            'scalar a^T qdot - ddot, EMA at 0.7) or tracker '
+                            '(n_hat^T v from the Kalman track). tracker '
+                            'REQUIRES obstacle_tracking:=true'),
+            DeclareLaunchArgument(
+                'lateral_evasion',
+                default_value=str(_DEFAULTS.get('lateral_evasion', 'false')),
+                description='Step SIDEWAYS out of the swept volume when the '
+                            'acceleration box says the closing rate cannot be '
+                            'nulled before the gap reaches zero. Needs a '
+                            'tracked velocity to have a direction at all'),
+            DeclareLaunchArgument(
+                'outrun_evasion',
+                default_value=str(_DEFAULTS.get('outrun_evasion', 'false')),
+                description='Step aside toward the fastest direction orthogonal '
+                            'to v_obs when the joint velocity box says the '
+                            'obstacle cannot be outrun along the normal '
+                            '(cbf_safety_filter enable_outrun_evasion)'),
+            DeclareLaunchArgument(
+                'livelock_escape',
+                default_value=str(_DEFAULTS.get('livelock_escape', 'false')),
+                description='When the QP has been bending the nominal while the '
+                            'arm stands still for livelock_stall_s, nudge it '
+                            'tangentially in the barrier nullspace (bounded, '
+                            'logged; cbf_safety_filter enable_livelock_escape)'),
+            DeclareLaunchArgument(
+                'zone_ladder',
+                default_value=str(_DEFAULTS.get('zone_ladder', 'false')),
+                description='Four rungs on the obstacle gap (notice/active/'
+                            'priority/hold) scheduling the HOCBF gains, the '
+                            'slack priority and whether the trajectory runs at '
+                            'all; boundaries are multiples of d_safe '
+                            '(zone_r_*). Below zone_r_hold*d_safe the TASK is suspended and '
+                            'the nominal becomes a braking command; the barrier '
+                            'rows keep full authority, so this is not a freeze '
+                            '(cbf_safety_filter enable_zone_ladder)'),
+            DeclareLaunchArgument(
+                'multi_obstacle_k',
+                default_value=str(_DEFAULTS.get('multi_obstacle_k', '0')),
+                description='Obstacle rows per control point, one per cluster '
+                            '(real_time_distance multi_obstacle_k). 1 = single '
+                            'nearest point as before; 0 = use fr3_control.yaml'),
+            DeclareLaunchArgument(
+                'vobs_in_hdot',
+                default_value=str(_DEFAULTS.get('vobs_in_hdot', 'false')),
+                description='Tracked obstacle velocity inside hdot, signed, on '
+                            'rows with a confirmed track (cbf_safety_filter '
+                            'enable_vobs_in_hdot). REQUIRES obstacle_tracking:=true'),
+            DeclareLaunchArgument(
+                'velocity_standoff',
+                default_value=str(_DEFAULTS.get('velocity_standoff', 'false')),
+                description='Move the obstacle barrier out in proportion to the '
+                            'estimated closing speed: d_safe + time_s * v_app '
+                            '(cbf_safety_filter enable_velocity_standoff). '
+                            'Watch hstd= in CBFDIAG'),
+
+            # ── ISO 10218-1/-2:2025 layer ─────────────────────────────────────
+            # Every one of these is FALSE by default. The ISO layer adds no
+            # behaviour and changes no number until iso_enabled is asked for;
+            # see SAFETY.md for what is and is not claimed when it is.
+            DeclareLaunchArgument(
+                'iso_enabled',
+                default_value=str(_DEFAULTS.get('iso_enabled', 'false')),
+                description='Master flag for the ISO 10218 layer: the d_safe '
+                            'floor (C+Z_d+Z_r), the PFL speed ceiling, the '
+                            'braking-authority fault and the ISO fields on '
+                            'cbf_status. NOT a certified safety function — '
+                            'read franka_experiments/SAFETY.md first'),
+            DeclareLaunchArgument(
+                'iso_mode',
+                default_value=str(_DEFAULTS.get('iso_mode', 'automatic')),
+                description="'automatic' or 'reduced'. 'reduced' adds a TCP "
+                            'speed row at iso_tcp_reduced_speed (250 mm/s). '
+                            'Needs iso_enabled:=true'),
+            DeclareLaunchArgument(
+                'iso_ssm_speed_rows',
+                default_value=str(_DEFAULTS.get('iso_ssm_speed_rows', 'false')),
+                description='Drive the task-space speed rows from the ISO '
+                            '10218-2 Annex L separation-distance bound instead '
+                            'of the heuristic gap/blind-time cap. Needs '
+                            'iso_enabled:=true'),
+            DeclareLaunchArgument(
+                'iso_monitor_enabled',
+                default_value=str(_DEFAULTS.get('iso_monitor_enabled', 'false')),
+                description='Start iso_safety_monitor: an independent SSM '
+                            'channel that latches a NON-SAFETY-RATED stop when '
+                            'a control point exceeds its separation-distance '
+                            'speed cap. Needs iso_enabled:=true'),
+            DeclareLaunchArgument(
+                'torque_iso_monitor_delay_s',
+                default_value=str(_DEFAULTS.get('torque_iso_monitor_delay_s', '3.0')),
+                description='Seconds before launching iso_safety_monitor '
+                            '(after real_time_distance)'),
+            DeclareLaunchArgument(
+                'start_iso_evidence_logger',
+                default_value=str(_DEFAULTS.get('start_iso_evidence_logger', 'false')),
+                description='Record ISO evidence (TCP/control-point speed, '
+                            'separation margin d-S_p, stop timing, saturation) '
+                            'to a run directory. Passive: it subscribes and '
+                            'writes, it publishes nothing, and it evaluates the '
+                            'ISO criteria whether or not iso_enabled is true'),
+            DeclareLaunchArgument(
+                'torque_iso_evidence_delay_s',
+                default_value=str(_DEFAULTS.get('torque_iso_evidence_delay_s', '3.0')),
+                description='Seconds before launching iso_evidence_logger'),
+            DeclareLaunchArgument(
+                'iso_evidence_dir',
+                default_value=str(_DEFAULTS.get('iso_evidence_dir',
+                                                '~/franka_iso_evidence')),
+                description='Root directory for ISO evidence runs'),
+            DeclareLaunchArgument(
+                'iso_evidence_run_name',
+                default_value=str(_DEFAULTS.get('iso_evidence_run_name', 'run')),
+                description='Name appended to the evidence run directory'),
+            DeclareLaunchArgument(
+                'link_speed_max',
+                default_value=str(_DEFAULTS.get('link_speed_max', '')),
+                description='[m/s] override the flat task-space speed ceiling '
+                            'from fr3_control.yaml. Empty = leave the YAML '
+                            'alone. With iso_enabled:=true the filter REFUSES '
+                            'to start unless this is <= iso_v_pfl'),
+            DeclareLaunchArgument(
+                'retreat_cap_max_speed',
+                default_value=str(_DEFAULTS.get('retreat_cap_max_speed', '')),
+                description='[m/s] override the retreat-cap ceiling from '
+                            'fr3_control.yaml. Empty = leave the YAML alone. '
+                            'Must stay strictly below link_speed_max'),
+            DeclareLaunchArgument(
+                'obstacle_velocity_normal_guard',
+                default_value=str(_DEFAULTS.get(
+                    'obstacle_velocity_normal_guard', 'false')),
+                description='Discard a residual v_obs frame when the contact '
+                            'normal rotated more than 0.15 rad between the two '
+                            'frames it differences, i.e. the nearest obstacle '
+                            'point hopped to another surface patch. Aimed at '
+                            'the closing speed fabricated on a STATIC obstacle; '
+                            'watch nrot= in CBFDIAG '
+                            '(obstacle_velocity_normal_rot_max)'),
+            DeclareLaunchArgument(
+                'obstacle_identity_guard',
+                default_value=str(_DEFAULTS.get(
+                    'obstacle_identity_guard', 'false')),
+                description='Discard a control point closing-speed state when '
+                            'its nearest obstacle changes identity (different '
+                            'track_id, or closest_point_human jumped further '
+                            'than the fastest admitted obstacle could travel). '
+                            'Stops the residual estimator differencing the '
+                            'distance across two different bodies when one '
+                            'static and one moving obstacle swap places; the '
+                            'tracker estimate is unaffected. Watch nid= in '
+                            'CBFDIAG (obstacle_velocity_identity_jump)'),
+            DeclareLaunchArgument(
+                'latency_compensation',
+                default_value=str(_DEFAULTS.get('latency_compensation', 'false')),
+                description='Move each tracked obstacle forward by the measured '
+                            'blind time and tighten by the propagated position '
+                            'uncertainty (cbf_safety_filter '
+                            'enable_latency_compensation). OFF by default.'),
+            DeclareLaunchArgument(
+                'uncertainty_margin',
+                default_value=str(_DEFAULTS.get('uncertainty_margin', 'false')),
+                description='Tighten the barrier by the tracker own admitted '
+                            'velocity uncertainty. Inert without a track'),
+            DeclareLaunchArgument(
+                'sim_obstacle',
+                default_value=str(_DEFAULTS.get('sim_obstacle', 'false')),
+                description='DANGER: render a synthetic sphere into the depth '
+                            'stream so the whole avoidance chain can be '
+                            'exercised end to end. The arm WILL move away from '
+                            'something that is not there - never with a person '
+                            'nearby'),
+            DeclareLaunchArgument(
+                'depth_bag',
+                default_value=str(_DEFAULTS.get('depth_bag', '')),
+                description='Path to a rosbag to replay as the DEPTH SOURCE '
+                            'instead of a live camera (only the depth image and '
+                            'camera_info are played, so TF and joint states '
+                            'still come from the running robot). Empty = off'),
             DeclareLaunchArgument(
                 'torque_command_topic',
                 default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd')),
