@@ -215,7 +215,7 @@ class HumanArmVisualizer(Node):
                 break
         
         if base_frame is None:
-            return
+            base_frame = "fr3_link0"
 
         marker_array = MarkerArray()
         timestamp = self.get_clock().now().to_msg()
@@ -227,6 +227,18 @@ class HumanArmVisualizer(Node):
                 continue
                 
             pts_valid = state.keypoint_valid
+
+            # --- Delete Markers if arm is lost ---
+            if not any(pts_valid):
+                for ns in [f"human_arm_{side}", f"human_prediction_lines_{side}", f"human_prediction_joints_{side}", f"velocities_{side}"]:
+                    del_marker = Marker()
+                    del_marker.header.frame_id = base_frame
+                    del_marker.header.stamp = timestamp
+                    del_marker.ns = ns
+                    del_marker.action = Marker.DELETEALL
+                    marker_array.markers.append(del_marker)
+                continue
+            
             keypoints = [state.shoulder, state.elbow, state.wrist, state.hand]
 
             # 1. --- HUMAN ARM MARKER ---
@@ -328,55 +340,65 @@ class HumanArmVisualizer(Node):
                     marker_array.markers.append(vel_marker)
 
         # 4. --- ROBOT CPs & DISTANCE ARROWS ---
-        if self.latest_distances is not None and self.latest_distances.links:
-            for i, link in enumerate(self.latest_distances.links):
-                sphere = Marker()
-                sphere.header.frame_id = base_frame
-                sphere.header.stamp = timestamp
-                sphere.ns = "robot_points"
-                sphere.id = i
-                sphere.type = Marker.SPHERE
-                sphere.action = Marker.ADD
-                sphere.pose.position = link.closest_point_robot
-                sphere.scale.x = 0.06
-                sphere.scale.y = 0.06
-                sphere.scale.z = 0.06
-                sphere.color = ColorRGBA(r=1.0, g=0.8, b=0.0, a=0.8)
-                marker_array.markers.append(sphere)
+        if self.latest_distances is not None:
+            # If there are no valid links (empty message), clean the distance markers
+            if not self.latest_distances.links:
+                for ns in ["robot_points", "distances"]:
+                    del_marker = Marker()
+                    del_marker.header.frame_id = base_frame
+                    del_marker.header.stamp = timestamp
+                    del_marker.ns = ns
+                    del_marker.action = Marker.DELETEALL
+                    marker_array.markers.append(del_marker)
+            else:
+                for i, link in enumerate(self.latest_distances.links):
+                    sphere = Marker()
+                    sphere.header.frame_id = base_frame
+                    sphere.header.stamp = timestamp
+                    sphere.ns = "robot_points"
+                    sphere.id = i
+                    sphere.type = Marker.SPHERE
+                    sphere.action = Marker.ADD
+                    sphere.pose.position = link.closest_point_robot
+                    sphere.scale.x = 0.06
+                    sphere.scale.y = 0.06
+                    sphere.scale.z = 0.06
+                    sphere.color = ColorRGBA(r=1.0, g=0.8, b=0.0, a=0.8)
+                    marker_array.markers.append(sphere)
 
-            min_link = min(self.latest_distances.links, key=lambda l: l.distance)
-            
-            for i, link in enumerate(self.latest_distances.links):
-                dist_marker = Marker()
-                dist_marker.header.frame_id = base_frame
-                dist_marker.header.stamp = timestamp
-                dist_marker.ns = "distances"
-                dist_marker.id = i
-                dist_marker.type = Marker.ARROW
-                dist_marker.action = Marker.ADD
+                min_link = min(self.latest_distances.links, key=lambda l: l.distance)
                 
-                dist_marker.points.append(link.closest_point_human)
-                dist_marker.points.append(link.closest_point_robot)
-                
-                is_min = (link == min_link)
-                
-                if is_min:
-                    dist_marker.scale.x = 0.02
-                    dist_marker.scale.y = 0.04
-                    dist_marker.scale.z = 0.04
-                    if link.zone == 'critical':
-                        dist_marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
-                    elif link.zone == 'danger':
-                        dist_marker.color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=1.0)
-                    else:
-                        dist_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
-                else:
-                    dist_marker.scale.x = 0.005
-                    dist_marker.scale.y = 0.010
-                    dist_marker.scale.z = 0.010
-                    dist_marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
+                for i, link in enumerate(self.latest_distances.links):
+                    dist_marker = Marker()
+                    dist_marker.header.frame_id = base_frame
+                    dist_marker.header.stamp = timestamp
+                    dist_marker.ns = "distances"
+                    dist_marker.id = i
+                    dist_marker.type = Marker.ARROW
+                    dist_marker.action = Marker.ADD
                     
-                marker_array.markers.append(dist_marker)
+                    dist_marker.points.append(link.closest_point_human)
+                    dist_marker.points.append(link.closest_point_robot)
+                    
+                    is_min = (link == min_link)
+                    
+                    if is_min:
+                        dist_marker.scale.x = 0.02
+                        dist_marker.scale.y = 0.04
+                        dist_marker.scale.z = 0.04
+                        if link.zone == 'critical':
+                            dist_marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
+                        elif link.zone == 'danger':
+                            dist_marker.color = ColorRGBA(r=1.0, g=0.5, b=0.0, a=1.0)
+                        else:
+                            dist_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
+                    else:
+                        dist_marker.scale.x = 0.005
+                        dist_marker.scale.y = 0.010
+                        dist_marker.scale.z = 0.010
+                        dist_marker.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
+                        
+                    marker_array.markers.append(dist_marker)
 
         self.marker_pub.publish(marker_array)
 
@@ -470,7 +492,13 @@ class HumanArmVisualizer(Node):
 
         # Draw Human Landmarks for each active arm
         for side in self.active_sides:
-            if landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns[side], self.landmark_hold_s):
+            
+            # Check if the state is valid for this arm before rendering it
+            arm_is_valid = False
+            if self.latest_arm_states[side] is not None:
+                arm_is_valid = any(self.latest_arm_states[side].keypoint_valid)
+
+            if arm_is_valid and landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns[side], self.landmark_hold_s):
                 self.display_points[side], self.last_render_monotonic_ns[side] = update_display_points(
                     self.target_points[side], self.display_points[side], self.smoothing_tau_s, self.max_hz, self.last_render_monotonic_ns[side]
                 )
@@ -479,6 +507,10 @@ class HumanArmVisualizer(Node):
                         image, self.display_points[side], self.visibilities[side], self.LANDMARK_NAMES, 
                         self.visibility_threshold, self.scale, self.draw_labels
                     )
+            else:
+                # If the arm is lost, clean old 2D pixels to avoid freezing
+                self.display_points[side] = None
+                self.target_points[side] = None
 
         self._draw_distance_line(image, image_msg.header.stamp)
 
@@ -510,16 +542,18 @@ class HumanArmVisualizer(Node):
             speeds = [0.0, 0.0, 0.0, 0.0]
             if self.latest_arm_states[side]:
                 state = self.latest_arm_states[side]
-                if hasattr(state, 'velocities') and len(state.velocities) >= 4:
-                    speeds = [np.linalg.norm([v.x, v.y, v.z]) for v in state.velocities]
-                else:
-                    vel_fields = [
-                        getattr(state, 'shoulder_vel', getattr(state, 'shoulder_velocity', None)),
-                        getattr(state, 'elbow_vel', getattr(state, 'elbow_velocity', None)),
-                        getattr(state, 'wrist_vel', getattr(state, 'wrist_velocity', None)),
-                        getattr(state, 'hand_vel', getattr(state, 'hand_velocity', None))
-                    ]
-                    speeds = [np.linalg.norm([v.x, v.y, v.z]) if v else 0.0 for v in vel_fields]
+                if any(state.keypoint_valid):
+                    if hasattr(state, 'velocities') and len(state.velocities) >= 4:
+                        vels = state.velocities
+                    else:
+                        vels = [
+                            getattr(state, 'shoulder_vel', getattr(state, 'shoulder_velocity', None)),
+                            getattr(state, 'elbow_vel', getattr(state, 'elbow_velocity', None)),
+                            getattr(state, 'wrist_vel', getattr(state, 'wrist_velocity', None)),
+                            getattr(state, 'hand_vel', getattr(state, 'hand_velocity', None))
+                        ]
+                    # If the keypoint is lost, publish velocity at 0.0
+                    speeds = [np.linalg.norm([v.x, v.y, v.z]) if (state.keypoint_valid[i] and v is not None) else 0.0 for i, v in enumerate(vels)]
 
             prefix_lbl = f"{side.upper()[:1]}: " if len(self.active_sides) > 1 else ""
             speeds_str = f"Speeds [{prefix_lbl}m/s]: sh {speeds[0]:.2f} | el {speeds[1]:.2f} | wr {speeds[2]:.2f} | ha {speeds[3]:.2f}"

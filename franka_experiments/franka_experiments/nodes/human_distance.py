@@ -152,6 +152,7 @@ class HumanDistance(Node):
 
         # If no valid human arms are currently tracked, skip distance computation
         if not all_human_capsules:
+            self.per_link_pub.publish(MultiLinkDistance())
             return
 
         avg_confidence = confidence_sum / valid_arms_count
