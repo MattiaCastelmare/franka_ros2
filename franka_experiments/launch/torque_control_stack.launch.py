@@ -700,10 +700,15 @@ def _launch_all(context):
             f'motion_source="{motion_source}" — expected "pentagon" or "rl"')
 
     if motion_source == 'rl':
-        # Only non-empty overrides are passed: every one of these has a
-        # declare_parameter default in the node (model/config auto-discovered
-        # from the franka_sim checkout), and forwarding '' would override a
-        # working default with an invalid path.
+        # Only non-empty overrides are passed: forwarding '' would override a
+        # working node default with an invalid path. Left unset,
+        #   onnx_model → the newest .onnx under franka_sim/models, resolved by
+        #                utils.rl_policy.find_latest_model and logged at WARN
+        #                (an implicitly chosen policy is never quiet);
+        #   sim_config → the config.yaml frozen next to that model by train.py,
+        #                which is the config the run actually used.
+        # Both resolve through the franka_sim SOURCE checkout, which this
+        # package's --symlink-install install still points back into.
         rl_params = {
             'action_scale': float(p['rl_action_scale']),
             'target_xyz':   _as_float_list(p['rl_target_xyz']) or [0.45, 0.0, 0.45],

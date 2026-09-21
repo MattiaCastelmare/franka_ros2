@@ -39,7 +39,6 @@ removed before anyone acts on it.
 | `nodes/ee_random_waypoints_velocity_commander.py:25` | node | velocity-space mode | **DEAD** — referenced only by `setup.py` |
 | `nodes/cbf_OSCBF_filter.py:35` | node | pipeline 2, no launch | **DEAD/LEGACY** — no launch; `test_oscbf_fake.launch.py` never existed |
 | `nodes/pentagon_torque_commander.py:28` | node | pipeline 2, no launch | **LEGACY** — started by `test/launch/test_torque_fake.launch.py` only |
-| `nodes/rl_policy_commander.py:53` | node | no launch file starts it | **STALE MARKER** — started by the torque stack with `motion_source:=rl` (restored in ecd3601). Keep the node, remove the marker |
 | `nodes/experiment_logger.py:77` | `cfg_topics` | built and never read | **Correct** — dead block; its only input besides YAML is `config/fr3_distance.yaml` |
 | `nodes/pentagon_qddot_commander.py:106` | `reset_thr_m` | read into `self.reset_thr`, never used | **Correct** |
 | `nodes/qddot_to_torque.py:159` | `_on_qddot_nom` | misnomer (carries qddot_SAFE) | **Correct** — naming only, not dead code |
@@ -158,9 +157,14 @@ stale markers in §1 and the docs in §5.
   `franka_sim/config.yaml`, `franka_description/robots/fr3/joint_limits.yaml`.
   `cbf_safety_filter` already reads the franka_description one;
   `pentagon_qddot_commander` and `rl_policy_commander` still read `fr3_control`.
-- **`d_safe`:** 0.10 in `fr3_control.yaml`, 0.15 in `franka_sim/config.yaml` —
-  the cause of the failing `test_rl_policy::test_real_configs_are_in_sync`.
-  (`experiment_logger` also falls back to 0.20 in code.)
+- **`d_safe`:** RESOLVED 2026-09-17 — the robot was raised 0.10 → 0.15 to match
+  `franka_sim/config.yaml`, and `test_rl_policy::test_real_configs_are_in_sync`
+  passes again. NOT yet validated on hardware, and it moved every zone-ladder
+  rung with it (`zone_r_*` are multiples of `d_safe`).
+  (`experiment_logger` still falls back to 0.20 in code.)
+- **Controller gains now have FIVE copies.** `rt_torque_controller.cpp`'s
+  `d_gains`/`p_gains` defaults are mirrored into `franka_sim/config.yaml` when
+  the actuation-fidelity item lands (backlog P1). Same risk as `joint_limits`.
 - **`lpf_alpha`** names two different things: the torque LPF in
   `launch_defaults` (0.3) and the distance LPF in `fr3_complete.yaml` (0.5).
 - **Same-name helpers:** `cbf_utils.load_robot_config` = `config.load_package_config`,

@@ -44,7 +44,8 @@ from franka_experiments.utils.kinematics import (
     resolve_arm_joint_ids, resolve_frame_id,
 )
 from franka_experiments.utils.rl_policy import (
-    action_to_qddot, build_observation, find_sim_root, obstacle_centre,
+    action_to_qddot, build_observation, control_point_geometry, find_sim_root,
+    obstacle_centre,
     qddot_max_from_limits,
 )
 from franka_experiments.utils.cbf_utils import load_robot_config
@@ -197,7 +198,20 @@ def main():
         q_full[model.joints[pid].idx_q] = Q_TEST[k]
     ee = np.array(compute_ee_fk(model, data, q_full, fid).translation)
     obst = obstacle_centre(OBST_HUMAN, OBST_NORMAL, 0.08)
-    obs = build_observation(Q_TEST, np.zeros(7), ee, TARGET, obst, OBST_D)
+    # Replay through the node's OWN observation spec, resolved from the config
+    # frozen beside the policy — a literal 24 here would pass against a legacy
+    # model and silently stop testing anything against an extended one.
+    spec = node._obs_spec
+    entries = ((OBST_LINK, OBST_D, OBST_NORMAL, OBST_HUMAN),)
+    obs = build_observation(
+        Q_TEST, np.zeros(7), ee, TARGET, obst, OBST_D,
+        # The injected obstacle never moves, so the finite difference is
+        # exactly zero on every tick after the first — replayable without
+        # reproducing the node's wall-clock timing.
+        v_obs=np.zeros(3),
+        cp_geometry=control_point_geometry(entries, spec),
+        spec=spec)
+    print(f'phase2: obs layout {spec.describe()}')
 
     import onnxruntime as ort
     sess = ort.InferenceSession(args.model, providers=['CPUExecutionProvider'])

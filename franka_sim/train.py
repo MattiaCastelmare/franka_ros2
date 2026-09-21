@@ -32,7 +32,7 @@ from stable_baselines3.common.callbacks import (
     BaseCallback, CheckpointCallback, EvalCallback,
 )
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from franka_sim.envs.franka_cbf_env import FrankaCBFEnv
 
@@ -175,7 +175,17 @@ def main():
     shutil.copy(args.config, os.path.join(model_dir, 'config.yaml'))
 
     # ── Envs (train + eval share the config; eval env is deterministic-ish) ──
-    train_env = DummyVecEnv([make_env(cfg, seed)])
+    # n_envs > 1 runs MuJoCo + the CBF QP in separate OS processes (spawn, not
+    # fork — MUJOCO_GL=egl holds a CUDA/GL context that a fork would corrupt).
+    # Each sub-env owns its own FrankaCBFEnv/cbf_filter instance (no shared
+    # mutable state, see envs/franka_cbf_env.py), so the shield each rollout
+    # meets is exactly the same per-step certificate as with n_envs=1 — this
+    # only parallelizes the CPU-bound sim/QP throughput that was starving the
+    # GPU, it does not relax or batch the safety filter itself.
+    n_envs = max(1, int(rl.get('n_envs', 1)))
+    env_fns = [make_env(cfg, seed + i) for i in range(n_envs)]
+    train_env = (SubprocVecEnv(env_fns, start_method='spawn') if n_envs > 1
+                else DummyVecEnv(env_fns))
     eval_env  = DummyVecEnv([make_env(cfg, seed + 1000)])
 
     policy_kwargs = dict(net_arch=list(rl.get('net_arch', [256, 256])))
@@ -201,7 +211,7 @@ def main():
             device=device, seed=seed, verbose=1, tensorboard_log=tb_dir,
         )
 
-    print(f'device={model.device}  total_timesteps={total}  exp={exp}')
+    print(f'device={model.device}  n_envs={n_envs}  total_timesteps={total}  exp={exp}')
 
     ep_every = (args.checkpoint_every_episodes
                 if args.checkpoint_every_episodes is not None

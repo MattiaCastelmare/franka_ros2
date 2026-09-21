@@ -63,7 +63,7 @@ task:
   # evaluation; for TRAINING prefer a mix (0.5-0.7) so the policy still sees
   # unobstructed reaches, which is also what the robot mostly meets in practice.
   # Changing it for training is an experimental change: retrain and re-report.
-  blocking_fraction: 0.0
+  blocking_fraction: 0.6
   # [m] null = r_obs + d_safe (0.23), i.e. "the barrier would engage on the
   # direct route" — precisely the condition that forces a detour.
   blocking_margin: null
@@ -443,7 +443,18 @@ joint_limits:
 rl:
   algo: SAC                       # continuous-control off-policy (safe-exploration)
   total_timesteps: 2_000_000
-  n_envs: 1                       # SAC is off-policy; 1 env keeps the shield exact
+  # 8 parallel FrankaCBFEnv sub-processes (train.py: SubprocVecEnv, spawn'd so
+  # each owns its own MUJOCO_GL=egl context). The bottleneck was never the
+  # network on the GPU (256,256 MLP) — it was one MuJoCo+QP rollout at ~98 fps
+  # pegging a single CPU core while the GPU sat at ~16% util. 8 envs feed ~8x
+  # the transitions/s on this 28-core box, so the GPU actually has work to do
+  # between steps. Each sub-env's CBF shield is still exact and independent
+  # (see train.py comment) — this parallelizes throughput, not the safety math.
+  # `gradient_steps` below is raised to match, so the updates-per-transition
+  # ratio stays the one sac_v4/v5 were tuned at.
+  n_envs: 8
+  # Raise this only after checking RAM headroom (buffer_size below is shared,
+  # but each sub-env's MuJoCo state + OSQP workspace adds up).
   seed: 0
   policy: MlpPolicy
   learning_rate: 0.0003
@@ -463,7 +474,7 @@ rl:
   gamma: 0.997
   tau: 0.005
   train_freq: 1
-  gradient_steps: 1
+  gradient_steps: 8                # == n_envs, keeps updates/transition ratio fixed
   learning_starts: 10_000
   ent_coef: auto
   net_arch: [256, 256]

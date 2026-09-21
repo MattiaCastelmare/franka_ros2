@@ -26,9 +26,16 @@ test/
 └── README.md  ← this file
 ```
 
-Pure-python unit tests run with `pytest test/`: 44 `test_*.py` files,
-649 test functions, no ROS graph needed beyond a sourced workspace. The
+Pure-python unit tests run with `pytest test/`: 59 `test_*.py` files,
+**930 test functions**, no ROS graph needed beyond a sourced workspace. The
 `smoke_*.py` runners are not collected by pytest — run them directly.
+
+**Source the built workspace, not just `/opt/ros`.** `/ros2_ws/build` and
+`/ros2_ws/install` sit one level above the `./:/ros2_ws/src` bind mount, so
+they are container-local and vanish with the container. Without
+`colcon build --packages-up-to franka_experiments` the suite cannot import
+`franka_msgs` and pytest collects **nothing** — it reports "no tests collected"
+rather than failing, which looks like a passing run if you only read the tail.
 
 Pipeline 3 (OSCBF) has no `test_oscbf_fake.launch.py`; see the note in
 that section for the manual bring-up.
