@@ -20,3 +20,16 @@ bool[4] valid
 uint8[4] measurement_type
 
 float32 processing_latency_ms
+
+uint8 HAND_UNKNOWN=0
+uint8 HAND_LEFT=1
+uint8 HAND_RIGHT=2
+
+uint8 handedness
+float32 handedness_score
+
+bool palm_plane_valid
+
+geometry_msgs/Vector3 palm_plane_normal
+
+geometry_msgs/Vector3 palm_anchor_cross

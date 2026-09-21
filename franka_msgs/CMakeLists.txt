@@ -30,6 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MultiDistance.msg"
   "msg/MultiLinkDistance.msg"
   "msg/HandoverDistance.msg"
+  "msg/HandoverObserver.msg"
   "srv/SetCartesianStiffness.srv"
   "srv/SetTCPFrame.srv"
   "srv/SetForceTorqueCollisionBehavior.srv"

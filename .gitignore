@@ -18,3 +18,9 @@ franka_experiments/franka_logs/
 
 # MuJoCo runtime log (rigenerato a ogni run)
 MUJOCO_LOG.TXT
+franka_experiments/results/
+franka_experiments/build/
+franka_experiments/install/
+franka_experiments/log/
+**/__pycache__/
+*.pyo

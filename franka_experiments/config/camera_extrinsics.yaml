@@ -1,11 +1,40 @@
+# Camera extrinsics for the handover perception pipeline.
+#
+# ACTIVE calibration:
+#   arm_complex / arm_repeated / handtracker_poses / object
+#
+# handover_rosbag2 uses the alternative calibration commented below.
+
 parent_frame: base
 child_frame: camera_color_optical_frame
+
+# translation:
+#   x: 1.808212
+#   y: 0.086748
+#   z: 1.111983
+
+# rotation:
+#   x: 0.510496
+#   y: 0.615614
+#   z: -0.442613
+#   w: -0.405594
+
+# ================================================================
+# ALTERNATIVE CALIBRATION — handover_rosbag2
+# ================================================================
+# To replay handover_rosbag2, replace the active block above
+# with the values below.
+#
+# parent_frame: base
+# child_frame: camera_color_optical_frame
+#
 translation:
-  x: 1.808212
-  y: 0.086748
-  z: 1.111983
+  x: 1.754113
+  y: 0.154097
+  z: 1.059057
+
 rotation:
-  x: 0.510496
-  y: 0.615614
-  z: -0.442613
-  w: -0.405594
+  x: 0.550892
+  y: 0.586740
+  z: -0.429626
+  w: -0.409481

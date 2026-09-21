@@ -16,5 +16,5 @@ Visualization Manager:
       Name: Hand State Debug
       Enabled: true
       Topic:
-        Value: /handover/hand_state_debug_image
+        Value: /handover/hand_debug_image
       Value: true

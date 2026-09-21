@@ -291,3 +291,71 @@ def declare_from_spec(node: Node, values: dict, spec: dict,
     for name, (kind, kwargs) in spec.items():
         out[name] = fn[kind](node, name, cast[kind](values[name]), **kwargs)
     return SimpleNamespace(**out)
+
+
+# ---------------------------------------------------------------------
+# Human-hand pipeline ROS parameter defaults.
+#
+# Defaults live in config/hand_tracking.yaml so the perception pipeline
+# has one configuration source instead of duplicating constants across
+# individual ROS nodes.
+# ---------------------------------------------------------------------
+
+def load_hand_tracking_defaults(section):
+    from pathlib import Path
+
+    import yaml
+    from ament_index_python.packages import get_package_share_directory
+
+    candidates = []
+
+    try:
+        candidates.append(
+            Path(get_package_share_directory("franka_experiments"))
+            / "config"
+            / "hand_tracking.yaml"
+        )
+    except Exception:
+        pass
+
+    candidates.append(
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "hand_tracking.yaml"
+    )
+
+    path = next(
+        (candidate for candidate in candidates if candidate.exists()),
+        None,
+    )
+
+    if path is None:
+        raise FileNotFoundError(
+            "config/hand_tracking.yaml not found"
+        )
+
+    with path.open("r", encoding="utf-8") as stream:
+        data = yaml.safe_load(stream) or {}
+
+    params = data.get(section, {}).get("ros__parameters", {})
+
+    if not isinstance(params, dict):
+        raise RuntimeError(
+            f"{section}.ros__parameters must be a mapping"
+        )
+
+    return params
+
+
+def parameter_value(node, defaults, name):
+    if name not in defaults:
+        raise KeyError(
+            f"Missing hand_tracking.yaml parameter: {name}"
+        )
+
+    node.declare_parameter(
+        name,
+        defaults[name],
+    )
+
+    return node.get_parameter(name).value

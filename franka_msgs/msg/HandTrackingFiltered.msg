@@ -30,3 +30,14 @@ float32[4] age_s
 uint32[4] missed_updates
 
 float32 processing_latency_ms
+
+uint8 HAND_UNKNOWN=0
+uint8 HAND_LEFT=1
+uint8 HAND_RIGHT=2
+
+uint8 handedness
+float32 handedness_score
+
+bool palm_plane_valid
+geometry_msgs/Vector3 palm_plane_normal
+geometry_msgs/Vector3 palm_anchor_cross
