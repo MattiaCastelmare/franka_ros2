@@ -24,6 +24,49 @@ enable_camera: true
 # profile the D455 streamed for hours on this machine's USB 3 port. Set it to
 # "" to leave the driver's choice alone.
 camera_depth_profile: "848x480x30"
+# RealSense align_depth.enable. Driver default is false, so without this the
+# depth stream only ever publishes on /camera/camera/depth/* (unaligned to
+# the color pixel grid) — /camera/camera/aligned_depth_to_color/* simply does
+# not exist. ON by default so recorded bags always carry the aligned pair.
+camera_align_depth: true
+
+# Which physical camera is which. The leading underscore is MANDATORY: without
+# it the YAML/launch value is parsed as an integer and librealsense answers
+# "The requested device ... is NOT found". The D455's ROS serial is NOT the
+# iSerial printed by the USB descriptor (318523150655).
+camera_serial: "_318122300288"        # D455, scene camera -> /camera/camera/*
+
+# Eye-in-hand D405. Recording only: no node consumes it, it rides along in the
+# bag for the thesis dataset. Topics are /<wrist_camera_name>/<same>/...
+#
+# 21 Sep 2026, measured: the failure mode to know is that the camera WEDGES —
+# it enumerates, answers every control request (serial, firmware, profile
+# list), lets the kernel run VIDIOC_STREAMON successfully, and then sends
+# nothing. The driver advertises the topics anyway, so a bag records
+# /d405/d405/* with message_count 0 and nothing warns you. `initial_reset` and
+# a USB unbind/rebind do NOT clear it; only removing power does (unplug/replug,
+# or `uhubctl -l <hub> -p <port> -a cycle` when it hangs off a switchable hub).
+#
+# On a 480 Mbps link, once unwedged, colour+depth at 640x480x30 stream fine.
+# 848x480x30 is rejected there (the driver silently drops to x10) and three
+# simultaneous streams do not fit, hence infra off and these profiles. Raise
+# them back to 848x480x30 on a SuperSpeed connector.
+# ON by default since 21 Sep 2026, when the camera was unwedged and proved to
+# stream. NOTE this key is SHARED: velocity_cbf_control_stack.launch.py reads it
+# too, so that stack now also starts the D405 — driver only, it opens no window
+# (show_wrist_image is read by minimal.launch.py alone). Pass
+# start_wrist_camera:=false on the command line for a run you want stripped down.
+start_wrist_camera: true
+wrist_camera_serial: "_126122270738"
+wrist_camera_name: "d405"
+wrist_color_profile: "640x480x30"     # D405 colour rides on the depth module
+wrist_depth_profile: "640x480x30"
+wrist_enable_depth: true              # false = colour alone, the safest on USB 2
+# Open rqt_image_view on /<wrist_camera_name>/<same>/color/image_raw. Only has
+# an effect with start_wrist_camera:=true, which is already an explicit opt-in.
+# It is the quickest check that the D405 is actually STREAMING and not just
+# advertising: on a USB 2.1 link the topics exist and the window stays black.
+show_wrist_image: true
 
 # ── Controller mode (used by minimal.launch.py) ───────────────────────────
 # false → rt_velocity_executor_controller (default, safest)
@@ -50,8 +93,16 @@ tau_max_scale: 1.0
 
 # ── Scheduling / jitter reduction ─────────────────────────────────────
 control_spawner_delay_s: 10.0
-start_rviz: true
-rviz_delay_s: 5.0
+# On this rig the D455 ALWAYS logs a "Device or resource busy" / "device has
+# been disconnected" cycle on the very first open, self-healing via an
+# internal reset + re-enumeration (video0 -> video6) into "RealSense Node Is
+# Up!" ~1.9 s later — reproduced with camera_delay_s raised to 1.5 s (same
+# offset from the node's own construction, not from launch start) and with
+# rs_launch.py's initial_reset:=true (same pattern). Neither changes it, so
+# this delay does NOT avoid the cycle — it's cosmetic log noise, harmless
+# because it's long gone before control_spawner_delay_s (10 s) starts
+# anything RT-critical. Left at 0.0; raise it only to push the camera driver
+# launch itself later relative to other nodes, not to chase this warning.
 camera_delay_s: 0.0
 start_human_pose: true
 human_pose_delay_s: 0.0
@@ -76,6 +127,33 @@ torque_finger_pub_rate_hz: 10.0           # [Hz] MoveIt finger joint-state publi
 start_move_group: true                    # MoveIt planning services used by pentagon_qddot_commander
 start_experiment_logger: true             # CSV/plot run logger
 experiment_logger_delay_s: 2.0            # [s] experiment_logger start
+
+# ── Trajectory overlay ───────────────────────────────────────────────────────
+# The commanded path P(s) in red against the measured end effector in blue.
+# TWO nodes draw that, and the default is now the first:
+#
+#   trajectory_overlay_node        on the scene camera's RGB image, as two short
+#                                  fading trails chasing each other, in its own
+#                                  OpenCV window. Needs enable_camera and the
+#                                  camera_extrinsics.yaml calibration — which it
+#                                  also checks, for free: a dot that does not sit
+#                                  on the gripper IS the calibration drifting.
+#   trajectory_visualization_node  the same two traces as an RViz MarkerArray,
+#                                  in 3-D, with no camera involved.
+#
+# Both are cheap; the GUIs are not, and nothing pins rviz2 or the overlay window
+# away from the isolated RT cores. For a run whose timing you intend to trust,
+# clear start_rviz and trajectory_overlay_window (the overlay topic keeps being
+# published, so the picture is still recordable).
+#
+# start_rviz and its delay used to sit in the scheduling block above, read by
+# nothing. They are here now because something finally reads them.
+start_trajectory_viz: true                # EE trails drawn on the camera image
+trajectory_overlay_window: true           # …in a window, not just on a topic
+trajectory_trail_seconds: 2.0             # [s] how long a trail lives before it fades out
+start_trajectory_markers: false           # the older RViz MarkerArray node
+start_rviz: false                         # open rviz2 on those markers
+trajectory_viz_delay_s: 3.0               # [s] all of them start after the commander
 
 # ── Motion source (torque_control_stack) ──────────────────────────────
 # Exactly one node may publish q̈_nom; motion_source picks it.

@@ -91,6 +91,9 @@ _ALL_PARAMS = [
     'gazebo', 'enable_interpolation', 'command_topic',
     'control_spawner_delay_s',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_delay_s',
+    'camera_serial', 'camera_align_depth', 'camera_depth_profile',
+    'start_wrist_camera', 'wrist_camera_serial', 'wrist_camera_name',
+    'wrist_color_profile', 'wrist_depth_profile',
     'start_real_time_distance', 'start_experiment_logger',
     'experiment_logger_delay_s',
     'bypass_cbf',
@@ -189,10 +192,26 @@ def _launch_all(context):
     if start_camera:
         cam_delay = float(p['camera_delay_s'])
 
+        # serial_no is NOT optional here: with the wrist D405 also plugged in,
+        # a driver launched without it opens whichever device librealsense
+        # enumerates first, so /camera/camera/* silently becomes the wrong
+        # camera. align_depth.enable defaults to false in rs_launch.py, and
+        # without it /camera/camera/aligned_depth_to_color/* is never published
+        # at all. The depth profile is pinned for the same reason as in
+        # torque_control_stack: with no profile librealsense picks 15 fps here.
+        cam_args = {'camera_namespace': 'camera', 'camera_name': 'camera'}
+        if str(p['camera_serial']).strip():
+            cam_args['serial_no'] = str(p['camera_serial']).strip()
+        align_depth = _as_bool(p['camera_align_depth'])
+        cam_args['align_depth.enable'] = 'true' if align_depth else 'false'
+        if str(p['camera_depth_profile']).strip():
+            cam_args['depth_module.depth_profile'] = str(p['camera_depth_profile']).strip()
+
         realsense_driver = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([
                 FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
             ]).perform(context)),
+            launch_arguments=cam_args.items(),
         )
         actions.append(TimerAction(period=cam_delay, actions=[realsense_driver]))
 
@@ -224,11 +243,52 @@ def _launch_all(context):
             ],
         )
         actions.append(TimerAction(period=1.0, actions=[camera_tf_node]))
-        actions.append(LogInfo(msg=['[vel_cbf_stack] [Perception]      camera ENABLED '
-                                    '(delay=', str(cam_delay), 's)']))
+        actions.append(LogInfo(msg=['[vel_cbf_stack] [Perception]      scene camera ENABLED '
+                                    '(delay=', str(cam_delay), 's  serial=',
+                                    str(p['camera_serial']) or '<any>',
+                                    '  align_depth=', str(align_depth),
+                                    '  depth_profile=',
+                                    str(p['camera_depth_profile']) or '<driver>', ')']))
     else:
         actions.append(LogInfo(msg='[vel_cbf_stack] [Perception]      camera DISABLED '
                                    '(bypass_cbf:=true)'))
+
+    # ── [Perception] wrist camera (D405, eye-in-hand) ─────────────────────────
+    # Recording-only: nothing in this stack consumes it. Its own namespace AND
+    # name, so the topics are /<name>/<name>/... exactly like the scene camera
+    # (the convention handeye_eye_in_hand_calibration.launch.py already uses).
+    # The D405 carries its colour stream on the DEPTH module, hence
+    # depth_module.color_profile rather than rgb_camera.color_profile.
+    if _as_bool(p['start_wrist_camera']):
+        wrist_name = str(p['wrist_camera_name']).strip() or 'd405'
+        wrist_args = {
+            'camera_namespace': wrist_name,
+            'camera_name':      wrist_name,
+            'enable_color':     'true',
+            'enable_depth':     'true',
+            'align_depth.enable': 'true',
+        }
+        if str(p['wrist_camera_serial']).strip():
+            wrist_args['serial_no'] = str(p['wrist_camera_serial']).strip()
+        if str(p['wrist_color_profile']).strip():
+            wrist_args['depth_module.color_profile'] = str(p['wrist_color_profile']).strip()
+        if str(p['wrist_depth_profile']).strip():
+            wrist_args['depth_module.depth_profile'] = str(p['wrist_depth_profile']).strip()
+
+        wrist_driver = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
+            ]).perform(context)),
+            launch_arguments=wrist_args.items(),
+        )
+        actions.append(TimerAction(period=float(p['camera_delay_s']),
+                                   actions=[wrist_driver]))
+        actions.append(LogInfo(msg=['[vel_cbf_stack] [Perception]      wrist camera ENABLED '
+                                    '(', wrist_name, '  serial=',
+                                    str(p['wrist_camera_serial']) or '<any>', ')']))
+    else:
+        actions.append(LogInfo(msg='[vel_cbf_stack] [Perception]      wrist camera DISABLED '
+                                   '(start_wrist_camera:=false)'))
 
     # ── [Distance estimation] real_time_distance (Phase 2 only) ──────────────
     if start_rtd:
@@ -307,7 +367,7 @@ def generate_launch_description():
                 description='Seconds before spawning rt_velocity_executor_controller'),
             DeclareLaunchArgument(
                 'enable_camera',
-                default_value='false',
+                default_value=str(_DEFAULTS.get('enable_camera', 'false')),
                 description='Force-enable camera even in bypass mode'),
             DeclareLaunchArgument(
                 'camera_extrinsics_yaml',
@@ -320,6 +380,45 @@ def generate_launch_description():
                 'camera_delay_s',
                 default_value=str(_DEFAULTS.get('camera_delay_s', '0.0')),
                 description='Seconds before launching camera pipeline'),
+            DeclareLaunchArgument(
+                'camera_serial',
+                default_value=str(_DEFAULTS.get('camera_serial', '')),
+                description='Scene camera serial_no (leading underscore required, else '
+                            'the value is parsed as an int and the device is not found). '
+                            'Empty = whichever device librealsense enumerates first'),
+            DeclareLaunchArgument(
+                'camera_align_depth',
+                default_value=str(_DEFAULTS.get('camera_align_depth', 'true')),
+                description='RealSense align_depth.enable. Driver default is false, which '
+                            'means /camera/camera/aligned_depth_to_color/* is never published'),
+            DeclareLaunchArgument(
+                'camera_depth_profile',
+                default_value=str(_DEFAULTS.get('camera_depth_profile', '')),
+                description='Scene camera depth_module.depth_profile. Empty = driver choice '
+                            '(which is 15 fps on this rig)'),
+            DeclareLaunchArgument(
+                'start_wrist_camera',
+                default_value=str(_DEFAULTS.get('start_wrist_camera', 'false')),
+                description='Also start the eye-in-hand D405 (recording only; no node '
+                            'in this stack consumes it)'),
+            DeclareLaunchArgument(
+                'wrist_camera_serial',
+                default_value=str(_DEFAULTS.get('wrist_camera_serial', '')),
+                description='Wrist camera serial_no (leading underscore required)'),
+            DeclareLaunchArgument(
+                'wrist_camera_name',
+                default_value=str(_DEFAULTS.get('wrist_camera_name', 'd405')),
+                description='Wrist camera camera_namespace AND camera_name: topics become '
+                            '/<name>/<name>/color/image_raw'),
+            DeclareLaunchArgument(
+                'wrist_color_profile',
+                default_value=str(_DEFAULTS.get('wrist_color_profile', '')),
+                description='Wrist camera depth_module.color_profile (the D405 colour stream '
+                            'lives on the depth module)'),
+            DeclareLaunchArgument(
+                'wrist_depth_profile',
+                default_value=str(_DEFAULTS.get('wrist_depth_profile', '')),
+                description='Wrist camera depth_module.depth_profile'),
             DeclareLaunchArgument(
                 'start_real_time_distance',
                 default_value='false',

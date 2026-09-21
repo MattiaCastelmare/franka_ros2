@@ -50,6 +50,7 @@ from typing import List, Optional
 import numpy as np
 import pinocchio as pin
 from rclpy.node import Node
+from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
@@ -103,6 +104,26 @@ class PentagonQddotCommander(Node):
         # and let the CBF filter publish from qddot_nom to qddot_safe.
         self.declare_parameter('qddot_safe_topic',  _topics.get('qddot_nom', '/NS_1/qddot_nom'))
         self.declare_parameter('q_des_topic',       '/NS_1/q_des_state')
+        # ── EE trace, for trajectory_visualization_node ───────────────────────
+        # p_d and p_ee are computed on the SAME tick, in the SAME frame, from
+        # the same forward kinematics. Publishing both from here is what makes
+        # the red/blue overlay meaningful: a viewer that re-derived either one
+        # from TF or from q_des would be comparing two pipelines with different
+        # latencies, and at 0.1 m/s a 33 ms offset already draws 3 mm of
+        # deviation that is not there.
+        #
+        # p_d is the PATH point P(s), not the joint reference q_d. That
+        # distinction is the whole point: the anti-windup resets q_d onto the
+        # measured state (see the HARD reset below), so a red line drawn from
+        # FK(q_d) would snap onto the blue one exactly when the tracking is
+        # worst — hiding the deviation instead of showing it.
+        self.declare_parameter('ee_desired_topic',  '/NS_1/ee_desired')
+        self.declare_parameter('ee_actual_topic',   '/NS_1/ee_actual')
+        # Frame p_d / p_ee are expressed in. With plane != 'front' (the default)
+        # that is the Pinocchio root, which the FR3 URDF puts at 'base' —
+        # coincident with fr3_link0 through an identity fixed joint. With
+        # plane == 'front' it is plane_frame, whose default is fr3_link0 too.
+        self.declare_parameter('ee_track_frame',    'fr3_link0')
         # TODO[LEGACY]: reset_thr_m is declared and read into self.reset_thr, which is then referenced nowhere; superseded by the two-level soft_reset_thr/hard_reset_thr | confidence: high | superseded-by: soft_reset_thr + hard_reset_thr | flagged: 2026-09-01
         self.declare_parameter('reset_thr_m',       0.10)
         self.declare_parameter('joint_state_topic', AUTO_SENTINEL)
@@ -265,6 +286,9 @@ class PentagonQddotCommander(Node):
 
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
+        ee_des_topic   = str(self.get_parameter('ee_desired_topic').value)
+        ee_act_topic   = str(self.get_parameter('ee_actual_topic').value)
+        ee_frame       = str(self.get_parameter('ee_track_frame').value)
         self.reset_thr = float(self.get_parameter('reset_thr_m').value)
         js_topic_param = self.get_parameter('joint_state_topic').value
         ee_frame_name  = self.get_parameter('ee_frame').value
@@ -573,6 +597,20 @@ class PentagonQddotCommander(Node):
         # ── Publisher / timer ─────────────────────────────────────────────
         self.pub      = self.create_publisher(Float64MultiArray, qddot_topic, 10)
         self._sp_pub  = self.create_publisher(SensorJointState,  q_des_topic,  10)
+        # Depth 1 and preallocated messages: these are a DIAGNOSTIC stream on a
+        # 100 Hz control tick. A viewer that falls behind must see the newest
+        # point, never a backlog, and the tick must not pay for its slowness.
+        self._eed_pub = self.create_publisher(PointStamped, ee_des_topic, 1)
+        self._eea_pub = self.create_publisher(PointStamped, ee_act_topic, 1)
+        self._eed_msg = PointStamped()
+        self._eea_msg = PointStamped()
+        self._eed_msg.header.frame_id = ee_frame
+        self._eea_msg.header.frame_id = ee_frame
+        if self._use_plane_frame and plane_frame != ee_frame:
+            self.get_logger().warn(
+                f'ee_track_frame={ee_frame!r} but the commander computes in '
+                f'plane_frame={plane_frame!r} — the EE trace will be drawn in '
+                f'the wrong frame. Set ee_track_frame to {plane_frame!r}.')
         self.timer    = self.create_timer(self._dt, self._tick)
         self.t0    = self.get_clock().now()
         self._tlog = ThrottledLogger(self.get_logger())
@@ -1020,6 +1058,9 @@ class PentagonQddotCommander(Node):
             self._sp_msg.effort[i]   = float(self._q_ddot[i])
         self._sp_pub.publish(self._sp_msg)
 
+        # ── Publish the EE trace (desired vs measured) ───────────────────────
+        self._publish_ee_trace(p_d)
+
         # ── Independent open-loop nominal integration (ideal; ignores robot) ──
         self._step_nominal(p_d, v_d, a_d, actual_dt)
 
@@ -1425,6 +1466,30 @@ class PentagonQddotCommander(Node):
         self._tau_full += self.pin_data.nle
         for k, vid in enumerate(self._arm_v_ids):
             self._tau_des[k] = self._tau_full[vid]
+
+    def _publish_ee_trace(self, p_d) -> None:
+        """Desired and measured EE position, one PointStamped each.
+
+        Both carry the SAME stamp, because both are this tick's values: a viewer
+        drawing a deviation segment between them needs to know they are
+        simultaneous, and two clock reads would not say so.
+
+        No try/except and no subscriber count check. A publish on a preallocated
+        message is a few microseconds and the control tick can afford it; a
+        conditional would add a branch to the hot path to save nothing.
+        """
+        stamp = self.get_clock().now().to_msg()
+        self._eed_msg.header.stamp = stamp
+        self._eed_msg.point.x = float(p_d[0])
+        self._eed_msg.point.y = float(p_d[1])
+        self._eed_msg.point.z = float(p_d[2])
+        self._eed_pub.publish(self._eed_msg)
+
+        self._eea_msg.header.stamp = stamp
+        self._eea_msg.point.x = float(self._p_ee[0])
+        self._eea_msg.point.y = float(self._p_ee[1])
+        self._eea_msg.point.z = float(self._p_ee[2])
+        self._eea_pub.publish(self._eea_msg)
 
     def _log_data(self, t, q, dq, p_d, v_d, a_d,
                   s, s_dot, s_ddot, w, ee_err) -> None:

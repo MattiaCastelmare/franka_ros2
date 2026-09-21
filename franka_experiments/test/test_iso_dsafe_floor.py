@@ -9,7 +9,7 @@ changes anything, so it is the one place worth pinning:
   ``C + Z_d + Z_r`` or when ``link_speed_max`` is above ``iso_v_pfl``. A
   ceiling that silently moves when it cannot be met reads like a guarantee and
   is not one;
-* with the SHIPPED configuration (C = 0.85 m, d_safe = 0.10 m) the raise MUST
+* with the SHIPPED configuration (C = 0.85 m, d_safe = 0.15 m) the raise MUST
   fire. That is not a bug to be fixed later: it is the finding that conformant
   SSM is unachievable in this cell, and a test that ever goes green here
   without d_safe having moved means the check was weakened.

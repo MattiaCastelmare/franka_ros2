@@ -95,6 +95,7 @@ from franka_experiments.utils.launch_support import (
     declare_rt_torque_args,
     pick_controllers_yaml,
     resolve_controller_manager_name,
+    rviz_config_for_namespace,
 )
 
 # ── Defaults (single source of truth) ────────────────────────────────────────
@@ -123,7 +124,7 @@ _ALL_PARAMS = [
     'gazebo', 'lpf_alpha', 'tau_max_scale',
     'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
-    'camera_depth_profile',
+    'camera_depth_profile', 'camera_align_depth',
     'start_real_time_distance',
     'obstacle_tracking', 'obstacle_velocity_source', 'lateral_evasion', 'outrun_evasion',
     'livelock_escape', 'latency_compensation',
@@ -135,6 +136,9 @@ _ALL_PARAMS = [
     'start_iso_evidence_logger', 'torque_iso_evidence_delay_s',
     'iso_evidence_dir', 'iso_evidence_run_name',
     'start_experiment_logger', 'experiment_logger_delay_s',
+    'start_trajectory_viz', 'trajectory_overlay_window',
+    'trajectory_trail_seconds', 'start_trajectory_markers',
+    'start_rviz', 'trajectory_viz_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
     'rl_target_sequence', 'rl_action_scale',
@@ -466,6 +470,10 @@ def _launch_all(context):
         profile = str(p['camera_depth_profile']).strip()
         if profile:
             cam_args['depth_module.depth_profile'] = profile
+        # Driver default is align_depth.enable:=false — without this,
+        # /camera/camera/aligned_depth_to_color/* never gets published.
+        align_depth = _as_bool(p['camera_align_depth'])
+        cam_args['align_depth.enable'] = 'true' if align_depth else 'false'
         realsense_driver = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([
                 FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
@@ -474,7 +482,7 @@ def _launch_all(context):
         )
         actions.append(TimerAction(period=cam_delay, actions=[realsense_driver]))
         actions.append(LogInfo(msg=f'[torque_stack] [Perception]      RealSense depth profile: '
-                                   f'{profile or "driver default"}'))
+                                   f'{profile or "driver default"}, align_depth={align_depth}'))
 
         image_republisher = Node(
             package='franka_simulation',
@@ -763,6 +771,93 @@ def _launch_all(context):
     else:
         actions.append(LogInfo(msg='[torque_stack] [Logging]         experiment_logger DISABLED'))
 
+    # ── Trajectory overlay: commanded path (red) vs real EE (blue) ───────────
+    # Two viewers of the same two topics, two flags. The image overlay is the
+    # default: it answers the tracking question over the live picture of the
+    # arm, and re-checks camera_extrinsics.yaml — the calibration the safety
+    # pipeline subtracts the robot mask with — every frame, for free. The marker
+    # node answers the same question in 3-D, for when there is no camera.
+    #
+    # Both nodes are cheap and useful headless (their topics can be recorded);
+    # the GUIs are neither, so the window and rviz2 have flags of their own. On
+    # a machine with isolated RT cores that is not a formality: neither is
+    # pinned, so on a loaded box they compete with everything that is not on the
+    # isolated set. Turn them off for measurement runs.
+    if _as_bool(p['start_trajectory_viz']):
+        show_window = _as_bool(p['trajectory_overlay_window'])
+        traj_overlay_node = Node(
+            package='franka_experiments',
+            executable='trajectory_overlay_node',
+            name='trajectory_overlay',
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{
+                # The SAME file real_time_distance projects with, on purpose:
+                # two viewers of one calibration must not be able to disagree.
+                'camera_extrinsics_path': p['camera_extrinsics_yaml'],
+                'trail_seconds': float(p['trajectory_trail_seconds']),
+                'show_window': show_window,
+            }],
+        )
+        actions.append(TimerAction(
+            period=float(p['trajectory_viz_delay_s']),
+            actions=[traj_overlay_node],
+        ))
+        actions.append(LogInfo(
+            msg=f'[torque_stack] [Viz]             trajectory_overlay ENABLED '
+                f'(red = commanded P(s), blue = measured EE, '
+                f'{float(p["trajectory_trail_seconds"]):.1f} s trail, '
+                f'window {"ON" if show_window else "OFF"})'))
+        if not start_camera:
+            actions.append(LogInfo(
+                msg='[torque_stack] [Viz]             trajectory_overlay has NO '
+                    'CAMERA (enable_camera:=false): it will wait for frames and '
+                    'draw nothing'))
+    else:
+        actions.append(LogInfo(
+            msg='[torque_stack] [Viz]             trajectory_overlay DISABLED'))
+
+    if _as_bool(p['start_trajectory_markers']):
+        traj_viz_node = Node(
+            package='franka_experiments',
+            executable='trajectory_visualization_node',
+            name='trajectory_visualization',
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+        )
+        actions.append(TimerAction(
+            period=float(p['trajectory_viz_delay_s']),
+            actions=[traj_viz_node],
+        ))
+        actions.append(LogInfo(
+            msg='[torque_stack] [Viz]             trajectory_visualization '
+                'ENABLED (the same traces as RViz markers)'))
+        if _as_bool(p['start_rviz']):
+            rviz_node = Node(
+                package='rviz2',
+                executable='rviz2',
+                name='rviz2',
+                # In the bringup namespace so /tf and /tf_static resolve to the
+                # tree robot_state_publisher actually publishes on. The config's
+                # own topics stay absolute and are retargeted below.
+                namespace=p['namespace'],
+                arguments=['-d', rviz_config_for_namespace(p['namespace'])],
+                output='log',
+            )
+            actions.append(TimerAction(
+                period=float(p['trajectory_viz_delay_s']),
+                actions=[rviz_node],
+            ))
+            actions.append(LogInfo(
+                msg='[torque_stack] [Viz]             rviz2 ENABLED'))
+        else:
+            actions.append(LogInfo(
+                msg='[torque_stack] [Viz]             rviz2 DISABLED '
+                    '(markers still published)'))
+    else:
+        actions.append(LogInfo(
+            msg='[torque_stack] [Viz]             trajectory_visualization DISABLED'))
+
     return actions
 
 
@@ -803,6 +898,11 @@ def generate_launch_description():
                 description='RealSense depth_module.depth_profile, e.g. 848x480x30. '
                             'Empty = driver default (measured to fall back to 15 fps)'),
             DeclareLaunchArgument(
+                'camera_align_depth',
+                default_value=str(_DEFAULTS.get('camera_align_depth', 'true')),
+                description='RealSense align_depth.enable. Driver default is false, which '
+                            'means /camera/camera/aligned_depth_to_color/* is never published'),
+            DeclareLaunchArgument(
                 'start_real_time_distance',
                 default_value=_DEFAULTS.get('start_real_time_distance', 'true'),
                 description='Start real_time_distance node'),
@@ -814,6 +914,46 @@ def generate_launch_description():
                 'experiment_logger_delay_s',
                 default_value=str(_DEFAULTS.get('experiment_logger_delay_s', '2.0')),
                 description='Seconds before launching experiment_logger'),
+            DeclareLaunchArgument(
+                'start_trajectory_viz',
+                default_value=str(_DEFAULTS.get('start_trajectory_viz', 'true')),
+                description='Draw the EE trajectory on the scene camera image: '
+                            'red = the path P(s) the commander is asking for, '
+                            'blue = where the end effector actually is, both as '
+                            'short fading trails. Needs enable_camera'),
+            DeclareLaunchArgument(
+                'trajectory_overlay_window',
+                default_value=str(_DEFAULTS.get('trajectory_overlay_window',
+                                                'true')),
+                description='Open an OpenCV window on the overlay. Turn OFF for '
+                            'measurement runs: it is a GUI process and is not '
+                            'pinned away from the RT cores. The annotated image '
+                            'is published either way'),
+            DeclareLaunchArgument(
+                'trajectory_trail_seconds',
+                default_value=str(_DEFAULTS.get('trajectory_trail_seconds',
+                                                '2.0')),
+                description='[s] how long a point stays on the overlay before '
+                            'it fades out. 0 = never (the trails then grow for '
+                            'the whole run)'),
+            DeclareLaunchArgument(
+                'start_trajectory_markers',
+                default_value=str(_DEFAULTS.get('start_trajectory_markers',
+                                                'false')),
+                description='Also publish the same two traces as an RViz '
+                            'MarkerArray (trajectory_visualization_node)'),
+            DeclareLaunchArgument(
+                'start_rviz',
+                default_value=str(_DEFAULTS.get('start_rviz', 'false')),
+                description='Open rviz2 on those markers. Requires '
+                            'start_trajectory_markers. Turn OFF for measurement '
+                            'runs: rviz2 is a GUI process and is not pinned '
+                            'away from the RT cores'),
+            DeclareLaunchArgument(
+                'trajectory_viz_delay_s',
+                default_value=str(_DEFAULTS.get('trajectory_viz_delay_s', '3.0')),
+                description='Seconds before launching the overlay, the markers '
+                            'and rviz2'),
             DeclareLaunchArgument(
                 'start_move_group',
                 default_value=str(_DEFAULTS.get('start_move_group', 'true')),

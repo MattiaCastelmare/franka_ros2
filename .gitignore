@@ -19,3 +19,4 @@ franka_experiments/franka_logs/
 
 # MuJoCo runtime log (rigenerato a ogni run)
 MUJOCO_LOG.TXT
+
