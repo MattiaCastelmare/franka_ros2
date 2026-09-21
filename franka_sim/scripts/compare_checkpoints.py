@@ -48,6 +48,11 @@ def score(path: str, cfg: str, episodes: int, seed: int, render: bool = False):
         dmean=float(np.mean(r['d_mins'])),
         interv=float(np.mean(r['intervs'])),
         slack=float(np.mean(r['slacks'])),
+        # Episodes whose reset exhausted its rejection retries and fell back to
+        # the best draw available. Non-zero means the target/obstacle boxes are
+        # over-constrained and the start states were NOT all inside the safe
+        # set — read it before trusting the safety columns.
+        fallbacks=int(getattr(env, 'reset_fallbacks', 0)),
     )
 
 

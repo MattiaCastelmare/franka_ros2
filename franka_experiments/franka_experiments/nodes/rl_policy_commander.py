@@ -50,8 +50,6 @@ by ``cbf_safety_filter`` (hard box + hard rows), exactly as for the pentagon
 commander.
 """
 
-# TODO[LEGACY]: no launch file starts it since the RL branch was reverted in 4d4d450 | confidence: medium | superseded-by: none (RL work to KEEP — needs a launch entry point restored) | flagged: 2026-09-01
-
 from __future__ import annotations
 
 import csv
@@ -88,13 +86,16 @@ from franka_experiments.utils.logging_utils import ThrottledLogger, vec_to_str
 from franka_experiments.utils.ros import get_namespace_from_config, run_node_main
 from franka_experiments.utils.rl_policy import (
     ACT_DIM,
-    OBS_DIM,
+    control_point_geometry,
     action_to_qddot,
     build_observation,
+    find_latest_model,
     find_sim_root,
     joint_limits_mismatch,
     load_yaml,
     nearest_obstacle,
+    obs_spec_from_config,
+    obstacle_velocity,
     qddot_max_from_limits,
     resolve_model_path,
     resolve_sim_config_path,
@@ -192,13 +193,31 @@ class RLPolicyCommander(Node):
         # ── Policy + training config ─────────────────────────────────────────
         sim_root = str(gp('sim_root').value) or find_sim_root(__file__)
         model_param = str(gp('onnx_model').value)
+        # Empty parameter = the documented default in launch_defaults.yaml
+        # ("empty = newest model under franka_sim/models"). Resolve it rather
+        # than refusing to start: the shipped `motion_source:=rl` defaults
+        # would otherwise kill the node before it publishes anything.
+        auto_selected = False
+        if not model_param:
+            model_param = find_latest_model(sim_root)
+            auto_selected = bool(model_param)
         if not model_param:
             raise RuntimeError(
-                'Parameter "onnx_model" is empty — this node has nothing to '
-                'run. Export a policy first:\n'
+                'Parameter "onnx_model" is empty and no exported policy was '
+                f'found under "{sim_root or "<no franka_sim checkout found>"}'
+                '/models". Export one first:\n'
                 '  python3 -m franka_sim.export_onnx --model '
-                '<franka_sim/models/<exp>/best_model.zip>')
+                'franka_sim/models/<exp>/best_model.zip\n'
+                'or pass onnx_model:=/absolute/path/to/policy.onnx')
         self._model_path = resolve_model_path(model_param, sim_root)
+        if auto_selected:
+            # WARN, not INFO: an implicitly chosen policy must never be quiet.
+            # This is the one startup decision the operator cannot infer from
+            # the command line, and it determines what moves the arm.
+            self.get_logger().warn(
+                'onnx_model was not set — AUTO-SELECTED the most recently '
+                f'written export:\n    {self._model_path}\n'
+                '  Pass rl_onnx_model:=<path> to pin a specific policy.')
 
         cfg_path = resolve_sim_config_path(str(gp('sim_config').value),
                                            self._model_path, sim_root)
@@ -222,6 +241,11 @@ class RLPolicyCommander(Node):
         sim_env  = sim_cfg.get('env', {})
         sim_task = sim_cfg.get('task', {})
         sim_obst = sim_cfg.get('obstacle', {})
+
+        # Observation layout of THIS policy, from the config frozen beside it.
+        # A pre-`obs:` config resolves to the legacy 24-dim vector, so older
+        # models keep deploying byte-identically.
+        self._obs_spec = obs_spec_from_config(sim_cfg)
 
         rate = float(gp('rate_hz').value) or float(
             sim_env.get('control_rate_hz', 100.0))
@@ -264,11 +288,14 @@ class RLPolicyCommander(Node):
             self._model_path, sess_options=so, providers=['CPUExecutionProvider'])
         self._in_name = self._sess.get_inputs()[0].name
         in_shape = self._sess.get_inputs()[0].shape
-        obs_dim = in_shape[-1] if isinstance(in_shape[-1], int) else OBS_DIM
-        if obs_dim != OBS_DIM:
+        obs_dim = (in_shape[-1] if isinstance(in_shape[-1], int)
+                   else self._obs_spec.dim)
+        if obs_dim != self._obs_spec.dim:
             raise RuntimeError(
                 f'ONNX policy expects observation width {obs_dim}, this node '
-                f'builds {OBS_DIM}. Model and franka_sim env are out of sync.')
+                f'builds {self._obs_spec.dim} from {cfg_path or "<no config>"} '
+                f'({self._obs_spec.describe()}). The policy and the config '
+                'frozen next to it disagree — check `obs:` in that file.')
         out_shape = self._sess.get_outputs()[0].shape
         act_dim = out_shape[-1] if isinstance(out_shape[-1], int) else ACT_DIM
         if act_dim != ACT_DIM:
@@ -277,7 +304,12 @@ class RLPolicyCommander(Node):
                 'Wrong model file?')
 
         # ── Preallocated per-tick state ──────────────────────────────────────
-        self._obs_buf   = np.zeros((1, OBS_DIM), dtype=np.float32)
+        self._obs_buf   = np.zeros((1, self._obs_spec.dim), dtype=np.float32)
+        # Optional observation blocks: allocated once, filled in place per tick.
+        self._cp_geom   = np.zeros((self._obs_spec.n_cp, 4), dtype=np.float64)
+        self._v_obs     = np.zeros(3)
+        self._obs_xyz_prev: Optional[np.ndarray] = None
+        self._obs_xyz_prev_t = 0.0
         self._feed      = {self._in_name: self._obs_buf}
         self._qddot_nom = np.zeros(ACT_DIM)
         self._action    = np.zeros(ACT_DIM)
@@ -350,6 +382,7 @@ class RLPolicyCommander(Node):
             f'  targets   : {[t.tolist() for t in self._targets]} '
             f'(tol={self._target_tol} m, dwell={self._dwell_s} s)\n'
             f'  r_obs     : {self._r_obs} m   action_scale: {self._action_scale}\n'
+            f'  obs layout: {self._obs_spec.describe()}\n'
             f'  qddot_max : {self._qddot_max.tolist()} rad/s²')
 
     # ── Warm-up ──────────────────────────────────────────────────────────────
@@ -494,7 +527,13 @@ class RLPolicyCommander(Node):
                                 self._ee_fid).translation)
 
         # ── Observation: obstacle slot ───────────────────────────────────────
+        # The per-control-point block is rebuilt from the SAME snapshot, so the
+        # scalar slot and the geometry block can never describe different
+        # instants. `entries = ()` means "nothing reported near any link",
+        # which control_point_geometry renders as (clip_distance, 0, 0, 0) —
+        # the same token the sim emits when it has no direction to give.
         snap = self._obs_snap
+        entries: tuple = ()
         if snap is None:
             # Perception never started (legitimate: enable_camera:=false).
             c, d = synthetic_obstacle(self._ee_pos, self._no_obs_xyz, self._r_obs)
@@ -508,10 +547,14 @@ class RLPolicyCommander(Node):
                 self._tlog.warn(
                     f'per-link distances stale ({now - snap[1]:.2f} s > '
                     f'{self._d_timeout} s) — publishing zeros')
+            # Drop the velocity history too: the tick that resumes must not
+            # differentiate across the outage and report a phantom sweep.
+            self._obs_xyz_prev = None
             self._publish_zero(gate=3.0)
             return
         else:
-            found = nearest_obstacle(snap[0], self._r_obs, self._dist_links)
+            entries = snap[0]
+            found = nearest_obstacle(entries, self._r_obs, self._dist_links)
             if found is None:
                 c, d = synthetic_obstacle(self._ee_pos, self._no_obs_xyz,
                                           self._r_obs)
@@ -520,6 +563,20 @@ class RLPolicyCommander(Node):
             else:
                 np.copyto(self._obs_xyz, found[0])
                 self._d_min = found[1]
+
+        # ── Observation: optional blocks ─────────────────────────────────────
+        if self._obs_spec.n_cp:
+            control_point_geometry(entries, self._obs_spec, out=self._cp_geom)
+        if self._obs_spec.obstacle_velocity:
+            # Differentiate the RECONSTRUCTED centre against the wall clock —
+            # the tick period, not the nominal 1/rate, so scheduling jitter
+            # does not show up as obstacle motion.
+            np.copyto(self._v_obs, obstacle_velocity(
+                self._obs_xyz, self._obs_xyz_prev, now - self._obs_xyz_prev_t))
+            if self._obs_xyz_prev is None:
+                self._obs_xyz_prev = np.zeros(3)
+            np.copyto(self._obs_xyz_prev, self._obs_xyz)
+            self._obs_xyz_prev_t = now
 
         # ── Task: target advance / dwell ─────────────────────────────────────
         # Read the list ONCE: _target_cb may replace it (with a shorter one)
@@ -548,7 +605,9 @@ class RLPolicyCommander(Node):
 
         # ── Inference ────────────────────────────────────────────────────────
         build_observation(q, qdot, self._ee_pos, target, self._obs_xyz,
-                          self._d_min, out=self._obs_buf)
+                          self._d_min, v_obs=self._v_obs,
+                          cp_geometry=self._cp_geom, spec=self._obs_spec,
+                          out=self._obs_buf)
         t_inf = time.perf_counter()
         action = self._sess.run(None, self._feed)[0][0]
         self._infer_ms = (time.perf_counter() - t_inf) * 1e3

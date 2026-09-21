@@ -39,12 +39,12 @@ the throughput fighting over the GPU (measured: 250 -> 101 fps). Always check.
 ```bash
 # ── 1a. TRAIN, watching the logs live (Ctrl+C stops it) ─────────────────────
 docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
-  python3 -m franka_sim.train --exp-name sac_v3 --total-timesteps 2000000'
+  python3 -m franka_sim.train --exp-name sac_v5 --total-timesteps 2000000'
 
 # same, but also saving the log to a file
 docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
-  python3 -m franka_sim.train --exp-name sac_v3 --total-timesteps 2000000 2>&1 \
-  | tee /ros2_ws/src/franka_sim/runs/sac_v3_train.log'
+  python3 -m franka_sim.train --exp-name sac_v5 --total-timesteps 2000000 2>&1 \
+  | tee /ros2_ws/src/franka_sim/runs/sac_v5_train.log'
 ```
 
 Closing the terminal kills a foreground run. To survive it, detach instead —
@@ -52,12 +52,12 @@ but then the logs go to the file, not to your screen, which is the whole reason
 for the `tail -f`:
 
 ```bash
-# ── 1b. TRAIN detached (~2.5 h for 2M steps on the RTX 4070) ────────────────
+# ── 1b. TRAIN detached (~4.3 h for 2M steps on the RTX 4070 — measured on sac_v4) ────────────────
 docker exec -d franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
-  nohup python3 -m franka_sim.train --exp-name sac_v3 --total-timesteps 2000000 \
-  > /ros2_ws/src/franka_sim/runs/sac_v3_train.log 2>&1'
+  nohup python3 -m franka_sim.train --exp-name sac_v5 --total-timesteps 2000000 \
+  > /ros2_ws/src/franka_sim/runs/sac_v5_train.log 2>&1'
 
-tail -f franka_sim/runs/sac_v3_train.log        # follow it from the host
+tail -f franka_sim/runs/sac_v5_train.log        # follow it from the host
 ```
 
 Either way you get a block like this every ~2000 steps:
@@ -83,12 +83,12 @@ Either way you get a block like this every ~2000 steps:
 # ── 2. TEST the newest snapshot, with the viewer + the full metrics table ───
 docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
   python3 -m franka_sim.scripts.evaluate_policy \
-    --latest franka_sim/models/sac_v3 --episodes 10 --render'
+    --latest franka_sim/models/sac_v4 --episodes 10 --render'
 
 # ── 3. COMPARE every checkpoint of the run, against the baselines ───────────
 docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
   python3 -m franka_sim.scripts.compare_checkpoints \
-    --model-dir franka_sim/models/sac_v3 --episodes 5'
+    --model-dir franka_sim/models/sac_v4 --episodes 5'
 ```
 
 Stop a run: `docker exec franka_ros2 pkill -f franka_sim.train`. Nothing is
@@ -106,9 +106,11 @@ docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
 
 **But do not quote its numbers.** `sac_v2` (2026-08-31, 400 k steps) was trained
 under `d_safe=0.20`, a faster obstacle, no gripper mass and the bare flange as
-its end effector — four things that have since changed. It loads because the
-observation is still 24-dim, and `--latest` picks up its *frozen* `config.yaml`
-so it replays close to its own training conditions. It is a demo that the
+its end effector — four things that have since changed. It loads because
+`rl_policy_commander` resolves the observation layout from the `config.yaml`
+frozen beside it — no `obs:` block there, so it still gets the 24-dim vector it
+was trained on — and `--latest` picks up that same frozen config, so it replays
+close to its own training conditions. It is a demo that the
 pipeline runs, not a result.
 
 That frozen config is also why `sac_v2` still shows the **old fast obstacle**
@@ -138,19 +140,32 @@ franka_sim/
 ├── export_onnx.py              # SAC actor → ONNX (validated vs SB3), for deployment
 ├── models/<exp>/               # best_model, final_model, frozen config, checkpoints/
 ├── runs/<exp>_1/               # TensorBoard event files
+├── tests/                      # plain pytest (no ROS) — the regression guards
 └── scripts/
     ├── validate_cbf.py         # reduced-model proof the shield holds d ≥ d_safe
     ├── validate_actuation.py   # regression guard: the action must control the arm
     ├── evaluate_policy.py      # score one policy (or zero/random) + --latest
+    ├── benchmark.py            # policy + BOTH baselines + delta, one table
     └── compare_checkpoints.py  # score EVERY checkpoint of a run, one table
 ```
+
+Run the guards after touching `envs/`, the MJCF or `config.yaml`:
+
+```bash
+docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl \
+  python3 -m pytest franka_sim/tests -q'
+```
+
+They cover the three defects this project has actually hit: the action not
+reaching the plant, episodes starting inside the barrier, and the obstacle
+teleporting on the first tick.
 
 ---
 
 ## 2. Training
 
 ```bash
-python3 -m franka_sim.train --exp-name sac_v3 --total-timesteps 2000000
+python3 -m franka_sim.train --exp-name sac_v5 --total-timesteps 2000000
 ```
 
 | Flag | Meaning |
@@ -191,12 +206,12 @@ is exported to ONNX immediately — a checkpoint you cannot hand to
 ```bash
 # newest snapshot in a run — resolved by MTIME, not by filename, because
 # best_model is rewritten whenever eval improves
-python3 -m franka_sim.scripts.evaluate_policy --latest franka_sim/models/sac_v3 \
+python3 -m franka_sim.scripts.evaluate_policy --latest franka_sim/models/sac_v4 \
     --episodes 25 --render
 
 # or an explicit artifact
 python3 -m franka_sim.scripts.evaluate_policy \
-    --model franka_sim/models/sac_v3/best_model.onnx --episodes 50
+    --model franka_sim/models/sac_v4/best_model.onnx --episodes 50
 ```
 
 Prints: success rate, mean/median final EE error, episode return and length,
@@ -229,7 +244,7 @@ policy.
 
 ```bash
 python3 -m franka_sim.scripts.compare_checkpoints \
-    --model-dir franka_sim/models/sac_v3 --episodes 5 --render-best
+    --model-dir franka_sim/models/sac_v4 --episodes 5 --render-best
 ```
 
 | Flag | Meaning |
@@ -289,7 +304,8 @@ under `render_mode='human'`; headless still runs at ~12.7x real time.
 | **Actuation** | `q̈_safe → τ = M(q)q̈ + C(q,q̇)q̇ + g(q)` (`mj_inverse`, recomputed every substep) — the same chain as `qddot_to_torque` + `rt_torque_controller` + firmware gravity |
 | **Reward** | `−‖ee−target‖ + success − effort − CBF_intervention − slack − jerk`, collision penalty |
 | **Episode** | 5 s @ 100 Hz; terminate on collision (`d<0`) or success |
-| **Obstacle** | kinematic sphere, 0.20 Hz × 0.20 m (~0.25 m/s peak) |
+| **Obstacle** | kinematic sphere, 0.20 Hz × 0.20 m (~0.25 m/s peak); reset rejection-samples so every episode starts outside `d_safe` |
+| **Optional** | `actuation.enabled` (the robot's 1 kHz Kd/Kp/ffScale law) and `randomization.enabled` (latency, obs noise, joint noise, dynamics) — both **OFF** by default and bit-identical to the measured env while off |
 
 The obstacle is a mocap sphere (`contype=0`, never a physical MuJoCo contact);
 "collision" is surface distance `< 0`, handled by the reward — exactly how the
@@ -318,11 +334,27 @@ flange and the TCP.
 
 ## 6. CBF filter (`cbf_filter.AccelCBFFilter`)
 
-Same math as the robot: HOCBF barrier `h = d − d_safe` (relative degree 2), per
-obstacle row `aᵢᵀq̈ + s ≥ −k1(aᵢᵀq̇) − k0·h̄ᵢ − ċᵢ` (soft, slack-relaxable), a
-hard state-limit box (velocity/position braking + slew continuity) and a hard
-workspace box, solved by raw OSQP. Gains (`k0=25, k1=10.5, d_safe=0.15, ρ=1000`)
-and limits come from `config.yaml`.
+HOCBF barrier `h = d − d_safe` (relative degree 2), per obstacle row
+`aᵢᵀq̈ + s ≥ −k1(aᵢᵀq̇) − k0·h̄ᵢ − ċᵢ` (soft, slack-relaxable), a hard
+state-limit box (velocity/position braking + slew continuity, the FR3 firmware
+velocity envelope, the `qddot_max_abs` authority cap) and a hard workspace box,
+solved by raw OSQP. Gains (`k0=25, k1=10.5, d_safe=0.15, ρ=1000`) and limits
+come from `config.yaml`, mirroring `fr3_control.yaml`.
+
+**This shield is a SUBSET of the robot's, not a copy of it.** The robot also
+runs self-collision, joint-limit, singularity, retreat-cap and link-speed rows,
+a state governor that scales `q̈_nom`, a zone ladder, velocity standoff, three
+objective biases and the ISO layer. Mirroring all of it would mean maintaining
+a second copy of a ~6900-line subsystem that is still changing, so the gap is
+declared in `config.yaml` under `shield_parity:` and pinned by
+`test_shield_families_are_declared` — a new robot flag fails the suite until it
+is classified. Say *"trained under a subset of the deployed shield"*, never
+*"trained under the deployed shield"*.
+
+**The acceleration cap applies to the BOX, not to the action.**
+`qddot_max_abs: 10.0` clips the QP box, while `joint_limits` keeps
+`q̈_max = 17` on joints 5 and 7 for the action scale `q̈_nom = a·q̈_max`. That is
+exactly the robot's arrangement; capping both would change what `a = 1` means.
 
 **The workspace box is SIM-ONLY.** `workspace_face_rows` lost its last live
 importer on the robot in commit `4d4d450`, so hardware enforces no Cartesian
@@ -338,7 +370,7 @@ workspace rows back without them being re-mirrored here.
 ```bash
 ros2 launch franka_experiments torque_control_stack.launch.py \
     motion_source:=rl start_move_group:=false \
-    rl_onnx_model:=/ros2_ws/src/franka_sim/models/sac_v3/best_model.onnx \
+    rl_onnx_model:=/ros2_ws/src/franka_sim/models/sac_v4/best_model.onnx \
     rl_action_scale:=0.3
 ```
 
@@ -346,9 +378,12 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 first run on real hardware**, with the camera and `real_time_distance` on, a
 single conservative target, and `rl_status` + `cbf_status` on screen.
 
-`rl_policy_commander` rebuilds the identical 24-dim observation from robot
-topics and publishes into the same `cbf_safety_filter` the policy trained
-against. The shared contract lives in `franka_experiments/utils/rl_policy.py`.
+`rl_policy_commander` rebuilds the identical observation from robot topics and
+publishes into the same `cbf_safety_filter` the policy trained against. The
+shared contract lives in `franka_experiments/utils/rl_policy.py`; the layout
+itself is `franka_sim/envs/obs_layout.py`, and the node reads which blocks a
+policy wants from the `config.yaml` frozen next to it — so old and new models
+run through the same node without a flag.
 
 ---
 
@@ -367,10 +402,15 @@ docker exec franka_ros2 bash -lc 'source /opt/ros/humble/setup.bash && \
 
 | Test | Catches |
 |---|---|
-| `test_real_configs_are_in_sync` | drifted CBF gains / joint limits, **and missing keys on either side** |
+| `test_real_configs_are_in_sync` | drifted CBF gains / joint limits / box shape (14 keys), **and missing keys on either side** |
+| `test_shield_families_are_declared` | a robot shield family added, removed or flipped without being reclassified in `shield_parity` |
+| `test_accel_cap_applies_to_the_box_and_not_to_the_action` | `qddot_max_abs` capping the action scale, or not capping the box |
 | `test_workspace_box_is_sim_only` | workspace rows reappearing on the robot |
 | `test_ee_frame_matches_sim_ee_site` | `env.ee_site` and the node's `ee_frame` naming different points |
+| `test_observation_layout_mirrors_franka_sim` | `envs/obs_layout.py` and its robot-side mirror drifting apart, slot by slot |
 | `test_observation_*`, `test_action_*` | observation layout / action scaling drift |
+| `test_control_point_geometry_*` | the per-link `(dᵢ, n̂ᵢ)` block picking the wrong entry, or losing the "nothing near" token |
+| `franka_sim/tests/` (plain pytest) | actuation authority, reset feasibility, obstacle teleport, envelope/cap behaviour |
 
 A renamed key is indistinguishable from a deleted one, which is how a real
 drift once hid: the sync test raised `KeyError` instead of failing. It now
@@ -397,5 +437,17 @@ python3 -m franka_sim.scripts.validate_actuation  # the action controls the arm
   the Dockerfile. Newer qpsolvers imports a symbol that only exists in osqp 1.x,
   leaving `qpsolvers.available_solvers == []` and the ROS-side filters dying
   with `SolverNotFound`.
-* **Every policy trained before 2026-09-04 is void** — `d_safe`, the obstacle
-  regime, the gripper mass and the EE frame all changed.
+* **Every policy trained before 2026-09-17 is void.** `sac_v2` (pre-09-04:
+  `d_safe`, obstacle regime, gripper mass, EE frame) and `sac_v3` (pre-09-17:
+  the acceleration cap, the firmware velocity envelope, the `fr3_link3` control
+  point, and the reset/teleport fixes that made the collision metric mean
+  anything). Both still LOAD and replay their own frozen configs — that is a
+  reproducibility feature, not a licence to compare their numbers with a newer
+  run's. `sac_v4` is the current run.
+* **`build/` and `install/` are container-local.** `docker-compose.yml` mounts
+  `./:/ros2_ws/src`, and `/ros2_ws/build` and `/ros2_ws/install` sit one level
+  *above* that mount — so they do NOT persist on the host. After a fresh
+  container you must `colcon build` before the ROS-side suite can even import
+  `franka_msgs`; without it only the pure-numpy tests run and the rest are
+  silently not collected. `franka_sim/models/` and `runs/` are under the mount
+  and do persist.
