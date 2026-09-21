@@ -35,7 +35,8 @@ human-robot distance estimator (Flacco depth-space method) that publishes
 per-link distances on `/cbf/per_link_distances` (type `MultiLinkDistance`).
 Additional nodes cover experiment CSV/plot logging (`experiment_logger`), RViz
 capsule visualization (`capsule_overlay_node`), and hand-eye calibration
-(`handeye_calibration_node`).
+(`handeye_calibration_node` for the scene camera, `handeye_eye_in_hand_node`
+for the wrist D405).
 
 ---
 
@@ -58,7 +59,8 @@ franka_experiments/
 │   ├── torque_control_stack.launch.py       # accel-space pipeline
 │   ├── velocity_cbf_control_stack.launch.py # velocity pipeline
 │   ├── thales.launch.py                     # production velocity pipeline + rosbag
-│   ├── handeye_calibration_bringup.launch.py
+│   ├── handeye_calibration_bringup.launch.py    # scene camera, tag on the flange
+│   ├── handeye_eye_in_hand_calibration.launch.py # wrist D405, tag on the desk
 │   └── minimal.launch.py
 ├── scripts/                      # offline tools (latency budget, ISO constants, reports)
 ├── test/
@@ -86,6 +88,9 @@ franka_experiments/
 | `iso_evidence_logger` | `nodes/iso_evidence_logger.py` | Shared | `/NS_1/joint_states`, `/cbf/per_link_distances`, `/NS_1/cbf_status`, `/NS_1/iso_safety`, `/NS_1/qddot_nom`, `/NS_1/qddot_safe`, `/NS_1/torque_saturation` | — (passive: writes files, publishes nothing) | Records what a run did against the limits its own configuration claims, **whether or not the ISO layer is on**. Writes one directory per run: `iso_manifest.json` (the whole `iso_*` block, the limits, topics, git SHA), `iso_evidence.csv` (rate-sampled, default 100 Hz) and `iso_events.csv` (sparse, so a 30 ms excursion is not lost to sampling). Read back with `scripts/iso_evidence_report.py`. Started with `start_iso_evidence_logger:=true` |
 | `capsule_overlay_node` | `nodes/capsule_overlay_node.py` | Shared | TF tree, robot model | Marker array (RViz) | Publishes capsule geometry for robot-body visualisation in RViz |
 | `handeye_calibration_node` | `nodes/handeye_calibration_node.py` | Shared | TF tree, camera images | — | Interactive hand-eye calibration tool |
+| `handeye_eye_in_hand_node` | `nodes/handeye_eye_in_hand_node.py` | Calibration | `/detections`, TF (`d405_color_optical_frame → tag36h11:0`), joint states | `/NS_1/tracking_qdot` (Float64MultiArray, 7) | Eye-in-hand calibration of the wrist D405 against a tag on the desk: bootstrap moves → look-at orbit (IK-checked poses) → `T_BE·X·T_CT = Y` solve (`utils/handeye_solver.py`); writes `config/camera_EE_extrinsic.yaml` only if the held-out error passes. `solve_only:=true` re-solves the saved dataset |
+| `image_rectifier_node` | `nodes/image_rectifier_node.py` | Calibration | `image_raw`, `camera_info` | `image_rect`, `camera_info_rect` | OpenCV undistortion for apriltag_ros, which ignores `camera_info.d` (the D405 colour stream is not rectified) |
+| `tag_overlay_node` | `nodes/tag_overlay_node.py` | Calibration | `image`, `camera_info`, `/detections` | `image_overlay` | Camera view for placing the tag (RViz): start circle, tag outline green/orange, off-axis angle, margin, estimated distance. Run the launch with `preview:=true` to see it without starting the robot |
 
 ---
 

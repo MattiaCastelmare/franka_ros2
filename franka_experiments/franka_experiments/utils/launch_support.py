@@ -359,13 +359,50 @@ def _generate_torque_yaml(is_real, arm_id, command_topic, gazebo, lpf_alpha,
     ]
     return '\n'.join(lines)
 
-def write_temp_yaml(content: str, prefix: str = 'franka_rt_blender_') -> str:
-    """Write *content* to a temporary YAML file and return its path."""
+def write_temp_yaml(content: str, prefix: str = 'franka_rt_blender_',
+                    suffix: str = '.yaml') -> str:
+    """Write *content* to a temporary YAML file and return its path.
+
+    ``suffix`` exists because rviz2 reads a YAML document but insists on
+    recognising it by extension in some of its own dialogs; a generated layout
+    that ends in ``.yaml`` is the same bytes under a name that confuses whoever
+    opens it next.
+    """
     import tempfile
-    fd, path = tempfile.mkstemp(prefix=prefix, suffix='.yaml')
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
     with os.fdopen(fd, 'w') as f:
         f.write(content)
     return path
+
+def rviz_config_for_namespace(namespace: str,
+                              template: str = 'trajectory_rviz.rviz') -> str:
+    """Retarget an .rviz config at *namespace* and return a temp file path.
+
+    An .rviz config names its topics absolutely, so a layout written for
+    ``/NS_1/...`` shows nothing under any other namespace — silently, because a
+    Display with no publisher is an empty Display, not an error. Rather than
+    ship one file per namespace or make the operator edit it, the launch does
+    what it already does for the controller YAML: substitute and write a copy.
+
+    Returns the SHIPPED path unchanged when the namespace is already ``NS_1``
+    (or empty), so the common case reads the file the repository actually has
+    and a stale temp copy can never be the thing being debugged.
+
+    Args:
+        namespace: bringup namespace, with or without the leading slash.
+        template: file name inside ``franka_experiments/share/config``.
+    """
+    from ament_index_python.packages import get_package_share_directory
+    path = os.path.join(get_package_share_directory('franka_experiments'),
+                        'config', template)
+    ns = (namespace or '').strip().strip('/')
+    if ns in ('', 'NS_1'):
+        return path
+    with open(path) as f:
+        content = f.read()
+    return write_temp_yaml(content.replace('/NS_1/', f'/{ns}/'),
+                           prefix='franka_rviz_', suffix='.rviz')
+
 
 def pick_controllers_yaml(
     explicit: str,

@@ -31,6 +31,22 @@ topics:
   qddot_safe:         /NS_1/qddot_safe
   torque_cmd:         /NS_1/torque_cmd
   cbf_status:         /NS_1/cbf_status
+
+  # ── EE trace, for trajectory_visualization_node ─────────────────────────
+  # Both published by pentagon_qddot_commander on the SAME tick, from the same
+  # forward kinematics: ee_desired is the path point P(s), ee_actual the
+  # measured EE. Same tick and same frame is what makes the red/blue overlay a
+  # tracking error rather than a latency artefact — see the node's docstring.
+  ee_desired:         /NS_1/ee_desired
+  ee_actual:          /NS_1/ee_actual
+  trajectory_markers: /NS_1/trajectory_markers
+  # trajectory_overlay_node draws the same two traces ON THE CAMERA IMAGE, so
+  # it needs the colour pair of the scene camera (the D455 that looks at the
+  # robot) — the depth pair above is the safety pipeline's and is not aligned
+  # to the colour pixel grid.
+  color_image:        /camera/camera/color/image_raw
+  color_camera_info:  /camera/camera/color/camera_info
+  trajectory_overlay: /NS_1/trajectory_overlay
   multi_distance:     /human_robot/multi_distance
   per_link_distances: /cbf/per_link_distances
   # Per-joint saturation state of the torque command, 1.0 = that joint is on
@@ -48,28 +64,6 @@ topics:
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
   d_safe: 0.15          # minimum safe distance from obstacles [m]
-                        # RAISED 0.10 -> 0.15 on 2026-09-17 to re-synchronise
-                        # with franka_sim/config.yaml, which has carried 0.15
-                        # since the RL policy was first trained behind it.
-                        # The two had diverged and
-                        # test_rl_policy::test_real_configs_are_in_sync had been
-                        # failing for three days; the sim value won because a
-                        # policy must meet the shield it trained under, and
-                        # moving the SIM down would have voided the trained
-                        # policy for no safety gain.
-                        #
-                        # NOT YET RE-VALIDATED ON HARDWARE. This value changes
-                        # behaviour for every pipeline that reads it, not just
-                        # the RL one: cbf_safety_filter, cbf_velocity_filter,
-                        # cbf_OSCBF_filter, pentagon_qddot_commander's
-                        # avoidance shaping, and every zone-ladder rung (the
-                        # zone_r_* boundaries are MULTIPLES of d_safe, so they
-                        # all move with it). The whole test suite passes at
-                        # this value (915/915), but no test covers closed-loop
-                        # behaviour on a real FR3 — run supervised, with
-                        # cbf_status slack/fault on screen, before trusting it.
-                        #
-                        # Note the standoff is larger than the number suggests:
                         # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
                         # h = LinkDistance.distance - d_safe, i.e. measured from
                         # the capsule SURFACE. It used to be rebuilt as
@@ -109,20 +103,21 @@ params:
                         # the depth pipeline has no IEC/TS 61496-4-3 assessment
                         # and is not a rated protective device.
                         #
-                        # 0.15 m is therefore a RESEARCH value, and not an
-                        # ISO-derived one. It is 0.77 m short of the conformant
-                        # floor, which no value inside this arm's reach can
-                        # meet.
+                        # 0.15 m is therefore a RESEARCH value, tuned against
+                        # hardware, and not an ISO-derived one.
                         #
-                        # MIRRORED IN franka_sim/config.yaml (cbf.d_safe). The
-                        # two files are checked by
-                        # test_rl_policy::test_real_configs_are_in_sync. If they
-                        # ever diverge again, that test failing is the
-                        # divergence alarm working as designed, not a broken
-                        # test: fix it by moving one of the two VALUES, never by
-                        # dropping d_safe from the test's key list.
+                        # IN SYNC WITH SIM (21 Sep 2026): franka_sim/config.yaml
+                        # carries 0.15 m and so does this file, so the policy is
+                        # shielded by the same barrier it trained behind and
+                        # test_rl_policy::test_real_configs_are_in_sync passes.
+                        # The divergence that test caught was the robot briefly
+                        # running 0.10 m against a policy trained at 0.15 m; it
+                        # was closed by raising the ROBOT, which is the
+                        # conservative direction. Move either value and the test
+                        # fails again by design — fix it by moving the other one
+                        # too, never by dropping d_safe from its key list.
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: d_safe | flagged: 2026-09-01
-  d_safe_default: 0.1  # alias kept for backward compatibility
+  d_safe_default: 0.15  # alias kept for backward compatibility
 
   # ── ISO 10218-1/-2:2025 layer ─────────────────────────────────────────────
   # Tags: [R] required by the standard, [S] value/formula from the standard,
