@@ -236,7 +236,7 @@ def generate_launch_description():
         name='human_logger',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'run_name': run_name
+            'run_name': ParameterValue(run_name, value_type=str)
         }],
         output='screen'
     )
