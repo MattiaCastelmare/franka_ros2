@@ -460,6 +460,41 @@ class TrackManager:
         self.life_sum = 0            # summed age, in perception frames
         self.life_n = 0
 
+    # ── Retuning ────────────────────────────────────────────────────────────
+
+    def retune(self, *, confirm_hits: int, confirm_window: int,
+               max_missed: int) -> bool:
+        """Resize the lifecycle counters in place. True when anything changed.
+
+        The counters are FRAME counts, and the durations they are meant to
+        express only hold at one frame rate (see ``utils/rate_scaling``). The
+        node re-derives them when the depth stream turns out not to be running
+        at the configured rate, and this is where they land.
+
+        Live tracks are KEPT. Reaping every track because the coast budget grew
+        would throw away exactly the identities the budget exists to preserve,
+        and the alternative — a fleet of tracks whose ``missed`` counters are
+        measured against the old number — is harmless: the next :meth:`step`
+        compares each one against the new ``max_missed`` and the histories are
+        trimmed to the new window on their next hit. The one visible effect is
+        that a track already over the NEW budget dies one frame later.
+        """
+        hits = max(1, int(confirm_hits))
+        window = max(hits, int(confirm_window))
+        missed = max(1, int(max_missed))
+        if (hits, window, missed) == (self.confirm_hits, self.confirm_window,
+                                      self.max_missed):
+            return False
+        self.confirm_hits = hits
+        self.confirm_window = window
+        self.max_missed = missed
+        # Only the OVER-LONG histories need touching: a shorter one is already a
+        # valid window, and padding it would fabricate hits or misses.
+        for h in self._hits.values():
+            if len(h) > window:
+                del h[:-window]
+        return True
+
     # ── Query ───────────────────────────────────────────────────────────────
 
     def confirmed_tracks(self) -> list:

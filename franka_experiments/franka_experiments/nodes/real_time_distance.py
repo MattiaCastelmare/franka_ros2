@@ -72,10 +72,14 @@ from franka_experiments.utils.distance_utils import (
 )
 from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
-from franka_experiments.utils.params import declare_bool, declare_str
+from franka_experiments.utils.params import declare_bool, declare_int, declare_str
 from franka_experiments.utils.logging_utils import PerfTimer
 from franka_experiments.utils.obstacle_sim import InjectedSphere
 from franka_experiments.utils.calibration_check import calibration_residual
+from franka_experiments.utils.rate_scaling import (
+    FrameRateEstimator,
+    frames_for,
+)
 from franka_experiments.utils.self_detection import SelfDetectionMonitor
 from franka_experiments.utils.obstacle_track_pipeline import ObstacleTrackPipeline
 from franka_experiments.utils.perception_msgs import (
@@ -144,7 +148,21 @@ class RealTimeDistance(Node):
         self.fx_inv_f32 = self.fy_inv_f32 = None
 
         # ── Frame queue + visualisation snapshot ─────────────────────────
-        self._frame_queue      = queue.Queue(maxsize=1)
+        # Depth 2, not 1. MEASURED at 848x480x90 (2026-09-21): the compute loop
+        # needs 5.6-8.2 ms per frame against an 11.1 ms budget, so it HAS the
+        # room for every frame — and it was still only processing 53 of the 90.
+        # The reason is that callbacks arrive in bursts (the executor collects
+        # ready work, and the driver's republished copies land ~2 ms apart), and
+        # with a 1-deep queue every frame of a burst but the last was discarded
+        # by the frame after it. ~45 frames/s were thrown away with the CPU idle.
+        #
+        # The cost of the second slot is bounded and small: the loop can now
+        # start a frame one period old, i.e. 11 ms at 90 fps — still fresher
+        # than anything the 30 fps profile could deliver. Set
+        # `frame_queue_depth:=1` to get the strict freshest-only behaviour back.
+        _qdepth = declare_int(self, 'frame_queue_depth', 2, minimum=1,
+                              maximum=8)
+        self._frame_queue      = queue.Queue(maxsize=_qdepth)
         self._last_depth_shape: Optional[tuple] = None
         self._vis_frame: Optional[VisFrame] = None
         self._vis_lock  = threading.Lock()
@@ -192,6 +210,32 @@ class RealTimeDistance(Node):
         self.distance_cfg = dict(self.distance_cfg)
         self.distance_cfg['export_obstacle_cloud'] = self.tracking_enabled
 
+        # ── Rate-independent tuning (utils/rate_scaling) ──────────────────
+        # The lifecycle thresholds below are FRAME counts; the durations they
+        # stand for are only preserved if the counts follow the depth rate. The
+        # configured rate sizes them before the first frame; the measured one
+        # corrects them, which is what catches a driver that did not give the
+        # profile that was asked for (this rig has seen librealsense pick 15 fps
+        # by itself — see launch_defaults.yaml).
+        self._nominal_hz = float(self.distance_cfg.get('depth_rate_hz', 30.0))
+        self._rate = FrameRateEstimator(nominal_hz=self._nominal_hz)
+        self._prev_rate_stamp: Optional[float] = None
+        #: Last depth capture stamp accepted, in ns, and how many republished
+        #: copies of one were dropped. DIAGNOSTIC: the count belongs in the
+        #: status line because "the camera is at 90 Hz" and "the node sees
+        #: 90 distinct frames" are different claims.
+        self._last_depth_stamp_ns: int = 0
+        self._n_dup_frames: int = 0
+        # The EMA in the distance engine needs the same fallback rate for the
+        # frames that carry no usable interval.
+        self.distance_cfg['lpf_nominal_rate_hz'] = self._nominal_hz
+        # Durations, when the config states them. None means the config is the
+        # older frame-counted kind: the counts are then used verbatim and the
+        # retune never fires, so an unmigrated config behaves exactly as before.
+        self._trk_timing = self._read_track_timing(trk_cfg)
+        self._sd_timing = self._read_self_detect_timing(
+            trk_cfg.get('self_detection', {}) or {})
+
         # ── Multi-obstacle rows (perception.multi_obstacle_k) ─────────────
         # The flag and the cbf_obstacle_horizon it prunes against live in the
         # CONTROL config (fr3_control.yaml), not in robot_config_path, so that
@@ -232,10 +276,17 @@ class RealTimeDistance(Node):
         # the pixels are filtered.
         self.distance_cfg['depth_gate_tol_m'] = float(
             self.mask_cfg.get('depth_gate_tol_m', 0.0))
+        self.distance_cfg['depth_gate_bias_m'] = float(
+            self.mask_cfg.get('depth_gate_bias_m', 0.0))
         self.get_logger().info(
             'robot mask: ' + (
-                f'DEPTH-GATED, tol={self.distance_cfg["depth_gate_tol_m"]:.3f} m '
-                f'— an obstacle more than that in front of the arm is SEEN'
+                f'DEPTH-GATED, an obstacle is SEEN when it is more than '
+                f'{self.distance_cfg["depth_gate_tol_m"]:.3f} m in front of '
+                f'the model surface corrected by '
+                f'{self.distance_cfg["depth_gate_bias_m"]:.3f} m '
+                f'(mask.depth_gate_bias_m — set it to the SYSTEMATIC part of '
+                f'the calibration_check residual, or the arm reads as its own '
+                f'obstacle)'
                 if self.distance_cfg['depth_gate_tol_m'] > 0.0 else
                 '2D silhouette only — anything inside the robot outline is '
                 'invisible whatever its depth (set mask.depth_gate_tol_m)'))
@@ -262,12 +313,16 @@ class RealTimeDistance(Node):
         if self.tracking_enabled:
             sd = trk_cfg.get('self_detection', {}) or {}
             if sd.get('enabled', True):
+                sd_window, sd_confirm, sd_release = self._self_detect_counts(
+                    self._nominal_hz, sd)
                 self.self_detect = SelfDetectionMonitor(
-                    window=int(sd.get('window', 20)),
+                    window=sd_window,
                     motion_min_m=float(sd.get('motion_min_m', 0.08)),
                     offset_tol_m=float(sd.get('offset_tol_m', 0.02)),
-                    confirm=int(sd.get('confirm', 5)),
-                    release=int(sd.get('release', 15)))
+                    confirm=sd_confirm,
+                    release=sd_release)
+            trk_hits, trk_window, trk_coast = self._track_counts(
+                self._nominal_hz, trk_cfg)
             self.track_pipeline = ObstacleTrackPipeline(
                 voxel_m=float(trk_cfg.get('cluster_voxel_m', 0.02)),
                 min_cluster_points=int(trk_cfg.get('cluster_min_points', 10)),
@@ -281,11 +336,21 @@ class RealTimeDistance(Node):
                 sigma_meas=float(trk_cfg.get('sigma_meas_m', 0.01)),
                 gate_mahalanobis=float(trk_cfg.get('gate_mahalanobis', 3.0)),
                 gate_max_m=float(trk_cfg.get('gate_max_m', 0.5)),
-                confirm_hits=int(trk_cfg.get('confirm_hits', 3)),
-                confirm_window=int(trk_cfg.get('confirm_window', 5)),
-                max_missed=int(trk_cfg.get('max_missed', 5)),
+                confirm_hits=trk_hits,
+                confirm_window=trk_window,
+                max_missed=trk_coast,
                 max_tracks=int(trk_cfg.get('max_tracks', 12)),
+                # A frame with no usable stamp must not be advanced with the dt
+                # of a rate the stream is not running at.
+                default_dt=1.0 / self._nominal_hz,
             )
+            self.get_logger().info(
+                f'tracker lifecycle at {self._nominal_hz:.0f} Hz nominal: '
+                f'confirm {trk_hits}/{trk_window} frames, coast {trk_coast} '
+                f'frames'
+                + ('' if self._trk_timing is None else
+                   f' (= {self._trk_timing["window_s"] * 1e3:.0f} ms window, '
+                   f'{self._trk_timing["coast_s"] * 1e3:.0f} ms coast)'))
 
         # ── Calibration drift check (utils/calibration_check) ─────────────
         # Runs at most once every `period_s`, so it is free. It compares the
@@ -390,10 +455,162 @@ class RealTimeDistance(Node):
 
     # ── Camera callbacks ──────────────────────────────────────────────────────
 
+    # ── Rate-dependent tuning (utils/rate_scaling) ────────────────────────
+
+    def _read_track_timing(self, trk_cfg: dict) -> Optional[dict]:
+        """The tracker's lifecycle as DURATIONS, or None for a legacy config.
+
+        All three keys are required together. Half a migration — a coast in
+        seconds next to a confirmation in frames — is the one state where the
+        two disagree about what the config means, so it is refused in favour of
+        the frame counts, which at least agree with each other.
+        """
+        self._trk_cfg_raw = dict(trk_cfg)
+        window_s = trk_cfg.get('confirm_window_s')
+        coast_s = trk_cfg.get('max_coast_s')
+        frac = trk_cfg.get('confirm_hits_frac')
+        if window_s is None or coast_s is None or frac is None:
+            return None
+        return {'window_s': float(window_s), 'coast_s': float(coast_s),
+                'hits_frac': float(frac)}
+
+    def _read_self_detect_timing(self, sd_cfg: dict) -> Optional[dict]:
+        """The self-detection guard's delays as durations, or None. As above."""
+        self._sd_cfg_raw = dict(sd_cfg)
+        w = sd_cfg.get('window_s')
+        c = sd_cfg.get('confirm_s')
+        r = sd_cfg.get('release_s')
+        if w is None or c is None or r is None:
+            return None
+        return {'window_s': float(w), 'confirm_s': float(c),
+                'release_s': float(r)}
+
+    def _track_counts(self, hz: float, trk_cfg: Optional[dict] = None):
+        """``(confirm_hits, confirm_window, max_missed)`` in frames at *hz*.
+
+        The M-of-N birth rule scales by keeping the FRACTION, not the count: N
+        is a duration (how long a flickering cluster has to prove itself) while
+        M/N is a robustness ratio (how much of that time may be dropout), and
+        the dropout is a per-frame phenomenon. Keeping 3-of-5 at 90 Hz would
+        confirm a 33 ms speckle; keeping 60% of a 167 ms window confirms what
+        3-of-5 confirmed at 30 Hz.
+        """
+        t = self._trk_timing
+        if t is None:
+            cfg = self._trk_cfg_raw if trk_cfg is None else trk_cfg
+            return (int(cfg.get('confirm_hits', 3)),
+                    int(cfg.get('confirm_window', 5)),
+                    int(cfg.get('max_missed', 5)))
+        # The floors are statements about the ALGORITHM, not about the rate: a
+        # 1-frame coast reaps a track the first time a cluster flickers, and a
+        # 1-of-2 birth confirms any speckle that survives two frames — which is
+        # the tentative state existing for nothing. They bind only at rates far
+        # below anything this rig runs (coast 2 frames is 0.167 s at 12 Hz), so
+        # at 30 and 90 Hz the counts are the durations and nothing else.
+        window = frames_for(t['window_s'], hz, minimum=3)
+        hits = max(2, min(window, int(round(window * t['hits_frac']))))
+        return hits, window, frames_for(t['coast_s'], hz, minimum=2)
+
+    def _self_detect_counts(self, hz: float, sd_cfg: Optional[dict] = None):
+        """``(window, confirm, release)`` in frames at *hz*."""
+        t = self._sd_timing
+        if t is None:
+            cfg = self._sd_cfg_raw if sd_cfg is None else sd_cfg
+            return (int(cfg.get('window', 20)), int(cfg.get('confirm', 5)),
+                    int(cfg.get('release', 15)))
+        # Same reasoning: a 1-frame history window cannot measure travel, and a
+        # 1-frame confirm makes the verdict a single-frame coincidence.
+        return (frames_for(t['window_s'], hz, minimum=4),
+                frames_for(t['confirm_s'], hz, minimum=2),
+                frames_for(t['release_s'], hz, minimum=3))
+
+    def _retune_for_rate(self, stamp_s: float) -> None:
+        """Resize the frame-counted thresholds when the depth rate has moved.
+
+        Called once per PROCESSED frame with that frame's CAPTURE time, and the
+        distinction is the whole point: every counter being resized here ticks
+        once per tracker update, not once per camera exposure. When the compute
+        loop cannot keep up, `depth_callback`'s queue drops frames and a
+        5-update coast lasts 5 PROCESSED frames — so the rate that converts a
+        duration into a count is this one, measured between the frames that
+        actually made it through, and never the rate the camera claims.
+
+        Cheap by construction: the estimator returns True only on a material,
+        cooled-down change, so the steady state is one subtraction and one
+        comparison.
+        """
+        dt = (None if self._prev_rate_stamp is None
+              else stamp_s - self._prev_rate_stamp)
+        self._prev_rate_stamp = stamp_s
+        if dt is None or not self._rate.add(dt):
+            return
+
+        hz = self._rate.hz
+        changed = []
+        if self._trk_timing is not None and self.track_pipeline is not None:
+            hits, window, coast = self._track_counts(hz)
+            if self.track_pipeline.tracker.retune(
+                    confirm_hits=hits, confirm_window=window,
+                    max_missed=coast):
+                changed.append(f'tracker confirm {hits}/{window} frames, '
+                               f'coast {coast} frames')
+            self.track_pipeline.default_dt = 1.0 / hz
+        if self._sd_timing is not None and self.self_detect is not None:
+            w, c, r = self._self_detect_counts(hz)
+            if self.self_detect.retune(window=w, confirm=c, release=r):
+                changed.append(f'self-detect window {w}, confirm {c}, '
+                               f'release {r} frames')
+
+        # Throttled as well as cooled down: the cooldown bounds how often the
+        # thresholds MOVE, this bounds how often the log says so, and on a
+        # contended box those are not the same number.
+        if changed:
+            self.get_logger().warn(
+                f'processing {hz:.1f} depth frames/s, not the '
+                f'{self._nominal_hz:.0f} Hz in the config. Rescaled to keep '
+                f'the configured DURATIONS: ' + '; '.join(changed),
+                throttle_duration_sec=10.0)
+        else:
+            self.get_logger().warn(
+                f'processing {hz:.1f} depth frames/s, not the '
+                f'{self._nominal_hz:.0f} Hz in the config, and this config '
+                f'counts its thresholds in FRAMES: every lifecycle duration is '
+                f'now {self._nominal_hz / max(hz, 1e-6):.1f}x what it says. '
+                f'Migrate to confirm_window_s / max_coast_s / window_s.',
+                throttle_duration_sec=10.0)
+
     def depth_callback(self, msg):
+        # ── Drop a frame that has already been seen ──────────────────────
+        # MEASURED on this rig at 848x480x90 (2026-09-21): realsense2_camera
+        # publishes ~2/3 of its depth frames TWICE on the same topic, the two
+        # copies ~2 ms apart with the same capture stamp and byte-identical
+        # pixels (239 of 360 stamps over 4 s; 150 msg/s for 90 real frames/s).
+        # Independent of align_depth.
+        #
+        # A duplicate is not a cheap frame, it is an expensive one: it costs a
+        # full cv_bridge conversion and, if the compute loop happens to be free,
+        # a whole mask/distance/track pass — and that pass advances every Kalman
+        # filter by another dt with no new measurement in it, which is exactly
+        # how a still obstacle acquires a velocity. Dropping it here is the one
+        # place where it costs a comparison instead of a pipeline.
+        #
+        # The test is the CAPTURE stamp, not the content: hashing 814 kB per
+        # frame to discover it is identical would cost more than the work being
+        # avoided. Equal stamps from one camera mean one exposure.
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        if stamp_ns and stamp_ns == self._last_depth_stamp_ns:
+            self._n_dup_frames += 1
+            return
+        self._last_depth_stamp_ns = stamp_ns
         try:
+            _t_cvt = time.perf_counter()
             cv_image = self.bridge.imgmsg_to_cv2(
                 msg, desired_encoding='passthrough')
+            # Paid in the EXECUTOR's thread, once per accepted frame, whether or
+            # not the compute loop ever looks at it: it is the part of the depth
+            # path that competes with camera_info and TF rather than with the
+            # compute.
+            self._perf.set('cvt', (time.perf_counter() - _t_cvt) * 1e3)
             frame = (cv_image, msg)
             try:
                 self._frame_queue.put_nowait(frame)
@@ -438,13 +655,25 @@ class RealTimeDistance(Node):
     def _compute_loop(self):
         """Background daemon thread: blocks on queue for freshest frame."""
         while rclpy.ok():
+            # `wait` is the diagnostic that separates "the loop is too slow" from
+            # "the loop is being starved": it is the time this thread sat on an
+            # EMPTY queue with frames arriving at the camera's rate. Near zero
+            # means the compute is the ceiling; several milliseconds means the
+            # frames were there and this thread was not running.
+            _t_wait = time.perf_counter()
             try:
                 frame = self._frame_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            self._perf.set('wait', (time.perf_counter() - _t_wait) * 1e3)
             try:
                 if self.fx is not None:
-                    self._process_depth_impl(frame)
+                    # `all` is the whole per-frame cost, so the difference
+                    # against tf+mask+dist+track names what the stage timers do
+                    # not cover (message assembly, the vis snapshot, the
+                    # obstacle-cloud export, the publishes).
+                    with self._perf('all'):
+                        self._process_depth_impl(frame)
             except Exception as exc:
                 self._process_skip_count += 1
                 self.get_logger().error(
@@ -540,6 +769,12 @@ class RealTimeDistance(Node):
 
         self._check_calibration(depth, transforms)
 
+        # The frame counts the tracker and the self-detection guard run on are
+        # sized for a frame RATE, and this is the only place that knows what the
+        # rate actually is. Before the tracking block, so a rescale lands on the
+        # same frame that measured it.
+        self._retune_for_rate(stamp.sec + stamp.nanosec * 1e-9)
+
         # ── Cluster + track the SAME obstacle pixels the distances used ────
         # Fails soft on purpose: the distances are the primary safety signal and
         # must go out even if tracking blows up. A consumer that receives
@@ -619,9 +854,21 @@ class RealTimeDistance(Node):
                    if self.track_pipeline is not None else '')
             if self.self_detect is not None and self.self_detect.flagged:
                 trk += f' SELF={len(self.self_detect.flagged)}'
+            # Republished copies, cumulative. On the line because a rate read
+            # off `ros2 topic hz` counts them and this node does not: the gap
+            # between the two numbers is this counter.
+            dup = f' dup={self._n_dup_frames}' if self._n_dup_frames else ''
+            # leak = robot pixels the silhouette missed (they read as obstacles)
+            # tfage = how stale the poses the mask was drawn from are, relative
+            # to this depth frame. The two together say WHICH kind of mask
+            # failure is happening: holes, or a mask drawn where the arm was.
+            leak = f' leak={self.distance_engine.last_self_leak_px}'
+            tfage = (f' tfage={self.tf_mgr.last_pose_age_s * 1e3:.0f}ms'
+                     f'/L{"".join(str(n) for n in self.tf_mgr.last_levels)}')
             self._tlog_dist.info(
                 f'dist={min_dist:.3f} m  Z={closest_Z:.3f} m  '
-                f'pix={closest_uv_obs}  | {self._perf.summary()}{trk}')
+                f'pix={closest_uv_obs}  | {self._perf.summary()}{trk}'
+                f'{leak}{tfage}{dup}')
 
         # ── Publish ───────────────────────────────────────────────────────
         msgs = build_cp_messages(

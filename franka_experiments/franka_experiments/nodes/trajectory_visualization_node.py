@@ -77,12 +77,13 @@ class TrajectoryVisualizationNode(Node):
 
         rate = declare_float(self, 'publish_rate_hz', 20.0,
                              positive=True, maximum=200.0)
-        # Thin, as asked: the desired path is a reference, not an object. Wide
-        # enough to see at a metre, narrow enough that a 5 mm deviation is a
-        # visible gap rather than two lines touching.
-        self._w_des = declare_float(self, 'desired_line_width', 0.002,
+        # 5 mm: wide enough to read at a metre without leaning into the
+        # screen, narrow enough that a 1 cm deviation is still a visible gap
+        # rather than two lines touching. Below this the traces are there but
+        # nobody sees them, which is the same as not drawing them.
+        self._w_des = declare_float(self, 'desired_line_width', 0.005,
                                     positive=True, maximum=0.05)
-        self._w_act = declare_float(self, 'actual_line_width', 0.002,
+        self._w_act = declare_float(self, 'actual_line_width', 0.005,
                                     positive=True, maximum=0.05)
         self._label_min = declare_float(self, 'label_min_error_m', 0.002,
                                         minimum=0.0, maximum=1.0)

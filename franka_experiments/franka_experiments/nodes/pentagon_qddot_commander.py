@@ -224,9 +224,17 @@ class PentagonQddotCommander(Node):
         # itself slow down. RATIOS of the CBF's d_safe, read from the same
         # fr3_control.yaml the filter loads, so lowering d_safe lets the path
         # run closer too. 0.25 / 0.10 give the old 0.05 / 0.02 m at d_safe=0.20.
+        #
+        # The radii are TUNABLES and live in fr3_control.yaml's params: block —
+        # see the measurement there for why they went from 0.25 / 0.10
+        # (thresholds of 3.75 cm and 1.5 cm, which a real obstacle never
+        # reaches, so the governor never fired at all) to 1.5 / 0.8. The values
+        # below are only the fallback for a config that does not carry them.
         self.declare_parameter('governor_enabled',   True)
-        self.declare_parameter('governor_r_full',    0.25)  # [x d_safe] sigma = 1 above
-        self.declare_parameter('governor_r_stop',    0.10)  # [x d_safe] sigma = min below
+        self.declare_parameter('governor_r_full',
+                               float(_params.get('governor_r_full', 0.25)))
+        self.declare_parameter('governor_r_stop',
+                               float(_params.get('governor_r_stop', 0.10)))
         self.declare_parameter('governor_sigma_min', 0.05)  # never exactly 0
         self.declare_parameter('governor_timeout',   0.5)   # [s] stale -> sigma=1
         self.declare_parameter('cbf_status_topic',   '/NS_1/cbf_status')

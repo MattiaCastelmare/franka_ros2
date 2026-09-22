@@ -95,6 +95,15 @@ class PerfTimer:
     def __call__(self, key: str) -> '_TimerCtx':
         return _TimerCtx(self._ms, key)
 
+    def set(self, key: str, ms: float) -> None:
+        """Record a stage timed by the caller, in milliseconds.
+
+        For the intervals a context manager cannot wrap — a blocking wait whose
+        duration is the measurement, a span that starts in one thread's callback
+        and ends in another's loop.
+        """
+        self._ms[key] = float(ms)
+
     def summary(self) -> str:
         return '  '.join(f'{k}={v:.1f}ms' for k, v in self._ms.items())
 

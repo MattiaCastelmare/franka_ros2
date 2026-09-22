@@ -67,6 +67,21 @@ class TFManager:
         self._cache: Dict[str, _CacheEntry] = {}
         self._last_warn_t = 0.0
 
+        # ── Diagnostics for the LAST lookup_all call ────────────────────────
+        # How old the poses the mask was drawn from are, relative to the DEPTH
+        # FRAME they are drawn onto. Level 1 asks for the transform at the
+        # frame's stamp and fails whenever /tf has not reached it yet; Level 2
+        # then takes the latest available one SILENTLY, so a mask built on a
+        # pose one /tf period old looks identical in the logs to a mask built
+        # on the right one. At 15 Hz /tf that period is 67 ms, and an end
+        # effector at 0.5 m/s moves 33 mm in it — a leading edge of the arm
+        # left uncovered, which reads downstream as an obstacle at a gap of ~0.
+        #: [s] worst per-link pose age of the last lookup, frame stamp minus
+        #: transform stamp. Negative means the transform is AHEAD of the frame.
+        self.last_pose_age_s: float = 0.0
+        #: How many links resolved at each level: exact stamp / latest / cache.
+        self.last_levels = [0, 0, 0]
+
     # ── Public API ───────────────────────────────────────────────────────────
 
     def lookup_all(
@@ -82,6 +97,8 @@ class TFManager:
         """
         transforms: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
         failed: List[str] = []
+        self.last_pose_age_s = 0.0
+        self.last_levels = [0, 0, 0]
 
         for name in link_names:
             R, t = self._lookup_one(name, stamp)
@@ -147,6 +164,7 @@ class TFManager:
             tf = self._buf.lookup_transform(self._base, link_name, tf_time)
             R, t = _extract_Rt(tf)
             self._cache[link_name] = (R, t, now)
+            self._note_pose_age(stamp, tf.header.stamp, 0)
             return R, t
         except Exception:
             pass
@@ -156,6 +174,7 @@ class TFManager:
             tf = self._buf.lookup_transform(self._base, link_name, RclpyTime())
             R, t = _extract_Rt(tf)
             self._cache[link_name] = (R, t, now)
+            self._note_pose_age(stamp, tf.header.stamp, 1)
             return R, t
         except Exception:
             pass
@@ -166,6 +185,8 @@ class TFManager:
             age = now - ts
             if self._max_age is None or age <= self._max_age:
                 self._warn(f'TF using stale cache for {link_name} (age={age:.2f}s)')
+                self.last_levels[2] += 1
+                self.last_pose_age_s = max(self.last_pose_age_s, age)
                 return R, t
             # Cache entry is too old — treat as hard failure
             self._warn(
@@ -173,6 +194,18 @@ class TFManager:
                 f'(age={age:.2f}s > max={self._max_age:.2f}s)')
 
         return None, None
+
+    def _note_pose_age(self, frame_stamp, tf_stamp, level: int) -> None:
+        """Record how far behind the frame the pose actually is.
+
+        Kept as a MAXIMUM over the links of one lookup: the mask is only as
+        current as its worst link, and one lagging link is one uncovered limb.
+        """
+        self.last_levels[level] += 1
+        age = ((frame_stamp.sec - tf_stamp.sec)
+               + (frame_stamp.nanosec - tf_stamp.nanosec) * 1e-9)
+        if age > self.last_pose_age_s:
+            self.last_pose_age_s = age
 
     def _warn(self, msg: str):
         now = time.monotonic()
