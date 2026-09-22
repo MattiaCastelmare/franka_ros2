@@ -74,7 +74,29 @@ robot:
 # The node resolves the full path via ament_index_python at runtime.
 meshes:
   package: franka_description
-  sample_points_per_link: 300
+  # Points sampled per link mesh. They are the ONLY representation of the robot
+  # this pipeline has: the exclusion mask is their projection dilated, and
+  # `robot_depth` is their per-pixel minimum. 300 is sparse in both roles —
+  # the mask leans on the dilation to close the gaps between samples, and the
+  # depth buffer's front surface reads several centimetres too FAR, which is
+  # exactly the bias `mask.depth_gate_bias_m` now has to absorb
+  # (utils/calibration_check: -0.9 cm at 300, +1.4 cm at 3000, +6.0 cm at
+  # 20000, one unchanged extrinsic).
+  #
+  # 3000 buys back most of that bias. MEASURED cost of one rebuild (real
+  # meshes, this config, 848x480, 40 repetitions):
+  #
+  #     300 -> 0.75 ms    1000 -> 0.87 ms    3000 -> 1.52 ms    10000 -> 3.37 ms
+  #
+  # so this costs +0.8 ms on the `mask=` stage, against an 11.1 ms frame budget
+  # at 90 fps where `all=` already reaches 10 ms on a bad frame. 10000 is not
+  # affordable at this rate; 300 is one line away if the budget gets tight.
+  #
+  # What it does NOT fix is the mask's COVERAGE: in the same measurement the
+  # exclusion mask went from 4.5% to 4.6% of the frame, because the dilation
+  # was already closing the gaps between samples. Density is about the DEPTH
+  # buffer's bias and spread, not about holes in the silhouette.
+  sample_points_per_link: 3000
   files:
     fr3_link0: meshes/robot_arms/fr3/collision/link0.stl
     fr3_link1: meshes/robot_arms/fr3/collision/link1.stl
@@ -174,11 +196,35 @@ distance: # in meters
   ee_tip_offset: 0.10
   ee_tip_axis: 2 # 0=x, 1=y, 2=z
 
-  # Low-pass filter: EMA alpha for distance/direction smoothing across frames.
-  # Closer obstacles are always taken immediately (conservative).
-  # Only the recovery (obstacle moving away) is smoothed.
-  # 0.0 = no filter (raw), 0.9 = heavy smoothing (slow recovery)
+  # Low-pass filter on distance/direction. Closer obstacles are always taken
+  # immediately (conservative); only the recovery (obstacle moving away) is
+  # smoothed.
+  #
+  # STATED AS A TIME CONSTANT, not as a per-frame weight. lpf_alpha below is
+  # the legacy form and it is a weight PER FRAME, so the filter's bandwidth was
+  # whatever the depth profile happened to be: alpha 0.5 is a 48 ms lag at
+  # 30 Hz and a 16 ms one at 90 Hz -- three times less smoothing on the
+  # distance the CBF consumes, from a change nobody made to this file.
+  # lpf_tau_s pins the lag instead, and alpha is recomputed from the REAL
+  # inter-frame interval every frame (alpha = exp(-dt/tau)).
+  #
+  # 0.048 s is exactly what lpf_alpha 0.5 meant at the 30 Hz this was tuned at,
+  # so the migration is behaviour-preserving at that rate. 0 = no filter (raw);
+  # larger = heavier smoothing and slower recovery.
+  lpf_tau_s: 0.048
+  # Legacy per-frame weight. IGNORED while lpf_tau_s > 0; kept so a config that
+  # predates the time constant still runs, and as the record of where 0.048
+  # came from.
   lpf_alpha: 0.5
+
+  # [Hz] the depth rate this config is written for. It sizes every frame-counted
+  # threshold below BEFORE the first frame arrives, and it is the fallback dt
+  # for a frame with no usable stamp. It is a claim about the camera, not a
+  # measurement: real_time_distance measures the stream and rescales the counts
+  # (with a WARN) when the two disagree by more than 10% -- which is how a
+  # driver that quietly fell back to 15 fps stops silently doubling every
+  # lifecycle duration in this file.
+  depth_rate_hz: 90.0
 
   # Throttle interval [s] for repeated distance/obstacle log messages.
   log_throttle_s: 2.0
@@ -219,6 +265,40 @@ mask: # in pixels
   #
   # 0 disables the gate and restores the pure 2D silhouette exactly.
   depth_gate_tol_m: 0.06
+
+  # [m] SYSTEMATIC offset subtracted from the model depth before the gate
+  # compares, i.e. the gate is `depth < robot_depth - bias - tol`.
+  #
+  # WHY IT EXISTS. `robot_depth` is the MODEL's front surface, and the model is
+  # biased: at a pixel it is the nearest of however many mesh samples landed
+  # there, which sits farther than the true surface by an amount set by the
+  # SAMPLING DENSITY (utils/calibration_check has the measured swing: -0.9 cm
+  # at 300 samples/link, +6.0 cm at 20000, same extrinsic). A real extrinsic
+  # error adds to it.
+  #
+  # MEASURED 2026-09-21 on this rig: `measured - model = -6.1 cm (spread
+  # 5.0 cm)` for a whole run, against tol = 6.0 cm. The arm's own pixels sat ON
+  # the threshold, half the distribution crossed it, the gate un-excluded the
+  # arm and it became its own obstacle.
+  #
+  # ONLY THE SUM `bias + tol` CHANGES BEHAVIOUR — this is bookkeeping, not new
+  # arithmetic, and setting bias 0.06 here is numerically the same as putting
+  # tol at 0.12. The split is what makes the two maintainable: tol is the
+  # SPREAD (sensor noise, the mask's pose lag), bias is the MEDIAN, and the
+  # median moves by centimetres when sample_points_per_link moves, with no
+  # calibration having changed. In one number that is untraceable.
+  #
+  # The blind shell that matters is measured from the arm's TRUE surface and
+  # equals `tol` when the median is correct — it was ZERO (hence the leak)
+  # while the median went uncorrected.
+  #
+  # HOW TO SET IT. Read the calibration_check line and put the median here with
+  # the sign flipped: residual -6 cm -> 0.06. Re-read it after any change to
+  # sample_points_per_link. Over-correcting is the SAFE direction (the shell
+  # grows by the excess); under-correcting brings the leak back.
+  #
+  # 0 = the pre-2026-09-21 behaviour, gate against the raw model depth.
+  depth_gate_bias_m: 0.06
 
   robot_mask_dilate_px: 2
   ee_mask_dilate_px: 18
@@ -406,8 +486,15 @@ tracking:
   # the edge of the depth range flickers, and demanding consecutive hits would
   # keep restarting a track that is genuinely there — while a one-frame artefact
   # fails both rules anyway.
-  confirm_hits: 3
-  confirm_window: 5
+  #
+  # N IS A DURATION and M/N A RATIO, which is what makes this survive a change
+  # of depth profile: N answers "how long must a flickering cluster prove
+  # itself", M/N answers "how much of that time may be dropout", and dropout is
+  # a per-frame phenomenon. Scaling the COUNT instead would confirm a 33 ms
+  # speckle at 90 fps. 0.167 s x 0.6 rounds to 3-of-5 at 30 Hz (the tuning
+  # these were measured at) and to 9-of-15 at 90 Hz: 100 ms to birth either way.
+  confirm_window_s: 0.167
+  confirm_hits_frac: 0.6
 
   # ── Self-detection guard (utils/self_detection.py) ───────────────────────
   # The distance pipeline defines "obstacle" as "not robot", so the moment the
@@ -440,9 +527,10 @@ tracking:
   # behaviour; suppressing a distance would delete a barrier instead.
   self_detection:
     enabled: true
-    # Frames of history. 20 at 30 Hz is 0.67 s, in which a moving arm covers
-    # far more than motion_min_m.
-    window: 20
+    # History window, in SECONDS: what has to be spanned is a stretch of arm
+    # MOTION (see motion_min_m), which is a duration and not a frame count.
+    # 0.667 s is the 20 frames this was tuned with at 30 Hz.
+    window_s: 0.667
     # [m] how far the control point must have travelled before any judgement is
     # made. Below it the test is vacuous: a stationary arm next to a stationary
     # obstacle also has a constant offset, and flagging that would condemn every
@@ -453,12 +541,14 @@ tracking:
     # to frame) and well below the offset change a real obstacle produces while
     # the arm sweeps motion_min_m.
     offset_tol_m: 0.02
-    # Consecutive frames to raise the verdict, and to withdraw it. Withdrawal is
-    # slower on purpose: the fault is persistent by nature (a calibration does
-    # not come and go), so the verdict should be sticky, and a real obstacle
-    # that briefly happens to move with the arm must not clear it in one frame.
-    confirm: 5
-    release: 15
+    # How long the evidence must hold to raise the verdict, and to withdraw it.
+    # Withdrawal is slower on purpose: the fault is persistent by nature (a
+    # calibration does not come and go), so the verdict should be sticky, and a
+    # real obstacle that briefly happens to move with the arm must not clear it
+    # in one frame. In SECONDS: 0.167 / 0.5 are the 5 / 15 frames this was
+    # tuned with at 30 Hz.
+    confirm_s: 0.167
+    release_s: 0.5
 
   # ── Calibration drift check (utils/calibration_check.py) ─────────────────
   # Compares the PROJECTED ROBOT MODEL against the MEASURED DEPTH -- the one
@@ -492,10 +582,16 @@ tracking:
     baseline_m:           # empty = report only, never warn
     tolerance_m: 0.03     # [m] drift from baseline that raises the warning
 
-  # Frames a track may coast (predict without measurement) before deletion.
+  # How long a track may coast (predict without measurement) before deletion.
   # Bounded so an obstacle that has left stops contributing a velocity; long
   # enough that a hand passing behind the arm keeps its identity.
-  max_missed: 5
+  #
+  # IN SECONDS, because that is what the number means and what everything else
+  # is sized against: gate_max_m above is justified as "what a limb covers in
+  # the ~0.17 s a 5-frame coast lasts", and that sentence is only true if the
+  # coast stays 0.17 s when the frame rate changes. 0.167 s = the 5 frames this
+  # was tuned with at 30 Hz, = 15 frames at 90 Hz.
+  max_coast_s: 0.167
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Simulated obstacle (real_time_distance)  --  OFF, and it must stay off

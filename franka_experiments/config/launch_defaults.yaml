@@ -20,10 +20,25 @@ enable_camera: true
 # because with no profile librealsense chose 15 fps on this rig (July bags and
 # the Sep 2026 live runs both show a 66.7 ms frame period), which doubles the
 # sampling wait and turns a 13 ms camera hop into 62 ms — the largest single
-# item in the CBF's blind time (scripts/latency_budget.py). 848x480x30 is the
-# profile the D455 streamed for hours on this machine's USB 3 port. Set it to
-# "" to leave the driver's choice alone.
-camera_depth_profile: "848x480x30"
+# item in the CBF's blind time (scripts/latency_budget.py). Set it to "" to
+# leave the driver's choice alone.
+#
+# NOW AT 90 fps, verified against the hardware rather than the datasheet:
+# `v4l2-ctl -d /dev/video0 --list-formats-ext` lists Z16 90/60/30/15/5 fps at
+# 848x480 on this D455 (1280x720 caps at 30), and the link is USB 3.2 at
+# 5 Gbps, so the resolution does not have to drop for it. The compute has the
+# room: the Sep 2026 runs measured tf+mask+dist+track at 5-6 ms against an
+# 11.1 ms budget, and depth_callback keeps a Queue(maxsize=1), so a frame the
+# compute loop cannot take is DROPPED rather than queued — more fps buys a
+# fresher frame, never a backlog.
+#
+# What it would have broken, and no longer does: every frame-counted threshold
+# in the perception config (track coast, M-of-N birth, self-detection delays,
+# the distance EMA) used to be tuned against 30 Hz and would have shrunk 3x in
+# SECONDS. They are durations now (fr3_complete.yaml: max_coast_s,
+# confirm_window_s, window_s, lpf_tau_s) and real_time_distance derives the
+# counts from the rate it measures on the stream.
+camera_depth_profile: "848x480x90"
 # RealSense align_depth.enable. Driver default is false, so without this the
 # depth stream only ever publishes on /camera/camera/depth/* (unaligned to
 # the color pixel grid) — /camera/camera/aligned_depth_to_color/* simply does
@@ -108,6 +123,12 @@ start_human_pose: true
 human_pose_delay_s: 0.0
 start_real_time_distance: true
 real_time_distance_delay_s: 8.0
+# Publish the distance overlay (what the 'Robot + closest distance'
+# window draws) on /real_time_distance/overlay_image, so a bag can
+# record the picture itself instead of grabbing the screen. Off by
+# default: it costs one bgr8 frame per vis tick (perception.vis_rate_hz
+# in the robot config) even when nothing subscribes.
+publish_overlay_image: false
 
 # ── Torque control stack (torque_control_stack.launch.py) ─────────────
 # Startup sequencing and wiring for the acceleration-space torque pipeline.

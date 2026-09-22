@@ -190,6 +190,34 @@ class SelfDetectionMonitor:
                 'stale camera_extrinsics.yaml, or a robot_mask_dilate_px too '
                 'small for the depth noise at this range.')
 
+    def retune(self, *, window: int, confirm: int, release: int) -> bool:
+        """Resize the frame-counted thresholds in place. True when they moved.
+
+        ``window``, ``confirm`` and ``release`` are FRAME counts standing in for
+        durations — a travel window, a confirm delay, a release delay — and the
+        durations only survive a change of depth rate if the counts follow it
+        (see ``utils/rate_scaling``).
+
+        The verdicts and the per-key histories are KEPT. A verdict is a claim
+        about the calibration, which a frame rate has no bearing on, and
+        dropping it here would make a rate change silently un-flag an arm that
+        is still reading its own elbow as an obstacle. Histories longer than the
+        new window are trimmed; shorter ones simply refill, during which the
+        test is vacuous exactly as it is on a fresh key.
+        """
+        win = max(2, int(window))
+        con = max(1, int(confirm))
+        rel = max(1, int(release))
+        if (win, con, rel) == (self.window, self.confirm, self.release):
+            return False
+        self.window = win
+        self.confirm = con
+        self.release = rel
+        for h in self._hist.values():
+            if len(h) > win:
+                del h[:-win]
+        return True
+
     def reset(self) -> None:
         self._hist.clear()
         self._hits.clear()

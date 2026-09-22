@@ -50,19 +50,44 @@ def scene(hand_z=None, hand_box=(14, 26, 14, 26)):
     return depth, excl, robot_depth
 
 
-def surviving(depth, excl, robot_depth, tol=TOL):
-    """Pixels the exclusion step keeps, as a set of (row, col)."""
+def surviving(depth, excl, robot_depth, tol=TOL, bias=0.0):
+    """Pixels the exclusion step keeps, as a set of (row, col).
+
+    Mirrors the comparison in ``DistanceEngine`` — including the bias that
+    corrects the model surface — so a scene can be reasoned about without a
+    camera. ``test_the_engine_reads_the_bias_from_config`` is what keeps this
+    mirror honest about the real code reading the key.
+    """
     e = engine(tol)
     vg, ug = np.mgrid[0:H, 0:W]
     vg, ug = vg.ravel(), ug.ravel()
     keep_mask = excl[vg, ug]
     if robot_depth is not None and tol > 0:
-        z_rob = robot_depth[vg, ug]
+        z_rob = robot_depth[vg, ug] - bias
         d_here = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
         in_front = (d_here > 0) & (d_here < z_rob - tol)
         keep_mask = keep_mask & ~in_front
     kept = ~keep_mask
     return set(zip(vg[kept].tolist(), ug[kept].tolist()))
+
+
+def biased_scene(model_offset=0.06, measured=(1.47, 1.53)):
+    """The rig's own failure, 2026-09-21: a model that sits BEHIND the arm.
+
+    ``calibration_check`` read ``measured - model = -6.1 cm (spread 5.0 cm)``
+    for a whole run, so the model surface is ``model_offset`` farther than the
+    true one and the arm's own pixels are scattered around it. Half the band
+    reads 9 cm in front of the model, half 3 cm — which is what makes the gate
+    un-exclude one half and not the other.
+    """
+    depth = np.full((H, W), 3.0 / _DEPTH_TO_M, dtype=np.uint16)
+    excl = np.zeros((H, W), dtype=bool)
+    robot_depth = np.full((H, W), np.inf, dtype=np.float32)
+    excl[10:30, 10:30] = True
+    robot_depth[10:30, 10:30] = ROBOT_Z + model_offset
+    depth[10:20, 10:30] = np.uint16(measured[0] / _DEPTH_TO_M)
+    depth[20:30, 10:30] = np.uint16(measured[1] / _DEPTH_TO_M)
+    return depth, excl, robot_depth
 
 
 # ── THE POINT OF THE CHANGE ──────────────────────────────────────────────────
@@ -211,3 +236,101 @@ def test_the_buffer_follows_the_arm():
     b.rebuild({'fr3_link3': (np.eye(3), np.array([0.0, 0.0, 2.0]))}, (240, 320))
     far = float(b.robot_depth[np.isfinite(b.robot_depth)].min())
     assert far > near + 0.8
+
+
+# ── THE BIASED MODEL: the failure seen on the rig, and its fix ───────────────
+
+def test_a_model_behind_the_arm_makes_the_arm_its_own_obstacle():
+    """Reproduces the field failure with bias = 0, i.e. the old behaviour.
+
+    Nothing is in front of this arm. The gate still hands back half its band,
+    because those pixels are more than `tol` in front of a model that is itself
+    6 cm too far — and everything downstream then sees an obstacle at a gap of
+    ~0 on the robot's own surface.
+    """
+    depth, excl, zbuf = biased_scene()
+    leaked = [p for p in surviving(depth, excl, zbuf, bias=0.0)
+              if 10 <= p[0] < 30 and 10 <= p[1] < 30]
+    assert len(leaked) == 200, 'the 9 cm half of the band must leak'
+    assert all(p[0] < 20 for p in leaked), 'and only that half'
+
+
+def test_the_bias_restores_the_exclusion():
+    """With the systematic part corrected, the same arm is the arm again."""
+    depth, excl, zbuf = biased_scene()
+    assert not [p for p in surviving(depth, excl, zbuf, bias=0.06)
+                if 10 <= p[0] < 30 and 10 <= p[1] < 30]
+
+
+def test_the_bias_does_not_blind_the_pipeline():
+    """The blind shell stays `tol` from the arm's TRUE surface, not tol+bias.
+
+    This is the whole reason for correcting the model instead of widening the
+    tolerance: tol = 0.12 would also have stopped the leak, and would have hid
+    a hand anywhere inside 12 cm of the arm — the `critical` zone is 10 cm.
+    """
+    depth, excl, zbuf = biased_scene()
+    for gap in (0.10, 0.20, 0.50):
+        depth_h = depth.copy()
+        depth_h[14:26, 14:26] = np.uint16((ROBOT_Z - gap) / _DEPTH_TO_M)
+        kept = surviving(depth_h, excl, zbuf, bias=0.06)
+        assert (20, 20) in kept, f'a hand {gap * 100:.0f} cm in front must be seen'
+
+
+def test_only_the_sum_of_bias_and_tolerance_changes_anything():
+    """The honest statement of what the split does: nothing, numerically.
+
+    `depth < z_rob - bias - tol` depends on the SUM, so bias 0.06 + tol 0.06 is
+    the same gate as tol 0.12 with no bias. The split is bookkeeping — it keeps
+    the median (which moves with sample_points_per_link) apart from the spread
+    (which does not) — and this test exists so nobody reads the two keys as
+    independent safety margins.
+    """
+    depth, excl, zbuf = biased_scene()
+    depth[14:26, 14:26] = np.uint16((ROBOT_Z - 0.10) / _DEPTH_TO_M)
+    assert (surviving(depth, excl, zbuf, tol=0.12, bias=0.0)
+            == surviving(depth, excl, zbuf, tol=0.06, bias=0.06))
+
+
+def test_the_blind_shell_is_measured_from_the_true_surface():
+    """Correcting the median restores the shell `tol` asks for.
+
+    With the model 6 cm behind the arm and no correction the shell is ZERO: a
+    pixel at the arm's own surface is already 'in front' of the model by the
+    whole tolerance, which is the leak. Correct the median and the nearest
+    visible obstacle sits `tol` from the surface again, not 0 and not tol+bias.
+    """
+    depth, excl, zbuf = biased_scene()
+    # A hand 7 cm in front of the TRUE surface: beyond tol, so it must be seen.
+    depth[14:26, 14:26] = np.uint16((ROBOT_Z - 0.07) / _DEPTH_TO_M)
+    assert (20, 20) in surviving(depth, excl, zbuf, bias=0.06)
+    # And one 3 cm in front is inside the tolerance, so it must not be.
+    depth[14:26, 14:26] = np.uint16((ROBOT_Z - 0.03) / _DEPTH_TO_M)
+    assert (20, 20) not in surviving(depth, excl, zbuf, bias=0.06)
+
+
+def test_the_engine_reads_the_bias_from_config():
+    e = DistanceEngine({'min_depth_m': 0.15, 'max_depth_m': 4.0,
+                        'lpf_alpha': 0.0, 'depth_gate_tol_m': 0.06,
+                        'depth_gate_bias_m': 0.06})
+    assert e._depth_gate_bias == pytest.approx(0.06)
+    assert e.last_self_leak_px == 0
+    # Absent key = the pre-fix behaviour, bit for bit.
+    assert engine()._depth_gate_bias == 0.0
+
+
+def test_the_shipped_config_corrects_the_measured_residual():
+    """fr3_complete.yaml carries the bias the rig actually measured."""
+    import os
+    import yaml
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, 'config', 'fr3_complete.yaml')) as fh:
+        cfg = yaml.safe_load(fh)
+    mask = cfg['mask']
+    assert mask['depth_gate_bias_m'] == pytest.approx(0.06)
+    # The tolerance must keep covering the SPREAD only: a tolerance grown to
+    # swallow the bias is the fix this one replaced.
+    assert mask['depth_gate_tol_m'] <= 0.08
+    # Denser sampling is the other half of the same fix: it removes part of the
+    # bias at the source instead of correcting it downstream.
+    assert cfg['meshes']['sample_points_per_link'] >= 3000

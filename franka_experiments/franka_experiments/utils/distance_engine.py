@@ -47,6 +47,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 import numpy as np
 
 from franka_experiments.utils.obstacle_clusters import label_points
+from franka_experiments.utils.rate_scaling import ema_alpha_for
 
 
 class ObstacleHit(NamedTuple):
@@ -152,6 +153,27 @@ class DistanceEngine:
         self.min_depth  = float(distance_cfg['min_depth_m'])
         self.max_depth  = float(distance_cfg['max_depth_m'])
         self._lpf_alpha = float(distance_cfg.get('lpf_alpha', 0.5))
+        # The rate-independent form of the same filter. lpf_alpha is a weight
+        # PER FRAME, so its bandwidth is whatever the depth profile happens to
+        # be: 0.5 at 30 Hz is a 48 ms lag and the same 0.5 at 90 Hz is 16 ms —
+        # three times less smoothing on the distance the CBF consumes, for a
+        # change nobody made to this file. With lpf_tau_s set, alpha is
+        # recomputed from the REAL inter-frame interval every frame and the lag
+        # is the number written here. Absent (or 0) keeps the legacy per-frame
+        # alpha bit for bit.
+        self._lpf_tau_s = float(distance_cfg.get('lpf_tau_s', 0.0) or 0.0)
+        # Fallback alpha for the frames that carry no usable dt (the first one,
+        # a duplicate stamp, a stall). Zero would not do: alpha <= 0 disables
+        # the whole smoothing pass, approach rate-limit included, and one
+        # unstamped frame must not open that door.
+        self._lpf_alpha_nominal = ema_alpha_for(
+            self._lpf_tau_s,
+            1.0 / float(distance_cfg.get('lpf_nominal_rate_hz', 30.0) or 30.0))
+        if self._lpf_tau_s > 0.0 and self._log is not None:
+            self._log.info(
+                f'distance EMA: tau={self._lpf_tau_s * 1e3:.0f} ms '
+                f'(rate-independent); legacy lpf_alpha={self._lpf_alpha:.2f} '
+                f'ignored, fallback alpha={self._lpf_alpha_nominal:.2f}')
 
         # Approach-spike outlier rejection (rate-limit + 1-frame confirmation).
         # v_max_approach: implied approach speed [m/s] above which a closer
@@ -170,6 +192,15 @@ class DistanceEngine:
         # is the pre-change behaviour and the fallback when no depth buffer is
         # supplied.
         self._depth_gate_tol = float(distance_cfg.get('depth_gate_tol_m', 0.0))
+        # Systematic model-minus-measurement offset of the robot's own surface,
+        # SUBTRACTED from the model depth before the gate compares. See the long
+        # note at the comparison: with a biased model the tolerance alone cannot
+        # separate "the arm" from "in front of the arm", and widening the
+        # tolerance to cover the bias blinds the pipeline by the same amount.
+        self._depth_gate_bias = float(distance_cfg.get('depth_gate_bias_m', 0.0))
+        #: Pixels kept as obstacle candidates that sit at the robot's own
+        #: surface — the arm read as an obstacle. DIAGNOSTIC, see the gate.
+        self.last_self_leak_px: int = 0
 
         self._grid_roi: Optional[tuple] = None
         self._grid_ug:  Optional[np.ndarray] = None
@@ -307,10 +338,56 @@ class DistanceEngine:
                 # disagreement between the projected model and the depth, and a
                 # tolerance under that would classify the arm as an obstacle
                 # wherever the calibration is worst.
-                z_rob = robot_depth[vg, ug]
+                # ── The model surface, corrected ────────────────────────────
+                # `robot_depth` is where the MODEL puts the arm, and the model
+                # is biased: the front surface at a pixel is the nearest of
+                # however many mesh samples happened to land on it, which sits
+                # FARTHER than the true surface by an amount that depends on
+                # the sampling density (utils/calibration_check documents the
+                # measured swing: -0.9 cm at 300 samples/link, +6.0 cm at
+                # 20000, on one unchanged extrinsic). Any real extrinsic error
+                # adds to that.
+                #
+                # MEASURED on the rig 2026-09-21: the calibration check read
+                # `measured - model = -6.1 cm (spread 5.0 cm)` for a whole run,
+                # against a gate tolerance of 6.0 cm. So the arm's own pixels
+                # sat exactly ON the threshold and half the distribution
+                # crossed it: `depth < z_rob - tol` was TRUE for the arm's own
+                # surface, the gate un-excluded it, and the arm became its own
+                # obstacle.
+                #
+                # ONLY THE SUM `bias + tol` CHANGES ANY BEHAVIOUR. Splitting it
+                # is not arithmetic, it is bookkeeping, and the bookkeeping is
+                # the point: `tol` is the SPREAD of the residual (sensor noise,
+                # the mask's pose lag) and `bias` is its MEDIAN, which moves
+                # when `sample_points_per_link` moves — several centimetres of
+                # it, with no calibration having changed. Folded into one
+                # number, densifying the mesh silently inflates the blind
+                # shell and nobody can tell which part of it was which.
+                #
+                # The shell that matters is measured from the arm's TRUE
+                # surface, and it is `tol` once the median is corrected. Read
+                # the median off the calibration_check line and put it in
+                # mask.depth_gate_bias_m, positive when the residual is
+                # negative.
+                z_rob = robot_depth[vg, ug] - self._depth_gate_bias
                 depth_here = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
                 in_front = (depth_here > 0) & (depth_here < z_rob - self._depth_gate_tol)
                 excluded = excluded & ~in_front
+                # ── DIAGNOSTIC: self pixels that leaked past the mask ───────
+                # A pixel the mask did NOT exclude, sitting AT the robot's own
+                # surface (within the same tolerance the gate uses), is the
+                # robot being read as an obstacle. The z-buffer is the ground
+                # truth here and it is already in hand, so the count is two
+                # ufuncs on a grid that is decimated by pixel_step.
+                #
+                # It counts what the SILHOUETTE missed, which is the only way
+                # the leak can happen: the gate above can un-exclude a pixel,
+                # never exclude one, so everything outside the mask is kept
+                # whatever its depth.
+                self.last_self_leak_px = int(np.count_nonzero(
+                    (~excluded) & np.isfinite(z_rob)
+                    & (np.abs(depth_here - z_rob) <= self._depth_gate_tol)))
             keep   = ~excluded
             ug, vg = ug[keep], vg[keep]
 
@@ -511,11 +588,10 @@ class DistanceEngine:
         dt is the REAL inter-frame interval [s]; when None/≤0 the rate-limit is
         skipped and every branch is bit-for-bit the legacy behaviour.
         """
-        alpha = self._lpf_alpha
+        dt_valid = dt is not None and dt > 1e-4   # guard div-by-0 / dup stamps
+        alpha = self._alpha_for(dt if dt_valid else None)
         if alpha <= 0.0:
             return results
-
-        dt_valid = dt is not None and dt > 1e-4   # guard div-by-0 / dup stamps
 
         smoothed: List[ControlPointResult] = []
         for r in results:
@@ -601,6 +677,19 @@ class DistanceEngine:
             smoothed.append(self._mk_result(r, d_new, dir_new))
 
         return smoothed
+
+    def _alpha_for(self, dt: Optional[float]) -> float:
+        """The EMA weight on history for this frame.
+
+        With ``lpf_tau_s`` unset this is the legacy constant. With it set the
+        weight comes from the measured interval, so the lag stays put when the
+        depth profile changes; a frame with no usable interval falls back to the
+        weight the nominal rate implies rather than to no smoothing at all.
+        """
+        if self._lpf_tau_s <= 0.0:
+            return self._lpf_alpha
+        a = ema_alpha_for(self._lpf_tau_s, dt) if dt is not None else 0.0
+        return a if a > 0.0 else self._lpf_alpha_nominal
 
     @staticmethod
     def _smooth_direction(dir_prev, dir_raw, alpha):

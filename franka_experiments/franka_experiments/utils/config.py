@@ -442,6 +442,18 @@ CBF_PARAM_SPEC = {
     'obstacle_velocity_max': ('float', dict(positive=True, maximum=10.0)),
     'obstacle_velocity_source': ('str', dict(choices=('residual', 'tracker'))),
     'obstacle_velocity_min_frames': ('int', dict(minimum=1, maximum=100)),
+    # Rate-independent forms of the four devices that condition v_obs. Every
+    # one of them is a DURATION; the frame counts they replace stay above as
+    # fallbacks. 0 = use the frame-counted form (the pre-2026-09-21 path).
+    'obstacle_velocity_dt_min_s': ('float', dict(minimum=0.0, maximum=0.5)),
+    'obstacle_velocity_tau_s': ('float', dict(minimum=0.0, maximum=1.0)),
+    'obstacle_velocity_median_s': ('float', dict(minimum=0.0, maximum=1.0)),
+    'obstacle_velocity_rot_hold_s': ('float', dict(minimum=0.0, maximum=1.0)),
+    'obstacle_velocity_min_span_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    'velocity_feedforward_min_span_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    # [Hz] the perception rate the gates are sized with BEFORE the stream has
+    # been measured. A claim about the camera profile, corrected at runtime.
+    'obstacle_input_rate_hz': ('float', dict(positive=True, maximum=1000.0)),
     'obstacle_velocity_residual_floor': ('bool', dict()),
     'obstacle_velocity_median': ('int', dict(minimum=1, maximum=15)),
     'obstacle_velocity_track_deadband': ('float', dict(minimum=0.0, maximum=1.0)),

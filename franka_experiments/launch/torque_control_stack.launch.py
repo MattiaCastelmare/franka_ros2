@@ -125,7 +125,7 @@ _ALL_PARAMS = [
     'control_spawner_delay_s', 'rt_pin_cpu',
     'enable_camera', 'camera_extrinsics_yaml', 'camera_link_extrinsics_yaml', 'camera_delay_s',
     'camera_depth_profile', 'camera_align_depth',
-    'start_real_time_distance',
+    'start_real_time_distance', 'publish_overlay_image',
     'obstacle_tracking', 'obstacle_velocity_source', 'lateral_evasion', 'outrun_evasion',
     'livelock_escape', 'latency_compensation',
     'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
@@ -189,8 +189,33 @@ def _as_float_list(x: str):
     return [float(v) for v in s.replace(';', ',').split(',') if v.strip()]
 
 
+def _profile_fps(profile: str) -> float | None:
+    """The fps out of a RealSense profile string, e.g. ``848x480x90`` -> 90.0.
+
+    THE SINGLE SOURCE OF TRUTH for the perception rate. Two consumers size
+    windows and gates with it — `distance.depth_rate_hz` in the perception
+    config and `obstacle_input_rate_hz` in the control config — and a rate that
+    is written down three times is a rate that will disagree with itself after
+    the next profile change. So it is parsed from the profile here and pushed
+    into both, and each consumer still MEASURES its own stream and says so if
+    the claim turns out to be false.
+
+    ``None`` when the profile is empty (the driver picks) or unparseable, which
+    leaves each config's own value in place.
+    """
+    parts = str(profile).strip().lower().split('x')
+    if len(parts) != 3:
+        return None
+    try:
+        fps = float(parts[2])
+    except ValueError:
+        return None
+    return fps if 1.0 <= fps <= 1000.0 else None
+
+
 def _rtd_config_with_overrides(path: str, *, tracking: bool,
-                               sim_obstacle: bool) -> str:
+                               sim_obstacle: bool,
+                               depth_rate_hz: float | None = None) -> str:
     """Return ``path``, or a copy of it with the two perception switches forced.
 
     ``real_time_distance`` reads its perception configuration from a YAML rather
@@ -198,10 +223,14 @@ def _rtd_config_with_overrides(path: str, *, tracking: bool,
     ``utils.params`` cannot express. That is the right shape for the file and
     the wrong shape for a launch argument, so this bridges the two.
 
-    Returns the ORIGINAL path when neither switch is set, so the common case
+    ``depth_rate_hz`` comes from the camera profile (see :func:`_profile_fps`)
+    and is written into ``distance.depth_rate_hz``, which is what sizes every
+    frame-counted perception threshold before the stream has been measured.
+
+    Returns the ORIGINAL path when nothing has to be forced, so the common case
     touches no filesystem and the node reads exactly the installed file.
     """
-    if not (tracking or sim_obstacle):
+    if not (tracking or sim_obstacle or depth_rate_hz):
         return path
     import os
     import tempfile
@@ -211,6 +240,8 @@ def _rtd_config_with_overrides(path: str, *, tracking: bool,
         cfg.setdefault('tracking', {})['enabled'] = True
     if sim_obstacle:
         cfg.setdefault('sim_obstacle', {})['enabled'] = True
+    if depth_rate_hz:
+        cfg.setdefault('distance', {})['depth_rate_hz'] = float(depth_rate_hz)
     out = os.path.join(tempfile.gettempdir(),
                        f'fr3_complete_launch_{os.getpid()}.yaml')
     with open(out, 'w') as f:
@@ -541,6 +572,7 @@ def _launch_all(context):
             p['robot_config_yaml'],
             tracking=_as_bool(p['obstacle_tracking']),
             sim_obstacle=_as_bool(p['sim_obstacle']),
+            depth_rate_hz=_profile_fps(p['camera_depth_profile']),
         )
         real_time_distance_node = Node(
             package='franka_experiments',
@@ -554,6 +586,11 @@ def _launch_all(context):
                 # Obstacle rows per control point, one per cluster; overrides
                 # perception.multi_obstacle_k in fr3_control.yaml (0 = YAML).
                 'multi_obstacle_k':       int(p['multi_obstacle_k']),
+                # The picture in the 'Robot + closest distance' window, as a
+                # topic, for recording it without a screen grabber. OFF by
+                # default: it is a bgr8 frame per vis tick whether or not
+                # anyone subscribes.
+                'publish_overlay_image':  _as_bool(p['publish_overlay_image']),
             }],
         )
         actions.append(TimerAction(period=rtd_delay, actions=[real_time_distance_node]))
@@ -577,7 +614,13 @@ def _launch_all(context):
         package='franka_experiments',
         executable='cbf_safety_filter',
         name='cbf_safety_filter',
-        output='screen',
+        # 'both', not 'screen': the CBFDIAG line carries vobs=, nrot=, hhold=
+        # and the active-row counts — the only record of WHY the arm moved the
+        # way it did — and with 'screen' it existed solely in whichever
+        # terminal the operator happened to be looking at. A static-obstacle
+        # oscillation is diagnosed from those fields after the fact or not at
+        # all, so they belong in ~/.ros/log/<run>/launch.log too.
+        output='both',
         additional_env=_SINGLE_THREAD_BLAS,
         # These three are ordinary ROS parameters, so they override the YAML
         # without rewriting it — declare_from_spec reads the parameter back
@@ -586,6 +629,12 @@ def _launch_all(context):
             'obstacle_velocity_source': p['obstacle_velocity_source'],
             'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
             'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
+            # The perception rate, from the camera profile — the one place it
+            # is written down. It sizes the evidence gates behind v_obs until
+            # the filter has measured the distance stream itself; a stream that
+            # does not match says so in a WARN and the gates are re-derived.
+            **({'obstacle_input_rate_hz': _profile_fps(p['camera_depth_profile'])}
+               if _profile_fps(p['camera_depth_profile']) else {}),
             'enable_livelock_escape':   _as_bool(p['livelock_escape']),
             'enable_latency_compensation': _as_bool(p['latency_compensation']),
             'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
@@ -747,7 +796,15 @@ def _launch_all(context):
             executable='pentagon_qddot_commander',
             name='pentagon_qddot_commander',
             namespace=p['namespace'],
-            output='screen',
+            # 'both', for the same reason as cbf_safety_filter: the governor's
+            # startup line and its `phase governor throttling (sigma=…)`
+            # warnings are the record of what the PHASE did, and a run where
+            # the reference ran away from the arm cannot be read back without
+            # them. On 'screen' they lived only in the operator's terminal —
+            # the 2026-09-22 static-obstacle run had to be reconstructed by
+            # differencing `s` against `time` in the CSV to find out whether
+            # the governor had engaged at all.
+            output='both',
             additional_env=_SINGLE_THREAD_BLAS,
             # Path geometry (centre / shape / radius) is NOT set here: the node
             # reads it from config/fr3_control.yaml (params: path_center_xyz,
@@ -911,6 +968,16 @@ def generate_launch_description():
                 'start_real_time_distance',
                 default_value=_DEFAULTS.get('start_real_time_distance', 'true'),
                 description='Start real_time_distance node'),
+            DeclareLaunchArgument(
+                'publish_overlay_image',
+                default_value=str(_DEFAULTS.get('publish_overlay_image',
+                                                'false')),
+                description='Publish the real_time_distance overlay — exactly '
+                            'what its OpenCV window shows — on '
+                            '/real_time_distance/overlay_image, so it can be '
+                            'recorded into a bag. The window itself is '
+                            'independent (booleans.visualize in the robot '
+                            'config)'),
             DeclareLaunchArgument(
                 'start_experiment_logger',
                 default_value=str(_DEFAULTS.get('start_experiment_logger', 'true')),

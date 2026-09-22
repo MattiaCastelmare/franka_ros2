@@ -1148,7 +1148,24 @@ NV         = 7
 #: 3 frames is 100 ms at 30 Hz, the same order as obstacle_velocity_min_frames,
 #: and short enough that a genuinely accelerating obstacle is re-measured well
 #: inside the barrier's own 0.3 s time constant.
+#:
+#: COUNTED IN FRAMES IS WHAT WENT WRONG. The perception stream is a parameter
+#: now (848x480x90 since 2026-09-21), and at 84 Hz these 3 frames are 36 ms:
+#: the guard gives up 2.8x sooner and the artefact it exists to suppress comes
+#: straight through. The duration is what was reasoned about, so the duration
+#: is what is configured — `obstacle_velocity_rot_hold_s` — and this stays only
+#: as the fallback for a config that predates it.
 _ROT_HOLD_MAX = 3
+
+#: [s] the duration the 3 frames above stood for, at the 30 Hz they were
+#: measured at. Default for `obstacle_velocity_rot_hold_s`.
+_ROT_HOLD_S = 0.10
+
+#: Hard cap on the median history when its window is a DURATION. Only there to
+#: bound memory if the stream stalls; the window does the filtering. A constant
+#: on purpose — deriving it from a nominal rate is how a 30 Hz assumption would
+#: creep back in and silently shorten an 84 Hz stream's window.
+_VMED_MAX_TAPS = 64
 
 #: [s] longest gap over which the identity test's PHYSICAL term keeps growing.
 #:
@@ -1169,6 +1186,10 @@ _ROT_HOLD_MAX = 3
 _IDENT_DT_MAX = 0.2
 
 G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD = 0, 1, 2, 3, 4, 5
+
+#: Rate-independent tuning: see the module that documents why every
+#: window on this path is a duration and not a frame count.
+from franka_experiments.utils.rate_scaling import ema_alpha_for, frames_for
 
 #: The link the ISO 'reduced' mode's 250 mm/s row is built on, and the one
 #: ``iso_safety_monitor`` applies its copy of the same cap to (its
@@ -1483,6 +1504,38 @@ class ConstraintBuilder:
         # Per-label median window for the CONSUMED closing speed, same
         # bounded key set (one per control point).
         self._obs_vmed: dict = {}
+
+        # ── Rate-independent conditioning of v_obs ───────────────────────────
+        # Every device that conditions this estimate — the differencing
+        # interval, the EMA, the median window, the rotation hold, the
+        # evidence gates — was tuned against a 30 Hz perception stream, and
+        # three of the five were expressed as FRAME COUNTS. The stream is a
+        # parameter (`camera_depth_profile`, 848x480x90 since 2026-09-21), and
+        # the constraint builder runs at `cbf_update_rate_hz` (50 Hz): at 30 Hz
+        # input it saw the same frame twice out of three rebuilds, at 84 Hz it
+        # sees a new one every time. So the windows shrank by up to 1.65x and
+        # the differencing noise grew by the same factor — on the one quantity
+        # this repo has already watched make the arm oscillate (see
+        # `obstacle_velocity_alpha` in fr3_control.yaml and the measured square
+        # wave in `_residual_velocity`).
+        #
+        # Everything here is therefore a DURATION, and the frame counts the
+        # gates still need are derived from the rate the stream is MEASURED at
+        # (set_input_rate, called by the node). The frame-counted parameters
+        # remain as fallbacks so an unmigrated config behaves exactly as before.
+        self._vres_dt_min = float(getattr(P, 'obstacle_velocity_dt_min_s', 0.0))
+        self._vres_tau = float(getattr(P, 'obstacle_velocity_tau_s', 0.0))
+        self._vmed_window_s = float(
+            getattr(P, 'obstacle_velocity_median_s', 0.0))
+        self._rot_hold_s = float(
+            getattr(P, 'obstacle_velocity_rot_hold_s', _ROT_HOLD_S))
+        #: When a rejection run started, per label, for the time-based hold.
+        self._obs_rothold_t0: dict = {}
+        # Nominal until the node measures the stream; see set_input_rate.
+        self._in_hz = float(getattr(P, 'obstacle_input_rate_hz', 30.0))
+        self._min_frames_eff = int(P.obstacle_velocity_min_frames)
+        self._ff_min_frames_eff = int(P.velocity_feedforward_min_frames)
+        self._apply_input_rate(self._in_hz)
         self._qlim_stuck, self._fid_cache = {}, {}
         # Per-label smoothing state for the uncertainty margin.
         self._unc_ema: dict = {}
@@ -1543,6 +1596,38 @@ class ConstraintBuilder:
         # identity signal never fired and the threshold is wrong.
         # See _obstacle_identity_changed.
         self.diag_ident_reset = 0
+
+    # ── Rate-dependent gates ────────────────────────────────────────────────
+
+    def _apply_input_rate(self, hz: float) -> None:
+        """Derive the frame-counted evidence gates from a perception rate.
+
+        The gates stay counts of MEASUREMENTS on purpose — a track coasting
+        through an occlusion must not accumulate evidence it does not have, and
+        `_tracked_velocity` documents that — but how many measurements make up
+        the evidence WINDOW the tuning reasoned about depends on the rate. So
+        the span is configured and the count is derived.
+        """
+        span = float(getattr(self._P, 'obstacle_velocity_min_span_s', 0.0))
+        ff_span = float(getattr(self._P, 'velocity_feedforward_min_span_s', 0.0))
+        if span > 0.0:
+            self._min_frames_eff = frames_for(span, hz, minimum=2)
+        if ff_span > 0.0:
+            self._ff_min_frames_eff = frames_for(ff_span, hz, minimum=2)
+
+    def set_input_rate(self, hz: float) -> bool:
+        """Re-derive the gates for a measured perception rate. True if changed.
+
+        Called by the node when its estimate of the distance stream's rate
+        moves materially. Nothing here touches state that a row depends on
+        mid-solve: the counts are read at the top of the next `build`.
+        """
+        if not (hz > 0.0):
+            return False
+        before = (self._min_frames_eff, self._ff_min_frames_eff)
+        self._in_hz = float(hz)
+        self._apply_input_rate(self._in_hz)
+        return (self._min_frames_eff, self._ff_min_frames_eff) != before
 
     def build(self, js, obs, now):
         if now - obs.stamp > self._P.distance_timeout:
@@ -1864,6 +1949,11 @@ class ConstraintBuilder:
             # Keyed on the CAPTURE stamp, so the window is a time window: the
             # builder runs at 50 Hz on a 30 Hz stream and would otherwise
             # count the same frame twice.
+            # The window is a DURATION when one is configured. The table above
+            # was measured on a 30 Hz stream, where 5 taps spanned 167 ms; five
+            # taps of an 84 Hz stream span 100 ms and reject less of exactly
+            # the noise that table is about. With `obstacle_velocity_median_s`
+            # set, taps are dropped by age and the count follows the rate.
             k_med = int(self._P.obstacle_velocity_median)
             if k_med > 1:
                 hist = self._obs_vmed.setdefault(lbl, [])
@@ -1871,8 +1961,21 @@ class ConstraintBuilder:
                     hist[-1] = (obs.t_cap, v_o)
                 else:
                     hist.append((obs.t_cap, v_o))
-                while len(hist) > k_med:
-                    hist.pop(0)
+                if self._vmed_window_s > 0.0:
+                    t_min = obs.t_cap - self._vmed_window_s
+                    while len(hist) > 2 and hist[0][0] < t_min:
+                        hist.pop(0)
+                    # A constant cap on top, purely so a stalled stream cannot
+                    # grow the list without bound. Deliberately NOT derived
+                    # from an assumed rate: a cap that assumed 30 Hz would trim
+                    # an 84 Hz stream's window back to 5 taps and quietly undo
+                    # the duration above. 64 taps is past any window this
+                    # parameter admits at any rate the camera can deliver.
+                    while len(hist) > _VMED_MAX_TAPS:
+                        hist.pop(0)
+                else:
+                    while len(hist) > k_med:
+                        hist.pop(0)
                 v_o = float(np.median([x[1] for x in hist]))
 
             # ── Tracked obstacle velocity INSIDE ḣ (enable_vobs_in_hdot) ─────
@@ -1886,7 +1989,7 @@ class ConstraintBuilder:
             # retreat cap and the evasion keep using v_o.
             v_hdot, vobs_track = v_o, False
             if (vobs_in_hdot and ob.v_vec is not None
-                    and ob.frames_seen >= self._P.obstacle_velocity_min_frames):
+                    and ob.frames_seen >= self._min_frames_eff):
                 vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
                 if np.isfinite(vn):
                     v_hdot = float(np.clip(vn, -vobs_hdot_max, vobs_hdot_max))
@@ -1918,7 +2021,7 @@ class ConstraintBuilder:
             # (see the source switch above), so this gate keeps meaning "this
             # estimate has enough evidence behind it" in BOTH modes rather than
             # silently reading the residual's counter while running the tracker.
-            if self._P.enable_velocity_feedforward and n_seen >= self._P.velocity_feedforward_min_frames:
+            if self._P.enable_velocity_feedforward and n_seen >= self._ff_min_frames_eff:
                 h_brake, b_ff_i = velocity_feedforward_terms(
                     v_o, decel=self._P.obstacle_decel_assumed, gain=self._P.velocity_feedforward_gain,
                     brake_max=self._P.velocity_braking_margin_max)
@@ -2698,7 +2801,7 @@ class ConstraintBuilder:
         gate on MEASUREMENTS, not on age: a track coasting through an occlusion
         does not accumulate evidence it does not have.
         """
-        if ob.v_vec is None or ob.frames_seen < self._P.obstacle_velocity_min_frames:
+        if ob.v_vec is None or ob.frames_seen < self._min_frames_eff:
             return 0.0
         v = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
         if not np.isfinite(v):
@@ -2898,8 +3001,24 @@ class ConstraintBuilder:
             return 0.0
         d_prev, t_prev, v_prev = prev
         dt = stamp - t_prev
-        if dt <= 1e-4:
-            return v_prev                  # same perception frame — hold
+        # HOLD until the anchor is old enough to difference against.
+        #
+        # `d_dot = Δd/dt` divides a distance that carries a fixed amount of
+        # depth noise by this interval, so the noise the QP sees is inversely
+        # proportional to it — and dt is set by the PERCEPTION RATE, which is a
+        # parameter of the camera profile and not of this estimator. At 30 Hz it
+        # was 33 ms, at 84 Hz the builder finds a new frame on every 20 ms
+        # rebuild: 1.65x the noise into k1 = 10.5, on the term whose edges this
+        # repo has already measured as ~0.9 rad/s² steps in a binding row.
+        #
+        # Holding the anchor instead of accepting the short interval keeps the
+        # derivative's noise gain, the EMA's time constant, the median's window
+        # and the rotation hold at the durations they were tuned with, at ANY
+        # input rate — and costs nothing in freshness where it matters: `h`
+        # itself still uses the newest distance on every rebuild. 0 disables
+        # the floor and restores the original per-frame behaviour.
+        if dt <= max(1e-4, self._vres_dt_min):
+            return v_prev                  # not enough time yet — hold
         rot_max = float(getattr(self._P, 'obstacle_velocity_normal_rot_max', 0.0))
         if rot_max > 0.0 and n_hat is not None:
             n_new = np.asarray(n_hat, dtype=np.float64).ravel()
@@ -2911,20 +3030,38 @@ class ConstraintBuilder:
                 # the guard for the rest of the run.
                 c = float(np.clip(n_new @ n_old, -1.0, 1.0))
                 held = self._obs_rothold.get(lbl, 0)
-                if c < np.cos(rot_max) and held < _ROT_HOLD_MAX:
+                # The hold is bounded in TIME, not in frames: what is being
+                # bounded is how long a stale-low estimate may be trusted while
+                # the geometry is too confusing to read, and that is a duration.
+                t0 = self._obs_rothold_t0.get(lbl)
+                if self._rot_hold_s > 0.0:
+                    within = t0 is None or (stamp - t0) < self._rot_hold_s
+                else:
+                    within = held < _ROT_HOLD_MAX
+                if c < np.cos(rot_max) and within:
                     self.diag_rot_reject += 1
                     self._obs_rothold[lbl] = held + 1
+                    if t0 is None:
+                        self._obs_rothold_t0[lbl] = stamp
                     # Re-anchor on the NEW geometry, keep the old velocity.
                     self._obs_vel[lbl] = (d_now, stamp, v_prev)
                     return v_prev
                 self._obs_rothold[lbl] = 0
+                self._obs_rothold_t0.pop(lbl, None)
         d_dot = (d_now - d_prev) / dt
         v_raw = adotq - d_dot
         # Cap at a physically plausible approach speed, same scale the distance
         # engine uses for its own spike rejection. A depth artefact can
         # otherwise fabricate metres per second out of one bad frame.
         v_raw = float(np.clip(v_raw, -self._P.obstacle_velocity_max, self._P.obstacle_velocity_max))
-        v = self._P.obstacle_velocity_alpha * v_prev + (1.0 - self._P.obstacle_velocity_alpha) * v_raw
+        # EMA weight from the TIME CONSTANT when one is configured. The config
+        # documents `obstacle_velocity_alpha: 0.7` as "~75 ms at the 30 Hz
+        # update", which is a statement about a duration that a per-update
+        # weight cannot keep: the same 0.7 is 56 ms once the builder advances 50
+        # times a second. alpha = exp(-dt/tau) holds the 75 ms instead.
+        a = (ema_alpha_for(self._vres_tau, dt) if self._vres_tau > 0.0
+             else self._P.obstacle_velocity_alpha)
+        v = a * v_prev + (1.0 - a) * v_raw
         self._obs_vel[lbl] = (d_now, stamp, v)
         return v
 

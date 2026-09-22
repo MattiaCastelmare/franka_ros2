@@ -109,6 +109,7 @@ from franka_experiments.utils.logging_utils import (
     format_velocity_summary,
 )
 from franka_experiments.utils.perception_msgs import labelled_links
+from franka_experiments.utils.rate_scaling import FrameRateEstimator
 
 
 #: Slack price of the task-space speed family once the SSM rows drive it
@@ -178,6 +179,22 @@ class CBFSafetyFilter(Node):
         # The one object that turns a (joint state, obstacle) pair into rows.
         # Stateful — barrier smoothing, per-track velocity filters, frame
         # counters — and driven at the constraint rate, never on the QP tick.
+        # ── Perception rate, measured ────────────────────────────────────
+        # The conditioning of v_obs is written in DURATIONS (see
+        # cbf_state_rows), and the two evidence gates that must stay counts of
+        # measurements are derived from the rate the distance stream actually
+        # arrives at. `obstacle_input_rate_hz` sizes them until the measurement
+        # settles; a stream that is not running at it costs a log line and a
+        # re-derivation instead of a silently shorter evidence window.
+        self._in_rate = FrameRateEstimator(
+            nominal_hz=float(getattr(P, 'obstacle_input_rate_hz', 30.0)))
+        self._prev_dist_stamp = None
+        #: Whether the first settled measurement has been reported. Without it
+        #: a stream that matches the nominal rate logs NOTHING — the estimator
+        #: is deliberately quiet unless something moves — and "the gates are
+        #: sized for the rate that is actually arriving" would be a claim with
+        #: no evidence anywhere in the run.
+        self._in_rate_logged = False
         self._rows = ConstraintBuilder(
             P, kin, q_min=self._q_min, q_max=self._q_max,
             acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(),
@@ -631,6 +648,48 @@ class CBFSafetyFilter(Node):
         if data.shape == (NV,):
             self._nom = NomSnap(data, self._now())
 
+    def _track_input_rate(self, t_cap: float) -> None:
+        """Measure the distance stream and re-derive the evidence gates.
+
+        Fed with the CAPTURE stamp, not the receipt time: what the gates count
+        is perception measurements, and their spacing is a property of the
+        camera profile rather than of this node's scheduling.
+
+        Cheap in the steady state — the estimator answers False until the rate
+        moves materially, and it is cooled down on top of that — so this is one
+        subtraction per distance message.
+        """
+        prev = self._prev_dist_stamp
+        self._prev_dist_stamp = t_cap
+        moved = prev is not None and self._in_rate.add(t_cap - prev)
+        if not self._in_rate_logged and self._in_rate.measured_hz is not None:
+            self._in_rate_logged = True
+            self.get_logger().info(
+                f'distance stream at {self._in_rate.measured_hz:.1f} Hz '
+                f'(obstacle_input_rate_hz says '
+                f'{self._in_rate.nominal_hz:.0f}); v_obs evidence gates: '
+                f'{self._rows._min_frames_eff} measurements for the tracked '
+                f'velocity, {self._rows._ff_min_frames_eff} for the '
+                f'feedforward')
+        if not moved:
+            return
+        hz = self._in_rate.hz
+        if self._rows.set_input_rate(hz):
+            self.get_logger().warn(
+                f'distance stream measured at {hz:.1f} Hz, not the '
+                f'{self._in_rate.nominal_hz:.0f} Hz in obstacle_input_rate_hz. '
+                f'Evidence gates re-derived to keep their configured SPANS: '
+                f'v_obs needs {self._rows._min_frames_eff} measurements, '
+                f'feedforward {self._rows._ff_min_frames_eff}',
+                throttle_duration_sec=10.0)
+        else:
+            self.get_logger().info(
+                f'distance stream measured at {hz:.1f} Hz '
+                f'(obstacle_input_rate_hz says '
+                f'{self._in_rate.nominal_hz:.0f}); the evidence gates land on '
+                f'the same counts',
+                throttle_duration_sec=10.0)
+
     def _on_distances(self, msg: MultiLinkDistance) -> None:
         P = self.P
         # The four track fields are read UNCONDITIONALLY, even in 'residual'
@@ -693,6 +752,7 @@ class CBFSafetyFilter(Node):
             t_cap = now
         self._diag_cap_age = age
         self._obs = ObstacleSnap(items, now, t_cap)
+        self._track_input_rate(t_cap)
 
         # ── Empty-frame run (roadmap Step 7) ────────────────────────────
         # Perception keeps publishing (the heartbeat is deliberate — it is how a

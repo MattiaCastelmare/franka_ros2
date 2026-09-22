@@ -133,12 +133,16 @@ class TrajectoryOverlayNode(Node):
         # ── Trail shape ──────────────────────────────────────────────────
         self._ttl = declare_float(self, 'trail_seconds', 2.0,
                                   minimum=0.0, maximum=120.0)
-        self._hold = declare_float(self, 'trail_head_hold', 0.25,
+        self._hold = declare_float(self, 'trail_head_hold', 0.40,
                                    minimum=0.0, maximum=0.99)
         self._levels = declare_int(self, 'fade_levels', 8, minimum=1, maximum=64)
-        self._w_line = declare_int(self, 'line_width_px', 2,
+        # Sized to be read at a glance on the live picture rather than
+        # measured: at 640x480 a 2 px trail and a 6 px head disappear against a
+        # busy bench. Both are parameters, so a run that wants the thinnest
+        # honest line back can ask for it without touching this file.
+        self._w_line = declare_int(self, 'line_width_px', 4,
                                    minimum=1, maximum=20)
-        self._r_tip = declare_int(self, 'tip_radius_px', 6,
+        self._r_tip = declare_int(self, 'tip_radius_px', 11,
                                   minimum=1, maximum=50)
         self._tie = declare_bool(self, 'draw_deviation', True)
         self._tie_min = declare_float(self, 'label_min_error_m', 0.002,
@@ -343,11 +347,14 @@ class TrajectoryOverlayNode(Node):
         if self._tie and 'd' in pix and 'a' in pix:
             err = float(np.linalg.norm(np.asarray(tip_d) - np.asarray(tip_a)))
             if err >= self._tie_min:
-                cv2.line(img, pix['d'], pix['a'], _AMBER, 1, cv2.LINE_AA)
+                cv2.line(img, pix['d'], pix['a'], _AMBER, 2, cv2.LINE_AA)
         for name, color in (('d', _RED), ('a', _BLUE)):
             if name in pix:
                 cv2.circle(img, pix[name], self._r_tip, color, -1, cv2.LINE_AA)
-                cv2.circle(img, pix[name], self._r_tip, _BLACK, 1, cv2.LINE_AA)
+                # The dark rim scales with the dot: a 1 px outline around an
+                # 11 px disc stops separating it from a bright bench.
+                cv2.circle(img, pix[name], self._r_tip, _BLACK,
+                           max(2, self._r_tip // 5), cv2.LINE_AA)
 
     def _fresh_s(self) -> float:
         """How old a head may be and still be drawn.

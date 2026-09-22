@@ -81,6 +81,16 @@ class P:
     obstacle_velocity_min_frames = 3
     obstacle_velocity_residual_floor = False
     obstacle_velocity_median = 1            # off, so existing tests are unchanged
+    # Rate-independent forms, all OFF here: every existing test keeps driving
+    # the frame-counted path it was written against, and the tests that exercise
+    # the durations turn them on explicitly.
+    obstacle_velocity_dt_min_s = 0.0
+    obstacle_velocity_tau_s = 0.0
+    obstacle_velocity_median_s = 0.0
+    obstacle_velocity_rot_hold_s = 0.0
+    obstacle_velocity_min_span_s = 0.0
+    velocity_feedforward_min_span_s = 0.0
+    obstacle_input_rate_hz = 30.0
     obstacle_velocity_track_deadband = 0.0
     obstacle_velocity_residual_floor_gap = 0.0  # no gap gate by default
     obstacle_velocity_normal_rot_max = 0.0  # rotation guard off by default
