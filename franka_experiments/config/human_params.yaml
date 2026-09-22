@@ -49,8 +49,8 @@ human_visualizer:
 
   # Overlay behavior
   visibility_threshold: 0.40
-  max_hz: 15.0
+  max_hz: 30.0
   scale: 1.0
   landmark_hold_s: 0.30
-  smoothing_tau_s: 0.12
+  smoothing_tau_s: 0.05
   draw_labels: true

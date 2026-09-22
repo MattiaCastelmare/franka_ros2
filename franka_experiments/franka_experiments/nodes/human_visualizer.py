@@ -314,12 +314,13 @@ class HumanArmVisualizer(Node):
                 ]
             
             for i, (pt, v) in enumerate(zip(keypoints, vels)):
+                vel_marker = Marker()
+                vel_marker.header.frame_id = base_frame
+                vel_marker.header.stamp = timestamp
+                vel_marker.ns = f"velocities_{side}"
+                vel_marker.id = i + 200
+                
                 if pts_valid[i] and v is not None:
-                    vel_marker = Marker()
-                    vel_marker.header.frame_id = base_frame
-                    vel_marker.header.stamp = timestamp
-                    vel_marker.ns = f"velocities_{side}"
-                    vel_marker.id = i + 200
                     vel_marker.type = Marker.ARROW
                     vel_marker.action = Marker.ADD
                     
@@ -336,8 +337,11 @@ class HumanArmVisualizer(Node):
                     vel_marker.scale.y = 0.030
                     vel_marker.scale.z = 0.030
                     vel_marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8)
+                else:
+                    # Removes the velocity marker if the keypoint is lost or velocity is None
+                    vel_marker.action = Marker.DELETE
                     
-                    marker_array.markers.append(vel_marker)
+                marker_array.markers.append(vel_marker)
 
         # 4. --- ROBOT CPs & DISTANCE ARROWS ---
         if self.latest_distances is not None:
@@ -492,7 +496,6 @@ class HumanArmVisualizer(Node):
 
         # Draw Human Landmarks for each active arm
         for side in self.active_sides:
-            
             # Check if the state is valid for this arm before rendering it
             arm_is_valid = False
             if self.latest_arm_states[side] is not None:

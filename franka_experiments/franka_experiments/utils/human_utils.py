@@ -289,6 +289,17 @@ def build_arm_state_msg(
     return msg
 
 
+def predict_future_positions(positions, velocities, step_dt, num_steps):
+    """Predict future positions using a constant-velocity model."""
+    future_positions = []
+    for step in range(1, num_steps + 1):
+        future_time = step * step_dt
+        future_positions.append(
+            positions + future_time * velocities
+        )
+    return np.array(future_positions)
+
+
 def build_prediction_msg(
     positions, velocities, valid, age, step_dt, num_steps, header, base_frame
 ) -> HumanArmPrediction:
@@ -302,17 +313,25 @@ def build_prediction_msg(
     msg.measurement_age = age.astype(float).tolist()
 
     fields = ['shoulder', 'elbow', 'wrist', 'hand']
-    for step in range(1, num_steps + 1):
-        future_time = step * step_dt
-        for i, field in enumerate(fields):
-            pt = to_point(positions[i] + future_time * velocities[i]) if valid[i] else Point()
-            getattr(msg, field).append(pt)
 
+    for i, field in enumerate(fields):
+        if valid[i]:
+            future_positions = predict_future_positions(
+                positions[i],
+                velocities[i],
+                step_dt,
+                num_steps
+            )
+            for pos in future_positions:
+                getattr(msg, field).append(to_point(pos))
+        else:
+            for _ in range(num_steps):
+                getattr(msg, field).append(Point())
     return msg
 
 
 def build_2d_landmarks_msg(landmarks, keypoint_names, header) -> PointCloud:
-    """Costruisce il messaggio PointCloud per i landmark 2D estratti da MediaPipe."""
+    """Builds the PointCloud message for the 2D landmarks extracted by MediaPipe."""
     msg = PointCloud()
     msg.header = header
     visibility = ChannelFloat32()
@@ -385,7 +404,6 @@ def draw_landmarks(
     draw_labels,
 ):
     """Draw the arm points, labels and connecting segments."""
-
     points = []
     radius = max(2, int(round(6 * scale)))
     thickness = max(1, int(round(2 * scale)))
