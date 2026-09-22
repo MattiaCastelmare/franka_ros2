@@ -42,6 +42,7 @@ class HumanArmVisualizer(Node):
     LANDMARK_NAMES = ('shoulder', 'elbow', 'wrist', 'index')
 
     def __init__(self) -> None:
+        # --- Load Config ---
         config_path = os.path.join(
             get_package_share_directory('franka_experiments'),
             'config',
@@ -74,6 +75,7 @@ class HumanArmVisualizer(Node):
         self.smoothing_tau_s = max(0.0, float(config['smoothing_tau_s']))
         self.draw_labels = bool(config['draw_labels'])
 
+        # --- OpenCV Bridge ---
         self.bridge = CvBridge()
         self.latest_image_msg: Image | None = None
         self.last_rendered_stamp_ns: int | None = None
@@ -434,8 +436,8 @@ class HumanArmVisualizer(Node):
             tf_msg = self.tf_buffer.lookup_transform(
                 self.camera_frame, 
                 'fr3_link0', 
-                stamp,
-                timeout=Duration(seconds=0.05)
+                rclpy.time.Time(),
+                timeout=Duration(seconds=0.0)
             )
             
             q = tf_msg.transform.rotation
@@ -514,6 +516,24 @@ class HumanArmVisualizer(Node):
                 # If the arm is lost, clean old 2D pixels to avoid freezing
                 self.display_points[side] = None
                 self.target_points[side] = None
+
+        # If both arms are active, draw a line between the shoulders if they are visible
+        if "left" in self.active_sides and "right" in self.active_sides:
+            left_pts = self.display_points["left"]
+            right_pts = self.display_points["right"]
+            
+            if left_pts is not None and right_pts is not None:
+                vis_left_shoulder = self.visibilities["left"][0]
+                vis_right_shoulder = self.visibilities["right"][0]
+                
+                # Check if both shoulders are visible enough to draw the line
+                if (vis_left_shoulder >= self.visibility_threshold and 
+                    vis_right_shoulder >= self.visibility_threshold):
+                    
+                    # Convert to integer pixel coordinates for drawing
+                    pt1 = (int(left_pts[0][0]), int(left_pts[0][1]))
+                    pt2 = (int(right_pts[0][0]), int(right_pts[0][1]))
+                    cv2.line(image, pt1, pt2, (0, 255, 255), 2)
 
         self._draw_distance_line(image, image_msg.header.stamp)
 

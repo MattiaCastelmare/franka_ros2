@@ -97,16 +97,14 @@ class HumanDistance(Node):
         latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.per_link_pub = self.create_publisher(MultiLinkDistance, '/cbf/per_link_distances', latest_qos)
         self.global_dist_pub = self.create_publisher(Float32, '/human_robot/distance', 10)
-
-        # Timer
-        self.timer = self.create_timer(1.0 / self.distance_loop_rate, self.distance_loop)
-
         self.get_logger().info(f'Human Distance node ready — mode: {self.mode}, tracking: {self.pose_side}')
 
 
     def arm_state_callback(self, msg: HumanArmState, side: str):
         """Stores the latest filtered human arm state for a specific side."""
         self.latest_arm_states[side] = msg
+        # Trigger distance computation after receiving a new arm state
+        self.distance_loop()
 
     def joint_state_callback(self, msg: JointState):
         """Stores the latest robot joint states."""
@@ -172,12 +170,11 @@ class HumanDistance(Node):
 
         # Robot Control Points
         robot_cps = define_control_points(transforms, self.robot_cfg, self.dist_cfg)
-
-        msg = MultiLinkDistance()
-        links_dict = {}
         
         # We reuse the internal geometry logic of RobotGeometry for point-to-capsule math
         robot_geom = RobotGeometry(definitions=[])
+        msg = MultiLinkDistance()
+        links_dict = {}
 
         # Minimum Distance Computation (Robot Control Points vs Human Capsules)
         for cp in robot_cps:
