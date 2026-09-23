@@ -19,7 +19,7 @@ human_tracker:
   model_complexity: 1
   min_detection_confidence: 0.40
   min_tracking_confidence: 0.30
-  inference_hz: 30.0           # Aligned to real source frequency (15 Hz)
+  inference_hz: 30.0           # Aligned to real source frequency (30 Hz)
   inference_scale: 1.00        # Max resolution and 3D accuracy
   visibility_threshold: 0.40
   depth_patch_radius: 2
@@ -31,7 +31,7 @@ human_tracker:
   loss_stability_s: 0.5
 
   # Kalman filter
-  kf_nominal_dt: 0.06666666666666667 # Nominal dt updated for 15 Hz (1/15 s)
+  kf_nominal_dt: 0.03333333333333333 # Nominal dt for 30 Hz (1/30 s)
   kf_process_accel_std: 1.0
   kf_measurement_std: 0.05
   max_state_age_s: 0.30
@@ -54,5 +54,6 @@ human_visualizer:
   max_hz: 30.0
   scale: 1.0
   landmark_hold_s: 0.30
-  smoothing_tau_s: 0.05
+  smoothing_tau_s: 0.05        # Ignored when sync_to_landmarks is true
+  sync_to_landmarks: true      # Draw on the frame MediaPipe processed (aligned, slightly delayed video)
   draw_labels: true

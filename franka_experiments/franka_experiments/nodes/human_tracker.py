@@ -253,7 +253,12 @@ class HumanTracker(Node):
                 self.pending_rgbd = None
 
             if rgbd is not None:
-                self.process_rgbd(*rgbd)
+                try:
+                    self.process_rgbd(*rgbd)
+                except Exception:
+                    if not rclpy.ok():
+                        break
+                    raise
 
             next_run = max(next_run + period, time.monotonic())
 
@@ -348,6 +353,7 @@ class HumanTracker(Node):
         image_rgb = cv2.cvtColor(self.last_image, cv2.COLOR_BGR2RGB)
         result = self.pose.process(image_rgb)
 
+        # Compute current time for dt and engage logic
         current_time = self.current_image_time.nanoseconds * 1e-9
 
         # Landmarks and Visibility

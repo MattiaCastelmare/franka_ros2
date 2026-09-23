@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import rclpy
 from functools import partial
+from collections import deque
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.duration import Duration
@@ -74,10 +75,12 @@ class HumanArmVisualizer(Node):
         self.landmark_hold_s = max(0.0, float(config['landmark_hold_s']))
         self.smoothing_tau_s = max(0.0, float(config['smoothing_tau_s']))
         self.draw_labels = bool(config['draw_labels'])
+        # Draw on the frame the landmarks were detected on, not the newest one
+        self.sync_to_landmarks = bool(config.get('sync_to_landmarks', True))
 
         # --- OpenCV Bridge ---
         self.bridge = CvBridge()
-        self.latest_image_msg: Image | None = None
+        self.image_buffer: deque[Image] = deque(maxlen=30)
         self.last_rendered_stamp_ns: int | None = None
 
         # --- Dictionaries for 2D states ---
@@ -90,6 +93,7 @@ class HumanArmVisualizer(Node):
         # --- Camera Intrinsics ---
         self.fx = self.fy = self.cx = self.cy = None
         self.camera_frame = None
+        self.base_to_camera = None  # cached static TF (R, t)
 
         # --- 3D Visualization State ---
         self.latest_arm_states = {side: None for side in self.active_sides}
@@ -167,7 +171,49 @@ class HumanArmVisualizer(Node):
         self.latest_distances = msg
 
     def image_cb(self, msg: Image) -> None:
-        self.latest_image_msg = msg
+        self.image_buffer.append(msg)
+
+    def select_image(self) -> Image | None:
+        """Newest image, or the one matching the latest landmarks if still recent."""
+        if not self.image_buffer:
+            return None
+        newest = self.image_buffer[-1]
+        if not self.sync_to_landmarks:
+            return newest
+
+        stamps = [s for s in self.last_valid_landmark_stamp_ns.values() if s is not None]
+        if not stamps:
+            return newest
+        target_ns = max(stamps)
+        if not landmarks_are_recent(stamp_to_ns(newest), target_ns, self.landmark_hold_s):
+            return newest
+        for msg in reversed(self.image_buffer):
+            if stamp_to_ns(msg) == target_ns:
+                return msg
+        return newest
+
+    def distances_are_recent(self, image_stamp_ns: int) -> bool:
+        """True if the latest distances refer to a frame close to the rendered one."""
+        if self.latest_distances is None:
+            return False
+        return landmarks_are_recent(
+            image_stamp_ns, stamp_to_ns(self.latest_distances), self.landmark_hold_s
+        )
+
+    def lookup_base_to_camera(self):
+        """Static base -> camera transform, cached after the first lookup."""
+        if self.base_to_camera is None:
+            tf_msg = self.tf_buffer.lookup_transform(
+                self.camera_frame, 'fr3_link0', rclpy.time.Time(),
+                timeout=Duration(seconds=0.0)
+            )
+            q = tf_msg.transform.rotation
+            tr = tf_msg.transform.translation
+            self.base_to_camera = (
+                quaternion_to_rotation(q.x, q.y, q.z, q.w),
+                np.array([tr.x, tr.y, tr.z]),
+            )
+        return self.base_to_camera
 
     def arm_state_cb(self, msg: HumanArmState, side: str) -> None:
         self.latest_arm_states[side] = msg
@@ -422,32 +468,18 @@ class HumanArmVisualizer(Node):
             return (u, v)
         return None
 
-    def _draw_distance_line(self, image: np.ndarray, stamp) -> None:
+    def _draw_distance_line(self, image: np.ndarray, image_stamp_ns: int) -> None:
         """Projects and draws the shortest geometric distance on the 2D overlay."""
-        if not self.latest_distances or self.fx is None or not self.camera_frame:
+        if self.fx is None or not self.camera_frame:
             return
-            
-        if not self.latest_distances.links:
+
+        if not self.distances_are_recent(image_stamp_ns) or not self.latest_distances.links:
             return
 
         try:
             min_link = min(self.latest_distances.links, key=lambda l: l.distance)
-            
-            tf_msg = self.tf_buffer.lookup_transform(
-                self.camera_frame, 
-                'fr3_link0', 
-                rclpy.time.Time(),
-                timeout=Duration(seconds=0.0)
-            )
-            
-            q = tf_msg.transform.rotation
-            R = quaternion_to_rotation(q.x, q.y, q.z, q.w)
-            t = np.array([
-                tf_msg.transform.translation.x, 
-                tf_msg.transform.translation.y, 
-                tf_msg.transform.translation.z
-            ])
-            
+            R, t = self.lookup_base_to_camera()
+
             uv_robot = self._project_point(min_link.closest_point_robot, R, t)
             uv_human = self._project_point(min_link.closest_point_human, R, t)
             
@@ -466,18 +498,22 @@ class HumanArmVisualizer(Node):
                     image, cp_name, text_pos, 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            self.get_logger().warn(f'Distance overlay skipped: {exc}', throttle_duration_sec=2.0)
 
     # -------------------------------------------------------------------------
     # Main Render Loop
     # -------------------------------------------------------------------------
     def render_latest(self) -> None:
         """Main rendering pipeline executed at a fixed frequency."""
+        # RViz markers do not depend on the 2D overlay subscribers
+        if self.marker_pub.get_subscription_count() > 0:
+            self.publish_3d_markers()
+
         if self.overlay_pub.get_subscription_count() == 0:
             return
 
-        image_msg = self.latest_image_msg
+        image_msg = self.select_image()
         if image_msg is None:
             return
 
@@ -504,8 +540,10 @@ class HumanArmVisualizer(Node):
                 arm_is_valid = any(self.latest_arm_states[side].keypoint_valid)
 
             if arm_is_valid and landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns[side], self.landmark_hold_s):
+                # No interpolation needed when the image matches the detection
+                tau = 0.0 if self.sync_to_landmarks else self.smoothing_tau_s
                 self.display_points[side], self.last_render_monotonic_ns[side] = update_display_points(
-                    self.target_points[side], self.display_points[side], self.smoothing_tau_s, self.max_hz, self.last_render_monotonic_ns[side]
+                    self.target_points[side], self.display_points[side], tau, self.max_hz, self.last_render_monotonic_ns[side]
                 )
                 if self.display_points[side] is not None:
                     draw_landmarks(
@@ -535,22 +573,17 @@ class HumanArmVisualizer(Node):
                     pt2 = (int(right_pts[0][0]), int(right_pts[0][1]))
                     cv2.line(image, pt1, pt2, (0, 255, 255), 2)
 
-        self._draw_distance_line(image, image_msg.header.stamp)
+        self._draw_distance_line(image, image_stamp_ns)
 
-        # HUD: INFO PANEL (Dynamic Height)
-        img_h, img_w = image.shape[:2]
-        overlay_box = image.copy()
-        
-        # Increase the box height by 20px if both arms are tracked
+        # HUD: INFO PANEL (Dynamic Height), darken only the top bar
         h_bar = 45 + 20 * (len(self.active_sides) - 1)
-        cv2.rectangle(overlay_box, (0, 0), (img_w, h_bar), (0, 0, 0), -1)
-        
-        cv2.addWeighted(overlay_box, 0.6, image, 0.4, 0, image)
+        bar = image[:h_bar]
+        bar[:] = (bar * 0.4).astype(image.dtype)
 
         # Draw Time and Min Distance
         timestamp_sec = image_msg.header.stamp.sec + image_msg.header.stamp.nanosec * 1e-9
         time_str = f"Time: {timestamp_sec:.2f} s"
-        if self.latest_distances and self.latest_distances.links:
+        if self.distances_are_recent(image_stamp_ns) and self.latest_distances.links:
             min_link = min(self.latest_distances.links, key=lambda l: l.distance)
             dist_str = f"Min Dist: {min_link.distance:.3f} m"
         else:
@@ -589,9 +622,6 @@ class HumanArmVisualizer(Node):
         overlay_msg.header = image_msg.header
         self.overlay_pub.publish(overlay_msg)
         self.last_rendered_stamp_ns = image_stamp_ns
-
-        # Generate and Publish 3D Markers
-        self.publish_3d_markers()
 
 
 def main(args=None) -> None:
