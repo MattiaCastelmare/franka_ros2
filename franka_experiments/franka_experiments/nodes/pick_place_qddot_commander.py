@@ -9,6 +9,14 @@ Features:
 - Operational Space Control (OSC) accelerations (6D Cartesian tracking + null-space posture).
 - Robust reference integration, velocity/position synchronization, and two-level anti-windup.
 - Clean null-space posture targeting a nominal neutral configuration to prevent joint fighting and base drift.
+
+DOF budget: the 6D task (3 position + 3 orientation) uses 6 of the 7 joints;
+the single redundant DOF (elbow self-motion) is left to the null-space posture.
+
+The published q̈ is only half of the loop. It must also reach the 1 kHz joint
+PD of rt_torque_controller (its ``accel_topic``): the open-loop feedforward
+τ = M·q̈ + C·q̇ alone is too weak on the low-inertia wrist joints to beat their
+static friction, and the EE orientation drifts. easy_torque.launch.py wires it.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ import numpy as np
 import pinocchio as pin
 
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
@@ -198,11 +207,11 @@ class PickPlaceQddotCommander(Node):
         self.declare_parameter('wait_transfer',    1.5)
         self.declare_parameter('wait_home',        1.5)
 
-        # Task-space Cartesian gains
+        # Task-space Cartesian gains. Orientation uses the same stiffness and damping as position
         self.declare_parameter('kp_cart',          40.0)
         self.declare_parameter('kd_cart',          12.0)
-        self.declare_parameter('kp_rot',           20.0)  # Aumentato leggermente per bloccare meglio il polso in verticale
-        self.declare_parameter('kd_rot',           6.0)
+        self.declare_parameter('kp_rot',           40.0)
+        self.declare_parameter('kd_rot',           12.0)
 
         # Robustness / stability parameters (Pentagon-style sync & anti-windup)
         self.declare_parameter('k_sync_pos',       2.0)
@@ -210,7 +219,7 @@ class PickPlaceQddotCommander(Node):
         self.declare_parameter('soft_reset_thr',   0.02)
         self.declare_parameter('hard_reset_thr',   0.05)
         self.declare_parameter('soft_reset_alpha', 0.95)
-        self.declare_parameter('k_null',           3.0)  # Ridotto per non far lottare lo spazio nullo contro il movimento del braccio
+        self.declare_parameter('k_null',           3.0)
         self.declare_parameter('d_null',           2.0)
         self.declare_parameter('lambda_sq_min',    1e-4)
         self.declare_parameter('lambda_sq_max',    5e-2)
@@ -299,7 +308,7 @@ class PickPlaceQddotCommander(Node):
         self._dJ_arm         = np.zeros((6, NUM_JOINTS))
         self._p_ee           = np.zeros(3)
         
-        # ORIENTAMENTO FISSO VERTICALE: EE puntato dritto in basso (-Z del base frame)
+        # Fixed Vertical Orientation: EE points downwards (-Z of base frame)
         self._R_des          = np.array([
             [1.0,  0.0,  0.0],
             [0.0, -1.0,  0.0],
@@ -363,13 +372,23 @@ class PickPlaceQddotCommander(Node):
         self._js_read  = self._js_b
         self._js_stamp = self.get_clock().now()
         self._js_imap: Optional[List[int]] = None
+        self._js_names: List[str] = []
 
         js_topic = js_topic_param
         if js_topic == AUTO_SENTINEL:
-            ns = get_namespace_from_config()
-            js_topic = f'/{ns}/joint_states' if ns else '/joint_states'
+            # joint_states_fast = the joint_state_broadcaster's own 1 kHz output
+            js_topic = _topics.get('joint_states_fast')
+            if not js_topic:
+                ns = get_namespace_from_config()
+                js_topic = f'/{ns}/joint_states' if ns else '/joint_states'
 
-        self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, 10)
+        # BEST_EFFORT, depth 1: with shared memory off (fastdds_no_shm.xml)
+        # every 1 kHz sample travels the UDP loopback, the same kernel path as
+        # the FCI loop. Best-effort drops the reliable ACK/NACK/heartbeat
+        # traffic, and only the latest state is ever read anyway.
+        js_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                            history=HistoryPolicy.KEEP_LAST)
+        self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, js_qos)
         self.pub     = self.create_publisher(Float64MultiArray, qddot_topic, 10)
         self._sp_pub = self.create_publisher(SensorJointState,  q_des_topic,  10)
         self.timer   = self.create_timer(self._dt, self._tick)
@@ -380,15 +399,19 @@ class PickPlaceQddotCommander(Node):
             f'pick_place_qddot_commander started\n'
             f'  topic    : {qddot_topic}\n'
             f'  js_topic : {js_topic}\n'
+            f'  R_des    : EE z along base -z (6D task, 1 redundant DOF)\n'
             f'  rate     : {self.rate_hz} Hz\n'
             f'  offsets  : lateral={self.lateral_offset}, down={self.down_offset}, drop={self.drop_offset}')
 
     def _js_cb(self, msg: JointState) -> None:
-        if self._js_imap is None:
+        # Re-map whenever the name list changes
+        if self._js_imap is None or self._js_names != msg.name:
             try:
                 self._js_imap = [msg.name.index(jn) for jn in FR3_JOINT_NAMES]
             except ValueError:
+                self._js_imap = None
                 return
+            self._js_names = list(msg.name)
         if len(msg.position) <= max(self._js_imap):
             return
         buf = self._js_write
@@ -479,7 +502,7 @@ class PickPlaceQddotCommander(Node):
         np.copyto(self._p_ee, oMee.translation)
         R_cur = np.asarray(oMee.rotation)
 
-        # ── Orientamento fisso verticale (nessuna cattura dinamica) ──
+        # ── Fixed Vertical Orientation ──
         np.dot(self._R_des.T, R_cur, out=self._R_err)
         np.dot(self._R_des, so3_log(self._R_err), out=self._e_rot)
         np.negative(self._e_rot, out=self._e_rot)
@@ -547,7 +570,12 @@ class PickPlaceQddotCommander(Node):
         np.dot(self._N, self._qddot_null, out=self._null_proj)
 
         np.add(self._qddot_task, self._null_proj, out=self._q_ddot)
-        np.clip(self._q_ddot, -self.qddot_max, self.qddot_max, out=self._q_ddot)
+        # Uniform scaling instead of a per-joint clip: clipping one joint changes the DIRECTION of q̈
+        np.abs(self._q_ddot, out=self._tmp7)
+        np.divide(self.qddot_max, np.maximum(self._tmp7, 1e-12), out=self._tmp7)
+        scale = float(self._tmp7.min())
+        if scale < 1.0:
+            self._q_ddot *= scale
 
         # Apply envelope ramp
         self._q_ddot *= envelope
@@ -616,8 +644,7 @@ class PickPlaceQddotCommander(Node):
         np.copyto(self._dq_d, js['qdot'])
         np.copyto(self._dq_filt, js['qdot'])
         
-        # Postura di riferimento neutra per lo spazio nullo (configurazione ergonomica Franka FR3)
-        # Questo impedisce che i giunti intermedi lottino contro il task principale di movimento.
+        # Neutral reference posture for null space
         self._q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.578, 0.785])
 
         self._task_start = self.get_clock().now()

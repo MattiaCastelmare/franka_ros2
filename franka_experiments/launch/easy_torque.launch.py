@@ -3,6 +3,7 @@ import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
@@ -26,6 +27,7 @@ from franka_experiments.utils.launch_support import (
 _LAUNCH_DEFAULTS, _ = load_launch_defaults()
 _BRINGUP_DEFAULTS, _ = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
+_QDDOT_NOM_TOPIC = '/NS_1/qddot_nom'
 
 def _launch_all(context):
     p = {
@@ -41,6 +43,7 @@ def _launch_all(context):
         'tau_max_scale': LaunchConfiguration('tau_max_scale').perform(context),
         'torque_command_topic': LaunchConfiguration('torque_command_topic').perform(context),
         'enable_camera': LaunchConfiguration('enable_camera').perform(context),
+        'rt_pin_cpu': LaunchConfiguration('rt_pin_cpu').perform(context),
     }
 
     use_fake = str(p['use_fake_hardware']).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
@@ -55,6 +58,8 @@ def _launch_all(context):
         gazebo=p['gazebo'],
         lpf_alpha=float(p['lpf_alpha']),
         tau_max_scale=float(p['tau_max_scale']),
+        # Without CBF the safe qddot is the nominal commander
+        accel_topic=_QDDOT_NOM_TOPIC,
     )
     controllers_yaml = pick_controllers_yaml(p['controllers_yaml'], use_fake, rt_params)
     cm_name = resolve_controller_manager_name(p['namespace'])
@@ -122,6 +127,23 @@ def _launch_all(context):
     )
     actions.append(TimerAction(period=2.0, actions=[controller_spawner]))
 
+    # ── 4b. Pin del thread RT sul core isolato ─────────────────────────────────
+    # Stesso meccanismo di torque_control_stack.launch.py (vedi
+    # tools/rt-tuning/README.md): senza pin il thread SCHED_FIFO di
+    # ros2_control_node può migrare su un core con IRQ (wifi/nvme) che lo
+    # stallano per millisecondi → FCI deadline mancate →
+    # communication_constraints_violation. Parte insieme allo spawner: lo
+    # script aspetta da sé che il thread FF compaia. rt_pin_cpu:='' disattiva.
+    rt_pin_cpu = str(p['rt_pin_cpu']).strip()
+    if rt_pin_cpu and not use_fake:
+        pin_rt_thread = ExecuteProcess(
+            cmd=['bash', PathJoinSubstitution([
+                FindPackageShare('franka_experiments'), 'scripts', 'pin_rt_thread.sh',
+            ]), rt_pin_cpu, '60'],
+            output='screen',
+        )
+        actions.append(TimerAction(period=2.0, actions=[pin_rt_thread]))
+
     # ── 5. Convertitore Dinamico (qddot_to_torque) ──────────────────────────────
     # Fondamentale: Converte le accelerazioni nominali (q̈) in coppie (τ) usando Pinocchio
     qddot_to_torque_node = Node(
@@ -130,7 +152,7 @@ def _launch_all(context):
         name='qddot_to_torque',
         output='screen',
         remappings=[
-            ('/NS_1/qddot_safe', '/NS_1/qddot_nom')
+            ('/NS_1/qddot_safe', _QDDOT_NOM_TOPIC)
         ]
     )
     actions.append(TimerAction(period=2.5, actions=[qddot_to_torque_node]))
@@ -156,6 +178,11 @@ def generate_launch_description():
                 'torque_command_topic',
                 default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd')),
                 description='Topic for rt_torque_controller'
+            ),
+            DeclareLaunchArgument(
+                'rt_pin_cpu',
+                default_value=str(_DEFAULTS.get('rt_pin_cpu', '3')),
+                description="Isolated CPU for the ros2_control RT thread ('' = no pinning)"
             ),
             DeclareLaunchArgument(
                 'enable_camera',
