@@ -12,22 +12,31 @@ from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from franka_msgs.msg import HumanArmState, HumanArmPrediction, MultiLinkDistance, KalmanDiagnostics
 from franka_experiments.utils.distance_utils import load_robot_config
-from franka_experiments.utils.human_utils import format_topic
+from franka_experiments.utils.human_utils import format_topic, stamp_to_ns
+from franka_experiments.utils.constants import FR3_JOINT_NAMES
 
 
 class BaseLogger:
-    """Base class handling CSV file creation, header writing, and data flushing."""
+    """Base class handling CSV file creation, header writing, and data flushing.
+
+    Every row starts with 'timestamp' (message header stamp, for alignment) and
+    'recv_time' (clock at reception); recv_time - timestamp is the pipeline latency.
+    """
 
     def __init__(self, filename: str, headers: list[str]):
         Path(filename).parent.mkdir(parents=True, exist_ok=True)
         self.filename = filename
         self.file = open(self.filename, mode='w', newline='')
         self.writer = csv.writer(self.file)
-        self.writer.writerow(headers)
+        self.writer.writerow(['timestamp', 'recv_time'] + headers)
 
     def log(self, data: list):
         """Write a single data row to the CSV file."""
         self.writer.writerow(data)
+
+    def flush(self):
+        if not self.file.closed:
+            self.file.flush()
 
     def close(self):
         """Flush and close the open file handle safely."""
@@ -40,7 +49,7 @@ class HumanRawLogger(BaseLogger):
     """Logger for raw 3D positions before Kalman Filtering."""
 
     def __init__(self, base_path: str):
-        headers = ['timestamp']
+        headers = []
         for kp in ['shoulder', 'elbow', 'wrist', 'hand']:
             headers.extend([f'{kp}_x', f'{kp}_y', f'{kp}_z'])
         super().__init__(f"{base_path}_human_raw.csv", headers)
@@ -50,7 +59,7 @@ class HumanStateLogger(BaseLogger):
     """Logger for filtered human arm state and perception diagnostics (HumanArmState.msg)."""
 
     def __init__(self, base_path: str):
-        headers = ['timestamp']
+        headers = []
         keypoints = ['shoulder', 'elbow', 'wrist', 'hand']
         
         # Positions and Velocities for 4 keypoints
@@ -72,7 +81,7 @@ class HumanPredictionLogger(BaseLogger):
 
     def __init__(self, base_path: str):
         headers = [
-            'timestamp', 'num_steps', 'step_dt', 'horizon_sec',
+            'num_steps', 'step_dt', 'horizon_sec',
             'hand_pred_end_x', 'hand_pred_end_y', 'hand_pred_end_z',
             'wrist_pred_end_x', 'wrist_pred_end_y', 'wrist_pred_end_z',
             'valid_shoulder', 'valid_elbow', 'valid_wrist', 'valid_hand'
@@ -84,7 +93,7 @@ class RobotStateLogger(BaseLogger):
     """Logger for 7-DoF robot joint position, velocity, acceleration, and torque (JointState)."""
 
     def __init__(self, base_path: str, num_joints: int = 7):
-        headers = ['timestamp']
+        headers = []
         for i in range(1, num_joints + 1):
             headers.extend([f'q_{i}', f'dq_{i}', f'tau_{i}'])
         super().__init__(f"{base_path}_robot_state.csv", headers)
@@ -95,7 +104,7 @@ class SafetyDistanceLogger(BaseLogger):
 
     def __init__(self, base_path: str):
         headers = [
-            'timestamp', 'min_distance', 
+            'min_distance', 
             'robot_closest_link', 'robot_cp_x', 'robot_cp_y', 'robot_cp_z',
             'human_closest_capsule', 'human_cp_x', 'human_cp_y', 'human_cp_z'
         ]
@@ -106,7 +115,7 @@ class KalmanDiagnosticsLogger(BaseLogger):
     """Logger for Kalman Filter internal diagnostics (Whiteness Test and Covariance Trace)."""
 
     def __init__(self, base_path: str):
-        headers = ['timestamp']
+        headers = []
         keypoints = ['shoulder', 'elbow', 'wrist', 'hand']
         
         for kp in keypoints:
@@ -120,7 +129,7 @@ class ControllerDiagnosticsLogger(BaseLogger):
 
     def __init__(self, base_path: str):
         headers = [
-            'timestamp', 'active_controller', 'solve_time_ms', 
+            'active_controller', 'solve_time_ms', 
             'cost_value', 'is_converged', 'tracking_error_pos'
         ]
         super().__init__(f"{base_path}_controller_diag.csv", headers)
@@ -207,10 +216,26 @@ class ExperimentLoggerNode(Node):
         self.mux_sub = self.create_subscription(
             String, '/controller_mux/active_controller', self.active_controller_callback, 10)
 
+        # Periodic flush so data survives a hard kill
+        self.flush_timer = self.create_timer(1.0, self.flush_all)
+
+    def all_loggers(self) -> list:
+        loggers = [self.robot_logger, self.distance_logger, self.diag_logger]
+        for side in self.active_sides:
+            loggers += [self.human_raw_loggers[side], self.human_state_loggers[side],
+                        self.human_pred_loggers[side], self.kf_diag_loggers[side]]
+        return loggers
+
+    def flush_all(self):
+        for logger in self.all_loggers():
+            logger.flush()
+
+    def times(self, msg) -> list:
+        """[header stamp, reception time] in seconds."""
+        return [stamp_to_ns(msg) * 1e-9, self.get_clock().now().nanoseconds * 1e-9]
 
     def human_raw_callback(self, msg: HumanArmState, side: str):
-        t = self.get_clock().now().nanoseconds / 1e9
-        row = [t]
+        row = self.times(msg)
         keypoints = [msg.shoulder, msg.elbow, msg.wrist, msg.hand]
         for pt in keypoints:
             row.extend([pt.x, pt.y, pt.z])
@@ -218,8 +243,7 @@ class ExperimentLoggerNode(Node):
         
     def human_state_callback(self, msg: HumanArmState, side: str):
         """Log incoming filtered human joint state and perception metrics."""
-        t = self.get_clock().now().nanoseconds / 1e9
-        row = [t]
+        row = self.times(msg)
 
         # Extract positions and velocities for shoulder, elbow, wrist, hand
         keypoints = [msg.shoulder, msg.elbow, msg.wrist, msg.hand]
@@ -243,15 +267,14 @@ class ExperimentLoggerNode(Node):
 
     def human_prediction_callback(self, msg: HumanArmPrediction, side: str):
         """Log multi-step trajectory prediction summary."""
-        t = self.get_clock().now().nanoseconds / 1e9
         horizon = msg.num_steps * msg.step_dt
 
         # End of horizon predicted positions for hand and wrist
         hand_end = msg.hand[-1] if len(msg.hand) > 0 else None
         wrist_end = msg.wrist[-1] if len(msg.wrist) > 0 else None
 
-        row = [
-            t, msg.num_steps, msg.step_dt, horizon,
+        row = self.times(msg) + [
+            msg.num_steps, msg.step_dt, horizon,
             hand_end.x if hand_end else 0.0,
             hand_end.y if hand_end else 0.0,
             hand_end.z if hand_end else 0.0,
@@ -267,8 +290,7 @@ class ExperimentLoggerNode(Node):
 
     def kf_diag_callback(self, msg: KalmanDiagnostics, side: str):
         """Log KF innovations and covariance traces."""
-        t = self.get_clock().now().nanoseconds / 1e9
-        row = [t]
+        row = self.times(msg)
         for i in range(4):
             inn = msg.innovations[i]
             row.extend([inn.x, inn.y, inn.z, msg.p_traces[i]])
@@ -276,12 +298,14 @@ class ExperimentLoggerNode(Node):
 
     def robot_state_callback(self, msg: JointState):
         """Log robot joint positions, velocities, and torques."""
-        t = self.get_clock().now().nanoseconds / 1e9
-        row = [t]
+        row = self.times(msg)
         
-        # Log first 7 joints (Franka Emika Panda)
-        n_joints = min(7, len(msg.position))
-        for i in range(n_joints):
+        # Arm joints by name: JointState order is not guaranteed (e.g. gripper joints)
+        index = {name: i for i, name in enumerate(msg.name)}
+        if not all(name in index for name in FR3_JOINT_NAMES):
+            return
+        for name in FR3_JOINT_NAMES:
+            i = index[name]
             q = msg.position[i] if i < len(msg.position) else 0.0
             dq = msg.velocity[i] if i < len(msg.velocity) else 0.0
             tau = msg.effort[i] if i < len(msg.effort) else 0.0
@@ -293,13 +317,11 @@ class ExperimentLoggerNode(Node):
         """Log minimum human-robot clearance distance and closest points from CBF data."""
         if not msg.links:
             return
-        t = self.get_clock().now().nanoseconds / 1e9
         
         # Find global minimum
         min_link = min(msg.links, key=lambda l: l.distance)
 
-        row = [
-            t, 
+        row = self.times(msg) + [
             min_link.distance, 
             min_link.robot_link_name, 
             min_link.closest_point_robot.x, 
@@ -319,15 +341,8 @@ class ExperimentLoggerNode(Node):
     def destroy_node(self):
         """Safely close all open CSV file writers upon node exit."""
         self.get_logger().info("Closing all experiment log files...")
-        for side in self.active_sides:
-            self.human_raw_loggers[side].close()
-            self.human_state_loggers[side].close()
-            self.human_pred_loggers[side].close()
-            self.kf_diag_loggers[side].close()
-            
-        self.robot_logger.close()
-        self.distance_logger.close()
-        self.diag_logger.close()
+        for logger in self.all_loggers():
+            logger.close()
         super().destroy_node()
 
 

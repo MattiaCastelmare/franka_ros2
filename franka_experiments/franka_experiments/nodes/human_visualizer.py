@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Lightweight ROS 2 visualizer for human-arm landmarks.
 
-The node renders the newest camera frame only. Landmark detections are held for
-short dropouts and smoothly interpolated between updates, so the overlay does
-not disappear whenever MediaPipe misses a single frame.
+With sync_to_landmarks the overlay is drawn on the newest camera frame already
+processed by the tracker (constant delay, landmarks aligned with the image).
+Otherwise it renders the newest frame, with landmarks held for short dropouts
+and smoothly interpolated between updates.
 Supports both single arm tracking and dual arm ('both') tracking dynamically.
 """
 
@@ -18,7 +19,6 @@ from cv_bridge import CvBridge
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -43,6 +43,8 @@ class HumanArmVisualizer(Node):
     LANDMARK_NAMES = ('shoulder', 'elbow', 'wrist', 'index')
 
     def __init__(self) -> None:
+        super().__init__('human_arm_visualizer')
+
         # --- Load Config ---
         config_path = os.path.join(
             get_package_share_directory('franka_experiments'),
@@ -51,13 +53,6 @@ class HumanArmVisualizer(Node):
         )
         full_config = load_robot_config(config_path)
         config = full_config['human_visualizer']
-        use_sim_time = bool(full_config.get('common', {}).get('use_sim_time', True))
-
-        super().__init__(
-            'human_arm_visualizer',
-            parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, use_sim_time)],
-            automatically_declare_parameters_from_overrides=True,
-        )
 
         color_topic = str(config['color_topic'])
         overlay_topic = str(config['overlay_topic'])
@@ -89,6 +84,8 @@ class HumanArmVisualizer(Node):
         self.visibilities = {side: np.zeros(len(self.LANDMARK_NAMES), dtype=np.float32) for side in self.active_sides}
         self.last_valid_landmark_stamp_ns = {side: None for side in self.active_sides}
         self.last_render_monotonic_ns = {side: None for side in self.active_sides}
+        # Stamp of the latest frame processed by the tracker, per side (empty detections included)
+        self.processed_stamp_ns = {side: None for side in self.active_sides}
 
         # --- Camera Intrinsics ---
         self.fx = self.fy = self.cx = self.cy = None
@@ -154,7 +151,8 @@ class HumanArmVisualizer(Node):
         )
         self.overlay_pub = self.create_publisher(Image, overlay_topic, overlay_qos)
         self.marker_pub = self.create_publisher(MarkerArray, '/human_robot/markers', 10)
-        self.render_timer = self.create_timer(1.0 / self.max_hz, self.render_latest)
+        # Overlay is event-driven (image / landmarks callbacks), markers run on a timer
+        self.marker_timer = self.create_timer(1.0 / self.max_hz, self.publish_markers_cb)
 
         self.get_logger().info(
             f'HumanArmVisualizer ready: image={color_topic}, max_hz={self.max_hz:.1f}, mode={self.pose_side}'
@@ -171,26 +169,34 @@ class HumanArmVisualizer(Node):
         self.latest_distances = msg
 
     def image_cb(self, msg: Image) -> None:
+        # Time jumped back (e.g. rosbag loop): restart from scratch
+        if self.image_buffer and stamp_to_ns(msg) < stamp_to_ns(self.image_buffer[-1]):
+            self.image_buffer.clear()
+            self.last_rendered_stamp_ns = None
+            self.processed_stamp_ns = {side: None for side in self.active_sides}
         self.image_buffer.append(msg)
+        self.render_latest()
 
     def select_image(self) -> Image | None:
-        """Newest image, or the one matching the latest landmarks if still recent."""
+        """Newest frame already processed by the tracker, or the newest one if it is silent."""
         if not self.image_buffer:
             return None
         newest = self.image_buffer[-1]
         if not self.sync_to_landmarks:
             return newest
 
-        stamps = [s for s in self.last_valid_landmark_stamp_ns.values() if s is not None]
-        if not stamps:
+        # A frame is ready when every side has been published for it
+        stamps = list(self.processed_stamp_ns.values())
+        if any(s is None for s in stamps):
             return newest
-        target_ns = max(stamps)
-        if not landmarks_are_recent(stamp_to_ns(newest), target_ns, self.landmark_hold_s):
+        ready_ns = min(stamps)
+        # Tracker not publishing anymore: fall back to the live image
+        if not landmarks_are_recent(stamp_to_ns(newest), ready_ns, self.landmark_hold_s):
             return newest
         for msg in reversed(self.image_buffer):
-            if stamp_to_ns(msg) == target_ns:
+            if stamp_to_ns(msg) <= ready_ns:
                 return msg
-        return newest
+        return None
 
     def distances_are_recent(self, image_stamp_ns: int) -> bool:
         """True if the latest distances refer to a frame close to the rendered one."""
@@ -222,7 +228,12 @@ class HumanArmVisualizer(Node):
         self.latest_arm_predictions[side] = msg
 
     def landmarks_cb(self, msg: PointCloud, side: str) -> None:
-        """Accept complete MediaPipe detections."""
+        """Mark the frame as processed and accept complete MediaPipe detections."""
+        self.processed_stamp_ns[side] = stamp_to_ns(msg)
+        self.update_landmarks(msg, side)
+        self.render_latest()
+
+    def update_landmarks(self, msg: PointCloud, side: str) -> None:
         if len(msg.points) < len(self.LANDMARK_NAMES):
             return
 
@@ -253,6 +264,10 @@ class HumanArmVisualizer(Node):
     # -------------------------------------------------------------------------
     # 3D Marker Generation
     # -------------------------------------------------------------------------
+    def publish_markers_cb(self) -> None:
+        if self.marker_pub.get_subscription_count() > 0:
+            self.publish_3d_markers()
+
     def publish_3d_markers(self) -> None:
         """Generates and publishes human arm and distance arrows for RViz."""
         
@@ -393,6 +408,10 @@ class HumanArmVisualizer(Node):
 
         # 4. --- ROBOT CPs & DISTANCE ARROWS ---
         if self.latest_distances is not None:
+            # Distances stopped arriving (e.g. human disengaged): treat them as empty
+            if self.image_buffer and not self.distances_are_recent(stamp_to_ns(self.image_buffer[-1])):
+                self.latest_distances.links = []
+
             # If there are no valid links (empty message), clean the distance markers
             if not self.latest_distances.links:
                 for ns in ["robot_points", "distances"]:
@@ -505,11 +524,7 @@ class HumanArmVisualizer(Node):
     # Main Render Loop
     # -------------------------------------------------------------------------
     def render_latest(self) -> None:
-        """Main rendering pipeline executed at a fixed frequency."""
-        # RViz markers do not depend on the 2D overlay subscribers
-        if self.marker_pub.get_subscription_count() > 0:
-            self.publish_3d_markers()
-
+        """Render the selected frame once; rendered stamps only move forward."""
         if self.overlay_pub.get_subscription_count() == 0:
             return
 
@@ -518,7 +533,7 @@ class HumanArmVisualizer(Node):
             return
 
         image_stamp_ns = stamp_to_ns(image_msg)
-        if image_stamp_ns == self.last_rendered_stamp_ns:
+        if self.last_rendered_stamp_ns is not None and image_stamp_ns <= self.last_rendered_stamp_ns:
             return
 
         try:

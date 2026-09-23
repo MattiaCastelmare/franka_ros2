@@ -21,7 +21,6 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, PointCloud
 from tf2_ros import Buffer, TransformListener
@@ -42,29 +41,15 @@ class HumanTracker(Node):
     KEYPOINT_NAMES = ("shoulder", "elbow", "wrist", "index")
 
     def __init__(self):
+        super().__init__("human_tracker")
+
+        # Config
         config_path = os.path.join(
             get_package_share_directory("franka_experiments"),
             "config",
             "human_params.yaml",
         )
-        full_config = load_robot_config(config_path)
-        config = full_config["human_tracker"]
-        use_sim_time = bool(
-            full_config.get("common", {}).get("use_sim_time", True)
-        )
-
-        super().__init__(
-            "human_tracker",
-            parameter_overrides=[
-                Parameter(
-                    "use_sim_time",
-                    Parameter.Type.BOOL,
-                    use_sim_time,
-                )
-            ],
-            automatically_declare_parameters_from_overrides=True,
-        )
-
+        config = load_robot_config(config_path)["human_tracker"]
         self.base_frame = str(config["base_frame"])
         self.pose_side = str(config["pose_side"]).lower()
         if self.pose_side not in ("left", "right", "both"):
@@ -78,8 +63,6 @@ class HumanTracker(Node):
         self.engage_stability_s = float(config["engage_stability_s"])
         self.loss_stability_s = float(config["loss_stability_s"])
         self.inference_hz = max(1.0, float(config["inference_hz"]))
-        self.inference_scale = float(config["inference_scale"])
-        self.inference_scale = float(np.clip(self.inference_scale, 0.1, 1.0))
         self.visibility_threshold = float(config["visibility_threshold"])
         self.depth_patch_radius = int(config["depth_patch_radius"])
         self.min_depth_m = float(config["min_depth_m"])
@@ -105,7 +88,6 @@ class HumanTracker(Node):
         self.last_depth = None
         self.image_header = None
         self.current_image_time = None
-        self.latest_arm_landmarks = None
         self.last_update_time = None
 
         # MediaPipe runs in a separate worker so old camera frames never accumulate
@@ -208,8 +190,7 @@ class HumanTracker(Node):
         self.get_logger().info(
             f"HumanTracker ready: side={self.pose_side}, "
             f"base_frame={self.base_frame}, model_complexity={model_complexity}, "
-            f"inference_hz={self.inference_hz:.1f}, "
-            f"inference_scale={self.inference_scale:.2f}"
+            f"inference_hz={self.inference_hz:.1f}"
         )
 
     # ------------------------------------------------------------------
@@ -372,6 +353,11 @@ class HumanTracker(Node):
                     vis[i] = landmarks[name]["visibility"]
             current_visibilities[side] = vis
 
+            # Published for every processed frame (also when not engaged)
+            self.landmarks_2d_pubs[side].publish(
+                build_2d_landmarks_msg(landmarks, self.KEYPOINT_NAMES, self.image_header)
+            )
+
         # Engage Logic
         if not self.is_engaged:
             if check_engagement_start(self.active_sides, self.visibility_threshold, current_visibilities):
@@ -381,7 +367,7 @@ class HumanTracker(Node):
                     self.is_engaged = True
                     self.first_visible_time = None
                     self.get_logger().info(
-                        "Human ENGAGED: all requested keypoints are stably visible. Start tracking.", 
+                        "Human ENGAGED: at least one arm is stably visible. Start tracking.", 
                         throttle_duration_sec=1.0
                     )
             else:
@@ -402,12 +388,6 @@ class HumanTracker(Node):
         for side in self.active_sides:
             landmarks = extracted_landmarks[side]
             visibilities = current_visibilities[side]
-
-            # Publish 2D landmarks for visualization
-            landmarks_msg = build_2d_landmarks_msg(
-                landmarks, self.KEYPOINT_NAMES, self.image_header
-            )
-            self.landmarks_2d_pubs[side].publish(landmarks_msg)
 
             log_prefix = f"[{side.upper()}] " if len(self.active_sides) > 1 else ""
             positions = np.full((4, 3), np.nan, dtype=float)

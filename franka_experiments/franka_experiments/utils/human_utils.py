@@ -1,8 +1,4 @@
 """Shared helper functions for human tracking and visualization.
-
-The functions in this module contain the same calculations previously embedded
-in human_tracker.py, human_visualizer.py and human.launch.py. Moving them here
-changes only code organization, not runtime behavior.
 """
 
 import os
@@ -14,6 +10,7 @@ import numpy as np
 import mediapipe as mp
 from typing import Any
 from geometry_msgs.msg import Point, Vector3, Point32
+from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud, ChannelFloat32
 from franka_msgs.msg import HumanArmState, HumanArmPrediction
 from ament_index_python.packages import get_package_share_directory
@@ -76,13 +73,13 @@ def get_side(active_sides: list, closest_capsule_name: str = "") -> str:
 
 def check_engagement_start(active_sides, visibility_threshold, visibilities_dict: dict) -> bool:
     """
-    Checks if all keypoints for each active side exceed the visbility threshold.
-    Requires 4 keypoints (single mode) or 8 keypoints ('both' mode).
+    Checks if at least one active arm has all 4 keypoints above the visibility threshold.
+    The other arm, if any, starts being tracked as soon as its keypoints appear.
     """
     for side in active_sides:
-        if not np.all(visibilities_dict[side] >= visibility_threshold):
-            return False
-    return True
+        if np.all(visibilities_dict[side] >= visibility_threshold):
+            return True
+    return False
 
 
 def check_engagement_loss(active_sides, validities_dict: dict) -> bool:
@@ -281,6 +278,11 @@ def to_vector(values):
     return msg
 
 
+def restamp(header, frame_id: str) -> Header:
+    """New header with the same stamp: never mutate the shared camera header."""
+    return Header(stamp=header.stamp, frame_id=frame_id)
+
+
 def stamp_to_ns(msg):
     """Convert a ROS message header timestamp to integer nanoseconds."""
     stamp = msg.header.stamp
@@ -292,8 +294,7 @@ def build_arm_state_msg(
 ) -> HumanArmState:
     """Builds the HumanArmState message."""
     msg = HumanArmState()
-    msg.header = header
-    msg.header.frame_id = base_frame
+    msg.header = restamp(header, base_frame)
 
     fields = ["shoulder", "elbow", "wrist", "hand"]
     for i, field in enumerate(fields):
@@ -327,8 +328,7 @@ def build_prediction_msg(
 ) -> HumanArmPrediction:
     """Builds the HumanArmPrediction message."""
     msg = HumanArmPrediction()
-    msg.header = header
-    msg.header.frame_id = base_frame
+    msg.header = restamp(header, base_frame)
     msg.step_dt = float(step_dt)
     msg.num_steps = int(num_steps)
     msg.keypoint_valid = valid.astype(bool).tolist()

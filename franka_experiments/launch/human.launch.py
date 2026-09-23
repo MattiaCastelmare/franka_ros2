@@ -70,7 +70,7 @@ def _launch_real_robot(context):
         'qdot_max', 'max_accel', 'timeout_threshold_s', 'timeout_ramp_s',
         'gazebo', 'enable_interpolation', 'command_topic',
         'use_torque_controller', 'torque_command_topic', 'lpf_alpha', 'tau_max_scale',
-        'control_spawner_delay_s'
+        'control_spawner_delay_s', 'rt_pin_cpu'
     ]}
 
     use_fake = str(p['use_fake_hardware']).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
@@ -147,6 +147,19 @@ def _launch_real_robot(context):
         )
         actions.append(TimerAction(period=float(p['control_spawner_delay_s']),
                                    actions=[controller_spawner]))
+
+    # Pin the ros2_control RT thread onto the isolated core (see scripts/pin_rt_thread.sh).
+    # Unpinned, it shares cores with MediaPipe and IRQs -> communication_constraints_violation.
+    rt_pin_cpu = str(p['rt_pin_cpu']).strip()
+    if rt_pin_cpu and not use_fake:
+        pin_rt_thread = ExecuteProcess(
+            cmd=['bash', PathJoinSubstitution([
+                FindPackageShare('franka_experiments'), 'scripts', 'pin_rt_thread.sh',
+            ]).perform(context), rt_pin_cpu, '60'],
+            output='screen',
+        )
+        actions.append(TimerAction(period=float(p['control_spawner_delay_s']),
+                                   actions=[pin_rt_thread]))
 
     # Avvio del driver RealSense (solo quando siamo sul robot reale)
     realsense_driver = IncludeLaunchDescription(
@@ -295,6 +308,8 @@ def generate_launch_description():
             DeclareLaunchArgument('torque_command_topic', default_value=str(_DEFAULTS.get('torque_command_topic', 'torque_cmd'))),
             DeclareLaunchArgument('lpf_alpha', default_value=str(_DEFAULTS.get('lpf_alpha', '1.0'))),
             DeclareLaunchArgument('tau_max_scale', default_value=str(_DEFAULTS.get('tau_max_scale', '1.0'))),
+            DeclareLaunchArgument('rt_pin_cpu', default_value=str(_DEFAULTS.get('rt_pin_cpu', '3')),
+                                  description="Isolated CPU for the ros2_control RT thread ('' = no pinning)"),
             real_robot_action,
             camera_tf_delayed,
             tracker,
