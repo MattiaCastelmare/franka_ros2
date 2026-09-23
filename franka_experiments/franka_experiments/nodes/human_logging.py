@@ -202,7 +202,7 @@ class ExperimentLoggerNode(Node):
             JointState, '/NS_1/joint_states', self.robot_state_callback, 10)
 
         self.min_dist_sub = self.create_subscription(
-            MultiLinkDistance, '/cbf/per_link_distances', self.min_distance_callback, latest_qos)
+            MultiLinkDistance, '/human/per_link_distances', self.min_distance_callback, latest_qos)
 
         self.mux_sub = self.create_subscription(
             String, '/controller_mux/active_controller', self.active_controller_callback, 10)

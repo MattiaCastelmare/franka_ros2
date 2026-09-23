@@ -95,7 +95,7 @@ class HumanDistance(Node):
 
         # Publishers
         latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.per_link_pub = self.create_publisher(MultiLinkDistance, '/cbf/per_link_distances', latest_qos)
+        self.per_link_pub = self.create_publisher(MultiLinkDistance, '/human/per_link_distances', latest_qos)
         self.global_dist_pub = self.create_publisher(Float32, '/human_robot/distance', 10)
         self.get_logger().info(f'Human Distance node ready — mode: {self.mode}, tracking: {self.pose_side}')
 

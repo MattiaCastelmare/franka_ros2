@@ -33,7 +33,8 @@ from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
     deproject, depth_patch_median, extract_arm_landmarks,
     measurement_age, quaternion_to_rotation, build_arm_state_msg,
-    build_prediction_msg, build_2d_landmarks_msg, format_topic
+    build_prediction_msg, build_2d_landmarks_msg, format_topic,
+    check_engagement_start, check_engagement_loss
 )
 
 
@@ -71,6 +72,11 @@ class HumanTracker(Node):
         self.active_sides = ["left", "right"] if self.pose_side == "both" else [self.pose_side]
 
         # Inference and filtering parameters
+        self.is_engaged = False
+        self.first_visible_time = None
+        self.first_lost_time = None
+        self.engage_stability_s = float(config["engage_stability_s"])
+        self.loss_stability_s = float(config["loss_stability_s"])
         self.inference_hz = max(1.0, float(config["inference_hz"]))
         self.inference_scale = float(config["inference_scale"])
         self.inference_scale = float(np.clip(self.inference_scale, 0.1, 1.0))
@@ -342,19 +348,54 @@ class HumanTracker(Node):
         image_rgb = cv2.cvtColor(self.last_image, cv2.COLOR_BGR2RGB)
         result = self.pose.process(image_rgb)
 
-        # Compute the time delta since the last update
         current_time = self.current_image_time.nanoseconds * 1e-9
+
+        # Landmarks and Visibility
+        current_visibilities = {}
+        extracted_landmarks = {}
+
+        for side in self.active_sides:
+            landmarks = extract_arm_landmarks(
+                result.pose_landmarks, self.last_image.shape, side, self.KEYPOINT_NAMES
+            )
+            extracted_landmarks[side] = landmarks
+            
+            vis = np.zeros(4, dtype=float)
+            if landmarks is not None:
+                for i, name in enumerate(self.KEYPOINT_NAMES):
+                    vis[i] = landmarks[name]["visibility"]
+            current_visibilities[side] = vis
+
+        # Engage Logic
+        if not self.is_engaged:
+            if check_engagement_start(self.active_sides, self.visibility_threshold, current_visibilities):
+                if getattr(self, 'first_visible_time', None) is None:
+                    self.first_visible_time = current_time
+                elif (current_time - self.first_visible_time) >= getattr(self, 'engage_stability_s', 0.3):
+                    self.is_engaged = True
+                    self.first_visible_time = None
+                    self.get_logger().info(
+                        "Human ENGAGED: all requested keypoints are stably visible. Start tracking.", 
+                        throttle_duration_sec=1.0
+                    )
+            else:
+                self.first_visible_time = None
+
+            if not self.is_engaged:
+                return
+
+        # Compute the time delta since the last update
         dt = self.compute_dt(current_time)
 
         # Compute 3D positions of the keypoints in the robot base frame
         camera_tf = self.get_camera_to_base_transform()
         speed_logs = []
+        current_validities = {}
 
         # Iterate on each active side (left/right) and process the keypoints
         for side in self.active_sides:
-            landmarks = extract_arm_landmarks(
-                result.pose_landmarks, self.last_image.shape, side, self.KEYPOINT_NAMES
-            )
+            landmarks = extracted_landmarks[side]
+            visibilities = current_visibilities[side]
 
             # Publish 2D landmarks for visualization
             landmarks_msg = build_2d_landmarks_msg(
@@ -364,7 +405,6 @@ class HumanTracker(Node):
 
             log_prefix = f"[{side.upper()}] " if len(self.active_sides) > 1 else ""
             positions = np.full((4, 3), np.nan, dtype=float)
-            visibilities = np.zeros(4, dtype=float)
             depths = np.zeros(4, dtype=float)
 
             if landmarks is not None and camera_tf is not None:
@@ -374,12 +414,11 @@ class HumanTracker(Node):
 
                 for i, name in enumerate(self.KEYPOINT_NAMES):
                     # Skip keypoints that are not visible enough or have no valid depth
-                    landmark = landmarks[name]
-                    visibility = landmark["visibility"]
-                    visibilities[i] = visibility
+                    visibility = visibilities[i]
                     if visibility < self.visibility_threshold:
                         continue
 
+                    landmark = landmarks[name]
                     u = int(round(landmark["x_px"]))
                     v = int(round(landmark["y_px"]))
                     landmark_pixels[i] = (u, v)
@@ -445,6 +484,9 @@ class HumanTracker(Node):
                 self.kfs[side].initialized & np.all(np.isfinite(filtered_pos), axis=1)
                 & (age >= 0.0) & (age <= self.max_state_age_s)
             )
+            
+            # Save validity for the disengage logic
+            current_validities[side] = keypoint_valid
 
             # Publish KF Diagnostics
             innovations, p_traces = self.kfs[side].get_diagnostics()
@@ -496,6 +538,26 @@ class HumanTracker(Node):
                 " | ".join(speed_logs),
                 throttle_duration_sec=1.0,
             )
+
+        # Disengage Logic
+        if self.is_engaged:
+            if check_engagement_loss(self.active_sides, current_validities):
+                if getattr(self, 'first_lost_time', None) is None:
+                    self.first_lost_time = current_time
+                elif (current_time - self.first_lost_time) >= getattr(self, 'loss_stability_s', 0.5):
+                    self.is_engaged = False
+                    self.first_lost_time = None
+                    self.get_logger().warn(
+                        "Human LOST: all keypoints are occluded or expired. DISENGAGE.", 
+                        throttle_duration_sec=1.0
+                    )
+                    
+                    # Total reset of filters
+                    for side in self.active_sides:
+                        self.kfs[side].reset()
+                        self.last_valid_time[side][:] = np.nan
+            else:
+                self.first_lost_time = None
 
     def stop_worker(self):
         self.stop_event.set()

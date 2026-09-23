@@ -27,6 +27,8 @@ human_tracker:
   max_depth_m: 3.00
   sync_queue_size: 5           # To avoid latency in the buffer
   sync_slop_s: 0.025           # For strict synchronization
+  engage_stability_s: 0.3
+  loss_stability_s: 0.5
 
   # Kalman filter
   kf_nominal_dt: 0.06666666666666667 # Nominal dt updated for 15 Hz (1/15 s)

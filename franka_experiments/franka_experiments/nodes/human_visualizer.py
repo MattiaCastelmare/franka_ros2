@@ -102,7 +102,7 @@ class HumanArmVisualizer(Node):
         # --- Subscriptions ---
         latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.dist_sub = self.create_subscription(
-            MultiLinkDistance, '/cbf/per_link_distances', self.dist_cb, latest_qos
+            MultiLinkDistance, '/human/per_link_distances', self.dist_cb, latest_qos
         )
         self.camera_info_sub = self.create_subscription(
             CameraInfo, camera_info_topic, self.camera_info_cb, 10

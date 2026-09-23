@@ -74,6 +74,28 @@ def get_side(active_sides: list, closest_capsule_name: str = "") -> str:
     return side_prefix
 
 
+def check_engagement_start(active_sides, visibility_threshold, visibilities_dict: dict) -> bool:
+    """
+    Checks if all keypoints for each active side exceed the visbility threshold.
+    Requires 4 keypoints (single mode) or 8 keypoints ('both' mode).
+    """
+    for side in active_sides:
+        if not np.all(visibilities_dict[side] >= visibility_threshold):
+            return False
+    return True
+
+
+def check_engagement_loss(active_sides, validities_dict: dict) -> bool:
+    """
+    Checks if ALL keypoints are lost (age > reset_after_s or max_state_age_s).
+    Returns True only if there is no valid keypoint in any active side.
+    """
+    for side in active_sides:
+        if np.any(validities_dict[side]):
+            return False
+    return True
+
+
 def extract_arm_landmarks(
     pose_landmarks,
     image_shape,
