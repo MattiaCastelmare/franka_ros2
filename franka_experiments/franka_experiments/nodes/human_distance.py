@@ -179,7 +179,6 @@ class HumanDistance(Node):
         if not all_human_capsules:
             self.per_link_pub.publish(MultiLinkDistance(header=header))
             return
-        capsule_radius = {cap['name']: float(cap['radius']) for cap in all_human_capsules}
 
         avg_confidence = confidence_sum / valid_arms_count
 
@@ -235,11 +234,10 @@ class HumanDistance(Node):
             ld.closest_point_robot.y = float(info['robot_position'][1])
             ld.closest_point_robot.z = float(info['robot_position'][2])
 
-            # Closest point on the human, moved from the capsule axis to its surface
-            human_surface = info['closest_human_point'] + capsule_radius[ld.human_capsule] * direction_vec
-            ld.closest_point_human.x = float(human_surface[0])
-            ld.closest_point_human.y = float(human_surface[1])
-            ld.closest_point_human.z = float(human_surface[2])
+            # Closest point on the human
+            ld.closest_point_human.x = float(info['closest_human_point'][0])
+            ld.closest_point_human.y = float(info['closest_human_point'][1])
+            ld.closest_point_human.z = float(info['closest_human_point'][2])
 
             ld.direction.x = float(direction_vec[0])
             ld.direction.y = float(direction_vec[1])

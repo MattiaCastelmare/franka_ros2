@@ -12,7 +12,7 @@ from launch.actions import (
     LogInfo,
     IncludeLaunchDescription,
 )
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -171,11 +171,6 @@ def generate_launch_description():
         package_share,
         'config',
         'human.rviz',
-    )
-    human_parameters_path = os.path.join(
-        package_share,
-        'config',
-        'human_params.yaml',
     )
 
     extrinsics = load_robot_config(camera_link_extrinsics_path)
