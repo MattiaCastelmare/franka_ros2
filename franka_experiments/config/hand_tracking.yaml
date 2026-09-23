@@ -36,7 +36,7 @@ hand_state_estimator:
     stability_speed: 0.2
     lost_timeout: 0.5
     velocity_mode: "w75"
-    max_position_age_s: 0.1
+    max_position_age_s: 0.101
     enable_prediction_bridge: true
     max_prediction_age_s: 0.3
 

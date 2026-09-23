@@ -57,6 +57,10 @@ def generate_launch_description():
         'start_rviz'
     )
 
+    record_video = LaunchConfiguration(
+        'record_video'
+    )
+
     publish_base_alias_tf = (
         LaunchConfiguration(
             'publish_base_alias_tf'
@@ -136,7 +140,7 @@ def generate_launch_description():
         package='franka_experiments',
         executable='hand_state_estimator',
         output='screen',
-        parameters=[{'use_sim_time': True, 'velocity_mode': velocity_mode, 'max_position_age_s': 0.1}],
+        parameters=[{'use_sim_time': True, 'velocity_mode': velocity_mode}],
     )
 
 
@@ -191,6 +195,16 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': True,
         }],
+    )
+
+    video_recorder = ExecuteProcess(
+        condition=IfCondition(record_video),
+        cmd=[
+            'python3',
+            '/ros2_ws/src/franka_experiments/scripts/bag_to_mp4.py',
+            '--live',
+        ],
+        output='screen',
     )
 
     bag_player = ExecuteProcess(
@@ -257,6 +271,11 @@ def generate_launch_description():
         ),
 
         DeclareLaunchArgument(
+            'record_video',
+            default_value='false',
+        ),
+
+        DeclareLaunchArgument(
             'publish_base_alias_tf',
             default_value='true',
         ),
@@ -271,6 +290,7 @@ def generate_launch_description():
         handover_observer,
         logger,
         rviz,
+        video_recorder,
 
         TimerAction(
             period=2.0,

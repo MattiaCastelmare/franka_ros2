@@ -1187,7 +1187,7 @@ class HandStateEstimator(Node):
         ages_finite = all(np.isfinite(age) for age in ages)
         position_age = (max(ages) if ages_finite else np.nan)
         valid = (state_usable
-            and tracking_count >= 2 and ages_finite and position_age <= self.max_position_age_s)
+            and tracking_count >= 1 and ages_finite and position_age <= self.max_position_age_s)
         fresh = (valid and tracking_count == 3)
         palm = np.zeros(3, dtype=float,)
         variance = np.zeros(3, dtype=float,)
