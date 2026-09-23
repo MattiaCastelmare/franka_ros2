@@ -21,12 +21,9 @@ static friction, and the EE orientation drifts. easy_torque.launch.py wires it.
 
 from __future__ import annotations
 
-import csv
 import math
 import threading
 import time
-from datetime import datetime
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -48,7 +45,6 @@ from franka_experiments.utils.kinematics import (
     load_pinocchio_model,
     resolve_frame_id,
     resolve_arm_joint_ids,
-    transform_ee_to_frame,
     so3_log,
 )
 from sensor_msgs.msg import JointState as SensorJointState
@@ -227,7 +223,6 @@ class PickPlaceQddotCommander(Node):
         self.declare_parameter('cart_err_max',     0.15)
         self.declare_parameter('q_des_max_error',  0.5)
         self.declare_parameter('dq_des_max',       2.0)
-        self.declare_parameter('dq_filter_alpha',  0.2)
 
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
@@ -269,7 +264,6 @@ class PickPlaceQddotCommander(Node):
 
         self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
         self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
-        self._dq_filter_alpha = float(self.get_parameter('dq_filter_alpha').value)
         self._dt              = 1.0 / self.rate_hz
 
         self.qddot_max = np.array([_limits[j][3] for j in _jnames], dtype=np.float64)
@@ -344,7 +338,6 @@ class PickPlaceQddotCommander(Node):
 
         self._q_d            = np.zeros(NUM_JOINTS)
         self._dq_d           = np.zeros(NUM_JOINTS)
-        self._dq_filt        = np.zeros(NUM_JOINTS)
 
         self._prev_tick_time = None
         self._last_phase     = None
@@ -483,9 +476,8 @@ class PickPlaceQddotCommander(Node):
             self._qdot_full[vid] = js['qdot'][k]
         qdot = js['qdot']
 
-        self._dq_filt += self._dq_filter_alpha * (qdot - self._dq_filt)
-
-        pin.computeAllTerms(self.pin_model, self.pin_data, self._q_full, self._qdot_full)
+        # Only kinematics is needed: J, dJ and frame placements (no dynamics terms)
+        pin.computeJointJacobiansTimeVariation(self.pin_model, self.pin_data, self._q_full, self._qdot_full)
         pin.updateFramePlacements(self.pin_model, self.pin_data)
 
         self._J6n[:] = pin.getFrameJacobian(
@@ -642,7 +634,6 @@ class PickPlaceQddotCommander(Node):
 
         np.copyto(self._q_d,  js['q'])
         np.copyto(self._dq_d, js['qdot'])
-        np.copyto(self._dq_filt, js['qdot'])
         
         # Neutral reference posture for null space
         self._q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.578, 0.785])
@@ -654,7 +645,6 @@ class PickPlaceQddotCommander(Node):
 
 def main(args=None):
     run_node_main(PickPlaceQddotCommander, args=args)
-
 
 if __name__ == '__main__':
     main()

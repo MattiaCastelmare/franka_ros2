@@ -1,5 +1,3 @@
-import yaml
-
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -29,6 +27,7 @@ _BRINGUP_DEFAULTS, _ = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
 _QDDOT_NOM_TOPIC = '/NS_1/qddot_nom'
 
+
 def _launch_all(context):
     p = {
         'namespace': LaunchConfiguration('namespace').perform(context),
@@ -42,14 +41,12 @@ def _launch_all(context):
         'lpf_alpha': LaunchConfiguration('lpf_alpha').perform(context),
         'tau_max_scale': LaunchConfiguration('tau_max_scale').perform(context),
         'torque_command_topic': LaunchConfiguration('torque_command_topic').perform(context),
-        'enable_camera': LaunchConfiguration('enable_camera').perform(context),
         'rt_pin_cpu': LaunchConfiguration('rt_pin_cpu').perform(context),
     }
 
     use_fake = str(p['use_fake_hardware']).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
-    start_camera = str(p['enable_camera']).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
 
-    # ── 1. Configurazione rt_torque_controller ─────────────────────────────────
+    # ── Configurazione rt_torque_controller ─────────────────────────────────
     rt_params = dict(
         is_real=not use_fake,
         arm_id=p['arm_id'],
@@ -66,7 +63,7 @@ def _launch_all(context):
 
     actions = []
 
-    # ── 2. Franka Bringup (Driver + state broadcaster) ─────────────────────────
+    # ── Franka Bringup (Driver + state broadcaster) ─────────────────────────
     franka_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([
             FindPackageShare('franka_bringup'), 'launch', 'franka.launch.py',
@@ -83,43 +80,7 @@ def _launch_all(context):
     )
     actions.append(franka_launch)
 
-    # ── 3. Percezione: Telecamera e TF ─────────────────────────────────────────
-    if start_camera:
-        realsense_driver = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(PathJoinSubstitution([
-                FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
-            ]).perform(context)),
-        )
-        actions.append(realsense_driver)
-        
-        link_ext_path = PathJoinSubstitution([
-            FindPackageShare('franka_experiments'), 'config', 'camera_link_extrinsics.yaml'
-        ]).perform(context)
-        
-        try:
-            with open(link_ext_path, 'r') as f:
-                link_ext = yaml.safe_load(f)
-            t_link = link_ext['translation']
-            r_link = link_ext['rotation']
-            
-            camera_tf_node = Node(
-                package='tf2_ros',
-                executable='static_transform_publisher',
-                name='camera_extrinsics_tf',
-                output='log',
-                arguments=[
-                    '--x',  str(t_link['x']), '--y',  str(t_link['y']), '--z',  str(t_link['z']),
-                    '--qx', str(r_link['x']), '--qy', str(r_link['y']),
-                    '--qz', str(r_link['z']), '--qw', str(r_link['w']),
-                    '--frame-id', link_ext['parent_frame'],
-                    '--child-frame-id', link_ext['child_frame'],
-                ],
-            )
-            actions.append(TimerAction(period=1.0, actions=[camera_tf_node]))
-        except FileNotFoundError:
-            pass
-
-    # ── 4. Torque Controller Spawner ───────────────────────────────────────────
+    # ── Torque Controller Spawner ───────────────────────────────────────────
     controller_spawner = Node(
         package='controller_manager', executable='spawner',
         arguments=['rt_torque_controller', '--controller-manager', cm_name],
@@ -127,7 +88,7 @@ def _launch_all(context):
     )
     actions.append(TimerAction(period=2.0, actions=[controller_spawner]))
 
-    # ── 4b. Pin del thread RT sul core isolato ─────────────────────────────────
+    # ── Pin del thread RT sul core isolato ─────────────────────────────────
     # Stesso meccanismo di torque_control_stack.launch.py (vedi
     # tools/rt-tuning/README.md): senza pin il thread SCHED_FIFO di
     # ros2_control_node può migrare su un core con IRQ (wifi/nvme) che lo
@@ -144,7 +105,7 @@ def _launch_all(context):
         )
         actions.append(TimerAction(period=2.0, actions=[pin_rt_thread]))
 
-    # ── 5. Convertitore Dinamico (qddot_to_torque) ──────────────────────────────
+    # ── Convertitore Dinamico (qddot_to_torque) ──────────────────────────────
     # Fondamentale: Converte le accelerazioni nominali (q̈) in coppie (τ) usando Pinocchio
     qddot_to_torque_node = Node(
         package='franka_experiments',
@@ -157,7 +118,7 @@ def _launch_all(context):
     )
     actions.append(TimerAction(period=2.5, actions=[qddot_to_torque_node]))
 
-    # ── 6. Pick & Place Qddot Commander ────
+    # ── Pick & Place Qddot Commander ────
     commander_node = Node(
         package='franka_experiments',
         executable='pick_place_qddot_commander',
@@ -183,11 +144,6 @@ def generate_launch_description():
                 'rt_pin_cpu',
                 default_value=str(_DEFAULTS.get('rt_pin_cpu', '3')),
                 description="Isolated CPU for the ros2_control RT thread ('' = no pinning)"
-            ),
-            DeclareLaunchArgument(
-                'enable_camera',
-                default_value='true',
-                description='Start RealSense camera driver and TF'
             ),
             OpaqueFunction(function=_launch_all)
         ]
