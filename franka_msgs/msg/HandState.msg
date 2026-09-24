@@ -33,3 +33,16 @@ geometry_msgs/Vector3 palm_longitudinal
 float32 tracking_confidence
 float32 motion_stability
 float32 processing_latency_ms
+
+# Physical anatomical hand selected upstream.
+uint8 HAND_UNKNOWN=0
+uint8 HAND_LEFT=1
+uint8 HAND_RIGHT=2
+uint8 physical_hand
+
+# Source of the currently published palm position.
+uint8 POSITION_SOURCE_NONE=0
+uint8 POSITION_SOURCE_MEASURED=1
+uint8 POSITION_SOURCE_DEGRADED_FILTERED=2
+uint8 POSITION_SOURCE_PREDICTED_W75=3
+uint8 position_source

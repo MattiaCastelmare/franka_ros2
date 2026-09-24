@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/HandTrackingRaw.msg"
   "msg/HandTrackingFiltered.msg"
   "msg/HandState.msg"
+  "msg/EndEffectorState.msg"
   "msg/LinkDistance.msg"
   "msg/MultiDistance.msg"
   "msg/MultiLinkDistance.msg"

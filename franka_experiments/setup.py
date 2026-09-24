@@ -65,6 +65,7 @@ setup(
             'kalman_hand = franka_experiments.nodes.kalman_hand:main',
             'hand_state_estimator = franka_experiments.nodes.hand_state_estimator:main',
             'hand_compare_visualizer = franka_experiments.nodes.hand_compare_visualizer:main',
+            'end_effector_state = franka_experiments.nodes.end_effector_state:main',
             'distance_handover_estimator = franka_experiments.nodes.distance_handover_estimator:main',
             'handover_observer = franka_experiments.nodes.handover_observer:main',
 

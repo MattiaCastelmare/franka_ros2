@@ -1214,6 +1214,18 @@ class HandStateEstimator(Node):
         start = time.perf_counter()
         out = HandState()
         out.header = msg.header
+
+        raw_physical_hand = int(msg.handedness)
+
+        if raw_physical_hand in (
+            HandTrackingFiltered.HAND_LEFT,
+            HandTrackingFiltered.HAND_RIGHT,
+        ):
+            out.physical_hand = raw_physical_hand
+        else:
+            out.physical_hand = HandState.HAND_UNKNOWN
+
+        out.position_source = HandState.POSITION_SOURCE_NONE
         out.filter_state = int(msg.filter_state)
         out.velocity_estimator = (HandState.VELOCITY_ESTIMATOR_W75
             if self.velocity_mode == 'w75' else HandState.VELOCITY_ESTIMATOR_C5)
@@ -1289,6 +1301,16 @@ class HandStateEstimator(Node):
         out.position_valid = bool(position['valid'])
         out.position_fresh = bool(position['fresh'])
         out.position_age_s = float(position['age_s'])
+
+        if not position['valid']:
+            out.position_source = HandState.POSITION_SOURCE_NONE
+        elif position.get('predicted', False):
+            out.position_source = HandState.POSITION_SOURCE_PREDICTED_W75
+        elif position['fresh']:
+            out.position_source = HandState.POSITION_SOURCE_MEASURED
+        else:
+            out.position_source = HandState.POSITION_SOURCE_DEGRADED_FILTERED
+
         if position['valid']:
             p = position['position']
             var = position['variance']
