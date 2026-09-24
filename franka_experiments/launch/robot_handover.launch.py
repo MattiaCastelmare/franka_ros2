@@ -177,6 +177,31 @@ def _launch_setup(context):
         ),
         launch_arguments={
             'align_depth.enable': 'true',
+            # Needed with the D405 also plugged in, otherwise the driver may
+            # open the D405 here instead of the D455.
+            'serial_no': '_318122300288',
+        }.items(),
+    )
+
+    # Wrist D405 on a USB 2 extension: 640x480x30 colour+depth fits,
+    # 848x480x30 and infra streams do not. Same setup as minimal.launch.py.
+    realsense_wrist = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('realsense2_camera'),
+                'launch',
+                'rs_launch.py',
+            ]).perform(context)
+        ),
+        launch_arguments={
+            'camera_namespace': 'd405',
+            'camera_name': 'd405',
+            'serial_no': '_126122270738',
+            'align_depth.enable': 'true',
+            'enable_infra1': 'false',
+            'enable_infra2': 'false',
+            'depth_module.color_profile': '640x480x30',
+            'depth_module.depth_profile': '640x480x30',
         }.items(),
     )
 
@@ -568,8 +593,9 @@ def _launch_setup(context):
         # Hardware
         franka,
 
-        # Camera
+        # Cameras
         realsense,
+        realsense_wrist,
 
         # TF compatibility
         base_alias_tf,
