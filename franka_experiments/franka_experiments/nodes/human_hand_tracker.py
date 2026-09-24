@@ -549,56 +549,6 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         self.cy = float(msg.k[5])
 
 
-
-
-
-
-
-
-    # SELECTOR_DEBUG_V1_DIAGNOSTIC_ONLY
-    #
-    # IMPORTANT:
-    # This code does NOT influence ACTIVE/STANDBY selection.
-    # It only records what LEFT and RIGHT looked like before
-    # the selector decision.
-
-
-
-
-
-
-
-
-
-
-
-
-    #
-    # DIAGNOSTIC ONLY.
-    #
-    # Measures whether each Holistic hand is geometrically
-    # owned by the corresponding body:
-    #
-    # shoulder -> elbow -> pose wrist -> hand wrist
-    #
-    # Absolutely NO effect on selection/tracking.
-
-
-    #
-    # DIAGNOSTIC ONLY.
-    #
-    # Compares Pose:
-    #   wrist / thumb / index / pinky
-    #
-    # against Hand:
-    #   0 / 4 / 8 / 20
-    #
-    # Also measures temporal continuity of Pose wrist.
-    #
-    # NO selector decision is changed.
-
-
-
     def _draw_soft_standby(
         self,
         image,
