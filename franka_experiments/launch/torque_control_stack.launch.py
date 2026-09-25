@@ -213,6 +213,26 @@ def _profile_fps(profile: str) -> float | None:
     return fps if 1.0 <= fps <= 1000.0 else None
 
 
+def _profile_wh(profile: str) -> tuple[int, int] | tuple[None, None]:
+    """The (width, height) out of a RealSense profile string, e.g. ``848x480x90``.
+
+    Feeds trajectory_overlay's window size, so that viewer opens at the SAME
+    on-screen size as real_time_distance's — which auto-sizes to this same
+    depth stream — even though trajectory_overlay draws on the color stream,
+    whose own resolution the driver picks independently. ``(None, None)`` when
+    the profile is empty or unparseable, which leaves the window at the color
+    frame's native resolution.
+    """
+    parts = str(profile).strip().lower().split('x')
+    if len(parts) != 3:
+        return None, None
+    try:
+        w, h = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+    return (w, h) if w > 0 and h > 0 else (None, None)
+
+
 def _rtd_config_with_overrides(path: str, *, tracking: bool,
                                sim_obstacle: bool,
                                depth_rate_hz: float | None = None) -> str:
@@ -853,19 +873,26 @@ def _launch_all(context):
     # isolated set. Turn them off for measurement runs.
     if _as_bool(p['start_trajectory_viz']):
         show_window = _as_bool(p['trajectory_overlay_window'])
+        win_w, win_h = _profile_wh(p['camera_depth_profile'])
+        traj_overlay_params = {
+            # The SAME file real_time_distance projects with, on purpose:
+            # two viewers of one calibration must not be able to disagree.
+            'camera_extrinsics_path': p['camera_extrinsics_yaml'],
+            'trail_seconds': float(p['trajectory_trail_seconds']),
+            'show_window': show_window,
+        }
+        if win_w is not None:
+            # Matches real_time_distance's window, which auto-sizes to this
+            # same depth profile — see _profile_wh.
+            traj_overlay_params['window_width'] = win_w
+            traj_overlay_params['window_height'] = win_h
         traj_overlay_node = Node(
             package='franka_experiments',
             executable='trajectory_overlay_node',
             name='trajectory_overlay',
             output='screen',
             additional_env=_SINGLE_THREAD_BLAS,
-            parameters=[{
-                # The SAME file real_time_distance projects with, on purpose:
-                # two viewers of one calibration must not be able to disagree.
-                'camera_extrinsics_path': p['camera_extrinsics_yaml'],
-                'trail_seconds': float(p['trajectory_trail_seconds']),
-                'show_window': show_window,
-            }],
+            parameters=[traj_overlay_params],
         )
         actions.append(TimerAction(
             period=float(p['trajectory_viz_delay_s']),
