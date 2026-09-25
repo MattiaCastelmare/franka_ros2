@@ -56,6 +56,12 @@ class ObstacleHit(NamedTuple):
     point:      Optional[np.ndarray]  # obstacle point, BASE frame
     direction:  Optional[np.ndarray]  # unit n_hat, obstacle -> control point
     cluster_id: int                   # label of the connected component; -1 = none
+    # RAW range from the camera to this obstacle point, camera frame [m] — the
+    # depth-space Z of the winning pixel, before the radius/margin subtraction
+    # that makes `distance` a surface gap. None when unavailable (mirrors
+    # `point`/`direction`). See sensor_range_uncertainty's docstring for why
+    # this must be the camera-frame Z and not a base-frame Euclidean distance.
+    range_m: Optional[float] = None
 
 
 @dataclass
@@ -76,6 +82,8 @@ class ControlPointResult:
     # Nearest point of each OTHER cluster, ascending distance, at most k-1.
     # Always empty with multi_obstacle_k = 1.
     extras: List[ObstacleHit] = field(default_factory=list)
+    # RAW range to closest_obstacle_point, camera frame [m]. See ObstacleHit.
+    range_m: Optional[float] = None
 
     @property
     def obstacles(self) -> List[ObstacleHit]:
@@ -87,7 +95,8 @@ class ControlPointResult:
         if not np.isfinite(self.distance):
             return []
         return [ObstacleHit(self.distance, self.closest_obstacle_point,
-                            self.direction, self.cluster_id)] + list(self.extras)
+                            self.direction, self.cluster_id, self.range_m)
+               ] + list(self.extras)
 
 
 @dataclass
@@ -487,10 +496,16 @@ class DistanceEngine:
                 direction = (vec / norm).astype(np.float32) if norm > 1e-9 \
                             else np.zeros(3, np.float32)
                 obs_pix = (int(ug[best]), int(vg[best]))
+                # RAW camera-frame depth of the winning pixel, i.e. Z as read
+                # by the sensor before the radius/margin subtraction that
+                # makes `distance` a surface gap. Exactly the quantity
+                # sensor_range_uncertainty's noise model is derived against.
+                range_m = float(obs_pt_cam[2])
             else:
                 obs_pt_base = None
                 direction   = None
                 obs_pix     = None
+                range_m     = None
 
             cid, extras = -1, []
             if labels is not None and np.isfinite(min_dist):
@@ -512,6 +527,7 @@ class DistanceEngine:
                 closest_pixel=obs_pix,
                 cluster_id=cid,
                 extras=extras,
+                range_m=range_m,
             ))
 
         if self._multi_k > 1:
@@ -546,7 +562,8 @@ class DistanceEngine:
             norm = float(np.linalg.norm(vec))
             direction = (vec / norm).astype(np.float32) if norm > 1e-9 \
                         else np.zeros(3, np.float32)
-            out.append(ObstacleHit(d, obs_pt_base, direction, int(lb)))
+            out.append(ObstacleHit(d, obs_pt_base, direction, int(lb),
+                                   float(p_cam[j][2])))
         return out
 
     def _cap_extra_rows(self, results: List[ControlPointResult]) -> None:
@@ -617,6 +634,11 @@ class DistanceEngine:
                     distance=d_prev,
                     direction=None if expired else dir_prev,
                     closest_obstacle_point=None, closest_pixel=None,
+                    # No fresh pixel this frame, so no fresh raw range either —
+                    # same treatment as closest_obstacle_point/closest_pixel
+                    # above. A held range_m would misrepresent THIS frame's
+                    # sensor noise as if it had actually been re-measured.
+                    range_m=None,
                 ))
                 continue
             # A finite measurement clears the hold clock for this CP.
@@ -702,6 +724,7 @@ class DistanceEngine:
             closest_obstacle_point=r.closest_obstacle_point,
             closest_pixel=r.closest_pixel,
             cluster_id=r.cluster_id, extras=r.extras,
+            range_m=r.range_m,
         )
 
     def _log_hold_expired(self, r, d_prev, age):

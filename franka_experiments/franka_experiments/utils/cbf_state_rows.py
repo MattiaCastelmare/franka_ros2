@@ -709,6 +709,107 @@ def latency_compensation_terms(
     return h_pred, h_unc
 
 
+# ── Sensor range uncertainty ─────────────────────────────────────────────────
+#
+# uncertainty_margin and latency_compensation_terms above both price what the
+# TRACKER admits it does not know — a Kalman filter's own covariance. Neither
+# says anything about the RAW DEPTH READING itself: a structured-light /
+# stereo sensor's per-pixel range error is not a tracking artefact, it is a
+# property of the sensor, present on the very first frame of a brand-new
+# detection, before any track exists to have a covariance at all.
+#
+# Depth sensors of this kind measure a DISPARITY (or an equivalent phase/time
+# offset) and convert it to range through z = f*B/disparity, so a roughly
+# CONSTANT disparity error sigma_d [px] turns into a range error that grows
+# QUADRATICALLY with range:
+#
+#     sigma_z(z) = z^2 / (f_px * baseline_m) * sigma_d_px
+#
+# (differentiate z = f*B/d w.r.t. d and take |dz/dd|*sigma_d). This is a
+# textbook property of every stereo/structured-light depth camera on this
+# rig — it is not measured per-track, it is fit ONCE offline
+# (scripts/range_noise_calibration.py) against a static target at known
+# distances, and the fitted constants live in configuration like every other
+# sensor calibration value.
+
+
+def sensor_range_uncertainty(
+    z: float,
+    *,
+    f_px: float,
+    baseline_m: float,
+    sigma_d_px: float,
+    k_sigma: float,
+    margin_max: float,
+) -> float:
+    """[m] barrier tightening bought by the depth SENSOR's own range noise.
+
+        sigma_z = z^2 / (f_px * baseline_m) * sigma_d_px
+        margin  = min(k_sigma * sigma_z, margin_max)
+
+    This is a NEW, independent term from :func:`uncertainty_margin` — that one
+    prices the TRACKER's velocity covariance, this one prices the RAW RANGE
+    MEASUREMENT the tracker (and the residual estimator) is built from. They
+    answer different questions ("how sure is the filter about the velocity it
+    inferred" vs "how sure is the sensor about the distance it just read") and
+    are ADDITIVE, never alternatives: a fresh detection with no track yet has
+    zero tracker uncertainty and full sensor uncertainty; an old, well-tracked
+    obstacle still sits behind depth noise that does not shrink with more
+    frames, because it is a property of THIS frame's pixel, not of history.
+
+    Args:
+        z: [m] raw range from the camera to the nearest obstacle point — the
+            camera-frame depth of the winning pixel, NOT the surface gap `h`
+            (which has the capsule radius and dilation margin subtracted) and
+            NOT a base-frame Euclidean distance (which would reintroduce the
+            extrinsic calibration's own several-centimetre bias into a term
+            that is supposed to be about the sensor alone).
+        f_px: [px] focal length. fx and fy are equal to within sensor
+            manufacturing tolerance on the RealSense cameras this rig uses
+            (see distance_engine's dilation-margin comment for the same
+            simplification), so one scalar suffices.
+        baseline_m: [m] the sensor's physical stereo/structured-light
+            baseline — NOT `tracking.calibration_check.baseline_m` in
+            fr3_complete.yaml, which is an unrelated drift-detector reference
+            offset that happens to share a name.
+        sigma_d_px: [px] disparity (or equivalent) measurement error,
+            approximately constant for a given sensor — the number
+            scripts/range_noise_calibration.py fits.
+        k_sigma: how many standard deviations to reserve. 2.0 ~ 95% of a
+            Gaussian's one-sided mass, the same convention every other
+            k_sigma in this module uses.
+        margin_max: [m] clamp, for the same reason every other margin_max in
+            this module has one: an implausible single reading (a reflective
+            surface, a sensor glitch) must not drive the barrier deeply
+            negative and have the QP answer with a maximal retreat.
+
+    Returns:
+        A NON-NEGATIVE tightening to SUBTRACT from the barrier. Never
+        negative and never NaN: `z <= 0`, a non-finite input, or a
+        non-positive `f_px * baseline_m` all yield exactly 0.0 rather than a
+        guess, the same discipline :func:`uncertainty_margin` holds itself to
+        for a malformed covariance.
+    """
+    zf = float(z)
+    if not np.isfinite(zf) or zf <= 0.0 or k_sigma <= 0.0:
+        return 0.0
+    f = float(f_px)
+    b = float(baseline_m)
+    denom = f * b
+    if not np.isfinite(denom) or denom <= 0.0:
+        return 0.0
+    sd = float(sigma_d_px)
+    if not np.isfinite(sd) or sd < 0.0:
+        return 0.0
+    sigma_z = (zf * zf / denom) * sd
+    if not np.isfinite(sigma_z):
+        return 0.0
+    mm = float(margin_max)
+    if not np.isfinite(mm) or mm <= 0.0:
+        return 0.0
+    return float(min(k_sigma * sigma_z, mm))
+
+
 # ── Risk-weighted slack ──────────────────────────────────────────────────────
 #
 # The QP relaxes a family with ONE slack variable shared by every row in it:
@@ -1258,6 +1359,14 @@ class Obstacle(NamedTuple):
     # is the pre-fix behaviour and what the replay harness and the unit tests
     # construct. Identical to the fixed path whenever nothing is dropped.
     cp_label: str = ''
+    # ── Sensor range uncertainty (enable_sensor_range_uncertainty) ──────────
+    # RAW range from the camera to this obstacle point, camera frame [m] — see
+    # LinkDistance.range_m. Independent of the track fields above: this is a
+    # property of the CURRENT frame's pixel, not of accumulated evidence, so
+    # unlike v_vec/vel_cov it is never gated on frames_seen. None (the "no
+    # measurement" default, same convention as v_vec) contributes exactly
+    # zero.
+    range_m: Optional[float] = None
 
 
 class ObstacleSnap(NamedTuple):
@@ -1567,6 +1676,7 @@ class ConstraintBuilder:
         self.diag_v_obs_link = ''
         self.diag_vapp = self.diag_hbrake = 0.0
         self.diag_hunc = 0.0
+        self.diag_hrng = 0.0        # largest sensor-range tightening [m]
         # ISO layer (iso_ssm_speed_rows): tightest SSM speed cap and largest
         # S_p of the last rebuild. inf / 0.0 mean the ISO rows contributed
         # nothing, which is also their flag-off state.
@@ -1708,6 +1818,7 @@ class ConstraintBuilder:
         self.diag_hbrake = 0.0     # largest braking-distance tightening [m]
         self.diag_hunc   = 0.0     # largest uncertainty tightening [m]
         self.diag_hlat   = 0.0     # largest latency-compensation tightening [m]
+        self.diag_hrng   = 0.0     # largest sensor-range tightening [m]
         self.diag_vobs_hdot   = 0.0
         self.diag_vobs_hdot_n = 0
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
@@ -2089,6 +2200,26 @@ class ConstraintBuilder:
                 h -= h_lat
                 if h_lat > self.diag_hlat:
                     self.diag_hlat = h_lat
+
+            # ── Sensor range uncertainty (enable_sensor_range_uncertainty) ──
+            # After the smoothing store, like every term above, so it never
+            # compounds. UNLIKE Phase 3/4 this is NOT gated on n_seen /
+            # obstacle_velocity_min_frames: it prices the raw depth pixel THIS
+            # frame's row was built from, not an accumulated track estimate,
+            # so it is exactly as available on a brand-new detection (frame 1)
+            # as on a track that has been confirmed for a second. Additive
+            # with Phase 3/4 — three independent `h -=` statements, no shared
+            # clamp between them; see the composition test.
+            if self._P.enable_sensor_range_uncertainty and ob.range_m is not None:
+                h_rng = sensor_range_uncertainty(
+                    ob.range_m, f_px=self._P.sensor_range_f_px,
+                    baseline_m=self._P.sensor_range_baseline_m,
+                    sigma_d_px=self._P.sensor_range_sigma_d_px,
+                    k_sigma=self._P.sensor_range_k_sigma,
+                    margin_max=self._P.sensor_range_margin_max)
+                h -= h_rng
+                if h_rng > self.diag_hrng:
+                    self.diag_hrng = h_rng
 
             # ── Speed-proportional standoff (enable_velocity_standoff) ──────
             # d_safe_eff = d_safe + time_s·v_app: the barrier moves out

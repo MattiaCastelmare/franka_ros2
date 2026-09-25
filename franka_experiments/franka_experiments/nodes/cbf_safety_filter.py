@@ -731,6 +731,7 @@ class CBFSafetyFilter(Node):
                 track_id=int(ld.track_id),
                 cp_label=cp_label,
                 **self._latency_fields(ld),
+                **self._range_field(ld),
             ))
         items = tuple(parsed)
         now = self._now()
@@ -788,6 +789,17 @@ class CBFSafetyFilter(Node):
             pos_cov=np.asarray(ld.position_covariance, dtype=np.float64).reshape(3, 3),
             pv_cov=np.asarray(ld.position_velocity_covariance,
                               dtype=np.float64).reshape(3, 3))
+
+    @staticmethod
+    def _range_field(ld) -> dict:
+        """``{'range_m': ...}`` from a LinkDistance, or an empty dict when the
+        message package predates the field (Obstacle.range_m then stays
+        None and enable_sensor_range_uncertainty's term evaluates to 0.0) or
+        when this entry did not carry a raw range (the 0.0 wire sentinel —
+        see LinkDistance.range_m)."""
+        if not hasattr(ld, 'range_m') or ld.range_m <= 0.0:
+            return {}
+        return dict(range_m=float(ld.range_m))
 
     # ═════════════════════════════════════════════════════════════════════
     #  Perception rate (50 Hz) — geometry only; Pinocchio lives here

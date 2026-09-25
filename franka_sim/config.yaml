@@ -418,6 +418,7 @@ shield_parity:
     - enable_velocity_feedforward
     - enable_weighted_slack
     - enable_latency_compensation
+    - enable_sensor_range_uncertainty  # needs LinkDistance.range_m + calibration; not hardware-validated
     - iso_enabled                 # also gates iso_ssm_speed_rows / the SSM rows
     - iso_monitor_enabled
 

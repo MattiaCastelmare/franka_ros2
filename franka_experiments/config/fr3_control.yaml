@@ -1898,6 +1898,78 @@ params:
   # deeply negative — the failure this filter has been bitten by before.
   latency_margin_max: 0.25
 
+  # ── Sensor range uncertainty (cbf_safety_filter) ────────────────────────────
+  #   sigma_z(z) = z^2 / (sensor_range_f_px * sensor_range_baseline_m) * sensor_range_sigma_d_px
+  #   h -= min(sensor_range_k_sigma * sigma_z, sensor_range_margin_max)
+  #
+  # A NEW, INDEPENDENT term from enable_uncertainty_margin above.
+  # uncertainty_margin prices what the TRACKER admits it does not know about
+  # the obstacle's VELOCITY (a Kalman filter's own covariance) -- it has
+  # nothing to say about a brand-new detection with no track yet, and nothing
+  # to say about how sure the sensor itself is of the RANGE the whole pipeline
+  # is built from. This term does: structured-light / stereo depth sensors
+  # measure a disparity (or an equivalent phase/time offset) and convert it to
+  # range through z = f*B/disparity, so a roughly CONSTANT disparity error
+  # sigma_d turns into a range error that grows QUADRATICALLY with range. It
+  # is present on the very first frame of a brand-new track (unlike
+  # uncertainty_margin, this term is NOT gated on obstacle_velocity_min_frames)
+  # and does not shrink as a track accumulates measurements, because it is a
+  # property of THIS frame's pixel, not of history. The two terms are
+  # ADDITIVE -- see test_cbf_sensor_range_uncertainty.py's composition test --
+  # never alternatives, and neither may ever loosen the barrier.
+  #
+  # z is the RAW camera-frame range to the winning obstacle pixel
+  # (LinkDistance.range_m), NOT the surface gap `distance` (radius and
+  # dilation margin already subtracted) and NOT a base-frame Euclidean
+  # distance recomputed from the extrinsic -- that round trip would
+  # reintroduce the extrinsic's own several-centimetre calibration bias
+  # (utils/calibration_check) into a term that is supposed to be about the
+  # sensor alone.
+  #
+  # OFF by default. With the flag off the term is not evaluated and the QP
+  # rows are bit-identical to the pre-Phase-3-range build (regression-tested).
+  # NOT enabled in launch_defaults.yaml: unlike enable_velocity_standoff this
+  # has not been validated on hardware (see scripts/range_noise_calibration.py
+  # and scripts/compare_range_noise.py) and must not be turned on for a real
+  # run without that validation and explicit sign-off.
+  enable_sensor_range_uncertainty: false
+
+  # [px] focal length. fx and fy are equal to within manufacturing tolerance
+  # on the RealSense cameras this rig uses (the same simplification
+  # distance_engine's dilation-margin correction makes), so one scalar
+  # suffices. Read off CameraInfo.k[0] at calibration time -- see
+  # scripts/range_noise_calibration.py's reported "f_px measured at capture
+  # time" line -- NOT re-read live per frame, so a camera profile change (a
+  # different resolution or FOV) requires re-running the calibration script.
+  sensor_range_f_px: 428.8
+
+  # [m] the sensor's physical stereo/structured-light baseline. THIS IS NOT
+  # tracking.calibration_check.baseline_m in fr3_complete.yaml -- that is an
+  # unrelated drift-detector reference offset (a model-vs-measured residual)
+  # that happens to share a name. This one is the manufacturer's physical
+  # baseline spec (a RealSense D455 is ~0.095 m), a geometric constant of the
+  # sensor, not a calibration residual.
+  sensor_range_baseline_m: 0.095
+
+  # [px] disparity (or equivalent) measurement error, approximately constant
+  # for a given sensor. FITTED, not guessed -- see
+  # scripts/range_noise_calibration.py, which points the camera at a static
+  # flat target at several known distances and regresses this constant
+  # against the quadratic law above. Placeholder until that calibration run
+  # is done; the flag stays off regardless.
+  sensor_range_sigma_d_px: 0.20
+
+  # [-] standard deviations of range error to reserve. Same convention as
+  # uncertainty_k_sigma and latency_k_sigma: 2.0 ~ 95% of a Gaussian's
+  # one-sided mass.
+  sensor_range_k_sigma: 2.0
+
+  # [m] clamp, for the same reason every other margin_max in this file has
+  # one: an implausible single reading (a reflective surface, a sensor
+  # glitch) must not drive the barrier deeply negative and have the QP answer
+  # with a maximal retreat.
+  sensor_range_margin_max: 0.25
+
   # ── Risk-weighted slack (cbf_safety_filter, Phase 2) ───────────────────────
   # One slack per FAMILY is shared by every row in it, so when rows conflict the
   # QP buys the same relief for all of them: a row 3 cm from contact and a row

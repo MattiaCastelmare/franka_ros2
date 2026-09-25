@@ -461,6 +461,16 @@ CBF_PARAM_SPEC = {
     'enable_uncertainty_margin': ('bool', dict()),
     'uncertainty_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
     'uncertainty_margin_alpha': ('float', dict(minimum=0.0, maximum=0.99)),
+    # Sensor range uncertainty: prices the raw depth READING's own noise,
+    # independent of (and additive with) uncertainty_margin above, which
+    # prices the tracker's velocity covariance. See cbf_state_rows.
+    # sensor_range_uncertainty.
+    'enable_sensor_range_uncertainty': ('bool', dict()),
+    'sensor_range_f_px': ('float', dict(positive=True, maximum=5000.0)),
+    'sensor_range_baseline_m': ('float', dict(positive=True, maximum=1.0)),
+    'sensor_range_sigma_d_px': ('float', dict(minimum=0.0, maximum=10.0)),
+    'sensor_range_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
+    'sensor_range_margin_max': ('float', dict(positive=True, maximum=1.0)),
     'enable_lateral_evasion': ('bool', dict()),
     'lateral_evasion_gain': ('float', dict(minimum=0.0, maximum=50.0)),
     'lateral_evasion_max_bias': ('float', dict(positive=True, maximum=100.0)),

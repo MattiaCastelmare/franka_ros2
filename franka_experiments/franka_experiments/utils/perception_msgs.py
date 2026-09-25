@@ -205,7 +205,7 @@ def build_cp_messages(
     link_entries = []
     link_cluster_ids = []
     for lk in segment_links:
-        for r, d, di, obs, cid in _cp_rows(by_link.get(lk, ())):
+        for r, d, di, obs, cid, rng in _cp_rows(by_link.get(lk, ())):
             pt  = r.point
             ld  = LinkDistance()
             ld.robot_link_name = lk
@@ -218,6 +218,11 @@ def build_cp_messages(
             if di is not None:
                 ld.direction = Vector3(
                     x=float(di[0]), y=float(di[1]), z=float(di[2]))
+            # 0.0 is the wire default and the "not carried" sentinel — see
+            # LinkDistance.range_m. A real range is never exactly 0.0, so
+            # only publish when there is a finite, positive measurement.
+            if rng is not None and math.isfinite(rng) and rng > 0.0:
+                ld.range_m = float(rng)
             ld.distance   = d
             # d >= 0.0, NOT d > 0.0.  DistanceEngine clamps the surface gap with
             # np.maximum(..., 0.0), so a control point that has reached the
@@ -267,7 +272,8 @@ def build_cp_messages(
 
 
 def _cp_rows(results):
-    """``(r, distance, direction, obstacle_point, cluster_id)`` per LinkDistance.
+    """``(r, distance, direction, obstacle_point, cluster_id, range_m)`` per
+    LinkDistance.
 
     Control points in ``(seg_idx, cp_idx)`` order — the contractual row order —
     each one's own result first (rank 0, what was always published), then its
@@ -275,9 +281,10 @@ def _cp_rows(results):
     """
     for r in sorted(results, key=lambda x: (x.seg_idx, x.cp_idx)):
         yield (r, r.distance, r.direction, r.closest_obstacle_point,
-               getattr(r, 'cluster_id', -1))
+               getattr(r, 'cluster_id', -1), getattr(r, 'range_m', None))
         for h in getattr(r, 'extras', ()):
-            yield r, h.distance, h.direction, h.point, h.cluster_id
+            yield (r, h.distance, h.direction, h.point, h.cluster_id,
+                  getattr(h, 'range_m', None))
 
 
 def labelled_links(msg):

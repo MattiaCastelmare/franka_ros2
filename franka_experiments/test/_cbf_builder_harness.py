@@ -111,6 +111,13 @@ class P:
     uncertainty_k_sigma = 2.0
     uncertainty_margin_alpha = 0.0
     link_speed_reaction_s = 0.20
+    # sensor range uncertainty (Phase 3)
+    enable_sensor_range_uncertainty = False
+    sensor_range_f_px = 428.8
+    sensor_range_baseline_m = 0.095
+    sensor_range_sigma_d_px = 0.20
+    sensor_range_k_sigma = 2.0
+    sensor_range_margin_max = 0.25
     # slack weighting
     enable_weighted_slack = False
     slack_weight_max = 5.0
@@ -213,14 +220,15 @@ def make_builder(**over):
 def make_obstacle(d=0.25, pr=(0.5, 0.0, 0.5), ph=(0.5, -0.25, 0.5),
                   link='fr3_link5', v=None, frames_seen=0, cov=None,
                   track_id=0, conf=1.0, a=None, pos_cov=None, pv_cov=None,
-                  cp_label=''):
+                  cp_label='', range_m=None):
     arr = lambda x: None if x is None else np.asarray(x, dtype=np.float64)
     return Obstacle(link=link, d=float(d),
                     pr=np.asarray(pr, dtype=np.float64),
                     ph=np.asarray(ph, dtype=np.float64), conf=float(conf),
                     v_vec=arr(v), frames_seen=int(frames_seen), vel_cov=arr(cov),
                     track_id=int(track_id), a_vec=arr(a), pos_cov=arr(pos_cov),
-                    pv_cov=arr(pv_cov), cp_label=cp_label)
+                    pv_cov=arr(pv_cov), cp_label=cp_label,
+                    range_m=None if range_m is None else float(range_m))
 
 
 def make_js(q=0.1, qdot=0.0, stamp=0.0):

@@ -103,3 +103,25 @@ float64[9] position_covariance
 # velocity_covariance it lets the consumer propagate the position covariance
 # forward: P_pp(t) = P_pp + t (P_pv + P_pv^T) + t^2 P_vv.
 float64[9] position_velocity_covariance
+
+# ── Sensor range uncertainty (cbf_safety_filter, enable_sensor_range_uncertainty) ──
+# RAW range from the camera to the winning obstacle pixel, in METRES, camera
+# frame — the depth-space Z of closest_point_human's source pixel BEFORE it is
+# converted to the surface gap `distance` (radius and dilation margin
+# subtracted) or transformed to base frame. This is NOT `distance` and NOT
+# derivable from closest_point_human + the camera extrinsic: that round trip
+# would reintroduce the extrinsic's own several-centimetre calibration bias
+# into a term that is supposed to be about the sensor alone.
+#
+# Independent of the obstacle-track fields above: a structured-light / stereo
+# sensor's per-pixel range noise is a property of THIS frame's reading, present
+# on the very first sighting of an obstacle, before any track — let alone a
+# track's covariance — exists.
+#
+# DEFAULT (0.0) IS SAFE: 0.0 is not a plausible real range (the camera cannot
+# read zero metres), so the consumer treats `range_m <= 0.0` as "not carried"
+# and evaluates the term to exactly 0.0 — the same "missing field degrades to
+# off" contract every other field on this message keeps. A publisher that
+# knows nothing about this term emits the message-default 0.0 and every
+# consumer keeps working unchanged.
+float64 range_m

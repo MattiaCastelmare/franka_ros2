@@ -394,6 +394,11 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'esc={getattr(rows, "diag_esc_w", 0.0):.2f} '
         f'outr={getattr(rows, "diag_outrun_r", 0.0):.2f}/{getattr(rows, "diag_outrun_w", 0.0):.2f} '
         f'hlat={getattr(rows, "diag_hlat", 0.0):.4f} '
+        # enable_sensor_range_uncertainty: largest tightening bought by the
+        # depth SENSOR's own range noise — independent of hunc (tracker
+        # covariance) and hlat (latency prediction), see cbf_state_rows.
+        # sensor_range_uncertainty. 0.0000 with the flag off.
+        f'hrng={getattr(rows, "diag_hrng", 0.0):.4f} '
         # enable_velocity_standoff: largest speed-proportional standoff [m].
         f'hstd={getattr(rows, "diag_hstand", 0.0):.4f} '
         # enable_vobs_in_hdot: largest-magnitude n̂ᵀv_track put into ḣ, and on
