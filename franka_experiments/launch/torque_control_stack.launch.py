@@ -141,7 +141,7 @@ _ALL_PARAMS = [
     'start_rviz', 'trajectory_viz_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
-    'rl_target_sequence', 'rl_action_scale',
+    'rl_target_sequence', 'rl_action_scale', 'isolation_test',
     'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
     'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
     'torque_world_tf_delay_s', 'torque_camera_tf_delay_s',
@@ -810,7 +810,13 @@ def _launch_all(context):
             # reads it from config/fr3_control.yaml (params: path_center_xyz,
             # path_type, path_radius) as its declare_parameter defaults. Launch
             # files carry wiring, not tunables.
-
+            #
+            # isolation_test IS threaded through explicitly (as a real bool,
+            # not the raw LaunchConfiguration string) because it defaults to
+            # False on the node itself and nothing else in this launch file
+            # ever set it — a run that does not pass isolation_test:=true is
+            # therefore identical to before this argument existed.
+            parameters=[{'isolation_test': _as_bool(p['isolation_test'])}],
         )
         commander_label = 'pentagon_qddot_commander'
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
@@ -1063,6 +1069,19 @@ def generate_launch_description():
                 default_value=str(_DEFAULTS.get('rl_action_scale', '1.0')),
                 description='Derate in (0,1] applied to the policy output: '
                             'q̈_nom = a·q̈_max·action_scale. Use 0.3 for a first run'),
+            # pentagon_qddot_commander's TEMPORARY per-joint step-response
+            # diagnostic (see that node's isolation_test parameter and
+            # _tick_isolation): sweeps joints 1-7 in turn, 2 s each, with a
+            # 0.4 rad raised-cosine bump, then self-stops. Off by default —
+            # not wired to any fr3_control.yaml/launch_defaults.yaml value on
+            # purpose, so this arg can never silently change a default run.
+            DeclareLaunchArgument(
+                'isolation_test',
+                default_value='false',
+                description='pentagon_qddot_commander: run the joint-by-joint '
+                            'isolation/step-response diagnostic instead of the '
+                            'normal pentagon trajectory. Self-terminating '
+                            '(14 s, 7 joints x 2 s)'),
 
             # ── Wiring / sequencing (defaults in config/launch_defaults.yaml) ──
             DeclareLaunchArgument(
