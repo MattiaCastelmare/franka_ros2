@@ -343,6 +343,16 @@ class RealTimeDistance(Node):
                 # A frame with no usable stamp must not be advanced with the dt
                 # of a rate the stream is not running at.
                 default_dt=1.0 / self._nominal_hz,
+                imm_enabled=bool(trk_cfg.get('imm_enabled', False)),
+                imm_ballistic_q_jerk=(float(trk_cfg['imm_ballistic_q_jerk'])
+                                     if trk_cfg.get('imm_ballistic_q_jerk') is not None
+                                     else None),
+                imm_ballistic_sigma_a0=float(trk_cfg.get('imm_ballistic_sigma_a0', 2.0)),
+                imm_gravity=tuple(trk_cfg.get('imm_gravity_mps2', (0.0, 0.0, -9.81))),
+                imm_mode_transition_stay_prob=float(
+                    trk_cfg.get('imm_mode_transition_stay_prob', 0.99)),
+                imm_initial_mode_prob=tuple(
+                    trk_cfg.get('imm_initial_mode_prob', (0.5, 0.5))),
             )
             self.get_logger().info(
                 f'tracker lifecycle at {self._nominal_hz:.0f} Hz nominal: '

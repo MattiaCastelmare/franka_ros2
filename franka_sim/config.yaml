@@ -411,13 +411,24 @@ shield_parity:
     - enable_outrun_evasion       # biases the QP target
     - enable_livelock_escape      # biases the QP target
     - enable_vobs_in_hdot
+    # MOVED here from robot_only_inactive (Sep 2026, thrown-ball dodge
+    # investigation): turned on on the robot to buy back the measured 48-85 ms
+    # camera-to-torque blind time for a small/fast obstacle (tighten-only,
+    # clamped at latency_margin_max, gated on obstacle_velocity_min_frames like
+    # every other track-derived term — see fr3_control.yaml). CONSEQUENCE: any
+    # Safe-RL policy exported from this sim config has been trained WITHOUT
+    # this term bending q̈_nom; on hardware with `motion_source:=rl` its
+    # measured safety margins no longer reflect what it trained under until
+    # this prediction+propagated-uncertainty term is ported into
+    # envs/cbf_filter.py (same pending obligation as the class-K rework this
+    # file already lags behind).
+    - enable_latency_compensation
 
   # Shipped OFF on the robot as well, so they are not part of today's gap.
   # Turning one on WIDENS the gap and fails the test until it is moved up.
   robot_only_inactive:
     - enable_velocity_feedforward
     - enable_weighted_slack
-    - enable_latency_compensation
     - enable_sensor_range_uncertainty  # needs LinkDistance.range_m + calibration; not hardware-validated
     - iso_enabled                 # also gates iso_ssm_speed_rows / the SSM rows
     - iso_monitor_enabled

@@ -254,9 +254,12 @@ obstacle_identity_guard: true
 
 # Latency compensation (Phase 4): predict each tracked obstacle forward by the
 # measured blind time (scripts/latency_budget.py) and tighten by the propagated
-# position uncertainty. OFF by default, as specified — turn on after a
-# supervised run has confirmed the extra tightening on hardware.
-latency_compensation: false
+# position uncertainty. Was off by default, as specified.
+#
+# TURNED ON (Sep 2026, thrown-ball dodge investigation) to match
+# fr3_control.yaml's enable_latency_compensation. Run a supervised session and
+# confirm the extra tightening before trusting it unattended.
+latency_compensation: true
 
 # Up to k obstacle rows per control point, one per connected cluster
 # (real_time_distance, perception.multi_obstacle_k): two distinct obstacles

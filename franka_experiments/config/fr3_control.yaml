@@ -1415,7 +1415,33 @@ params:
   # to a body-centroid track. At 0.35 m a 0.3 m/s approach still gets ~1 s of
   # anticipation before d_safe. 0 applies the floor everywhere (the previous
   # behaviour).
-  obstacle_velocity_residual_floor_gap: 0.35
+  #
+  # WIDENED 0.35 -> 0.7 (Sep 2026, thrown-ball dodge investigation), to match
+  # distance.thresholds.max_thresh in fr3_complete.yaml: 0.7 m is the whole
+  # range the publish gate ever lets the CBF see, so this now covers the
+  # entire visible approach rather than only its last third.
+  #
+  # Reason: test_track_lifecycle.py::test_the_residual_floor_is_still_on_so_the_gate_is_not_a_blindfold
+  # documents the design intent as "the residual needs no identity and no
+  # history, so the gap [obstacle_velocity_min_frames, 8 frames / ~265 ms
+  # continuous] is covered" for a genuinely new obstacle — but gated at 0.35 m
+  # that is only true inside the last 35 cm. A small, fast object that never
+  # holds a confirmed track for 265 ms straight (see cluster_min_points above)
+  # got v_obs pinned at 0 — the static-obstacle assumption — from 0.7 m down to
+  # 0.35 m: no k1 anticipation, no velocity_standoff, no latency compensation,
+  # no outrun-evasion bias, for most of its approach.
+  #
+  # This was a MEASURED, deliberate choice for people (residual p99 on a
+  # static scene is 0.017-0.029 m/s and does not need gating for noise — see
+  # the comment above the deadband) — the narrow gate was about not paying
+  # for exposure "bought for nothing" once the tracker already had it covered,
+  # which does not hold when the tracker path is the one failing. NOT
+  # re-validated against rosbag/{arm_complex,arm_repeated}'s static-scene jerk
+  # metric (docs/reactivity_evasion_report.md) — do that before trusting this
+  # on hardware; the residual is still not deadbanded, so this is the one
+  # change here that revisits noise-floor reasoning rather than only adding a
+  # tighten-only term.
+  obstacle_velocity_residual_floor_gap: 0.7
 
   # ── Obstacle-velocity feedforward (cbf_safety_filter, Phase 1) ─────────────
   # A SECOND, separately tunable use of the v_obs estimate the k1 term already
@@ -1516,11 +1542,28 @@ params:
   # blind time (0.085 s, Phase 0) plus the ~0.1 s the arm needs to build a
   # retreat speed: +6 cm for a hand at 0.3 m/s, +20 cm at 1 m/s. INITIAL
   # estimate, not tuned on hardware.
-  velocity_standoff_time_s: 0.20
+  #
+  # RAISED 0.20 -> 0.25 together with the cap below (Sep 2026, thrown-ball
+  # dodge investigation): a hardware run threw a ball at ~1.5-1.6 m/s
+  # (measured via cbf_v_obs_cond) directly at fr3_link8; the arm commanded
+  # essentially its full acceleration authority (qddot_delta_norm ~20 rad/s^2)
+  # and still ran min_h to about -0.067 m (raw clearance ~8 cm, no contact).
+  # Prediction was not the problem there — v_obs_cond was already >1 m/s well
+  # before the deepest point. This is a SPEED-PROPORTIONAL, tighten-only
+  # change: it leaves a slow reach (~0.3 m/s) at +0.075 m (was +0.06 m),
+  # barely different, while a fast throw now gets meaningfully more head
+  # start. Left base d_safe (0.15) untouched on purpose, since that also sets
+  # how close the arm may sit next to a SLOW/static obstacle, which past
+  # sessions deliberately tuned down. NOT hardware-validated.
+  velocity_standoff_time_s: 0.25
 
   # [m] clamp. Reached at 1.0 m/s with the time above, so the term is linear
   # over the 0-1 m/s a person moves at and flat beyond.
-  velocity_standoff_max: 0.20
+  #
+  # RAISED 0.20 -> 0.35 (see time_s above): the saturation point moves from
+  # 1.0 to 1.4 m/s, so a throw in the 1-1.6 m/s range that used to saturate
+  # at +0.20 m now keeps gaining standoff up to +0.35 m.
+  velocity_standoff_max: 0.35
 
   # [-] EMA on the standoff's DECAY only (rise is instant), per control point,
   # at the 50 Hz rebuild: 0.8 is a ~100 ms constant. Keeps a slowing or
@@ -1881,9 +1924,20 @@ params:
   # latency_margin_max. Gated on obstacle_velocity_min_frames like the other
   # track-derived terms.
   #
-  # OFF by default, as specified. With the flag off no term is evaluated and
-  # the rows are bit-identical (regression-tested).
-  enable_latency_compensation: false
+  # Was OFF by default, as specified; with the flag off no term is evaluated
+  # and the rows are bit-identical (regression-tested).
+  #
+  # TURNED ON (Sep 2026, thrown-ball dodge investigation): Phase 4 measured
+  # constant-velocity prediction matching truth within the filter's own 2σ,
+  # tighten-only, clamped at latency_margin_max — a validated, bounded win
+  # that was sitting unused. It is gated on obstacle_velocity_min_frames like
+  # every other track-derived term, so it only helps once a track is
+  # confirmed (see cluster_min_points / obstacle_velocity_residual_floor_gap
+  # above); it buys back the 48-85 ms measured blind time on top of that.
+  # NOT validated on hardware since being turned on — launch_defaults.yaml's
+  # latency_compensation must also be true for this to take effect via the
+  # launch file.
+  enable_latency_compensation: true
 
   # [s] the blind time to predict over. The measured p95 at 30 fps; use 0.168
   # if the camera is left at the driver's 15 fps default. Zero disables the
