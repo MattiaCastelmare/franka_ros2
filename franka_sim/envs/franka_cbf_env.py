@@ -660,6 +660,11 @@ class FrankaCBFEnv(gym.Env):
 
     # ── Gym API ────────────────────────────────────────────────────────────────
 
+    def _obs_proximity(self, d_min):
+        """Normalised obstacle-proximity ramp: 0 beyond obs_soft_margin, 1 at contact."""
+        margin = float(self.rw.get('obs_soft_margin', 0.10))
+        return min(1.0, max(0.0, margin - d_min) / margin)
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
@@ -703,6 +708,7 @@ class FrankaCBFEnv(gym.Env):
         self._p_obs_prev = None
 
         *_, d_min, cp_geom = self._build_obstacles(self._qdot)
+        self._obs_pen_prev = self._obs_proximity(d_min)
         return self._get_obs(d_min, cp_geom), {}
 
     def step(self, action):
@@ -743,6 +749,37 @@ class FrankaCBFEnv(gym.Env):
         success = dist < self.target_tol
         collision = d_min < float(rw.get('collision_dist', 0.0))
         jerk = float(np.linalg.norm(qddot_safe - self._qddot_prev))
+        # Anticipatory workspace-wall penalty (see reward.w_ws_margin in
+        # config.yaml): a linear ramp that starts well outside the hard CBF
+        # box (cbf.ws_margin) so the policy is pushed off the walls before
+        # the shield ever has to. 0 when ws_enable is off (sim-only feature).
+        ws_pen = 0.0
+        if self.cbf.ws_enable:
+            wall_dist = min(
+                min(ee[k] - self.cbf.ws_min[k], self.cbf.ws_max[k] - ee[k])
+                for k in range(3))
+            soft_margin = float(rw.get('ws_soft_margin', 0.15))
+            ws_pen = max(0.0, soft_margin - wall_dist)
+        # Dense obstacle-proximity penalty (reward.w_obs_margin): normalised
+        # linear ramp on the closest control-point surface distance, 0 at
+        # obs_soft_margin, 1 at contact. With the obstacle CBF rows ON this is
+        # redundant with w_intervention/w_slack; with cbf_obstacle_enabled:
+        # false it is the ONLY dense avoidance signal — without it the sole
+        # obstacle term is the sparse collision_penalty, and an early crash
+        # (which ends the episode) out-scores a full 500-step episode.
+        #
+        # obs_shaping selects HOW the ramp enters the reward:
+        #   penalty   — −w·pen(s') every tick (sac_b1). Raises the per-step
+        #               living cost, which in sac_b1 brought a full episode
+        #               (≈−260 discounted) within ~15 % of an early crash and
+        #               re-opened the crash-to-end-the-episode hack.
+        #   potential — Ng et al. 1999 shaping F = γΦ(s') − Φ(s), Φ = −w·pen:
+        #               the same gradient away from the obstacle, but it
+        #               telescopes to ≈0 over an episode, so it adds no living
+        #               cost and leaves the optimal policy unchanged. Φ of a
+        #               TERMINATED state is 0 (standard episodic convention);
+        #               truncation bootstraps, so Φ(s') is used there.
+        obs_pen = self._obs_proximity(d_min)
         reward = (
             - float(rw.get('w_dist', 1.0)) * dist
             + float(rw.get('w_success', 5.0)) * float(success)
@@ -751,12 +788,34 @@ class FrankaCBFEnv(gym.Env):
             - float(rw.get('w_slack', 0.5)) * info.slack
             - float(rw.get('w_smooth', 0.001)) * jerk
             - float(rw.get('w_qdot', 0.001)) * float(qdot @ qdot)
+            - float(rw.get('w_ws_margin', 0.0)) * ws_pen
         )
+        # terminate_on_collision: false keeps the episode running and charges
+        # collision_penalty on EVERY tick spent inside the obstacle.
+        terminated = ((collision and bool(rw.get('terminate_on_collision', True)))
+                      or (success and bool(rw.get('terminate_on_success', True))))
+
+        w_obs = float(rw.get('w_obs_margin', 0.0))
+        if str(rw.get('obs_shaping', 'penalty')) == 'potential':
+            gamma = float(rw.get('shaping_gamma',
+                                 self.cfg.get('rl', {}).get('gamma', 0.99)))
+            phi_next = 0.0 if terminated else -w_obs * obs_pen
+            reward += gamma * phi_next - (-w_obs * self._obs_pen_prev)
+        else:
+            reward -= w_obs * obs_pen
+        self._obs_pen_prev = obs_pen
+
         if collision:
             reward -= float(rw.get('collision_penalty', 10.0))
+            # collision_step_cost > 0: also charge every tick the crash skips,
+            # at a rate ≥ the worst per-step cost. Ending the episode early
+            # then always costs more than living it out, whatever the other
+            # weights — the structural fix for the early-termination hack
+            # (an undiscounted sum bounds the discounted one from above).
+            if terminated:
+                reward -= (float(rw.get('collision_step_cost', 0.0))
+                           * (self.max_steps - self._step))
         self._qddot_prev = qddot_safe
-
-        terminated = bool(collision) or (success and bool(rw.get('terminate_on_success', True)))
         truncated = self._step >= self.max_steps
 
         info_out = {
@@ -764,7 +823,7 @@ class FrankaCBFEnv(gym.Env):
             'is_success': bool(success),   # always present (Monitor info_keyword)
             'collision': bool(collision), 'cbf_slack': info.slack,
             'cbf_intervention': info.intervention, 'cbf_n_c': info.n_c,
-            'cbf_braking': info.braking,
+            'cbf_braking': info.braking, 'obs_pen': obs_pen,
         }
 
         obs = self._get_obs(d_min, cp_geom)

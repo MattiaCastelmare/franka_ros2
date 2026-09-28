@@ -1,3 +1,16 @@
+# ── RUN B (sac_b1, 2026-09-25): END-TO-END AVOIDANCE ABLATION ──────────────
+# Identical to sac_v9's frozen config EXCEPT:
+#   env.cbf_obstacle_enabled: false  -> no obstacle rows in the QP; joint
+#     pos/vel/slew/q̈ boxes and the sim-only workspace box stay ON, so the RL
+#     policy alone owns obstacle avoidance AND reaching.
+#   reward.collision_penalty 10 -> 300, w_obs_margin/obs_soft_margin (new dense
+#     proximity ramp), terminate_on_collision explicit.
+# Question: "does the CBF actually matter?" — CBF-shielded (sac_v9) vs
+# end-to-end RL on the same task, same seeds. SIM-ONLY: never deploy this
+# policy on the FR3 (it was trained with no obstacle barrier).
+# cbf.d_safe stays 0.15: with the obstacle rows off it only drives the reset
+# clearance and the blocking-episode sampling, kept equal to v9 so both runs
+# see the same task distribution.
 # ============================================================================
 # franka_sim — central configuration (Safe RL + CBF, Sim-to-Real)
 #
@@ -21,6 +34,7 @@ env:
   control_rate_hz: 100.0          # policy + CBF tick rate (matches real qp_rate)
   sim_timestep: 0.002             # MuJoCo integration step (→ 5 substeps/tick)
   max_episode_steps: 500          # 5 s episodes at 100 Hz
+  cbf_obstacle_enabled: false     # RUN B: obstacle avoidance left entirely to RL
   # Viewer playback rate (--render only; ignored while training and headless).
   # 1.0 = wall-clock real time. Lower it to inspect a motion in slow motion.
   render_speed: 1.0
@@ -308,7 +322,16 @@ reward:
   w_ws_margin: 1.0
   ws_soft_margin: 0.15            # [m] matches d_safe's order of magnitude
   collision_dist: 0.0             # [m] surface distance below this ⇒ collision
-  collision_penalty: 10.0         # one-off penalty on collision (then terminate)
+  # RUN B: must dominate the cost of a whole episode (~-210 undiscounted,
+  # ~-100 discounted at gamma 0.997), else crashing early to end the episode
+  # beats doing the task.
+  collision_penalty: 300.0
+  terminate_on_collision: true
+  # Dense proximity ramp on the closest control-point surface distance:
+  # 0 at obs_soft_margin, w_obs_margin/step at contact. Normalised (unlike
+  # ws_pen). 2.0/step at contact ~ 5x the typical w_dist term.
+  w_obs_margin: 2.0
+  obs_soft_margin: 0.10           # [m]
   terminate_on_success: true
 
 # ── CBF safety filter (MIRROR of fr3_control.yaml `params`) ──────────────────
@@ -469,25 +492,13 @@ shield_parity:
     - enable_outrun_evasion       # biases the QP target
     - enable_livelock_escape      # biases the QP target
     - enable_vobs_in_hdot
-    # MOVED here from robot_only_inactive (Sep 2026, thrown-ball dodge
-    # investigation): turned on on the robot to buy back the measured 48-85 ms
-    # camera-to-torque blind time for a small/fast obstacle (tighten-only,
-    # clamped at latency_margin_max, gated on obstacle_velocity_min_frames like
-    # every other track-derived term — see fr3_control.yaml). CONSEQUENCE: any
-    # Safe-RL policy exported from this sim config has been trained WITHOUT
-    # this term bending q̈_nom; on hardware with `motion_source:=rl` its
-    # measured safety margins no longer reflect what it trained under until
-    # this prediction+propagated-uncertainty term is ported into
-    # envs/cbf_filter.py (same pending obligation as the class-K rework this
-    # file already lags behind).
-    - enable_latency_compensation
 
   # Shipped OFF on the robot as well, so they are not part of today's gap.
   # Turning one on WIDENS the gap and fails the test until it is moved up.
   robot_only_inactive:
     - enable_velocity_feedforward
     - enable_weighted_slack
-    - enable_sensor_range_uncertainty  # needs LinkDistance.range_m + calibration; not hardware-validated
+    - enable_latency_compensation
     - iso_enabled                 # also gates iso_ssm_speed_rows / the SSM rows
     - iso_monitor_enabled
 
