@@ -2,6 +2,7 @@
 
 import os
 import threading
+import time
 
 import numpy as np
 import pinocchio as pin
@@ -74,8 +75,20 @@ class EndEffectorStateNode(Node):
 
         self.lock = threading.Lock()
 
+        # Prefer the real-robot fast joint-state stream.
+        # Automatically fall back to the recorded/standard stream
+        # when the primary is not producing valid arm states.
+        self.primary_last_valid_wall = None
+        self.primary_hold_s = 0.20
+
         control_cfg = load_control_config('control')
         topics = control_cfg['topics']
+
+        self.primary_joint_topic = topics.get(
+            'joint_states_fast',
+            topics['joint_states_topic'],
+        )
+        self.fallback_joint_topic = topics['joint_states_topic']
 
         self.pub = self.create_publisher(
             EndEffectorState,
@@ -85,13 +98,18 @@ class EndEffectorStateNode(Node):
 
         self.create_subscription(
             JointState,
-            topics.get(
-                'joint_states_fast',
-                topics['joint_states_topic'],
-            ),
-            self.on_joint_state,
+            self.primary_joint_topic,
+            self.on_primary_joint_state,
             1,
         )
+
+        if self.fallback_joint_topic != self.primary_joint_topic:
+            self.create_subscription(
+                JointState,
+                self.fallback_joint_topic,
+                self.on_fallback_joint_state,
+                1,
+            )
 
         # 100 Hz is plenty for the handover observer/control layer.
         self.create_timer(
@@ -103,6 +121,20 @@ class EndEffectorStateNode(Node):
             f'EndEffectorState: {self.ee_link}, '
             f'v_ee = J_ee(q) qdot'
         )
+
+    def on_primary_joint_state(self, msg):
+        if self.on_joint_state(msg):
+            self.primary_last_valid_wall = time.monotonic()
+
+    def on_fallback_joint_state(self, msg):
+        if (
+            self.primary_last_valid_wall is not None
+            and time.monotonic() - self.primary_last_valid_wall
+                <= self.primary_hold_s
+        ):
+            return
+
+        self.on_joint_state(msg)
 
     def on_joint_state(self, msg):
 
@@ -123,7 +155,7 @@ class EndEffectorStateNode(Node):
                 or i >= len(msg.position)
                 or i >= len(msg.velocity)
             ):
-                return
+                return False
 
             q[k] = msg.position[i]
             qdot[k] = msg.velocity[i]
@@ -133,6 +165,8 @@ class EndEffectorStateNode(Node):
             self.qdot[:] = qdot
             self.stamp = msg.header.stamp
             self.has_state = True
+
+        return True
 
     def publish_state(self):
 

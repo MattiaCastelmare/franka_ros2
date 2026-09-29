@@ -144,6 +144,15 @@ def generate_launch_description():
     )
 
 
+    end_effector_state = Node(
+        package='franka_experiments',
+        executable='end_effector_state',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+        }],
+    )
+
     handover_distance = Node(
         package='franka_experiments',
         executable='distance_handover_estimator',
@@ -195,10 +204,6 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': True,
         }],
-        additional_env={
-            '__NV_PRIME_RENDER_OFFLOAD': '1',
-            '__GLX_VENDOR_LIBRARY_NAME': 'nvidia',
-        },
     )
 
     video_recorder = ExecuteProcess(
@@ -289,6 +294,7 @@ def generate_launch_description():
         tracker,
         kalman,
         estimator,
+        end_effector_state,
         compare_visualizer,
         handover_distance,
         handover_observer,
