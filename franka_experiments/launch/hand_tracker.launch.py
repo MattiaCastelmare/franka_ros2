@@ -236,7 +236,7 @@ def generate_launch_description():
         # /ros2_ws/src/rosbags_external/handover_20260924_154930
         DeclareLaunchArgument(
             'bag_path',
-            default_value='/ros2_ws/rosbags/datasets-001/arm_complex',
+            default_value='/ros2_ws/rosbags/datasets-001/handover_rosbag2',
         ),
 
         DeclareLaunchArgument(

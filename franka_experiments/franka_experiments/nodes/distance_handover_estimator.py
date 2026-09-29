@@ -46,6 +46,12 @@ class HandoverDistanceEstimator(Node):
         self.max_ee_state_age_s = float(
             self.get_parameter('max_ee_state_age_s').value
         )
+
+        # Keep EE position availability consistent with the
+        # previous TF cache semantics.
+        self.max_ee_position_age_s = float(
+            config['distance'].get('tf_cache_max_age_s', 0.5)
+        )
         self.ttc_min_closing_speed = float(
             parameter_value(
                 self,
@@ -183,8 +189,15 @@ class HandoverDistanceEstimator(Node):
 
         t = self.stamp_to_seconds(msg.header.stamp)
 
-        if self.ee_states and t <= self.ee_states[-1][0]:
-            self.ee_states.clear()
+        if self.ee_states:
+            last_t = self.ee_states[-1][0]
+
+            if t < last_t:
+                self.ee_states.clear()
+
+            elif t == last_t:
+                self.ee_states[-1] = (t, msg)
+                return
 
         self.ee_states.append((t, msg))
 
@@ -201,7 +214,7 @@ class HandoverDistanceEstimator(Node):
 
         age = abs(t_hand - t_ee)
 
-        if age > self.max_ee_state_age_s:
+        if age > self.max_ee_position_age_s:
             return None, age
 
         return state, age
@@ -332,6 +345,7 @@ class HandoverDistanceEstimator(Node):
 
         ee_velocity_valid = bool(
             ee_state.valid
+            and ee_age <= self.max_ee_state_age_s
             and np.all(np.isfinite(ee_velocity))
         )
 
