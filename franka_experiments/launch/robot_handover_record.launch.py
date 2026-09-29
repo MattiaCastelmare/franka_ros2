@@ -17,22 +17,50 @@ _CAMERA_TOPICS = [
     'aligned_depth_to_color/camera_info',
     'extrinsics/depth_to_color',
 ]
+
 ROSBAG_TOPICS = [
     f'/{cam}/{cam}/{topic}'
     for cam in ('camera', 'd405')
     for topic in _CAMERA_TOPICS
 ]
 
+ROSBAG_TOPICS += [
+    # Robot state
+    '/NS_1/franka/joint_states',
+    '/NS_1/joint_states',
+    '/tf',
+    '/tf_static',
+
+    # Hand perception/state
+    '/handover/hand_tracking_raw',
+    '/handover/hand_tracking_filtered',
+    '/handover/hand_state',
+
+    # Robot-relative handover state
+    '/handover/end_effector_state',
+    '/handover/distance',
+    '/handover/observer',
+
+    # Control
+    '/NS_1/qddot_nom',
+    '/NS_1/torque_cmd',
+]
+
 
 def generate_launch_description():
     stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    bag_dir = os.path.join(os.path.expanduser('~'), 'ros2_bags', f'handover_{stamp}')
+    bag_dir = os.path.join(
+        os.path.expanduser('~'),
+        'ros2_bags',
+        f'handover_{stamp}',
+    )
 
     return LaunchDescription([
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution([
                 FindPackageShare('franka_experiments'),
-                'launch', 'robot_handover.launch.py',
+                'launch',
+                'robot_handover.launch.py',
             ]))
         ),
         ExecuteProcess(
