@@ -231,13 +231,12 @@ def generate_launch_description():
 
     return LaunchDescription([
 
+        # Available bags:
+        # /ros2_ws/rosbags/datasets-001/{arm_complex,arm_repeated,handtracker_poses,handratacker_objecy,handover_rosbag2}
+        # /ros2_ws/src/rosbags_external/handover_20260924_154930
         DeclareLaunchArgument(
             'bag_path',
-            default_value=(
-                '/ros2_ws/rosbags/'
-                'datasets-001/'
-                'arm_complex'
-            ),
+            default_value='/ros2_ws/rosbags/datasets-001/arm_complex',
         ),
 
         DeclareLaunchArgument(
