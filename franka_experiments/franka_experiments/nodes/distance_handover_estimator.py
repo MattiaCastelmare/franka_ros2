@@ -66,9 +66,9 @@ class HandoverDistanceEstimator(Node):
         # No differentiation and no C5 are performed here.
         self.ee_states = deque(maxlen=100)
 
-        # Existing scalar-distance C5 fallback.
-        # Intentionally unchanged.
+        # Scalar-distance C5 samples must belong to the same physical hand.
         self.distance_history = deque(maxlen=5)
+        self.physical_hand = HandState.HAND_UNKNOWN
 
         self.publisher = self.create_publisher(
             HandoverDistance,
@@ -290,6 +290,12 @@ class HandoverDistanceEstimator(Node):
         field.z = float(value[2])
 
     def callback(self, msg: HandState):
+        physical_hand = int(msg.physical_hand)
+        if physical_hand in (HandState.HAND_LEFT, HandState.HAND_RIGHT):
+            if physical_hand != self.physical_hand:
+                self.distance_history.clear()
+            self.physical_hand = physical_hand
+
         out = HandoverDistance()
 
         out.header.stamp = msg.header.stamp

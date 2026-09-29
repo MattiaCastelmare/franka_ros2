@@ -53,6 +53,19 @@ def _as_bool(value) -> bool:
     )
 
 
+def _on_success(actions):
+    def on_exit(event, context):
+        if context.is_shutdown:
+            return []
+        if event.returncode != 0:
+            raise RuntimeError(
+                f'[handover] {event.process_name} failed '
+                f'(exit={event.returncode}); aborting startup'
+            )
+        return actions
+    return on_exit
+
+
 def _poll(name: str, test: str, timeout_s: str) -> ExecuteProcess:
     """
     Wait until a ROS condition becomes true.
@@ -66,6 +79,7 @@ def _poll(name: str, test: str, timeout_s: str) -> ExecuteProcess:
             'timeout',
             str(timeout_s),
             'bash',
+            '-o', 'pipefail',
             '-c',
             f'until {test}; do sleep 1; done',
         ],
@@ -248,7 +262,8 @@ def _launch_setup(context):
             'show_selected_landmarks': True,
 
             'model_complexity': 0,
-            'static_image_mode': False,
+            # Re-detect pose each frame instead of propagating a lost hand ROI.
+            'static_image_mode': True,
 
             'min_tracking_confidence': 0.5,
             'min_detection_confidence': 0.4,
@@ -422,6 +437,12 @@ def _launch_setup(context):
 
             handover_distance,
             handover_observer,
+            Node(
+                package='franka_experiments',
+                executable='proximity_estimator',
+                output='screen',
+                parameters=[{'use_sim_time': False}],
+            ),
 
             compare_visualizer,
             logger,
@@ -554,7 +575,7 @@ def _launch_setup(context):
 
         (
             f'ros2 service list 2>/dev/null '
-            f'| grep -q "^{cm}/list_controllers$"'
+            f'| grep -Fx "{cm}/list_controllers" >/dev/null'
         ),
 
         timeout_s,
@@ -567,7 +588,9 @@ def _launch_setup(context):
         (
             f'ros2 control list_controllers '
             f'--controller-manager {cm} 2>/dev/null '
-            f'| grep -q "{_TORQUE_CONTROLLER}.*active"'
+            r"| sed -E 's/\x1B\[[0-9;]*m//g' "
+            f'| grep -E "^[[:space:]]*{_TORQUE_CONTROLLER}[[:space:]]+'
+            f'[^[:space:]]+[[:space:]]+active[[:space:]]*$" >/dev/null'
         ),
 
         timeout_s,
@@ -603,8 +626,6 @@ def _launch_setup(context):
         # Perception
         perception_pipeline,
 
-        # Wait until ros2_control is alive
-        wait_cm,
     ]
 
 
@@ -627,7 +648,7 @@ def _launch_setup(context):
         RegisterEventHandler(
             OnProcessExit(
                 target_action=wait_cm,
-                on_exit=after_cm,
+                on_exit=_on_success(after_cm),
             )
         )
     )
@@ -638,9 +659,7 @@ def _launch_setup(context):
         RegisterEventHandler(
             OnProcessExit(
                 target_action=controller_spawner,
-                on_exit=[
-                    wait_torque,
-                ],
+                on_exit=_on_success([wait_torque]),
             )
         )
     )
@@ -653,14 +672,13 @@ def _launch_setup(context):
         RegisterEventHandler(
             OnProcessExit(
                 target_action=wait_torque,
-                on_exit=[
-                    handover_commander,
-                ],
+                on_exit=_on_success([handover_commander]),
             )
         )
     )
 
 
+    actions.append(wait_cm)
     return actions
 
 

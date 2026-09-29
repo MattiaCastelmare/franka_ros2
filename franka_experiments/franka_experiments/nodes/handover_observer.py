@@ -177,9 +177,8 @@ class HandoverObserverNode(Node):
                 self.reset_pending()
         else:
             held_rate = bool(int(msg.rate_source) == HandoverDistance.RATE_SOURCE_RELATIVE_HOLD)
-            if (held_rate and self.current_state in (HandoverObserver.HOLD,
-                    HandoverObserver.APPROACHING, HandoverObserver.RETREATING,)):
-                # Preserve the current state.
+            if held_rate:
+                # HOLD is not new evidence, including during LOST/WARMUP.
                 # Pending fresh evidence remains pending.
                 pass
             else:

@@ -53,6 +53,13 @@ VELOCITY_ESTIMATORS = {
     HandState.VELOCITY_ESTIMATOR_W75: 'W75',
 }
 
+POSITION_SOURCES = {
+    HandState.POSITION_SOURCE_NONE: 'INVALID',
+    HandState.POSITION_SOURCE_MEASURED: 'MEASURED',
+    HandState.POSITION_SOURCE_DEGRADED_FILTERED: 'DEGRADED_FILTERED',
+    HandState.POSITION_SOURCE_PREDICTED_W75: 'PREDICTED_W75',
+}
+
 from franka_experiments.utils.params import (
     load_hand_tracking_defaults,
     parameter_value,
@@ -539,21 +546,12 @@ class HandTrackingCsvLogger(Node):
         state = int(msg.filter_state)
         velocity_source = int(msg.velocity_source)
         velocity_estimator = int(msg.velocity_estimator)
-        position_valid = bool(msg.position_valid)
-        position_fresh = bool(msg.position_fresh)
-        hold_source = int(HandState.VELOCITY_SOURCE_HOLD)
-        runtime_bridge_inferred = bool(
-            position_valid and not position_fresh and int(msg.filter_state)
-                == int(HandTrackingFiltered.PREDICT_ONLY) and bool(msg.velocity_valid
-            ) and velocity_source == hold_source and not bool(msg.geometry_ok))
-        if not position_valid:
-            position_source_name = ('INVALID')
-        elif position_fresh:
-            position_source_name = ('MEASURED')
-        elif runtime_bridge_inferred:
-            position_source_name = ('PREDICTED_W75')
-        else:
-            position_source_name = ('DEGRADED_FILTERED')
+        position_source = int(msg.position_source)
+        position_source_name = POSITION_SOURCES.get(position_source, 'UNKNOWN')
+        # Keep the legacy CSV column, but use the authoritative message field.
+        runtime_bridge_inferred = (
+            position_source == HandState.POSITION_SOURCE_PREDICTED_W75
+        )
         row = [
             timestamp, timestamp - self.state_first_timestamp, msg.header.frame_id, int(msg.valid),
             int(msg.position_valid), int(msg.position_fresh), float(msg.position_age_s),

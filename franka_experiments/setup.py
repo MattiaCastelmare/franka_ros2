@@ -68,6 +68,8 @@ setup(
             'end_effector_state = franka_experiments.nodes.end_effector_state:main',
             'distance_handover_estimator = franka_experiments.nodes.distance_handover_estimator:main',
             'handover_observer = franka_experiments.nodes.handover_observer:main',
+            'proximity_estimator = franka_experiments.nodes.proximity_estimator:main',
+            'grasp = franka_experiments.nodes.grasp:main',
 
         ],
     },

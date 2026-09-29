@@ -9,6 +9,7 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from franka_msgs.msg import (
+    HandObjectState,
     HandState,
     HandTrackingFiltered,
     HandTrackingRaw,
@@ -30,6 +31,7 @@ class HandCompareVisualizer(Node):
 
     def __init__(self):
         super().__init__('hand_compare_visualizer')
+        self.declare_parameter('standoff_m', 0.20)
         config_dir = (
             get_package_share_directory('franka_experiments')
             + '/config/'
@@ -63,6 +65,10 @@ class HandCompareVisualizer(Node):
         ).as_matrix()
         self.r_base_camera = self.r_camera_base.T
         self.bridge = CvBridge()
+        self._object_state = None
+        self.create_subscription(
+            HandObjectState, '/handover/hand_object',
+            lambda msg: setattr(self, '_object_state', msg), 1)
         self.create_subscription(
             CameraInfo,
             (
@@ -206,6 +212,33 @@ class HandCompareVisualizer(Node):
         ):
             return None
         return u, v
+
+    def _draw_object_overlay(self, image, image_msg, state_msg):
+        msg = self._object_state
+        color = (160, 160, 160)
+        text = 'Oggetto: dati assenti/scaduti'
+        if msg is not None:
+            age = self._prediction_stamp_s(image_msg.header.stamp) - self._prediction_stamp_s(msg.header.stamp)
+            current = (0.0 <= age <= .2 and msg.physical_hand == state_msg.physical_hand
+                       and msg.physical_hand in (1, 2)
+                       and msg.header.frame_id == state_msg.header.frame_id)
+            if current:
+                text = 'Oggetto: non osservabile'
+                if msg.valid and state_msg.position_valid and state_msg.position_source == HandState.POSITION_SOURCE_MEASURED:
+                    text, color = 'Oggetto: non confermato', (0, 210, 255)
+                    if msg.object_present and 0.0 <= msg.object_age <= .2:
+                        text = f'Oggetto: CONFERMATO  c={msg.object_confidence:.2f}  eta={msg.object_age:.2f}s'
+                        color = (60, 255, 60)
+                        height, width = image.shape[:2]
+                        pixel = self.project(msg.object_centroid_3d, width, height)
+                        if pixel is not None:
+                            cv2.drawMarker(image, pixel, color, cv2.MARKER_CROSS, 18, 2)
+                            cv2.circle(image, pixel, 12, color, 1, cv2.LINE_AA)
+                            cv2.putText(image, 'OGGETTO', (pixel[0]+15, pixel[1]-8),
+                                        cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
+        width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)[0][0]
+        cv2.rectangle(image, (8, 62), (min(image.shape[1]-8, width+20), 84), (0, 0, 0), -1)
+        cv2.putText(image, text, (14, 78), cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
 
     # W75 VISUAL PREDICTION
 
@@ -717,17 +750,39 @@ class HandCompareVisualizer(Node):
             self._display_hand_side = (current_side)
         # Palm center
         palm_pixel = None
-        if visual_trusted:
+        if state_msg.position_valid:
             palm_pixel = self.project(state_msg.palm_position, width, height,)
             if palm_pixel is not None:
                 cv2.drawMarker(
                     image, palm_pixel, (0, 255, 255), cv2.MARKER_CROSS, 12, 2, cv2.LINE_8,)
-        if (visual_trusted and distance_msg.valid):
+        if (state_msg.position_valid and distance_msg.valid):
             ee_pixel = self.project(distance_msg.ee_control_point, width, height,)
             distance_palm_pixel = self.project(distance_msg.palm_position, width, height,)
             if (ee_pixel is not None and distance_palm_pixel is not None):
                 cv2.line(image, ee_pixel, distance_palm_pixel, (255, 255, 0), 2, cv2.LINE_AA,)
                 cv2.circle(image, ee_pixel, 5, (255, 255, 0), -1,)
+            # Geometric standoff, before the commander's reference smoothing.
+            palm = self._prediction_np_point(distance_msg.palm_position)
+            ee = self._prediction_np_point(distance_msg.ee_control_point)
+            delta = ee - palm
+            standoff = float(self.get_parameter('standoff_m').value)
+            if np.isfinite(palm).all() and np.isfinite(standoff) and standoff >= 0.0:
+                target = palm.copy()
+                target[2] += standoff
+                target_pixel = self.project(self._prediction_ros_point(target), width, height)
+                if target_pixel is not None:
+                    color = (0, 140, 255)
+                    if distance_palm_pixel is not None:
+                        cv2.line(image, distance_palm_pixel, target_pixel, color, 2, cv2.LINE_AA)
+                    cv2.drawMarker(image, target_pixel, color, cv2.MARKER_DIAMOND, 18, 2, cv2.LINE_AA)
+                    cv2.putText(image, 'STANDOFF +Z',
+                        (max(0, min(target_pixel[0] + 12, width - 125)),
+                         max(16, target_pixel[1] - 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                cv2.putText(image,
+                    f'Standoff +Z: {standoff * 100:.0f} cm | EE-palmo Z: {delta[2] * 100:.1f} cm',
+                    (14, height - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (0, 140, 255), 1, cv2.LINE_AA)
         # v + d overlay
         timestamp_s = (
             float(image_msg.header.stamp.sec) + 1e-9 * float(image_msg.header.stamp.nanosec))
@@ -778,8 +833,24 @@ class HandCompareVisualizer(Node):
             box_right = min(width - 8, 18 + text_width,)
             cv2.rectangle(image, (8, 8), (box_right, 38), (0, 0, 0), -1,)
             cv2.putText(image, text, (14, 29), font, font_scale, text_color, thickness, cv2.LINE_8,)
+        # Position remains useful while the velocity estimator is warming up.
+        coordinates = 'Palmo [base] m: X=--  Y=--  Z=--'
+        if distance_msg.valid:
+            palm_base = distance_msg.palm_position
+        elif state_msg.position_valid and state_msg.header.frame_id in ('base', 'fr3_link0'):
+            palm_base = state_msg.palm_position
+        else:
+            palm_base = None
+        if palm_base is not None and np.isfinite(self._prediction_np_point(palm_base)).all():
+            coordinates = (f'Palmo [base] m: X={palm_base.x:+.3f}  '
+                           f'Y={palm_base.y:+.3f}  Z={palm_base.z:+.3f}')
+        text_width = cv2.getTextSize(coordinates, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0][0]
+        cv2.rectangle(image, (8, 39), (min(width - 8, 18 + text_width), 60), (0, 0, 0), -1)
+        cv2.putText(image, coordinates, (14, 54), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.38, (0, 255, 255), 1, cv2.LINE_AA)
         # Visual-only W75 prediction overlay.
         self._draw_prediction_overlay(image, filtered_msg, state_msg, distance_msg,)
+        self._draw_object_overlay(image, image_msg, state_msg)
         output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8',)
         output.header = image_msg.header
         self.publisher.publish(output)

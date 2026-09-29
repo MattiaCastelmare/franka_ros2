@@ -505,8 +505,9 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             '/handover/hand_debug_image_raw',
             10,
         )
+        # Process recent images when inference is slower than the camera.
         image_qos = QoSProfile(
-            depth=5,
+            depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
         )
         self.rgb_sub = Subscriber(
@@ -529,7 +530,7 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         )
         self.synchronizer = ApproximateTimeSynchronizer(
             [self.rgb_sub, self.depth_sub],
-            queue_size=4,
+            queue_size=2,
             slop=0.05,
         )
         self.synchronizer.registerCallback(self.image_callback)

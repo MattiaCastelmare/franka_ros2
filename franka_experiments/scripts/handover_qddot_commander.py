@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import time
 import numpy as np
 
 from franka_msgs.msg import HandState
@@ -15,16 +14,45 @@ class HandoverPath:
 
     def __init__(self, node):
         self.node = node
-        self.zero = np.zeros(3)
+        self.p = None
+        self.v = np.zeros(3)
+        self.a = np.zeros(3)
+        self.stamp_ns = None
 
     def position(self, s):
-        return self.node.desired_position()
+        now = self.node.get_clock().now().nanoseconds
+        dt = (now - self.stamp_ns) * 1e-9 if self.stamp_ns is not None else 0.0
+        self.stamp_ns = now
+        if self.p is None or not 0.0 < dt <= 0.1:
+            self.p = self.node._p_ee.copy()
+            self.v.fill(0.0)
+            self.a.fill(0.0)
+            return self.p
+
+        # One continuous reference, including hand switches and reacquisition.
+        # Invalid hands select the current TCP in desired_position(), not a
+        # stale hand target. Bounded deceleration replaces an abrupt v_d = 0.
+        target = self.node.desired_position()
+        omega = 1.0 / max(0.01, float(
+            self.node.get_parameter('target_response_s').value))
+        accel = omega**2 * (target - self.p) - 2.0 * omega * self.v
+        amax = max(0.0, float(
+            self.node.get_parameter('max_target_acceleration_m_s2').value))
+        accel *= min(1.0, amax / max(float(np.linalg.norm(accel)), 1e-12))
+        velocity = self.v + accel * dt
+        vmax = max(0.0, float(
+            self.node.get_parameter('max_target_velocity_m_s').value))
+        velocity *= min(1.0, vmax / max(float(np.linalg.norm(velocity)), 1e-12))
+        self.a[:] = (velocity - self.v) / dt
+        self.p += 0.5 * (self.v + velocity) * dt
+        self.v[:] = velocity
+        return self.p
 
     def velocity(self, s, s_dot):
-        return self.node.desired_velocity()
+        return self.v
 
     def acceleration(self, s, s_dot, s_ddot):
-        return self.zero
+        return self.a
 
 
 class HandoverQddotCommander(PentagonQddotCommander):
@@ -36,21 +64,21 @@ class HandoverQddotCommander(PentagonQddotCommander):
         self.declare_parameter('test_offset_xyz', [0.0, 0.0, 0.0])
 
         self.declare_parameter('standoff_m', 0.20)
-        self.declare_parameter('hand_timeout_s', 0.15)
+        self.declare_parameter('hand_timeout_s', 0.20)
         self.declare_parameter('min_confidence', 0.70)
 
         # Target virtuale massimo rispetto all'EE corrente.
         self.declare_parameter('max_target_step_m', 0.05)
         self.declare_parameter('max_target_velocity_m_s', 0.25)
+        self.declare_parameter('max_target_acceleration_m_s2', 0.75)
+        self.declare_parameter('target_response_s', 0.10)
 
         self._hold_position = None
 
         self._hand_position = np.zeros(3)
-        self._hand_velocity = np.zeros(3)
 
         self._hand_ok = False
-        self._hand_velocity_ok = False
-        self._hand_rx_time = 0.0
+        self._hand_stamp_ns = 0
 
         self._handover_path = HandoverPath(self)
 
@@ -58,7 +86,7 @@ class HandoverQddotCommander(PentagonQddotCommander):
             HandState,
             '/handover/hand_state',
             self._hand_cb,
-            10,
+            1,
         )
 
         self.get_logger().info(
@@ -90,33 +118,18 @@ class HandoverQddotCommander(PentagonQddotCommander):
 
         if self._hand_ok:
             self._hand_position[:] = p
-            self._hand_rx_time = time.monotonic()
-
-        v = np.array([
-            msg.palm_velocity.x,
-            msg.palm_velocity.y,
-            msg.palm_velocity.z,
-        ], dtype=float)
-
-        self._hand_velocity_ok = bool(
-            self._hand_ok
-            and
-            msg.velocity_valid
-            and
-            np.isfinite(v).all()
-        )
-
-        if self._hand_velocity_ok:
-            self._hand_velocity[:] = v
+            self._hand_stamp_ns = (
+                msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+            )
 
     def hand_trusted(self):
 
         if not self._hand_ok:
             return False
 
-        age = time.monotonic() - self._hand_rx_time
+        age = (self.get_clock().now().nanoseconds - self._hand_stamp_ns) * 1e-9
 
-        return age <= float(
+        return 0.0 <= age <= float(
             self.get_parameter('hand_timeout_s').value
         )
 
@@ -140,26 +153,17 @@ class HandoverQddotCommander(PentagonQddotCommander):
 
             return self._hold_position + offset
 
-        # Mano persa/non trusted -> stop cartesiano dove siamo.
+        # Mano persa/non trusted -> target sul TCP; il path frena gradualmente.
         if not self.hand_trusted():
             return self._p_ee.copy()
 
-        # Target = punto a standoff dalla mano,
-        # lungo la linea mano <-> EE.
-        delta = self._p_ee - self._hand_position
-        distance = float(np.linalg.norm(delta))
-
-        if distance < 1e-6:
-            return self._p_ee.copy()
-
+        # Standoff solo lungo +Z della base: stessa X/Y del palmo.
         standoff = float(
             self.get_parameter('standoff_m').value
         )
 
-        target = (
-            self._hand_position
-            + standoff * delta / distance
-        )
+        target = self._hand_position.copy()
+        target[2] += standoff
 
         # Non dare mai al controller un target virtuale
         # troppo lontano dall'EE corrente.
@@ -175,34 +179,6 @@ class HandoverQddotCommander(PentagonQddotCommander):
             target = self._p_ee + move
 
         return target
-
-    def desired_velocity(self):
-
-        if not bool(
-            self.get_parameter('follow_hand').value
-        ):
-            return np.zeros(3)
-
-        if (
-            not self.hand_trusted()
-            or not self._hand_velocity_ok
-        ):
-            return np.zeros(3)
-
-        v = self._hand_velocity.copy()
-
-        vmax = float(
-            self.get_parameter(
-                'max_target_velocity_m_s'
-            ).value
-        )
-
-        speed = float(np.linalg.norm(v))
-
-        if speed > vmax:
-            v *= vmax / speed
-
-        return v
 
     def _start_trajectory(self, js):
 
