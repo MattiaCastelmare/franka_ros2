@@ -307,6 +307,6 @@ class ObstacleTrackPipeline:
                 f'confirmed={len(self.tracker.confirmed_tracks())} '
                 f'births={d["births"]} '
                 f'reaped={d["reaped"]}/{d["reaped_young"]}(mature/young) '
-                f'unassoc={d["unassociated"]} cap={d["over_capacity"]} '
+                f'unassoc={d["unassociated"]} cap={d["over_capacity"]} evict={d.get("evicted", 0)} '
                 f'life={d["mean_life"]:.1f}fr '
                 f'dt={self.last_dt * 1e3:.1f}ms')

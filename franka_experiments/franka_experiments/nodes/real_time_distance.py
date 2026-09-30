@@ -334,12 +334,19 @@ class RealTimeDistance(Node):
                 contains_tol=float(trk_cfg.get('cluster_contains_tol_m', 0.05)),
                 q_jerk=float(trk_cfg.get('q_jerk', 2.0)),
                 sigma_meas=float(trk_cfg.get('sigma_meas_m', 0.01)),
+                # Prior on a NEW track's velocity / acceleration. Were fixed at
+                # the TrackManager defaults (1.0 m/s, 5.0 m/s^2); the velocity
+                # prior both biases a young track toward 0 and sets the first
+                # association gate, so a thrown object needs it configurable.
+                sigma_v0=float(trk_cfg.get('sigma_v0', 1.0)),
+                sigma_a0=float(trk_cfg.get('sigma_a0', 5.0)),
                 gate_mahalanobis=float(trk_cfg.get('gate_mahalanobis', 3.0)),
                 gate_max_m=float(trk_cfg.get('gate_max_m', 0.5)),
                 confirm_hits=trk_hits,
                 confirm_window=trk_window,
                 max_missed=trk_coast,
                 max_tracks=int(trk_cfg.get('max_tracks', 12)),
+                evict_stale_tentative=bool(trk_cfg.get('evict_stale_tentative', False)),
                 # A frame with no usable stamp must not be advanced with the dt
                 # of a rate the stream is not running at.
                 default_dt=1.0 / self._nominal_hz,

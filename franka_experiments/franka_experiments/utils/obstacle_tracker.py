@@ -706,6 +706,11 @@ class TrackManager:
             exclusion mask failing, the whole scene reading as obstacle) can
             otherwise produce hundreds of clusters and hence hundreds of tracks,
             and the association cost is O(T·C).
+        evict_stale_tentative: when the table is full, a new cluster may take
+            the slot of the UNCONFIRMED track that has gone longest without a
+            measurement (at least one missed frame). Confirmed tracks and
+            tentative tracks still being hit are never evicted. OFF = the old
+            "refuse the birth" behaviour, bit-identical.
         imm_enabled: births an :class:`IMMTrack` (generic + ballistic model,
             blended) instead of a plain :class:`KalmanTrack`. OFF by default —
             with it off every track built here is bit-identical to before this
@@ -726,6 +731,7 @@ class TrackManager:
         confirm_window: int = 5,
         max_missed: int = 5,
         max_tracks: int = 12,
+        evict_stale_tentative: bool = False,
         imm_enabled: bool = False,
         imm_ballistic_q_jerk: Optional[float] = None,
         imm_ballistic_sigma_a0: float = 2.0,
@@ -743,6 +749,7 @@ class TrackManager:
         self.confirm_window = int(confirm_window)
         self.max_missed = int(max_missed)
         self.max_tracks = int(max_tracks)
+        self.evict_stale_tentative = bool(evict_stale_tentative)
         self.imm_enabled = bool(imm_enabled)
         # None (IMMTrack's own default) means "same as q_jerk" -- see
         # IMMTrack's docstring for the measurement behind that default.
@@ -789,6 +796,7 @@ class TrackManager:
         self.n_reaped_young = 0      # died before it was ever confirmed
         self.n_unassociated = 0      # clusters that matched no existing track
         self.n_over_capacity = 0     # clusters dropped because max_tracks was hit
+        self.n_evicted = 0           # stale tentative tracks evicted to make room
         self.life_sum = 0            # summed age, in perception frames
         self.life_n = 0
 
@@ -892,7 +900,7 @@ class TrackManager:
             # how often max_tracks was the thing that bit. Conflating the two
             # would hide a saturated tracker behind a tight gate.
             self.n_unassociated += 1
-            if len(self.tracks) >= self.max_tracks:
+            if len(self.tracks) >= self.max_tracks and not self._evict_one():
                 self.n_over_capacity += 1
                 continue
             self.n_births += 1
@@ -957,6 +965,36 @@ class TrackManager:
         if track_id not in self._confirmed and sum(h) >= self.confirm_hits:
             self._confirmed.add(track_id)
 
+    def _evict_one(self) -> bool:
+        """Free one slot for a birth, or return False.
+
+        WHY. On the 2026-09-30 hardware run the table sat at max_tracks for the
+        whole run and 85 % of unmatched clusters were refused a track. The slots
+        were held by tentative tracks of flickering clutter that would be reaped
+        within max_missed frames anyway, while a thrown ball arriving meanwhile
+        got no track. A track that is unconfirmed AND has missed its latest
+        frame(s) is the least informative thing in the table; a new cluster
+        has at least the same claim to the slot.
+
+        Never touches a confirmed track (it may be carrying a velocity the CBF
+        uses) nor a tentative one hit on its last frame (it may be the ball,
+        three frames from confirmation).
+        """
+        if not self.evict_stale_tentative:
+            return False
+        cand = [t for t in self.tracks
+                if t.track_id not in self._confirmed and t.missed >= 1]
+        if not cand:
+            return False
+        victim = max(cand, key=lambda t: (t.missed, -t.track_id))
+        self.tracks.remove(victim)
+        self.n_evicted += 1
+        self.n_reaped_young += 1
+        self.life_sum += int(victim.frames_seen)
+        self.life_n += 1
+        self._hits.pop(victim.track_id, None)
+        return True
+
     def _reap(self) -> None:
         keep = []
         for t in self.tracks:
@@ -992,6 +1030,7 @@ class TrackManager:
             'reaped_young': self.n_reaped_young,
             'unassociated': self.n_unassociated,
             'over_capacity': self.n_over_capacity,
+            'evicted': self.n_evicted,
             'mean_life': (self.life_sum / self.life_n) if self.life_n else 0.0,
             'alive': len(self.tracks),
             'confirmed': len(self._confirmed),

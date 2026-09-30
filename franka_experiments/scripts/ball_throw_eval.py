@@ -215,6 +215,20 @@ def passes(tt, ok, P, rows_t, rows_cpr, near_m, min_speed):
     return out
 
 
+def truth_velocity(tt, ok, P, half_window=2):
+    """Ball velocity from the truth trajectory: a least-squares line over
+    ±half_window colour frames (±67 ms at 30 Hz), NaN where the ball is missing."""
+    V = np.full((len(tt), 3), np.nan)
+    for i in range(len(tt)):
+        idx = [j for j in range(i - half_window, i + half_window + 1) if 0 <= j < len(tt) and ok[j]]
+        if len(idx) < 4 or not ok[i]:
+            continue
+        t = tt[idx] - tt[i]
+        A = np.c_[t, np.ones_like(t)]
+        V[i] = np.linalg.lstsq(A, P[idx], rcond=None)[0][0]
+    return V
+
+
 def cmd_score(args):
     T = np.load(args.truth)
     tt, ok, P = T['t'], T['ok'], T['p']
@@ -233,7 +247,7 @@ def cmd_score(args):
                 L.append((np.array([l.closest_point_robot.x, l.closest_point_robot.y, l.closest_point_robot.z]),
                           np.array([l.closest_point_human.x, l.closest_point_human.y, l.closest_point_human.z]),
                           l.distance, l.track_id, l.frames_seen, float(np.linalg.norm(v)),
-                          float(n @ v), float(np.sqrt(max(n @ C @ n, 0.0)))))
+                          float(n @ v), float(np.sqrt(max(n @ C @ n, 0.0))), v))
             rows.append((recv, _stamp(m), L))
         elif topic == QDD_SAFE:
             safe.append((recv, np.array(m.data[:7])))
@@ -261,6 +275,8 @@ def cmd_score(args):
     fast = lambda l: l[3] > 0 and l[6] - args.fast_k * l[7] >= args.fast_v
     print(' pass  t_close  v[m/s] min_gap |  row_lead  on_ball  tracked  max_fs  max|v| | trust_lead  fast_lead | cbf_lead  max_dev')
     S = dict(row=[], trk=0, trust=[], cbf=[], v_ok=0, fast=[])
+    vt = truth_velocity(tt, ok, P)
+    verr = []            # (|v_track - v_true|, |v_track|/|v_true|, angle deg) on ball rows
     in_pass = np.zeros(len(rows), bool)
     for n, p in enumerate(ps, 1):
         # rows (by capture stamp) in the window before the closest approach
@@ -277,6 +293,14 @@ def cmd_score(args):
             best = min(r[2], key=lambda l: np.linalg.norm(l[1] - pb))
             if np.linalg.norm(best[1] - pb) < args.on_ball_m:
                 on.append((r[0], r[1], best))
+                j = min(cand, key=lambda j: abs(tt[j] - r[1]))
+                for l in r[2]:
+                    if l[3] > 0 and np.linalg.norm(l[1] - pb) < args.on_ball_m and np.isfinite(vt[j]).all():
+                        vtr, vtk = vt[j], l[8]
+                        sp = np.linalg.norm(vtr)
+                        if sp > args.min_speed and np.linalg.norm(vtk) > 1e-6:
+                            ang = np.degrees(np.arccos(np.clip(vtk @ vtr / (np.linalg.norm(vtk) * sp), -1, 1)))
+                            verr.append((np.linalg.norm(vtk - vtr), np.linalg.norm(vtk) / sp, ang, l[4]))
             if any(np.linalg.norm(l[1] - pb) < args.on_ball_m and fast(l) for l in r[2]):
                 on_fast.append(r[0])
         # recv time of the closest approach ≈ capture stamp + the recording's latency
@@ -307,6 +331,16 @@ def cmd_score(args):
               f'CBF acted {np.isfinite(S["cbf"]).sum()}/{len(ps)} (median lead {f(S["cbf"]):.0f} ms)')
         print(f'  fast-track (v_n - {args.fast_k}σ >= {args.fast_v} m/s) on the ball in '
               f'{np.isfinite(S["fast"]).sum()}/{len(ps)} passes (median lead {f(S["fast"]):.0f} ms)')
+    if verr:
+        E = np.array(verr)
+        print(f'  track velocity vs truth on the ball ({len(E)} rows): |error| median {np.median(E[:, 0]):.2f} m/s, '
+              f'speed ratio median {np.median(E[:, 1]):.2f} (p10 {np.percentile(E[:, 1], 10):.2f}), '
+              f'direction error median {np.median(E[:, 2]):.0f} deg')
+        for lo, hi in ((0, 6), (6, 10), (10, 15), (15, 25), (25, 10 ** 6)):
+            m = (E[:, 3] >= lo) & (E[:, 3] < hi)
+            if m.any():
+                print(f'    frames_seen {lo:2d}-{min(hi, 999) - 1:3d}: n={m.sum():4d}  |err| {np.median(E[m, 0]):.2f} m/s  '
+                      f'ratio {np.median(E[m, 1]):.2f}  dir {np.median(E[m, 2]):3.0f} deg')
     # How often the same test fires on something that is NOT a ball pass:
     # a fast-trusted track anywhere else is a candidate false trigger.
     dur = rows[-1][1] - rows[0][1]

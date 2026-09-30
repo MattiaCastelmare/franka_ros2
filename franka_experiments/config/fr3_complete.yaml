@@ -99,6 +99,19 @@ meshes:
     fr3_link7: meshes/robot_arms/fr3/collision/link7.stl
     fr3_link8: meshes/robot_ee/franka_hand_white/collision/hand.stl
 
+# ── Camera geometry: which optical frame camera_extrinsics.yaml really is ──
+# The hand-eye node labels it base -> camera_COLOR_optical_frame, and this node
+# applies it to the RAW depth image, whose optical frame is 5.9 cm away on the
+# D455 (/camera/camera/extrinsics/depth_to_color t = [-0.0591, 0, 0.0002]).
+# Composing that offset in was TRIED on 2026-09-30 (replay of
+# rosbag/ball_throws_2) and made things worse on both independent checks: the
+# robot mask's coverage of the measured arm fell 91 % -> 84 % and the arm read
+# as its own obstacle (CBF overriding the nominal on half the ticks), and the
+# distance rows moved AWAY from the colour-tracked ball ground truth. So the
+# calibration, as used, behaves as base -> DEPTH optical, and no offset is
+# applied. If the hand-eye procedure changes, re-check with calibration_check
+# (coverage, residual) before assuming the label.
+
 topics:
   depth_image: /camera/camera/depth/image_rect_raw
   depth_camera_info: /camera/camera/depth/camera_info
@@ -461,6 +474,16 @@ tracking:
   max_clusters: 16
   max_tracks: 20
 
+  # When the table is full, a new cluster may take the slot of the unconfirmed
+  # track that has gone longest without a measurement (>= 1 missed frame);
+  # confirmed tracks and tentative ones still being hit are never evicted.
+  # Why: the 2026-09-30 run sat at 20/20 all along and refused 85 % of new
+  # clusters (cap=), so a thrown ball arriving often got no slot. Replayed
+  # (scripts/ball_throw_eval.py): refusals 7592 -> 70, ball tracked 8/9 -> 9/9
+  # passes, fast-trusted 6/9 -> 8/9; CBF interventions away from the ball
+  # unchanged. `evict=` in the log line counts them. false = old behaviour.
+  evict_stale_tentative: true
+
   # [m] slack added to a cluster's radius when deciding whether a control
   # point's closest_point_human belongs to it. Needed because the radius is
   # measured over VOXEL CENTROIDS while the query is a RAW surface point, so a
@@ -481,6 +504,14 @@ tracking:
   # overshoot.
   q_jerk: 2.0
   sigma_meas_m: 0.01
+  # [m/s] prior on a NEW track's velocity (was the code default 1.0, not
+  # configurable). It pulls a young track toward zero: on the 2026-09-30 throws
+  # the tracked speed read 0.83x the true one over the first 5 frames at 1.0,
+  # 0.97x at 2.0 (|error| 0.51 -> 0.32 m/s; scripts/ball_throw_eval.py). 3.0
+  # was no better. It also widens the first association gate, which a thrown
+  # object needs; fast-track trust in the CBF reads the resulting covariance,
+  # so a larger prior cannot open that gate by itself.
+  sigma_v0: 2.0
 
   # Association gate, in units of the filter's OWN uncertainty (chi^2 with 3
   # DoF: 3.0 admits ~97% of true associations). Mahalanobis and not Euclidean

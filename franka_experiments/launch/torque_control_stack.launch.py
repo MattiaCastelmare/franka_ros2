@@ -130,6 +130,7 @@ _ALL_PARAMS = [
     'livelock_escape', 'latency_compensation',
     'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
     'uncertainty_margin', 'sim_obstacle', 'depth_bag',
+    'start_rosbag', 'rosbag_output_dir', 'rosbag_delay_s',
     'multi_obstacle_k', 'vobs_in_hdot', 'velocity_standoff',
     'iso_enabled', 'iso_mode', 'iso_ssm_speed_rows', 'iso_monitor_enabled',
     'torque_iso_monitor_delay_s', 'link_speed_max', 'retreat_cap_max_speed',
@@ -995,6 +996,36 @@ def _launch_all(context):
         actions.append(LogInfo(
             msg='[torque_stack] [Viz]             trajectory_visualization DISABLED'))
 
+    # ── [Recording] everything bag_replay.launch.py and ball_throw_eval.py need ──
+    # Raw depth (what the robot sees), colour + aligned depth (ground truth for
+    # a coloured object), TF, the FAST joint states the CBF reads, and the
+    # pipeline's outputs. zstd per file: 90 Hz raw depth plus colour fill a
+    # disk in minutes otherwise.
+    if _as_bool(p['start_rosbag']):
+        import os as _os, time as _time
+        out = str(p['rosbag_output_dir']).strip() or _os.path.expanduser(
+            _time.strftime('~/ros2_bags/rosbag_%Y%m%d_%H%M%S'))
+        topics = [
+            '/camera/camera/depth/image_rect_raw', '/camera/camera/depth/camera_info',
+            '/camera/camera/depth/metadata',
+            '/camera/camera/color/image_raw', '/camera/camera/color/camera_info',
+            '/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/aligned_depth_to_color/camera_info',
+            '/camera/camera/extrinsics/depth_to_color',
+            '/tf', '/tf_static',
+            '/NS_1/joint_states', '/NS_1/franka/joint_states',
+            '/NS_1/qddot_nom', '/NS_1/qddot_safe', '/NS_1/torque_cmd', '/NS_1/cbf_status',
+            '/NS_1/ee_actual', '/NS_1/ee_desired',
+            '/cbf/per_link_distances',
+        ]
+        recorder = ExecuteProcess(
+            cmd=['ros2', 'bag', 'record', '-o', out,
+                 '--compression-mode', 'file', '--compression-format', 'zstd', *topics],
+            output='screen', name='rosbag_record')
+        actions.append(TimerAction(period=rtd_delay + float(p['rosbag_delay_s']),
+                                   actions=[recorder]))
+        actions.append(LogInfo(msg=f'[torque_stack] [Recording]       rosbag -> {out}'))
+
     return actions
 
 
@@ -1396,6 +1427,20 @@ def generate_launch_description():
                 'torque_finger_pub_rate_hz',
                 default_value=str(_DEFAULTS.get('torque_finger_pub_rate_hz', '10.0')),
                 description='[Hz] MoveIt finger joint-state publisher rate'),
+
+            DeclareLaunchArgument(
+                'start_rosbag',
+                default_value=str(_DEFAULTS.get('start_rosbag', 'false')),
+                description='Record a bag with every topic bag_replay.launch.py '
+                            'and scripts/ball_throw_eval.py need (zstd)'),
+            DeclareLaunchArgument(
+                'rosbag_output_dir',
+                default_value=str(_DEFAULTS.get('rosbag_output_dir', '')),
+                description='Bag directory; empty = ~/ros2_bags/rosbag_<time>'),
+            DeclareLaunchArgument(
+                'rosbag_delay_s',
+                default_value=str(_DEFAULTS.get('rosbag_delay_s', '3.0')),
+                description='[s] after real_time_distance starts'),
 
             DeclareLaunchArgument(
                 'rt_pin_cpu',
