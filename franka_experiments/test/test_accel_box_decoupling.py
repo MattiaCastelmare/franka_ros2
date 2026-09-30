@@ -40,3 +40,28 @@ def test_braking_toward_a_limit_is_unchanged_by_the_wide_box():
 def test_wide_box_gives_more_authority_in_free_space():
     lb, ub = _box(WIDE, Q0, np.zeros(7), brake=DECEL)
     np.testing.assert_allclose(ub, WIDE); np.testing.assert_allclose(lb, -WIDE)
+
+
+def _penetration(box, brake, v0):
+    """Joint 5 driven at full box toward its upper limit at entry speed v0; how far past the margin it gets."""
+    kw = dict(KW, v_margin=0.7, relax_dt=0.5, brake_eta=0.6)   # the shipped values
+    q = Q0.copy(); q[4] = 1.2
+    qd = np.zeros(7); qd[4] = v0
+    for _ in range(800):
+        lb, ub = hard_accel_box(q, qd, acc_lb=np.full(7, -box), acc_ub=np.full(7, box),
+                                brake_acc=np.full(7, brake), **kw)
+        qd[4] += ub[4] * 0.01
+        q[4] += qd[4] * 0.01
+    return q[4] - (2.8 - KW['q_margin'])
+
+
+def test_a_narrower_box_narrows_the_braking_curve_too():
+    """qddot_accel_limits below the braking authority (wrists at 6 against 10): the curve must assume the
+    joint can only do what the box lets it do. cbf_safety_filter passes brake_acc = min(decel, box)."""
+    for v0 in (0.5, 1.0, 1.5, 1.8):
+        legacy = _penetration(10.0, 10.0, v0)        # the arithmetic before the box was narrowed
+        inconsistent = _penetration(6.0, 10.0, v0)   # narrow box, curve still sized for 10
+        consistent = _penetration(6.0, 6.0, v0)      # what the node now does
+        assert consistent <= legacy + 1e-9
+        assert consistent <= inconsistent + 1e-9
+        assert consistent < 0.005                    # rad past the 0.05 rad margin, i.e. it stops on the curve

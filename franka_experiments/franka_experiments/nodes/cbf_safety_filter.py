@@ -170,6 +170,11 @@ class CBFSafetyFilter(Node):
                 raise ValueError(f'qddot_accel_limits must be {qdd_cap.size} positive '
                                  f'values, got {acc.tolist()}')
             qdd_cap = np.minimum(acc, P.qddot_max_abs)
+            # A box NARROWER than the braking authority must narrow the curve too: the curve assumes the
+            # joint can decelerate at brake_eta * brake_acc, and a box that cannot deliver that (wrists at
+            # 6 rad/s^2 with a curve sized for 10 x 0.6 = 6) leaves no margin at all for stopping at a
+            # limit. Widening the box leaves the curve where it was (this min is then the old value).
+            self._brake_acc = np.minimum(self._brake_acc, qdd_cap)
         self._lb, self._ub = -qdd_cap, qdd_cap
         self._qdot_max = jl['qdot_max']
 
