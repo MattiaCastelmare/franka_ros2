@@ -94,6 +94,21 @@ search band did not help), or a less batched depth stream (the D455 delivers 90 
 A person standing near the arm (the catcher) costs about as much again: with their rows left in, aimed hits
 go 2/6 → 5/6 on `ball_throws_3`.
 
+### Where the 0.3 s comes from (open)
+
+The colour+depth ground truth sees the flying ball **0.4–1.0 s (median ~0.5 s)** before closest approach; the depth
+pipeline's first row on it is at **0.29 s (bt3) / 0.35 s (bt2)**, a track with 3 frames ~20 ms later. That
+moment did not move in any replay of any perception setting tried tonight: `pixel_step` 4/5/6,
+`cluster_min_points` 3/4/5, `roi_pad_px` 180/400/700, `max_thresh` 0.7/1.0/1.3/2.0/2.5, `cbf_obstacle_horizon`
+1.2/2.5 (tracks >= 3 frames move by at most 0.05 s). So it is gated by something none of those touch (what the
+robot-silhouette / depth gate lets through for a small fast object, or the stereo depth on a ball that far
+away) and ~0.2 s of warning is sitting there. Finding that gate is worth more than any control change. Note
+`rosbag/replay_cfg/p_thr10.yaml` and the earlier "max_thresh 1.0: no gain" never changed the first-row time
+either, so that experiment said nothing about the band itself.
+
+Three prediction-row replays vs three baseline replays (aimed, bt2): hits 7,7,6 of 9 vs 3,5,4; bt3 5,5,5 of 6 in both;
+mean clearance −1.1/−2.5 cm vs −0.2/−1.6 — `tracking.prediction` is **worse**, not merely useless.
+
 ## 6. How far to trust it
 
 * The modelled arm exaggerates excursions by ~1.6–2× (simulated off-path 21 cm vs recorded 12 cm mean on
