@@ -156,6 +156,9 @@ distance: # in meters
   # compute. Cost at 180: all= ~10.3-11.2 ms per frame against the 11.1 ms
   # budget at 90 Hz — close the OpenCV window (booleans.visualize) for fast
   # experiments, it costs ~2.6 ms live.
+  # The WHOLE image (any pad >= 848 px; compute_roi clamps to the frame) was
+  # tried in replay: 16.8-18.5 ms per frame (~55 Hz), no gain in how early the
+  # CBF acts, and less clearance (the extra clutter saturates max_clusters).
   roi_pad_px: 180
 
   # ── Publish gate for the whole frame (NOT a per-CP filter) ───────────────
