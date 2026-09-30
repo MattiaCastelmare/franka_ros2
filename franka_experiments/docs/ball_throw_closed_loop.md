@@ -40,7 +40,7 @@ sign flips of any bag), `pass_plot.py` (one figure per pass from a live bag).
 * `ball_throws_4` **cannot be used for smoothness**: the arm never moved in that recording (|q̇| ≤ 0.02 for
   135 s, `ee_actual` constant) while the command sat at 6–7 rad/s², so its `trk_err` is "command − 0". The
   conclusion "the wider acceleration box made the arm jerky" was drawn from it and is **not supported**
-  (the box was still the wrong thing to widen — see §4 — but not for that reason).
+  (the box was still the wrong thing to widen — see §4 — but not for that reason). Sampled colour frames show an idle cell and a replay through the current perception finds no fast track within 0.7 m of the arm anywhere in the recording: it carries no throws either.
 
 ## 3. What changed
 
