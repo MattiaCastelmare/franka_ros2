@@ -335,7 +335,8 @@ cbf:
   velocity_box_margin: 0.9        # fraction of qdot_max the box allows
   position_margin_rad: 0.05       # [rad] barrier kept inside the mechanical stop
   position_brake_eta: 0.6         # fraction of decel authority the curve assumes
-  max_qddot_delta: 5.0            # [rad/s² per tick] slew-continuity bound
+  max_qddot_delta: 1.5            # [rad/s² per tick] slew-continuity bound (robot: 5.0 -> 1.5 on 2026-09-30;
+                                  # a policy trained before that saw 5.0 — retrain or fine-tune before motion_source:=rl)
 
   # [rad/s²] Ceiling on the per-joint acceleration authority the QP may use.
   #

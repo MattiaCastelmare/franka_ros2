@@ -556,12 +556,37 @@ params:
   # rate — the barrier keeps its authority, it just cannot be met in one step.
   slew_box_enabled: true
 
-  # [rad/s^2 per tick] At qp_rate_hz=100 this is 500 rad/s^3. Braking is not
-  # impeded: joint4 goes 0 -> -4 (its full authority) in one tick. The wrist
-  # joints, whose bound is 17, need 4 ticks (40 ms) to saturate. LOWER it if
-  # trk_err stays high; RAISE it if the CBF reacts visibly late to a fast
-  # approach. Watch the `slew=` field in CBFDIAG to see which joints it binds.
-  max_qddot_delta: 5.0
+  # [rad/s^2 per tick] At qp_rate_hz=100, 1.5 is 150 rad/s^3: the command can go from 0 to
+  # 6 rad/s^2 in 40 ms. It was 5.0 (500 rad/s^3, 0 -> 10 rad/s^2 in 20 ms), and on the
+  # 2026-09-30 ball throws (ball_throws_3, live) the command spent its time
+  # stepping between the two ends of the box: |q̈_safe| at 10 for 1 % of the ticks, sign flips
+  # every 100-150 ms. Closed loop on the recorded throws (scripts/ball_closed_loop.py, 15
+  # passes, the real filter + an arm identified on ball_throws_3):
+  #     max_qddot_delta   cmd jerk p99   realised jerk p99   clearance gain (bt2 / bt3)
+  #           5.0              500              441-453         +3.0 / +3.5 cm
+  #           2.0              200              192             +2.9 / +3.3
+  #           1.0              100               96             +2.9 / +3.0
+  # i.e. a 3-5x smoother command for 0.2-0.5 cm of clearance: the arm is limited by
+  # the TIME it is warned, not by how fast the command may change. Braking toward a joint
+  # limit is not impeded: the state box is intersected with this one, and the braking curve
+  # starts early enough (position_brake_eta) for a 40 ms ramp. LOWER it if the arm still looks
+  # jerky, RAISE it if the CBF reacts visibly late to a fast approach. Watch the `slew=`
+  # field in CBFDIAG to see which joints it binds.
+  max_qddot_delta: 1.5
+
+  # [fraction of the acceleration box, 0 = off] Cap on what an OBSTACLE row may DEMAND.
+  #
+  # A row is a bound aᵀq̈ + s >= h_qp. When the barrier is far out of reach — a ball
+  # at 4 m/s with 60 ms to go, h_qp = -20..-40 against an authority of a few m/s^2 —
+  # the slack s is 17..40 and its price (rho_slack, quadratic) swamps every other
+  # term, so the solution is the corner of the box on every joint that helps: the
+  # +/-10 rad/s^2 square wave of ball_throws_3, sign-flipping as the rows change
+  # between frames. The demand is unmeetable, so asking for all of it buys nothing
+  # but violence. Capping h_qp at frac * max(aᵀq̈ over the box) keeps the ask inside
+  # what the arm can do, the optimum stays in the box's interior, and the command
+  # becomes proportional to the row instead of saturated by it.
+  # 0 leaves h_qp exactly as built (bit-identical to before this key existed).
+  obstacle_demand_frac: 0.0
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
   # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: iso_tau_rate_max (qddot_to_torque, post-dynamics) | flagged: 2026-09-01
@@ -999,7 +1024,12 @@ params:
   # does not realise the bigger steps, and 0.94 is one step from a
   # joint_velocity_violation abort. Needs a jerk/slew and tracking rework
   # before the box can grow.
-  qddot_accel_limits: []
+  # 2026-09-30 (closed loop, scripts/ball_closed_loop.py): the LOWER box
+  # [6, 2.585, 3.5, 4, 6, 5.5, 6] (joints 5 and 7 at 6 instead of 10) gives the same clearance
+  # (+2.7 / +3.3 cm against +3.0 / +3.5 for the old box, 15 recorded passes) and a 40 % lower peak
+  # command; at 4 rad/s^2 on the wrists the gain falls to +1.8 / +2.5 cm. The extra wrist authority
+  # was never what limited the dodge.
+  qddot_accel_limits: [6.0, 2.585, 3.5, 4.0, 6.0, 5.5, 6.0]
 
   # ── State governor: slow the TASK down before a state limit is a reflex ────
   #

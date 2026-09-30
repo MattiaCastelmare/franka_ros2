@@ -198,6 +198,29 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
     return h_qp, (rtr, rtr_cap, spd, spd_cap)
 
 
+def cap_row_demand(h_qp: np.ndarray, A: np.ndarray, group: np.ndarray, *,
+                   obs_group: int, acc_ub: np.ndarray, frac: float) -> np.ndarray:
+    """Clamp the obstacle rows' demand to ``frac`` of what the acceleration box can deliver.
+
+    The QP row is ``G x <= h_qp`` with ``G = [-A | -1]``, i.e. ``aᵀq̈ + s >= -h_qp``: the DEMAND is
+    ``-h_qp`` (negative ``h_qp`` = "accelerate away"). ``aᵀq̈`` is largest at ``q̈_j = sign(a_j)·ub_j``,
+    i.e. ``Σ|a_j|·ub_j``; a row demanding more than ``frac`` of that is asking for the corner of the box,
+    and gets ``frac`` of it instead. Only the
+    OBSTACLE family is touched (joint-limit, self-collision and singularity rows keep their full
+    demand: they are about the arm's own survival, not about a thrown object), and only downwards —
+    a demand below the cap is returned unchanged. ``frac <= 0`` is the identity.
+
+    Returns ``h_qp`` (modified in place and returned, like the rest of the assembly).
+    """
+    if frac <= 0.0 or h_qp is None or A is None or len(h_qp) == 0:
+        return h_qp
+    limit = frac * (np.abs(A) @ acc_ub)
+    clip = (group == obs_group) & (-h_qp > limit)
+    if np.any(clip):
+        h_qp[clip] = -limit[clip]
+    return h_qp
+
+
 # Shape constants for tangential_bias's two internal blends. Not exposed as
 # ROS parameters: they set the WIDTH of a smoothing transition, not a gain —
 # retuning them changes how far into "nominal has no sideways intent" the

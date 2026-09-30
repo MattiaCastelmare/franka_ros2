@@ -232,6 +232,9 @@ class _Sink:
         self.last = msg
 
 
+_RAW = {}
+
+
 def make_filter(overrides):
     """Construct the shipped CBFSafetyFilter in-process with the launch's parameters + overrides."""
     import rclpy
@@ -243,17 +246,44 @@ def make_filter(overrides):
     for d in tcs._cbf_parameters(dict(tcs._DEFAULTS)):
         params.update(d)
     params.update(overrides or {})
+    # keys the filter reads straight from the YAML (lists, optionals) are not ROS parameters: patch the loader
+    from franka_experiments.utils import config as _cfg
+    raw = {k: params.pop(k) for k in list(params) if k in _cfg.CBF_RAW_KEYS}
+    if raw and not getattr(_cfg.load_package_yaml, '_patched', False):
+        _orig = _cfg.load_package_yaml
+
+        def _patched(pkg, rel, _o=_orig):
+            d = _o(pkg, rel)
+            if rel.endswith('fr3_control.yaml'):
+                d['params'].update(_RAW)
+            return d
+        _patched._patched = True
+        _cfg.load_package_yaml = _patched
+    _RAW.clear()
+    _RAW.update(raw)
     f = tempfile.NamedTemporaryFile('w', suffix='.yaml', delete=False)
     yaml.safe_dump({'cbf_safety_filter': {'ros__parameters': params}}, f)
     f.close()
     if not rclpy.ok():
         rclpy.init(args=['--ros-args', '--params-file', f.name, '--log-level', os.environ.get('CL_LOG', 'warn')])
     from franka_experiments.nodes.cbf_safety_filter import CBFSafetyFilter
+    _use_source_share()
     node = CBFSafetyFilter()
     node._pub = _Sink()
     node._status_pub = _Sink()
     node._priority_set = True
     return node
+
+
+def _use_source_share():
+    """Resolve the franka_experiments share dir to the SOURCE tree (the install is a stale copy)."""
+    for m in list(sys.modules.values()):
+        orig = getattr(m, 'get_package_share_directory', None)
+        if orig is not None and not getattr(orig, '_src', False):
+            def patched(pkg, _o=orig):
+                return PKG if pkg == 'franka_experiments' else _o(pkg)
+            patched._src = True
+            m.get_package_share_directory = patched
 
 
 class Clock:
@@ -305,6 +335,8 @@ def run_pass(rec, p, args, node_factory):
     q, qd = rec.q_at(t0)
     q, qd = q.copy(), qd.copy()
     cmd = Commander(q_home=args.q_home)
+    if args.nom_cap > 0:
+        cmd.QDD_MAX = np.minimum(cmd.QDD_MAX, args.nom_cap)
     tt, ok, PB = args.truth
     plant_a = np.zeros(7)
     circ = CircleRef(rec, t0, node.P.d_safe, cmd.ee)
@@ -320,7 +352,7 @@ def run_pass(rec, p, args, node_factory):
     pk = 0
     dt = 0.01
     steps = int(round((t1 - t0) / dt))
-    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err']}
+    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec']}
     a_real = np.zeros(7)
     last_nom_t = -1.0
     for s in range(steps):
@@ -341,6 +373,8 @@ def run_pass(rec, p, args, node_factory):
         node._on_joint_state(js)
         p_d, v_d, a_d = circ.ref(sg)
         qdd_nom = cmd.qddot(q, qd, p_d, v_d, a_d)
+        if args.oracle > 0:
+            qdd_nom = qdd_nom + _oracle(args, t, t_c, q, tt, ok, PB, model, data, pin, cps_fn=cps)
         nm = Float64MultiArray()
         nm.data = [float(x) for x in qdd_nom]
         node._on_qddot_nom(nm)
@@ -365,10 +399,28 @@ def run_pass(rec, p, args, node_factory):
         if ball is not None:
             cl_s = float(np.min(np.linalg.norm(cps(q) - ball, axis=1)) - R_CAP - R_BALL)
             cl_r = float(np.min(np.linalg.norm(cps(qr) - ball, axis=1)) - R_CAP - R_BALL)
+        if args.probe and abs((t - t_c) - args.probe) < 0.005 and node._con is not None:
+            con = node._con
+            from franka_experiments.utils.cbf_qp_assembly import build_row_rhs
+            h, _ = build_row_rhs(con, qd, node._qdot_cbf, k0=node.P.k0_cbf, k1=node.P.k1_cbf,
+                                 retreat_horizon=node.P.retreat_cap_horizon_s, speed_horizon=node.P.link_speed_horizon_s)
+            amax = np.abs(con.A) @ node._ub
+            ach = con.A @ safe
+            print(f'  PROBE t-tc={t - t_c:+.3f}  n_c={con.A.shape[0]} safe={np.round(safe, 1)} nom={np.round(qdd_nom, 1)}')
+            print(f'    slack by group {np.round(node._diag_slack, 2)}  box ub={np.round(node._box_ub[:7], 1)}')
+            obs_i = np.nonzero(con.group == 0)[0]
+            order = obs_i[np.argsort(h[obs_i])[:7]]
+            for i in order:
+                print(f'    row {i:2d} {str(con.links[i])[:16]:16s} demand={-h[i]:7.2f} amax={amax[i]:5.2f} a.safe={ach[i]:6.2f} '
+                      f'|a|={np.linalg.norm(con.A[i]):.2f} vobs={con.v_obs[i]:.2f} h_bar={con.h_bar[i]:.3f}')
         if args.trace and s % 10 == 0:
             print(f'   t-tc={t - t_c:+5.2f} d_obs={d_obs:5.3f} sg={sg:4.2f} ee_err={float(np.linalg.norm(p_d - cmd.ee(q)))*100:5.1f}cm '
                   f'|safe|={np.abs(safe).max():5.2f} |nom|={np.abs(qdd_nom).max():5.2f} |qd|={np.abs(qd).max():4.2f} '
                   f'clr={_fmt(_ball_at(tt, ok, PB, t), cps, q)}')
+        def _off(qq):
+            e = cmd.ee(qq)
+            return float(np.hypot(np.hypot(e[1] - circ.cy, e[2] - circ.cz) - circ.r, e[0] - circ.x))
+        log['off_sim'].append(_off(q)); log['off_rec'].append(_off(qr))
         log['t'].append(t); log['safe'].append(safe); log['nom'].append(qdd_nom)
         log['q'].append(q.copy()); log['qd'].append(qd.copy()); log['acc'].append(a_real.copy())
         log['cl_sim'].append(cl_s); log['cl_rec'].append(cl_r)
@@ -378,6 +430,61 @@ def run_pass(rec, p, args, node_factory):
     except Exception:
         pass
     return _metrics(log, t_c, dt, fr3_velocity_envelope)
+
+
+_ORACLE = {}
+
+
+def _oracle(args, t, t_c, q, tt, ok, PB, model, data, pin, cps_fn):
+    """EXPERIMENT: a perfectly informed sideways dodge, to bound what the arm could physically do.
+
+    Knows the ball's true line from ``args.oracle_lead`` s before closest approach; picks the control point
+    that would pass closest, and pushes it perpendicular to the flight with a raised-cosine acceleration of
+    peak ``args.oracle`` m/s² until 0.1 s after closest approach.
+    """
+    t_e = t_c - args.oracle_lead
+    if t < t_e or t > t_c + 0.10:
+        return np.zeros(7)
+    if 'sel' not in _ORACLE or _ORACLE.get('tc') != t_c:
+        i = np.argmin(abs(tt - t_e))
+        idx = [j for j in range(i - 3, i + 4) if ok[j]]
+        A = np.c_[tt[idx] - tt[i], np.ones(len(idx))]
+        v = np.linalg.lstsq(A, PB[idx], rcond=None)[0][0]
+        p0 = PB[i]
+        ts = np.arange(0, 0.6, 0.01)
+        best = None
+        C = cps_fn(q)
+        for k, c in enumerate(C):
+            d = np.linalg.norm(p0 + np.outer(ts, v) - c, axis=1)
+            if best is None or d.min() < best[0]:
+                j = int(np.argmin(d))
+                best = (d.min(), k, p0 + ts[j] * v, v)
+        _, k, pc, v = best
+        _ORACLE.update(sel=k, tc=t_c, v=v / max(np.linalg.norm(v), 1e-9), pc=pc)
+    k, vh = _ORACLE['sel'], _ORACLE['v']
+    C = cps_fn(q)
+    off = C[k] - _ORACLE['pc']
+    u = off - (off @ vh) * vh
+    n = np.linalg.norm(u)
+    if n < 1e-6:
+        u = np.cross(vh, [0, 0, 1.0]); n = np.linalg.norm(u)
+    u = u / n
+    # point Jacobian of control point k on its link: use the distal link frame of the segment
+    segs = [('fr3_link3', 'fr3_link4', 2), ('fr3_link4', 'fr3_link5', 2), ('fr3_link5', 'fr3_link6', 2),
+            ('fr3_link6', 'fr3_link7', 2), ('fr3_link7', 'fr3_link8', 3)]
+    names = []
+    for sname, e, nn in segs:
+        names += [e] * nn
+    fid = model.getFrameId(names[k])
+    pin.computeJointJacobians(model, data, q)
+    pin.updateFramePlacements(model, data)
+    J = pin.getFrameJacobian(model, data, fid, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+    r = C[k] - data.oMf[fid].translation
+    Jp = J[:3] + np.cross(J[3:].T, r).T
+    ph = (t - t_e) / (t_c + 0.10 - t_e)
+    w = 0.5 * (1 - np.cos(2 * np.pi * ph))
+    a = args.oracle * w * u
+    return Jp.T @ np.linalg.solve(Jp @ Jp.T + 1e-3 * np.eye(3), a)
 
 
 def _fmt(ball, cps, q):
@@ -466,7 +573,18 @@ def _metrics(log, t_c, dt, envelope):
         r = np.where(qd >= 0, qd / np.maximum(up, 1e-3), qd / np.minimum(lo, -1e-3))
         vr.append(np.max(r))
     cl_s = np.array(log['cl_sim']); cl_r = np.array(log['cl_rec'])
-    big = (np.abs(S[1:]) > 1.0) & (np.abs(S[:-1]) > 1.0) & (np.sign(S[1:]) != np.sign(S[:-1]))
+    # reversals: Schmitt-trigger sign changes of each joint's command (|q̈| > 1.5 rad/s² to count)
+    rev = 0
+    for j in range(S.shape[1]):
+        state = 0
+        for x in S[wt][:, j]:
+            if abs(x) > 1.5 and np.sign(x) != state:
+                rev += 1 if state != 0 else 0
+                state = int(np.sign(x))
+    tv = float(np.abs(np.diff(S[wt], axis=0)).sum())
+    err_all = np.array(log['ee_err'])
+    after = t > t_c
+    rec_t = next((float(tt_ - t_c) for tt_, e_ in zip(t[after], err_all[after]) if e_ < 0.05), float('nan'))
     dev = np.linalg.norm(S - N, axis=1)
     err = np.array(log['ee_err'])
     return dict(
@@ -477,12 +595,13 @@ def _metrics(log, t_c, dt, envelope):
         jerk_cmd_p99=float(np.percentile(jerk_cmd[w].max(axis=1), 99)),
         jerk_cmd_max=float(jerk_cmd[w].max()),
         jerk_real_p99=float(np.percentile(jerk_real[w].max(axis=1), 99)),
-        flips=int(big[w].sum()),
+        flips=int(rev), tv=tv, recover_s=rec_t,
         dev_rms=float(np.sqrt(np.mean(dev[wt] ** 2))),
         vratio_max=float(np.max(np.array(vr)[wt])),
         qd_peak=float(np.abs(QD[wt]).max()),
         ee_err_max=float(err[wt].max()),
         ee_err_end=float(err[-1]),
+        off_sim=float(np.max(np.array(log['off_sim'])[wt])), off_rec=float(np.max(np.array(log['off_rec'])[wt])),
     )
 
 
@@ -529,6 +648,10 @@ def main():
     ap.add_argument('--only', type=int, nargs='*', default=None, help='1-based pass numbers')
     ap.add_argument('--check-nominal', action='store_true')
     ap.add_argument('--trace', action='store_true')
+    ap.add_argument('--oracle', type=float, default=0.0, help='EXPERIMENT: perfectly informed sideways dodge, peak m/s²')
+    ap.add_argument('--oracle-lead', type=float, default=0.30)
+    ap.add_argument('--nom-cap', type=float, default=0.0, help='cap |q̈_nom| per joint at this value [rad/s²] (experiment)')
+    ap.add_argument('--probe', type=float, default=0.0, help='print the QP rows at this time relative to closest approach')
     ap.add_argument('--no-cbf', action='store_true', help='plant + task law only (validation of the model)')
     ap.add_argument('--json', default='')
     ap.add_argument('--label', default='')
@@ -539,7 +662,7 @@ def main():
     args.truth = (T['t'], T['ok'], T['p'])
     # q_home: the recorded posture when the trajectory started (first ee_desired sample)
     mov = np.nonzero(np.abs(rec.Vj).max(axis=1) > 0.05)[0]
-    qh, _ = rec.q_at(rec.tj[mov[0]] - 0.3)
+    qh, _ = rec.q_at(rec.tj[mov[0]] - 0.3 if len(mov) else rec.tj[0])
     args.q_home = qh
     if args.check_nominal:
         check_nominal(rec, args)
@@ -559,13 +682,13 @@ def main():
         print(f"pass {n} v={p['v']:.1f}  clr {m['clr_rec']*100:5.1f} -> {m['clr_sim']*100:5.1f} cm  "
               f"peak cmd {m['peak_cmd']:5.2f} acc {m['peak_acc']:5.2f}  jerk p99 cmd {m['jerk_cmd_p99']:6.0f} "
               f"real {m['jerk_real_p99']:6.0f}  flips {m['flips']:2d}  vratio {m['vratio_max']:.2f}  "
-              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm", flush=True)
+              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}", flush=True)
     if rows:
         g = lambda k: np.mean([r[k] for r in rows])
         print(f"{args.label or 'run'} MEAN  clr_gain {100*(g('clr_sim')-g('clr_rec')):+5.1f} cm  "
               f"min_clr {100*min(r['clr_sim'] for r in rows):5.1f}  peak_cmd {g('peak_cmd'):5.2f}  "
               f"jerk_cmd_p99 {g('jerk_cmd_p99'):6.0f}  jerk_real_p99 {g('jerk_real_p99'):6.0f}  "
-              f"flips {g('flips'):4.1f}  vratio {g('vratio_max'):.2f} (max {max(r['vratio_max'] for r in rows):.2f})  "
+              f"rev {g('flips'):4.1f} tv {g('tv'):4.0f} rec {np.nanmean([r['recover_s'] for r in rows]):4.2f}s  vratio {g('vratio_max'):.2f} (max {max(r['vratio_max'] for r in rows):.2f})  "
               f"ee_err_max {100*g('ee_err_max'):4.1f}")
     if args.json:
         json.dump(rows, open(args.json, 'w'), indent=1)
