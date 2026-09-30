@@ -100,7 +100,7 @@ The colour+depth ground truth sees the flying ball **0.4–1.0 s (median ~0.5 s)
 pipeline's first row on it is at **0.29 s (bt3) / 0.35 s (bt2)**, a track with 3 frames ~20 ms later. That
 moment did not move in any replay of any perception setting tried tonight: `pixel_step` 4/5/6,
 `cluster_min_points` 3/4/5, `roi_pad_px` 180/400/700, `max_thresh` 0.7/1.0/1.3/2.0/2.5, `cbf_obstacle_horizon`
-1.2/2.5 (tracks >= 3 frames move by at most 0.05 s). So it is gated by something none of those touch (what the
+1.2/2.5, `perception.multi_obstacle_max_rows` 24/60 (tracks >= 3 frames move by at most 0.05 s). So it is gated by something none of those touch (what the
 robot-silhouette / depth gate lets through for a small fast object, or the stereo depth on a ball that far
 away) and ~0.2 s of warning is sitting there. Finding that gate is worth more than any control change. Note
 `rosbag/replay_cfg/p_thr10.yaml` and the earlier "max_thresh 1.0: no gain" never changed the first-row time
