@@ -108,9 +108,10 @@ Instrumenting `real_time_distance` on `ball_throws_3` (scratch hook, not kept) e
 
 * with the shipped `roi_pad_px: 180` the ball is **outside the search box** until ~−0.3 s (its pixels sit at u ≈ 700
   while the box ends at 635) — but widening the box does not bring the track forward, because
-* before ~−0.4 s the ball pixels are **part of the thrower's cluster**: with the box wide open, the cluster holding
-  the ball at −0.47 s has 201 points and radius 0.27 m and an established track (21 frames); the ball gets a
-  cluster of its own (15 points, radius 0.05 m) and a new track at −0.39 s, confirmed by −0.31 s.
+* before ~−0.4 s the ball is **inside the thrower's blob**: with the box wide open, the nearest cluster to the ball at
+  −0.47 s is 201 points, radius 0.27 m (the thrower's hand and forearm; its sphere contains the ball) with an
+  established track (21 frames); the ball gets a cluster of its own (15 points, radius 0.05 m) and a new track
+  at −0.39 s, confirmed by −0.31 s. (One pass of one bag instrumented; the colour truth agrees on the ~0.5 s.)
 
 The ball leaves the thrower's hand ~0.4–0.5 s before it reaches the arm; the pipeline has it as a separate object
 within ~0.1 s of release and a velocity within ~0.15 s. There is no hidden 0.2 s in the detection. The only earlier
