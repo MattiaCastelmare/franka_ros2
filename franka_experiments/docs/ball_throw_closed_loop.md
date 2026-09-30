@@ -122,8 +122,10 @@ mean clearance −1.1/−2.5 cm vs −0.2/−1.6 — `tracking.prediction` is **
 ## 7. Next hardware run
 
 1. `colcon build --packages-select franka_experiments` (the install is a copy), launch the torque stack as usual.
-2. Record with `start_rosbag` (now includes `/NS_1/franka/joint_states`), check the arm actually moves in the
-   recording (`python3 scripts/smoothness_report.py <bag>`: realised accel p50 should be ~0.5–1, not 0.03).
+2. Record with `start_rosbag` (now includes `/NS_1/franka/joint_states`), then `python3 scripts/smoothness_report.py <bag>`:
+   it says first whether the arm moved at all (the `ball_throws_4` trap), then prints PASS / WATCH / FAIL for
+   command jerk, peak command, realised jerk, trk_err and |q̇| against the firmware envelope. The old
+   `ball_throws_3` scores FAIL on command jerk, trk_err and peak command; the new settings should not.
 3. Expect: peak `qddot_safe` 6, command jerk ≤ 150 rad/s³, `vrat` ≤ ~0.75 in CBFDIAG, `slew=` bites more often.
 4. If the dodge looks too timid: raise `max_qddot_delta` to 2–3 first (jerk 200–300, nearly free in the model),
    then `velocity_box_margin` to 0.8. If it still looks jerky: lower `max_qddot_delta` to 1.0.

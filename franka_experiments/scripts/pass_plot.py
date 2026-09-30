@@ -18,7 +18,7 @@ for tp, recv, m in read_bag(rep, {DIST}):
     rows.append((_stamp(m), np.array([[l.closest_point_robot.x, l.closest_point_robot.y, l.closest_point_robot.z]
                                       for l in m.links if l.valid])))
 ps = passes(tt, ok, P, np.array([r[0] for r in rows]), [r[1] for r in rows], 0.6, 1.5)
-safe, nom, js = load(live)
+safe, nom, js, *_ = load(live)
 ts = np.array([s[0] for s in safe]); Qs = np.array([s[1] for s in safe])
 tn = np.array([s[0] for s in nom]); Qn = np.array([s[1] for s in nom])
 tj = np.array([j[0] for j in js]); V = np.array([j[2] for j in js])
