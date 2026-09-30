@@ -70,7 +70,6 @@ from franka_experiments.utils.cbf_qp_assembly import (
     box_only_solve,
     braking_command,
     build_osqp_A,
-    cap_row_demand,
     build_osqp_bounds,
     build_row_rhs,
     pad_rows_to_block,
@@ -981,9 +980,6 @@ class CBFSafetyFilter(Node):
                 con, qdot, self._qdot_cbf, k0=P.k0_cbf, k1=P.k1_cbf,
                 retreat_horizon=P.retreat_cap_horizon_s,
                 speed_horizon=P.link_speed_horizon_s)
-            if P.obstacle_demand_frac > 0.0:
-                cap_row_demand(h_qp, con.A, con.group, obs_group=G_OBS,
-                               acc_ub=self._ub, frac=P.obstacle_demand_frac)
         elif obs is not None and now - obs.stamp > P.distance_timeout:
             # Perception was received once and has since gone stale — a failure
             # of the channel that feeds the barrier must degrade toward MORE

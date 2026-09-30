@@ -338,6 +338,10 @@ def run_pass(rec, p, args, node_factory):
     if args.nom_cap > 0:
         cmd.QDD_MAX = np.minimum(cmd.QDD_MAX, args.nom_cap)
     tt, ok, PB = args.truth
+    shift_vec = np.zeros(3)
+    if args.threat >= 0:
+        shift_vec = _threat_shift(rec, t_c, tt, ok, PB, cps, args.threat)
+        PB = PB + shift_vec                      # the truth ball flies the shifted line
     plant_a = np.zeros(7)
     circ = CircleRef(rec, t0, node.P.d_safe, cmd.ee)
     sg = 1.0
@@ -352,7 +356,7 @@ def run_pass(rec, p, args, node_factory):
     pk = 0
     dt = 0.01
     steps = int(round((t1 - t0) / dt))
-    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec']}
+    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec', 'dw', 'dn']}
     a_real = np.zeros(7)
     last_nom_t = -1.0
     for s in range(steps):
@@ -363,7 +367,13 @@ def run_pass(rec, p, args, node_factory):
             _, i = pend[pk]
             pk += 1
             t_cap, _, m = rec.dist[i]
-            msg = _reproject(m, rec, hist_t, hist_q, t_cap, model, data, pin)
+            keep = shift_fn = None
+            b_ = _ball_at(tt, ok, PB - shift_vec, t_cap)        # the UNSHIFTED ball, where the rows were recorded
+            if args.ball_only:
+                keep = (lambda ph_, b_=b_: b_ is not None and np.linalg.norm(ph_ - b_) < 0.15)
+            if args.threat >= 0:
+                shift_fn = (lambda ph_, b_=b_: shift_vec if (b_ is not None and np.linalg.norm(ph_ - b_) < 0.15) else None)
+            msg = _reproject(m, rec, hist_t, hist_q, t_cap, model, data, pin, keep, shift_fn)
             node._on_distances(msg)
         js = JointState()
         js.name = list(K)
@@ -413,14 +423,17 @@ def run_pass(rec, p, args, node_factory):
             for i in order:
                 print(f'    row {i:2d} {str(con.links[i])[:16]:16s} demand={-h[i]:7.2f} amax={amax[i]:5.2f} a.safe={ach[i]:6.2f} '
                       f'|a|={np.linalg.norm(con.A[i]):.2f} vobs={con.v_obs[i]:.2f} h_bar={con.h_bar[i]:.3f}')
+        if args.qtrace and s % 10 == 0:
+            print(f'   t-tc={t - t_c:+5.2f} q={np.round(q, 2)} qd={np.round(qd, 2)} safe={np.round(safe, 1)} nom={np.round(qdd_nom, 1)} box_ub={np.round(node._box_ub[:7], 1)} box_lb={np.round(node._box_lb[:7], 1)}')
         if args.trace and s % 10 == 0:
             print(f'   t-tc={t - t_c:+5.2f} d_obs={d_obs:5.3f} sg={sg:4.2f} ee_err={float(np.linalg.norm(p_d - cmd.ee(q)))*100:5.1f}cm '
                   f'|safe|={np.abs(safe).max():5.2f} |nom|={np.abs(qdd_nom).max():5.2f} |qd|={np.abs(qd).max():4.2f} '
-                  f'clr={_fmt(_ball_at(tt, ok, PB, t), cps, q)}')
+                  f'clr={_fmt(_ball_at(tt, ok, PB, t), cps, q)} fast={node._rows.diag_fast} wmiss={node._rows.diag_miss_w:.2f} vobs={node._rows.diag_v_obs:.1f} hstd={node._rows.diag_hstand:.2f} dodge_w={node._rows.diag_dodge_w:.2f} gap*={node._rows.diag_dodge_gap:.2f} t*={node._rows.diag_dodge_t:.2f} |dodge|={float(np.linalg.norm(node._dodge_bias)):.1f}')
         def _off(qq):
             e = cmd.ee(qq)
             return float(np.hypot(np.hypot(e[1] - circ.cy, e[2] - circ.cz) - circ.r, e[0] - circ.x))
         log['off_sim'].append(_off(q)); log['off_rec'].append(_off(qr))
+        log['dw'].append(node._rows.diag_dodge_w); log['dn'].append(float(np.linalg.norm(node._dodge_bias)))
         log['t'].append(t); log['safe'].append(safe); log['nom'].append(qdd_nom)
         log['q'].append(q.copy()); log['qd'].append(qd.copy()); log['acc'].append(a_real.copy())
         log['cl_sim'].append(cl_s); log['cl_rec'].append(cl_r)
@@ -487,6 +500,24 @@ def _oracle(args, t, t_c, q, tt, ok, PB, model, data, pin, cps_fn):
     return Jp.T @ np.linalg.solve(Jp @ Jp.T + 1e-3 * np.eye(3), a)
 
 
+def _threat_shift(rec, t_c, tt, ok, PB, cps, miss):
+    """Translation that makes the recorded ball aim at the arm: its line is moved, perpendicular to the flight,
+    until it passes ``miss`` m from the axis of the control point it would have passed nearest to."""
+    i = int(np.argmin(abs(tt - t_c)))
+    idx = [j for j in range(i - 3, i + 4) if ok[j]]
+    A = np.c_[tt[idx] - tt[i], np.ones(len(idx))]
+    v = np.linalg.lstsq(A, PB[idx], rcond=None)[0][0]
+    vh = v / max(np.linalg.norm(v), 1e-9)
+    q_rec, _ = rec.q_at(t_c)
+    C = cps(q_rec)
+    p0 = PB[i]
+    perp = [(c - p0) - ((c - p0) @ vh) * vh for c in C]
+    k = int(np.argmin([np.linalg.norm(x) for x in perp]))
+    d = perp[k]
+    n = np.linalg.norm(d)
+    return d * max(n - miss, 0.0) / max(n, 1e-9)
+
+
 def _fmt(ball, cps, q):
     if ball is None:
         return '  -  '
@@ -512,7 +543,7 @@ def _ball_at(tt, ok, P, t):
     return P[good[0]]
 
 
-def _reproject(m, rec, hist_t, hist_q, t_cap, model, data, pin):
+def _reproject(m, rec, hist_t, hist_q, t_cap, model, data, pin, keep=None, shift=None):
     """The recorded message, with every control point carried to the SIMULATED pose at capture time."""
     from franka_msgs.msg import MultiLinkDistance
     out = MultiLinkDistance()
@@ -536,6 +567,10 @@ def _reproject(m, rec, hist_t, hist_q, t_cap, model, data, pin):
     cache = {}
     links = []
     for ld in m.links:
+        if keep is not None and ld.valid:
+            ph_ = np.array([ld.closest_point_human.x, ld.closest_point_human.y, ld.closest_point_human.z])
+            if not keep(ph_):
+                continue
         nl = type(ld)()
         for f in nl.get_fields_and_field_types():
             setattr(nl, f, getattr(ld, f))
@@ -545,8 +580,14 @@ def _reproject(m, rec, hist_t, hist_q, t_cap, model, data, pin):
                 cache[name] = (M(q_rec, name), M(q_sim, name))
             Mr, Ms = cache[name]
             pr = np.array([ld.closest_point_robot.x, ld.closest_point_robot.y, ld.closest_point_robot.z])
-            ph = np.array([ld.closest_point_human.x, ld.closest_point_human.y, ld.closest_point_human.z])
-            off = (np.linalg.norm(pr - ph) - ld.distance) if ld.distance > 1e-6 else off_def
+            ph0 = np.array([ld.closest_point_human.x, ld.closest_point_human.y, ld.closest_point_human.z])
+            off = (np.linalg.norm(pr - ph0) - ld.distance) if ld.distance > 1e-6 else off_def
+            ph = ph0
+            if shift is not None:
+                dsh = shift(ph0)
+                if dsh is not None:
+                    ph = ph0 + dsh
+                    nl.closest_point_human.x, nl.closest_point_human.y, nl.closest_point_human.z = map(float, ph)
             prs = Ms.act(Mr.actInv(pr))
             v = prs - ph
             n = np.linalg.norm(v)
@@ -601,6 +642,8 @@ def _metrics(log, t_c, dt, envelope):
         qd_peak=float(np.abs(QD[wt]).max()),
         ee_err_max=float(err[wt].max()),
         ee_err_end=float(err[-1]),
+        dodge_lead=next((float(t_c - tt_) for tt_, w_ in zip(t, log['dw']) if w_ > 0.3), float('nan')),
+        dodge_peak=float(np.max(log['dn'])),
         off_sim=float(np.max(np.array(log['off_sim'])[wt])), off_rec=float(np.max(np.array(log['off_rec'])[wt])),
     )
 
@@ -648,6 +691,9 @@ def main():
     ap.add_argument('--only', type=int, nargs='*', default=None, help='1-based pass numbers')
     ap.add_argument('--check-nominal', action='store_true')
     ap.add_argument('--trace', action='store_true')
+    ap.add_argument('--threat', type=float, default=-1.0, help='AIM the recorded ball at the arm: residual miss to the nearest control-point axis at closest approach [m] (0 = dead centre); negative = as recorded')
+    ap.add_argument('--qtrace', action='store_true')
+    ap.add_argument('--ball-only', action='store_true', help='drop every obstacle row that is not on the ball (isolates the throw response)')
     ap.add_argument('--oracle', type=float, default=0.0, help='EXPERIMENT: perfectly informed sideways dodge, peak m/s²')
     ap.add_argument('--oracle-lead', type=float, default=0.30)
     ap.add_argument('--nom-cap', type=float, default=0.0, help='cap |q̈_nom| per joint at this value [rad/s²] (experiment)')
@@ -682,10 +728,10 @@ def main():
         print(f"pass {n} v={p['v']:.1f}  clr {m['clr_rec']*100:5.1f} -> {m['clr_sim']*100:5.1f} cm  "
               f"peak cmd {m['peak_cmd']:5.2f} acc {m['peak_acc']:5.2f}  jerk p99 cmd {m['jerk_cmd_p99']:6.0f} "
               f"real {m['jerk_real_p99']:6.0f}  flips {m['flips']:2d}  vratio {m['vratio_max']:.2f}  "
-              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}", flush=True)
+              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}  dodge lead {m['dodge_lead']:.2f}s peak {m['dodge_peak']:.1f}", flush=True)
     if rows:
         g = lambda k: np.mean([r[k] for r in rows])
-        print(f"{args.label or 'run'} MEAN  clr_gain {100*(g('clr_sim')-g('clr_rec')):+5.1f} cm  "
+        print(f"{args.label or 'run'} MEAN  hits {sum(r['clr_sim'] < 0 for r in rows)}/{len(rows)} clr {100*g('clr_sim'):5.1f}  clr_gain {100*(g('clr_sim')-g('clr_rec')):+5.1f} cm  "
               f"min_clr {100*min(r['clr_sim'] for r in rows):5.1f}  peak_cmd {g('peak_cmd'):5.2f}  "
               f"jerk_cmd_p99 {g('jerk_cmd_p99'):6.0f}  jerk_real_p99 {g('jerk_real_p99'):6.0f}  "
               f"rev {g('flips'):4.1f} tv {g('tv'):4.0f} rec {np.nanmean([r['recover_s'] for r in rows]):4.2f}s  vratio {g('vratio_max'):.2f} (max {max(r['vratio_max'] for r in rows):.2f})  "

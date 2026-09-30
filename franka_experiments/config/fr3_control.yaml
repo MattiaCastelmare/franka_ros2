@@ -574,20 +574,6 @@ params:
   # field in CBFDIAG to see which joints it binds.
   max_qddot_delta: 1.5
 
-  # [fraction of the acceleration box, 0 = off] Cap on what an OBSTACLE row may DEMAND.
-  #
-  # A row is a bound aᵀq̈ + s >= h_qp. When the barrier is far out of reach — a ball
-  # at 4 m/s with 60 ms to go, h_qp = -20..-40 against an authority of a few m/s^2 —
-  # the slack s is 17..40 and its price (rho_slack, quadratic) swamps every other
-  # term, so the solution is the corner of the box on every joint that helps: the
-  # +/-10 rad/s^2 square wave of ball_throws_3, sign-flipping as the rows change
-  # between frames. The demand is unmeetable, so asking for all of it buys nothing
-  # but violence. Capping h_qp at frac * max(aᵀq̈ over the box) keeps the ask inside
-  # what the arm can do, the optimum stays in the box's interior, and the command
-  # becomes proportional to the row instead of saturated by it.
-  # 0 leaves h_qp exactly as built (bit-identical to before this key existed).
-  obstacle_demand_frac: 0.0
-
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
   # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: iso_tau_rate_max (qddot_to_torque, post-dynamics) | flagged: 2026-09-01
   # STILL DEAD, deliberately. The live torque-rate limit is `iso_tau_rate_max`
@@ -971,7 +957,17 @@ params:
   # with a feasibility guard collapsing the box onto lb (hardest legal braking)
   # if the demands conflict.
 
-  velocity_box_margin: 0.9   # fraction of the official qdot_max actually allowed
+  # fraction of the official qdot_max actually allowed. 0.9 -> 0.7 on 2026-09-30.
+  # Closed loop on the recorded throws AIMED at the arm (scripts/ball_closed_loop.py --threat 0, the
+  # hardest dodges the filter will be asked for), peak joint velocity against the FIRMWARE envelope
+  # (libfranka's position-based curve, the thing joint_velocity_violation trips on):
+  #     velocity_box_margin    0.9         0.75        0.6         0.45
+  #     peak |qdot|/envelope   0.92-0.94   0.78        0.62        0.46
+  #     hits / clearance       5/9 5/6     5/9 5/6     5/9 5/6     5/9 5/6   (-0.1..-0.3 cm per step)
+  # i.e. the cap costs nothing measurable in clearance and takes the worst case from "one step from a
+  # firmware abort" to 0.7. It is also the headroom config/safety/watchman_profile.md asks for
+  # (<= 0.83 so that SLS-J can sit 20 % above the software cap). The tracked path needs < 1.0 rad/s.
+  velocity_box_margin: 0.7
 
   # [rad/s^2] Ceiling on the per-joint acceleration authority the QP may use.
   #
