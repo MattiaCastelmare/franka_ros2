@@ -76,6 +76,8 @@ from franka_experiments.utils.params import declare_bool, declare_int, declare_s
 from franka_experiments.utils.logging_utils import PerfTimer
 from franka_experiments.utils.obstacle_sim import InjectedSphere
 from franka_experiments.utils.calibration_check import calibration_residual
+from franka_experiments.utils.ballistic_prediction import (
+    PREDICTED_CLUSTER_ID, PredictionConfig, add_predicted_hits)
 from franka_experiments.utils.rate_scaling import (
     FrameRateEstimator,
     frames_for,
@@ -361,6 +363,13 @@ class RealTimeDistance(Node):
                 imm_initial_mode_prob=tuple(
                     trk_cfg.get('imm_initial_mode_prob', (0.5, 0.5))),
             )
+            self._pred_cfg = PredictionConfig.from_dict(trk_cfg.get('prediction'))
+            if self._pred_cfg.enabled:
+                self.get_logger().info(
+                    f'impact prediction ON: horizon {self._pred_cfg.horizon_s:.2f} s, '
+                    f'fast tracks >= {self._pred_cfg.min_speed:.1f} m/s '
+                    f'({self._pred_cfg.k_sigma:.1f} sigma), rows when predicted gap < '
+                    f'{self._pred_cfg.publish_gap_m:.2f} m')
             self.get_logger().info(
                 f'tracker lifecycle at {self._nominal_hz:.0f} Hz nominal: '
                 f'confirm {trk_hits}/{trk_window} frames, coast {trk_coast} '
@@ -809,6 +818,19 @@ class RealTimeDistance(Node):
                     f'obstacle tracking skipped this frame: {exc}',
                     throttle_duration_sec=2.0)
 
+        # ── Predicted impact points of fast tracks (utils.ballistic_prediction) ──
+        # Before the publish gate: the whole point is a ball still beyond it.
+        n_pred = 0
+        pred_cfg = getattr(self, '_pred_cfg', None)
+        if self.track_pipeline is not None and pred_cfg is not None and pred_cfg.enabled:
+            try:
+                cp_results, n_pred = add_predicted_hits(
+                    cp_results, self.track_pipeline.tracker.confirmed_tracks(), pred_cfg)
+            except Exception as exc:
+                self.get_logger().error(f'impact prediction skipped this frame: {exc}',
+                                        throttle_duration_sec=2.0)
+        self._n_pred_rows = n_pred
+
         # ── Two different questions, two different lists (roadmap Step 7) ──
         # `in_band` is the LEGACY one and decides the MultiDistance / fallback /
         # logging path: "is there an obstacle in the band this node reports on".
@@ -836,6 +858,12 @@ class RealTimeDistance(Node):
                         and r.distance <= thresholds['max_thresh']]
                        if self._publish_contact_regime else in_band)
         now = time.monotonic()
+        if not publishable and n_pred:
+            # Nothing measured inside the band, but a fast object is predicted
+            # to reach a control point: publish, so the CBF gets the rows.
+            self._publish_fallback(fallback_distance, stamp)
+            self._publish_rows(cp_results, n_pts, stamp, thresholds, fallback_distance)
+            return
         if not publishable:
             if self._tlog_no_obs.due(now):
                 self._tlog_no_obs.debug(
@@ -888,37 +916,7 @@ class RealTimeDistance(Node):
                 f'{leak}{tfage}{dup}')
 
         # ── Publish ───────────────────────────────────────────────────────
-        msgs = build_cp_messages(
-            cp_results=cp_results,
-            n_pts=n_pts,
-            stamp=stamp,
-            frame_id=self.robot_cfg['base_frame'],
-            segment_links=self.robot_cfg.get('segment_links', []),
-            thresholds=thresholds,
-            fallback=fallback_distance,
-            zones=self.zones,
-            return_cluster_ids=self.multi_k > 1,
-        )
-        multi_msg, mld_msg = msgs[0], msgs[1]
-        cluster_ids = msgs[2] if self.multi_k > 1 else None
-        # Track fields onto the message that is about to go out. Same topic,
-        # same entries, same order — only the four appended fields are written,
-        # and only for control points whose nearest obstacle point falls inside
-        # a CONFIRMED track. Everything else keeps the all-zero "no track"
-        # defaults the consumer already treats as "contribute nothing".
-        if self.track_pipeline is not None:
-            try:
-                annotate_track_fields(mld_msg, self.track_pipeline,
-                                      skip_keys=self._self_detected(cp_results),
-                                      cluster_ids=cluster_ids)
-            except Exception as exc:
-                self.get_logger().error(
-                    f'track annotation skipped this frame: {exc}',
-                    throttle_duration_sec=2.0)
-
-        self.multi_dist_pub.publish(multi_msg)
-        self.per_link_dist_pub.publish(mld_msg)
-        self._hb_active = False   # re-arm the heartbeat transition log
+        self._publish_rows(cp_results, n_pts, stamp, thresholds, fallback_distance)
 
         # ── Visualisation snapshot ────────────────────────────────────────
         with self._vis_lock:
@@ -938,6 +936,45 @@ class RealTimeDistance(Node):
                 visual_exclusion_mask=self.visual_robot_exclusion_mask,
                 visualize_only_raw_video=self.visualize_only_raw_video,
             )
+
+    def _publish_rows(self, cp_results, n_pts, stamp, thresholds, fallback_distance):
+        """Build, annotate and publish MultiDistance + MultiLinkDistance."""
+        want_cids = self.multi_k > 1 or bool(getattr(self, '_n_pred_rows', 0))
+        msgs = build_cp_messages(
+            cp_results=cp_results,
+            n_pts=n_pts,
+            stamp=stamp,
+            frame_id=self.robot_cfg['base_frame'],
+            segment_links=self.robot_cfg.get('segment_links', []),
+            thresholds=thresholds,
+            fallback=fallback_distance,
+            zones=self.zones,
+            return_cluster_ids=want_cids,
+        )
+        multi_msg, mld_msg = msgs[0], msgs[1]
+        cluster_ids = msgs[2] if want_cids else None
+        if cluster_ids is not None:
+            for ld, cid in zip(mld_msg.links, cluster_ids):
+                if cid == PREDICTED_CLUSTER_ID:
+                    ld.zone = 'predicted'
+        # Track fields onto the message that is about to go out. Same topic,
+        # same entries, same order — only the four appended fields are written,
+        # and only for control points whose nearest obstacle point falls inside
+        # a CONFIRMED track. Everything else keeps the all-zero "no track"
+        # defaults the consumer already treats as "contribute nothing".
+        if self.track_pipeline is not None:
+            try:
+                annotate_track_fields(mld_msg, self.track_pipeline,
+                                      skip_keys=self._self_detected(cp_results),
+                                      cluster_ids=cluster_ids)
+            except Exception as exc:
+                self.get_logger().error(
+                    f'track annotation skipped this frame: {exc}',
+                    throttle_duration_sec=2.0)
+
+        self.multi_dist_pub.publish(multi_msg)
+        self.per_link_dist_pub.publish(mld_msg)
+        self._hb_active = False   # re-arm the heartbeat transition log
 
     def _check_calibration(self, depth, transforms) -> None:
         """Throttled model-vs-measurement comparison. Never raises, never blocks.

@@ -385,6 +385,11 @@ def annotate_track_fields(msg, pipeline, skip_keys=None, cluster_ids=None) -> in
                            ld.closest_point_human.y,
                            ld.closest_point_human.z])
         cid = cluster_ids[i] if cluster_ids is not None else -1
+        if cid == -2:
+            # A PREDICTED impact point (utils.ballistic_prediction): a place,
+            # not an obstacle. It must stay static — a track's velocity on it
+            # would count the motion twice.
+            continue
         if cid >= 0 and hasattr(pipeline, 'track_info_for_cluster'):
             info = pipeline.track_info_for_cluster(cid)
         elif hasattr(pipeline, 'track_info_for_point'):

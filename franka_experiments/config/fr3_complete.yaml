@@ -145,7 +145,18 @@ distance: # in meters
   # robot pixels leaking through the mask (leak= ~7 -> ~24 per frame).
   pixel_step: 6
   image_margin_px: 10
-  roi_pad_px: 90
+  # [px] padding of the depth search box around the robot's silhouette. Was
+  # 90. Nothing outside this box is sampled, so a ball thrown at the arm was
+  # invisible until it was almost there: on the 2026-09-30 hardware throws the
+  # CBF could act only ~150 ms before closest approach. At 180 (replay of
+  # rosbag/ball_throws_2 and _3, scripts/ball_throw_eval.py) the ball is in
+  # the rows ~290-360 ms ahead and the CBF acts ~250-270 ms ahead (was
+  # ~150-160), with ~2x the avoidance effort before contact and no increase in
+  # interventions away from the ball. 300 gave no further gain at +40 %
+  # compute. Cost at 180: all= ~10.3-11.2 ms per frame against the 11.1 ms
+  # budget at 90 Hz — close the OpenCV window (booleans.visualize) for fast
+  # experiments, it costs ~2.6 ms live.
+  roi_pad_px: 180
 
   # ── Publish gate for the whole frame (NOT a per-CP filter) ───────────────
   # real_time_distance builds `valid` = CPs whose distance falls in this band.
@@ -483,6 +494,28 @@ tracking:
   # passes, fast-trusted 6/9 -> 8/9; CBF interventions away from the ball
   # unchanged. `evict=` in the log line counts them. false = old behaviour.
   evict_stale_tentative: true
+
+  # Predicted impact points (utils/ballistic_prediction.py): a fast track is
+  # propagated ballistically over horizon_s and, where it is predicted to pass
+  # within publish_gap_m of a control point, that point gets one more obstacle
+  # row at the PREDICTED position (zone 'predicted' on the wire, no track
+  # velocity). OFF: measured on both 2026-09-30 bags it added only 0-50 ms of
+  # CBF lead on top of roi_pad_px 180 (the CBF's own tracked-velocity terms
+  # already act as soon as a fast track exists), while raising interventions
+  # away from the ball by 30-100 % (fast-moving people get predicted too).
+  # Worth re-testing for slower, longer throws, where the flight is long
+  # enough for the prediction to lead the velocity terms.
+  prediction:
+    enabled: false
+    horizon_s: 0.5
+    step_s: 0.01
+    min_speed: 1.0          # [m/s] and |v| - k_sigma*sigma >= min_speed
+    k_sigma: 2.0
+    min_frames: 3
+    object_radius_m: 0.035
+    publish_gap_m: 0.30     # [m] predicted surface gap below which a row is emitted
+    min_time_s: 0.03        # closest approach must still be ahead
+    assume_ballistic: true  # gravity when the track has no IMM mode estimate
 
   # [m] slack added to a cluster's radius when deciding whether a control
   # point's closest_point_human belongs to it. Needed because the radius is
