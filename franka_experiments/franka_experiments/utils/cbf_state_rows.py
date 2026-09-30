@@ -1645,6 +1645,14 @@ class ConstraintBuilder:
         self._min_frames_eff = int(P.obstacle_velocity_min_frames)
         self._ff_min_frames_eff = int(P.velocity_feedforward_min_frames)
         self._apply_input_rate(self._in_hz)
+        # Fast-track trust: see _fast_track. Read once; getattr so a config
+        # that predates the block keeps the old behaviour exactly.
+        self._fast_on = bool(getattr(P, 'obstacle_velocity_fast_trust', False))
+        self._fast_min_frames = int(getattr(P, 'obstacle_velocity_fast_min_frames', 3))
+        self._fast_v = float(getattr(P, 'obstacle_velocity_fast_speed', 1.0))
+        self._fast_k = float(getattr(P, 'obstacle_velocity_fast_k_sigma', 2.0))
+        self._fast_max = float(getattr(P, 'obstacle_velocity_fast_max',
+                                       P.obstacle_velocity_max))
         self._qlim_stuck, self._fid_cache = {}, {}
         # Per-label smoothing state for the uncertainty margin.
         self._unc_ema: dict = {}
@@ -1688,6 +1696,7 @@ class ConstraintBuilder:
         self.diag_vobs_hdot = 0.0
         self.diag_vobs_hdot_n = 0
         self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
+        self.diag_fast = 0          # rows whose track passed the fast-track test
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
         self.diag_outrun_r = 0.0    # largest closing/outrunnable ratio this rebuild
@@ -1824,6 +1833,7 @@ class ConstraintBuilder:
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
         self.diag_hstand = 0.0
+        self.diag_fast = 0
         # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
         # inf/0.0 with the flag off, which is how the CBFDIAG line says
         # 'the ISO rows are not doing anything' without the config open.
@@ -1966,6 +1976,9 @@ class ConstraintBuilder:
             # only ever tighten the QP, never loosen it. Trusting the receding
             # half would mean relaxing a barrier on a 30 Hz vision estimate.
             v_o = 0.0
+            fast = self._fast_track(ob, n_w)
+            if fast:
+                self.diag_fast += 1
             if self._P.obstacle_velocity_enabled:
                 if self._P.obstacle_velocity_source == 'tracker':
                     # The tracked 3D velocity projected on n̂. The residual's
@@ -2087,7 +2100,11 @@ class ConstraintBuilder:
                 else:
                     while len(hist) > k_med:
                         hist.pop(0)
-                v_o = float(np.median([x[1] for x in hist]))
+                v_med = float(np.median([x[1] for x in hist]))
+                # A fast-trusted track is not the artefact the median exists
+                # for (see _fast_track): its rising edge passes at once, the
+                # median still governs the decay and every other row.
+                v_o = max(v_med, v_o) if fast else v_med
 
             # ── Tracked obstacle velocity INSIDE ḣ (enable_vobs_in_hdot) ─────
             # ḣ = aᵀq̇ − n̂ᵀv_obs with the track's own 3D velocity, SIGNED: an
@@ -2100,10 +2117,11 @@ class ConstraintBuilder:
             # retreat cap and the evasion keep using v_o.
             v_hdot, vobs_track = v_o, False
             if (vobs_in_hdot and ob.v_vec is not None
-                    and ob.frames_seen >= self._min_frames_eff):
+                    and (ob.frames_seen >= self._min_frames_eff or fast)):
                 vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
                 if np.isfinite(vn):
-                    v_hdot = float(np.clip(vn, -vobs_hdot_max, vobs_hdot_max))
+                    lim = max(vobs_hdot_max, self._fast_max) if fast else vobs_hdot_max
+                    v_hdot = float(np.clip(vn, -lim, lim))
                     vobs_track = True
             # NOT appended here. v_obs is indexed BY ROW in the QP
             # (h_qp = k1*(A@qdot - v_obs) + ...), so it has to be appended in
@@ -2236,7 +2254,7 @@ class ConstraintBuilder:
             # releases the barrier smoothly instead of stepping it by k0·h_std.
             if stand_on:
                 raw = (velocity_standoff(v_o, time_s=stand_t, max_m=stand_max)
-                       if n_seen >= self._P.obstacle_velocity_min_frames else 0.0)
+                       if (n_seen >= self._P.obstacle_velocity_min_frames or fast) else 0.0)
                 prev = self._stand_ema.get(lbl)
                 h_std = raw if (prev is None or raw >= prev) else (
                     stand_alpha * prev + (1.0 - stand_alpha) * raw)
@@ -2868,6 +2886,49 @@ class ConstraintBuilder:
             depth_gain=self._P.retreat_cap_depth_gain, depth_speed_ref=self._P.retreat_cap_depth_speed_ref,
             engage_gap=self._P.retreat_cap_engage_gap, max_speed=self._P.retreat_cap_max_speed)
 
+    def _fast_track(self, ob, n_w: np.ndarray) -> bool:
+        """Is this a young track whose CLOSING speed is beyond doubt?
+
+        WHY A SECOND GATE
+        -----------------
+        ``obstacle_velocity_min_frames`` / ``_min_span_s`` hold every track's
+        velocity at 0 for ~265 ms, because on hardware most tracks live two
+        frames and report their own prior (sigma_v0) as a velocity. That is the
+        right default and the wrong answer for a thrown object: on the
+        2026-09-30 ball throws (rosbag/ball_throws_2, 2.6-4.5 m/s) the ball
+        reached the arm in less than the gate, so its velocity never reached
+        the QP and the barrier acted on position alone, 30-110 ms before
+        contact.
+
+        The two cases differ in something the track REPORTS about itself: a
+        prior-dominated track has a velocity covariance as large as its
+        velocity, a real fast object has a closing speed several sigma above
+        zero. So a track younger than the span gate is trusted when
+
+            n̂ᵀv − k·sqrt(n̂ᵀ P_vv n̂)  >=  v_fast   and   frames_seen >= n_min
+
+        Measured on the replay of that bag (scripts/ball_throw_eval.py,
+        k=2, v_fast=1.0 m/s): true on the ball in 7 of 9 passes, a median
+        ~180 ms before closest approach; everywhere else ~15 rows a minute, the
+        throwers' own arms included. Static clutter never passes it: its
+        closing speed p99 is 0.86 m/s at sigma 0.06.
+
+        Only the APPROACHING half can pass (v_fast > 0), so the gate can only
+        tighten the QP, like every other term on this path.
+        """
+        if not self._fast_on or ob.v_vec is None or ob.frames_seen < self._fast_min_frames:
+            return False
+        vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
+        if not np.isfinite(vn) or vn < self._fast_v:
+            return False
+        sn = 0.0
+        if ob.vel_cov is not None:
+            C = np.asarray(ob.vel_cov, dtype=np.float64)
+            sn = float(np.sqrt(max(float(n_w @ C @ n_w), 0.0)))
+            if not np.isfinite(sn):
+                return False
+        return vn - self._fast_k * sn >= self._fast_v
+
     def _obstacle_speed_tracked(self, ob, n_w: np.ndarray, lbl: str = '',
                                 t_cap: float = 0.0) -> float:
         """Component of the TRACKED obstacle velocity along n̂, in m/s.
@@ -2932,16 +2993,20 @@ class ConstraintBuilder:
         gate on MEASUREMENTS, not on age: a track coasting through an occlusion
         does not accumulate evidence it does not have.
         """
-        if ob.v_vec is None or ob.frames_seen < self._min_frames_eff:
+        fast = self._fast_track(ob, n_w)
+        if ob.v_vec is None or (ob.frames_seen < self._min_frames_eff and not fast):
             return 0.0
         v = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
         if not np.isfinite(v):
             return 0.0
         # Same clamp as the residual path, and for the same reason: one bad
         # depth frame must not be able to fabricate metres per second. The
-        # tracker makes that far less likely, not impossible.
-        v = float(np.clip(v, -self._P.obstacle_velocity_max,
-                          self._P.obstacle_velocity_max))
+        # tracker makes that far less likely, not impossible. A fast-trusted
+        # track has already shown its speed clears its own uncertainty, so it
+        # gets the higher ceiling a thrown object needs.
+        vmax = max(self._P.obstacle_velocity_max, self._fast_max) if fast \
+            else self._P.obstacle_velocity_max
+        v = float(np.clip(v, -vmax, vmax))
         db = float(self._P.obstacle_velocity_track_deadband)
         if db > 0.0:
             # SOFT threshold, not a gate: subtracting keeps the map continuous.

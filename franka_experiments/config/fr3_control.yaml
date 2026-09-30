@@ -1254,6 +1254,32 @@ params:
   # obstacle_velocity_min_frames: 8 was "~265 ms at 30 Hz".
   obstacle_velocity_min_span_s: 0.265
 
+  # ── FAST-TRACK TRUST (cbf_state_rows._fast_track) ─────────────────────────
+  # The span gate above holds a track's velocity at 0 for ~265 ms, and a thrown
+  # object is faster than that: on the 2026-09-30 throws (rosbag/ball_throws_2,
+  # a tennis-size ball at 2.6-4.5 m/s) it reached the arm first in every pass,
+  # so the barrier only ever saw its POSITION and acted 30-110 ms before
+  # contact. A young track is trusted anyway when its closing speed clears k
+  # sigma of its own velocity covariance:
+  #
+  #     n̂ᵀv − k·σ_n >= fast_speed   and   frames_seen >= fast_min_frames
+  #
+  # which a prior-dominated two-frame track cannot do (its sigma is as large as
+  # its speed) and static clutter cannot either (closing-speed p99 0.86 m/s).
+  # A trusted fast track also skips the median's rising edge (not its decay),
+  # reaches the standoff, and is clamped at fast_max instead of
+  # obstacle_velocity_max / vobs_hdot_max — both 2 m/s, half the ball's speed.
+  #
+  # Replay of that bag with the perception tuned the same day
+  # (scripts/ball_throw_eval.py): passes on the ball in 7/9 throws, ~180 ms
+  # before closest approach; ~15 rows/min elsewhere, the throwers' arms
+  # included. CBFDIAG fast= counts the rows. OFF restores the old behaviour.
+  obstacle_velocity_fast_trust: true
+  obstacle_velocity_fast_min_frames: 3
+  obstacle_velocity_fast_speed: 1.0   # [m/s]
+  obstacle_velocity_fast_k_sigma: 2.0
+  obstacle_velocity_fast_max: 6.0     # [m/s]
+
   # [Hz] the perception rate the gates are sized with until the stream has been
   # measured — a claim about the camera profile, corrected at runtime with a
   # log line. Keep it equal to the profile in launch_defaults.yaml.

@@ -450,6 +450,13 @@ CBF_PARAM_SPEC = {
     'obstacle_velocity_median_s': ('float', dict(minimum=0.0, maximum=1.0)),
     'obstacle_velocity_rot_hold_s': ('float', dict(minimum=0.0, maximum=1.0)),
     'obstacle_velocity_min_span_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    # Fast-track trust (cbf_state_rows._fast_track): a young track whose
+    # closing speed clears k sigma of its own covariance bypasses the span gate.
+    'obstacle_velocity_fast_trust': ('bool', dict()),
+    'obstacle_velocity_fast_min_frames': ('int', dict(minimum=1, maximum=100)),
+    'obstacle_velocity_fast_speed': ('float', dict(positive=True, maximum=10.0)),
+    'obstacle_velocity_fast_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
+    'obstacle_velocity_fast_max': ('float', dict(positive=True, maximum=10.0)),
     'velocity_feedforward_min_span_s': ('float', dict(minimum=0.0, maximum=2.0)),
     # [Hz] the perception rate the gates are sized with BEFORE the stream has
     # been measured. A claim about the camera profile, corrected at runtime.

@@ -89,6 +89,12 @@ class P:
     obstacle_velocity_median_s = 0.0
     obstacle_velocity_rot_hold_s = 0.0
     obstacle_velocity_min_span_s = 0.0
+    # Fast-track trust: OFF here, so every older test keeps the old gate.
+    obstacle_velocity_fast_trust = False
+    obstacle_velocity_fast_min_frames = 3
+    obstacle_velocity_fast_speed = 1.0
+    obstacle_velocity_fast_k_sigma = 2.0
+    obstacle_velocity_fast_max = 6.0
     velocity_feedforward_min_span_s = 0.0
     obstacle_input_rate_hz = 30.0
     obstacle_velocity_track_deadband = 0.0

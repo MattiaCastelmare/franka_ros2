@@ -122,7 +122,15 @@ topics:
 distance: # in meters
   min_depth_m: 0.15
   max_depth_m: 4.0
-  pixel_step: 10
+  # Sampling stride [px]. Was 10. A tennis-size ball (~7 cm) 1.4-2.2 m from
+  # the D455 covers ~15-25 px of the 848x480 depth image, so at stride 10 it
+  # got 2-3 samples — under tracking.cluster_min_points — and never got a
+  # track: on the 2026-09-30 throws (rosbag/ball_throws_2) the ball was in the
+  # distance rows in 9/9 passes and tracked in 0/9. Replayed at 6 it is
+  # tracked in 9/9 (scripts/ball_throw_eval.py); 8 and 10 track 5/9.
+  # Cost: all= 9.3 -> ~9.7 ms per frame (11.1 ms budget at 90 Hz), and more
+  # robot pixels leaking through the mask (leak= ~7 -> ~24 per frame).
+  pixel_step: 6
   image_margin_px: 10
   roi_pad_px: 90
 
@@ -526,7 +534,14 @@ tracking:
   # a per-frame phenomenon. Scaling the COUNT instead would confirm a 33 ms
   # speckle at 90 fps. 0.167 s x 0.6 rounds to 3-of-5 at 30 Hz (the tuning
   # these were measured at) and to 9-of-15 at 90 Hz: 100 ms to birth either way.
-  confirm_window_s: 0.167
+  #
+  # SHORTENED to 0.056 s (3-of-5 at 90 Hz, the 2-of-3 floor at 30 Hz) on
+  # 2026-09-30: a ball thrown at the arm is in the rows ~260 ms before it
+  # arrives, and a 100 ms birth ate most of that. Replayed on the throws, a
+  # velocity the CBF can trust (cbf obstacle_velocity_fast_trust) then exists
+  # ~180 ms before closest approach instead of never. Junk tracks do confirm
+  # sooner too; the CBF-side fast-track test is what keeps them out of the QP.
+  confirm_window_s: 0.056
   confirm_hits_frac: 0.6
 
   # ── Ballistic (gravity-aware) velocity model (utils/obstacle_tracker.IMMTrack) ──

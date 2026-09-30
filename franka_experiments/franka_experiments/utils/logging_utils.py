@@ -401,6 +401,9 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'hrng={getattr(rows, "diag_hrng", 0.0):.4f} '
         # enable_velocity_standoff: largest speed-proportional standoff [m].
         f'hstd={getattr(rows, "diag_hstand", 0.0):.4f} '
+        # obstacle_velocity_fast_trust: rows whose young track passed the
+        # fast-track test this rebuild. 0 with the flag off.
+        f'fast={getattr(rows, "diag_fast", 0)} '
         # enable_vobs_in_hdot: largest-magnitude n̂ᵀv_track put into ḣ, and on
         # how many rows. +0.000/0 with the flag off.
         f'vhd={getattr(rows, "diag_vobs_hdot", 0.0):+.3f}/'

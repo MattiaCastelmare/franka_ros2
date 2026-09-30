@@ -235,7 +235,8 @@ def _profile_wh(profile: str) -> tuple[int, int] | tuple[None, None]:
 
 def _rtd_config_with_overrides(path: str, *, tracking: bool,
                                sim_obstacle: bool,
-                               depth_rate_hz: float | None = None) -> str:
+                               depth_rate_hz: float | None = None,
+                               visualize: bool | None = None) -> str:
     """Return ``path``, or a copy of it with the two perception switches forced.
 
     ``real_time_distance`` reads its perception configuration from a YAML rather
@@ -247,10 +248,13 @@ def _rtd_config_with_overrides(path: str, *, tracking: bool,
     and is written into ``distance.depth_rate_hz``, which is what sizes every
     frame-counted perception threshold before the stream has been measured.
 
+    ``visualize`` forces ``booleans.visualize`` (the OpenCV window) when not
+    None — a headless bag replay must not try to open one.
+
     Returns the ORIGINAL path when nothing has to be forced, so the common case
     touches no filesystem and the node reads exactly the installed file.
     """
-    if not (tracking or sim_obstacle or depth_rate_hz):
+    if not (tracking or sim_obstacle or depth_rate_hz or visualize is not None):
         return path
     import os
     import tempfile
@@ -262,11 +266,40 @@ def _rtd_config_with_overrides(path: str, *, tracking: bool,
         cfg.setdefault('sim_obstacle', {})['enabled'] = True
     if depth_rate_hz:
         cfg.setdefault('distance', {})['depth_rate_hz'] = float(depth_rate_hz)
+    if visualize is not None:
+        cfg.setdefault('booleans', {})['visualize'] = bool(visualize)
     out = os.path.join(tempfile.gettempdir(),
                        f'fr3_complete_launch_{os.getpid()}.yaml')
     with open(out, 'w') as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     return out
+
+
+def _bag_topics(bag: str) -> set:
+    """Topic names recorded in a rosbag2 directory (empty if unreadable)."""
+    import os
+    try:
+        with open(os.path.join(bag, 'metadata.yaml')) as f:
+            info = (yaml.safe_load(f) or {}).get('rosbag2_bagfile_information', {})
+        return {t['topic_metadata']['name'] for t in info.get('topics_with_message_count', [])}
+    except (OSError, KeyError, TypeError, yaml.YAMLError):
+        return set()
+
+
+def _depth_source_topics(bag: str, depth: str, info: str) -> tuple[str, str]:
+    """The (image, camera_info) pair to replay: the RAW depth stream when the
+    bag has it, else the aligned one the older bags carry.
+
+    Raw first because it is what real_time_distance consumes live — 848x480 at
+    the camera's native rate. The aligned stream is re-projected onto the colour
+    camera (1280x720) and published at the COLOUR rate (30 Hz), so a replay of
+    it exercises a different resolution, a different rate and a different
+    intrinsic matrix than the robot ever sees.
+    """
+    if depth in _bag_topics(bag):
+        return depth, info
+    return ('/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/aligned_depth_to_color/camera_info')
 
 
 def _depth_bag_player(bag: str, cfg_path: str):
@@ -277,7 +310,9 @@ def _depth_bag_player(bag: str, cfg_path: str):
     replayed: they must come from the robot that is actually running, or the
     mask would be built for one pose while the arm is in another — which is not
     a degraded measurement, it is a wrong one, and it is wrong in the direction
-    of thinking the workspace is emptier than it is.
+    of thinking the workspace is emptier than it is. (bag_replay.launch.py is
+    the other case: it replays TF and joints TOGETHER with the depth they were
+    recorded with, and no robot.)
 
     ``--loop`` because the point is to keep the depth stream alive for as long
     as the stack runs, not to reproduce one recording end to end.
@@ -288,14 +323,63 @@ def _depth_bag_player(bag: str, cfg_path: str):
         topics = (yaml.safe_load(f) or {}).get('topics', {}) or {}
     depth = topics.get('depth_image', '/camera/camera/depth/image_rect_raw')
     info = topics.get('depth_camera_info', '/camera/camera/depth/camera_info')
-    # The bags in this repo carry the ALIGNED depth stream under its own name.
-    src_depth = '/camera/camera/aligned_depth_to_color/image_raw'
-    src_info = '/camera/camera/aligned_depth_to_color/camera_info'
-    return ExecuteProcess(
-        cmd=['ros2', 'bag', 'play', bag, '--loop',
-             '--topics', src_depth, src_info,
-             '--remap', f'{src_depth}:={depth}', f'{src_info}:={info}'],
-        output='screen')
+    src_depth, src_info = _depth_source_topics(bag, depth, info)
+    cmd = ['ros2', 'bag', 'play', bag, '--loop', '--topics', src_depth, src_info]
+    if (src_depth, src_info) != (depth, info):
+        cmd += ['--remap', f'{src_depth}:={depth}', f'{src_info}:={info}']
+    return ExecuteProcess(cmd=cmd, output='screen')
+
+
+def _cbf_parameters(p) -> list:
+    """cbf_safety_filter's ROS parameters from the launch arguments.
+
+    A function so bag_replay.launch.py runs the filter with EXACTLY the
+    parameters the live stack gives it, rather than a copy that drifts.
+
+    These are ordinary ROS parameters, so they override the YAML without
+    rewriting it — declare_from_spec reads the parameter back after declaring
+    it with the YAML value as the default.
+    """
+    fps = _profile_fps(p['camera_depth_profile'])
+    return [{
+        'obstacle_velocity_source': p['obstacle_velocity_source'],
+        'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
+        'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
+        # The perception rate, from the camera profile — the one place it
+        # is written down. It sizes the evidence gates behind v_obs until
+        # the filter has measured the distance stream itself; a stream that
+        # does not match says so in a WARN and the gates are re-derived.
+        **({'obstacle_input_rate_hz': fps} if fps else {}),
+        'enable_livelock_escape':   _as_bool(p['livelock_escape']),
+        'enable_latency_compensation': _as_bool(p['latency_compensation']),
+        'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
+        'enable_zone_ladder':       _as_bool(p['zone_ladder']),
+        'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
+        'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
+        # ── ISO 10218-1/-2:2025 layer ────────────────────────────────
+        # All four default FALSE in launch_defaults.yaml: with them off
+        # the filter's numerical output is exactly what it was before
+        # the ISO layer existed. iso_enabled is the master flag; the
+        # other three do nothing without it.
+        'iso_enabled':          _as_bool(p['iso_enabled']),
+        'iso_mode':             str(p['iso_mode']),
+        'iso_ssm_speed_rows':   _as_bool(p['iso_ssm_speed_rows']),
+        'iso_monitor_enabled':  _as_bool(p['iso_monitor_enabled']),
+    }, *_speed_ceiling_overrides(p), {
+        # A launch BOOL onto a threshold parameter: the guard's "off" state
+        # is 0.0 rad, and exposing the angle on the command line would
+        # invite tuning a number whose right value is a property of the
+        # depth sensor, not of the run. 0.15 rad is derived in
+        # fr3_control.yaml; change it there if the hardware says so.
+        'obstacle_velocity_normal_rot_max':
+            (0.15 if _as_bool(p['obstacle_velocity_normal_guard']) else 0.0),
+        # Same bool-onto-a-threshold shape, and for the same reason: the
+        # guard's "off" state is 0.0 m, and the right value of the jump
+        # floor is a property of the depth sensor's argmin noise, not of
+        # the run. 0.10 m is derived in fr3_control.yaml.
+        'obstacle_velocity_identity_jump':
+            (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
+    }]
 
 
 def _launch_all(context):
@@ -642,49 +726,7 @@ def _launch_all(context):
         # all, so they belong in ~/.ros/log/<run>/launch.log too.
         output='both',
         additional_env=_SINGLE_THREAD_BLAS,
-        # These three are ordinary ROS parameters, so they override the YAML
-        # without rewriting it — declare_from_spec reads the parameter back
-        # after declaring it with the YAML value as the default.
-        parameters=[{
-            'obstacle_velocity_source': p['obstacle_velocity_source'],
-            'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
-            'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
-            # The perception rate, from the camera profile — the one place it
-            # is written down. It sizes the evidence gates behind v_obs until
-            # the filter has measured the distance stream itself; a stream that
-            # does not match says so in a WARN and the gates are re-derived.
-            **({'obstacle_input_rate_hz': _profile_fps(p['camera_depth_profile'])}
-               if _profile_fps(p['camera_depth_profile']) else {}),
-            'enable_livelock_escape':   _as_bool(p['livelock_escape']),
-            'enable_latency_compensation': _as_bool(p['latency_compensation']),
-            'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
-            'enable_zone_ladder':       _as_bool(p['zone_ladder']),
-            'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
-            'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
-            # ── ISO 10218-1/-2:2025 layer ────────────────────────────────
-            # All four default FALSE in launch_defaults.yaml: with them off
-            # the filter's numerical output is exactly what it was before
-            # the ISO layer existed. iso_enabled is the master flag; the
-            # other three do nothing without it.
-            'iso_enabled':          _as_bool(p['iso_enabled']),
-            'iso_mode':             str(p['iso_mode']),
-            'iso_ssm_speed_rows':   _as_bool(p['iso_ssm_speed_rows']),
-            'iso_monitor_enabled':  _as_bool(p['iso_monitor_enabled']),
-        }, *_speed_ceiling_overrides(p), {
-            # A launch BOOL onto a threshold parameter: the guard's "off" state
-            # is 0.0 rad, and exposing the angle on the command line would
-            # invite tuning a number whose right value is a property of the
-            # depth sensor, not of the run. 0.15 rad is derived in
-            # fr3_control.yaml; change it there if the hardware says so.
-            'obstacle_velocity_normal_rot_max':
-                (0.15 if _as_bool(p['obstacle_velocity_normal_guard']) else 0.0),
-            # Same bool-onto-a-threshold shape, and for the same reason: the
-            # guard's "off" state is 0.0 m, and the right value of the jump
-            # floor is a property of the depth sensor's argmin noise, not of
-            # the run. 0.10 m is derived in fr3_control.yaml.
-            'obstacle_velocity_identity_jump':
-                (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
-        }],
+        parameters=_cbf_parameters(p),
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
     # acceleration) and converts it to torque — no remap needed.
