@@ -992,7 +992,14 @@ params:
   # command would cause. On the robot watch vrat=/VELHI (joint velocity vs the
   # firmware envelope) and trk_err in CBFDIAG; go to the 10-box only once a
   # run shows neither near its limit. [] restores the old box exactly.
-  qddot_accel_limits: [8.0, 5.0, 6.0, 6.0, 10.0, 7.0, 10.0]
+  # REVERTED on the robot the same day: with [8, 5, 6, 6, 10, 7, 10] the arm
+  # was visibly jerky (live run ball_throws_4 vs ball_throws_3: trk_err p90
+  # 4.7 -> 9.5 rad/s^2, p99 11.8 -> 20.8, slew-limited ticks 1 -> 4 %, peak
+  # joint velocity 0.65 -> 0.94 of the firmware envelope). The torque loop
+  # does not realise the bigger steps, and 0.94 is one step from a
+  # joint_velocity_violation abort. Needs a jerk/slew and tracking rework
+  # before the box can grow.
+  qddot_accel_limits: []
 
   # ── State governor: slow the TASK down before a state limit is a reflex ────
   #
