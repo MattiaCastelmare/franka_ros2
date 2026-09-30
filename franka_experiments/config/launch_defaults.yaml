@@ -128,7 +128,7 @@ real_time_distance_delay_s: 8.0
 # record the picture itself instead of grabbing the screen. Off by
 # default: it costs one bgr8 frame per vis tick (perception.vis_rate_hz
 # in the robot config) even when nothing subscribes.
-publish_overlay_image: false
+publish_overlay_image: true
 
 # ── Torque control stack (torque_control_stack.launch.py) ─────────────
 # Startup sequencing and wiring for the acceleration-space torque pipeline.

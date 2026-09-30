@@ -2225,6 +2225,10 @@ params:
   path_center_xyz: [0.4, 0.0, 0.45]  # [m] circle/lissajous centre, plane_frame
   path_type: circle                  # circle | lissajous | pentagon
   path_radius: 0.25                  # [m] circle radius in the selected plane
+  path_cycle_time: 6.0               # [s] one full lap; speed = 2*pi*radius/this
+                                     # (10 s = 0.16 m/s, 6 s = 0.26 m/s, 3 s = 0.52 m/s on the 0.25 m circle)
+  path_kp_cart: 20.0                 # [N/m] Cartesian PD gains of pentagon_qddot_commander
+  path_kd_cart: 9.0                  # [N.s/m] kd ~ 2*sqrt(kp) for near-critical damping
 
   # DEPRECATED/UNUSED: not read by any code. DistanceEngine reads its EMA weight
   # from `lpf_alpha` in fr3_complete.yaml (the `distance:` section), NOT from this

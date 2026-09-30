@@ -153,7 +153,8 @@ class PentagonQddotCommander(Node):
                                str(_params.get('path_type', 'circle')))
         self.declare_parameter('plane',               'yz')
         self.declare_parameter('plane_frame',         'fr3_link0')
-        self.declare_parameter('cycle_time',          10.0)
+        self.declare_parameter('cycle_time',
+                               float(_params.get('path_cycle_time', 10.0)))
         self.declare_parameter('smoothness',          0.20)
         # Lissajous amplitudes [m] (used only when path_type='lissajous')
         self.declare_parameter('lissajous_a',         0.12)
@@ -161,8 +162,10 @@ class PentagonQddotCommander(Node):
         # kp/kd: task-space Cartesian gains [N/m, N·s/m].
         # Conservative for torque control — overshoot propagates via M·q̈.
         # kd ≈ 2√kp for near-critical damping.
-        self.declare_parameter('kp_cart',             20.0)
-        self.declare_parameter('kd_cart',              9.0)
+        self.declare_parameter('kp_cart',
+                               float(_params.get('path_kp_cart', 20.0)))
+        self.declare_parameter('kd_cart',
+                               float(_params.get('path_kd_cart', 9.0)))
         # kp_rot temporaneamente ridotto 10.0 → 5.0 per il PRIMO test con
         # l'anello di orientamento ora effettivamente regolante: prima la
         # formula di e_rot era in frame/segno errati → loop di fatto
