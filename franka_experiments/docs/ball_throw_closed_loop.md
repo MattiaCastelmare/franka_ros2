@@ -88,23 +88,34 @@ raised-cosine acceleration (filter still active), aimed throws, ball-only:
 
 So at the ~0.3 s the perception gives today (first row on the ball 350 ms before closest approach, trusted
 ~330 ms, median filter reaction ~250 ms) **a dead-centre 4 m/s throw cannot be dodged by any control law** with
-this arm's authority; ~0.45 s is where it starts to work. More lead is the lever, not a cleverer reaction:
-seeing the ball earlier (RGB detection of the ball, which the colour camera sees at 2–3 m; a longer depth
-search band did not help), or a less batched depth stream (the D455 delivers 90 fps in bursts of 3 every 33 ms).
+this arm's authority; ~0.45 s is where it starts to work — and 0.45 s is about the whole flight from release (see
+below). What would help: thrower-intent prediction (the hand's swing before release), a throw from farther away,
+a less batched depth stream (the D455 delivers 90 fps in bursts of 3 every 33 ms, ~20–30 ms), or accepting that
+aimed 4 m/s throws at a 7-DOF arm from 2 m are not avoidable and that the filter's job is smoothness and not making it worse.
 A person standing near the arm (the catcher) costs about as much again: with their rows left in, aimed hits
 go 2/6 → 5/6 on `ball_throws_3`.
 
-### Where the 0.3 s comes from (open)
+### Where the 0.3 s comes from (resolved: the release)
 
-The colour+depth ground truth sees the flying ball **0.4–1.0 s (median ~0.5 s)** before closest approach; the depth
-pipeline's first row on it is at **0.29 s (bt3) / 0.35 s (bt2)**, a track with 3 frames ~20 ms later. That
-moment did not move in any replay of any perception setting tried tonight: `pixel_step` 4/5/6,
-`cluster_min_points` 3/4/5, `roi_pad_px` 180/400/700, `max_thresh` 0.7/1.0/1.3/2.0/2.5, `cbf_obstacle_horizon`
-1.2/2.5, `perception.multi_obstacle_max_rows` 24/60 (tracks >= 3 frames move by at most 0.05 s). So it is gated by something none of those touch (what the
-robot-silhouette / depth gate lets through for a small fast object, or the stereo depth on a ball that far
-away) and ~0.2 s of warning is sitting there. Finding that gate is worth more than any control change. Note
-`rosbag/replay_cfg/p_thr10.yaml` and the earlier "max_thresh 1.0: no gain" never changed the first-row time
-either, so that experiment said nothing about the band itself.
+The colour+depth ground truth sees the flying ball 0.4–1.0 s (median ~0.5 s) before closest approach, the depth
+pipeline's first row on it is at 0.29 s (bt3) / 0.35 s (bt2) and a track with 3 frames ~20 ms later — and that
+moment did not move in any replay of any perception setting tried: `pixel_step` 4/5/6, `cluster_min_points`
+3/4/5, `roi_pad_px` 180/400/700, `max_thresh` 0.7…2.5, `cbf_obstacle_horizon` 1.2/2.5,
+`perception.multi_obstacle_max_rows` 24…80, `multi_obstacle_k` 3/4 (three replicas each), `max_clusters` 48,
+`cluster_depth_jump_m` 0.04/0.06 (worse: the ball fragments).
+
+Instrumenting `real_time_distance` on `ball_throws_3` (scratch hook, not kept) explains why:
+
+* with the shipped `roi_pad_px: 180` the ball is **outside the search box** until ~−0.3 s (its pixels sit at u ≈ 700
+  while the box ends at 635) — but widening the box does not bring the track forward, because
+* before ~−0.4 s the ball pixels are **part of the thrower's cluster**: with the box wide open, the cluster holding
+  the ball at −0.47 s has 201 points and radius 0.27 m and an established track (21 frames); the ball gets a
+  cluster of its own (15 points, radius 0.05 m) and a new track at −0.39 s, confirmed by −0.31 s.
+
+The ball leaves the thrower's hand ~0.4–0.5 s before it reaches the arm; the pipeline has it as a separate object
+within ~0.1 s of release and a velocity within ~0.15 s. There is no hidden 0.2 s in the detection. The only earlier
+information is the thrower's own motion (a fast hand swinging toward the arm), i.e. predicting the release — not a
+control or perception-tuning problem.
 
 Three prediction-row replays vs three baseline replays (aimed, bt2): hits 7,7,6 of 9 vs 3,5,4; bt3 5,5,5 of 6 in both;
 mean clearance −1.1/−2.5 cm vs −0.2/−1.6 — `tracking.prediction` is **worse**, not merely useless.
