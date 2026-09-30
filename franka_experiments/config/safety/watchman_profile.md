@@ -38,7 +38,7 @@ Set each joint's safe speed limit **~20 % above** the software cap, i.e. above
 `velocity_box_margin * qdot_max` from `config/fr3_control.yaml` and
 `franka_description/robots/fr3/joint_limits.yaml`.
 
-**At today's `velocity_box_margin = 0.9`, that rule has no room left.** The +20 %
+**At `velocity_box_margin = 0.9` — the value until 2026-09-30; it is 0.7 now, which satisfies the rule, so recompute the table below from the YAML — that rule had no room left.** The +20 %
 target lands above the FR3's own flat `qdot_max` on **every joint**, and a safe
 limit cannot be set above the limit the firmware already enforces:
 
