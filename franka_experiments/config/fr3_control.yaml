@@ -1064,10 +1064,12 @@ params:
   governor_resume_s: 0.5
 
   # Fraction of the firmware velocity envelope the governor measures against.
-  # MUST NOT exceed velocity_box_margin (0.9), or the hard box clamps before the
+  # MUST NOT exceed velocity_box_margin (0.7), or the hard box clamps before the
   # governor has faded anything and the ordering the governor exists to create
-  # is inverted. 0.85 leaves it half a band of lead.
-  governor_envelope_margin: 0.85
+  # is inverted. 0.65 leaves it half a band of lead. (Was 0.85 against a 0.9 box;
+  # the box moved to 0.7 on 2026-09-30 and this has to follow it. Closed loop on the
+  # recorded throws the governor rarely binds, so the change is neutral there.)
+  governor_envelope_margin: 0.65
 
   # [s] Approach horizon for the velocity and position caps in the box.
   #

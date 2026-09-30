@@ -46,3 +46,9 @@ def test_slew_and_box_are_consistent_with_the_task_needs():
     qd_cap = P['velocity_box_margin'] * 2.62
     assert qd_cap >= 1.5
     assert np.min(P['qddot_accel_limits']) >= 2.5
+
+
+def test_the_state_governor_fades_before_the_velocity_box_clamps():
+    P = _params()
+    assert P['governor_envelope_margin'] <= P['velocity_box_margin'], (
+        'state_governor.py: the governor must start fading BEFORE the hard box clamps')
