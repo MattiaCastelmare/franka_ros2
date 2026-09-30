@@ -123,6 +123,27 @@ def cmd_truth(args):
         raise SystemExit(f'no {COLOR_INFO} in {args.bag}')
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
 
+    # Pass 1: pixels that are ball-coloured in most frames are SCENERY (a
+    # pink sticker, a red cable), not the ball. Without this the centroid
+    # averages the ball with a static patch and the "ball" is seen in every
+    # frame at an impossible speed.
+    static = None
+    if args.static_frac > 0:
+        cnt, n_fr = None, 0
+        for _, _, m in read_bag(args.bag, {COLOR}):
+            rgb = np.frombuffer(m.data, np.uint8).reshape(m.height, -1)[:, :3 * m.width]
+            rgb = rgb.reshape(m.height, m.width, 3)
+            if m.encoding == 'bgr8':
+                rgb = rgb[..., ::-1]
+            mk = ball_mask(rgb, args.r_min, args.rg_min, args.bg_min, args.g_max)
+            cnt = mk.astype(np.uint16) if cnt is None else cnt + mk
+            n_fr += 1
+        static = cnt > args.static_frac * n_fr
+        # grow it by a few pixels: the patch's edge flickers with noise
+        from scipy.ndimage import binary_dilation
+        static = binary_dilation(static, iterations=3)
+        print(f'static ball-coloured pixels masked out: {int(static.sum())}')
+
     depth_by_stamp, pending = {}, []
     out = []                                # stamp, ok, x, y, z, npix
     def flush():
@@ -155,6 +176,8 @@ def cmd_truth(args):
             if m.encoding == 'bgr8':
                 rgb = rgb[..., ::-1]
             mk = ball_mask(rgb, args.r_min, args.rg_min, args.bg_min, args.g_max)
+            if static is not None:
+                mk &= ~static
             n = int(mk.sum())
             if n < args.min_px:
                 out.append((st, 0, np.nan, np.nan, np.nan, n))
@@ -362,6 +385,8 @@ def main():
     a.add_argument('--bg-min', type=int, default=20)
     a.add_argument('--g-max', type=int, default=120)
     a.add_argument('--min-px', type=int, default=8)
+    a.add_argument('--static-frac', type=float, default=0.3,
+                   help='mask pixels ball-coloured in more than this fraction of frames (0 = off)')
     a.set_defaults(fn=cmd_truth)
     s = sub.add_parser('score')
     s.add_argument('bag')

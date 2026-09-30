@@ -1021,7 +1021,11 @@ def _launch_all(context):
         recorder = ExecuteProcess(
             cmd=['ros2', 'bag', 'record', '-o', out,
                  '--compression-mode', 'file', '--compression-format', 'zstd', *topics],
-            output='screen', name='rosbag_record')
+            output='screen', name='rosbag_record',
+            # FILE compression runs at shutdown and a 90 s run is ~20 GB raw:
+            # launch's default 5 s SIGTERM escalation killed it mid-compression
+            # on 2026-09-30 (no metadata.yaml, a truncated .zstd). Let it finish.
+            sigterm_timeout='600', sigkill_timeout='600')
         actions.append(TimerAction(period=rtd_delay + float(p['rosbag_delay_s']),
                                    actions=[recorder]))
         actions.append(LogInfo(msg=f'[torque_stack] [Recording]       rosbag -> {out}'))
