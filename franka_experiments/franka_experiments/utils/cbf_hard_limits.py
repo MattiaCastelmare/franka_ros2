@@ -142,6 +142,7 @@ def hard_accel_box(
     relax_dt: float | None = None,   # approach horizon; None → dt (legacy)
     clip_to_limits: bool = False,    # keep the box inside [acc_lb, acc_ub]
     firmware_envelope: bool = True,  # also obey the FR3 position-based q̇ limit
+    brake_acc: np.ndarray | None = None,  # braking authority; None → min(|lb|,|ub|)
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-joint q̈ box enforcing velocity AND position limits. Returns (lb, ub).
 
@@ -194,7 +195,13 @@ def hard_accel_box(
     # Decel authority available for the braking curve (symmetric authority =
     # min of the two static bounds, scaled by η < 1 so riding the curve never
     # saturates the static box).
-    a_auth = brake_eta * np.minimum(np.abs(acc_lb), np.abs(acc_ub))
+    # ``brake_acc`` decouples it from the box: the box is what the QP may
+    # COMMAND, the braking curve is what the joint is assumed to have for
+    # STOPPING at a limit, and the latter stays at Franka's deceleration_limit
+    # (the number its own velocity envelope is built from) when the box grows.
+    base = (np.minimum(np.abs(acc_lb), np.abs(acc_ub)) if brake_acc is None
+            else np.asarray(brake_acc, dtype=float))
+    a_auth = brake_eta * base
 
     v_cap = v_margin * qdot_max
     v_ub = np.minimum(v_cap, np.sqrt(2.0 * a_auth * h_up))
@@ -240,6 +247,7 @@ def position_velocity_accel_box(
     out_ub: np.ndarray,      # (n,) OUTPUT buffer, written in place
     clip_to_limits: bool = False,
     firmware_envelope: bool = True,
+    brake_acc: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """:func:`hard_accel_box` with the calling convention the QP loop needs.
 
@@ -267,7 +275,7 @@ def position_velocity_accel_box(
         q, qdot, acc_lb=acc_lb, acc_ub=acc_ub, qdot_max=qdot_max,
         v_margin=v_margin, q_min=q_min, q_max=q_max, q_margin=q_margin,
         brake_eta=brake_eta, dt=dt, relax_dt=relax_dt, clip_to_limits=clip_to_limits,
-        firmware_envelope=firmware_envelope)
+        firmware_envelope=firmware_envelope, brake_acc=brake_acc)
     out_lb[:] = lb
     out_ub[:] = ub
     if firmware_envelope:

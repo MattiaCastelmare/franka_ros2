@@ -516,6 +516,13 @@ tracking:
     publish_gap_m: 0.30     # [m] predicted surface gap below which a row is emitted
     min_time_s: 0.03        # closest approach must still be ahead
     assume_ballistic: true  # gravity when the track has no IMM mode estimate
+    # Replace the control point's hit ON THE SAME TRACK with the predicted one
+    # (a collision-cone barrier on the miss distance, pushing sideways instead
+    # of along the flight). Measured with the clearance metric
+    # (rosbag/replay_cfg/clearance.py): +5.4 / +7.5 cm against +7.8 / +7.8 cm
+    # for the ordinary rows — moving along the ball's velocity also clears
+    # these not-quite-centred throws, and does it with more authority. Off.
+    replace_current: false
 
   # [m] slack added to a cluster's radius when deciding whether a control
   # point's closest_point_human belongs to it. Needed because the radius is

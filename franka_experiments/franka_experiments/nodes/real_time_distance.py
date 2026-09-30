@@ -824,8 +824,16 @@ class RealTimeDistance(Node):
         pred_cfg = getattr(self, '_pred_cfg', None)
         if self.track_pipeline is not None and pred_cfg is not None and pred_cfg.enabled:
             try:
+                pl = self.track_pipeline
+
+                def _track_id_of(cid, p):
+                    trk = (pl.track_for_cluster(cid) if cid is not None and cid >= 0
+                           else pl.track_for_point(p))
+                    return int(trk.track_id) if trk is not None else 0
+
                 cp_results, n_pred = add_predicted_hits(
-                    cp_results, self.track_pipeline.tracker.confirmed_tracks(), pred_cfg)
+                    cp_results, pl.tracker.confirmed_tracks(), pred_cfg,
+                    track_id_of=_track_id_of)
             except Exception as exc:
                 self.get_logger().error(f'impact prediction skipped this frame: {exc}',
                                         throttle_duration_sec=2.0)

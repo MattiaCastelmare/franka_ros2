@@ -153,6 +153,23 @@ class CBFSafetyFilter(Node):
         # rated 10 (libfranka kMaxJointAcceleration). See qddot_max_abs in
         # fr3_control.yaml for the measurement that made this necessary.
         qdd_cap = np.minimum(jl['decel_max'], P.qddot_max_abs)
+        # The braking curve toward the joint limits keeps deceleration_limit
+        # whatever the box is: it is the number the firmware's own velocity
+        # envelope is built from, so the position side cannot change.
+        self._brake_acc = qdd_cap.copy()
+        # qddot_accel_limits (fr3_control.yaml) widens the box the QP may
+        # COMMAND — what an evasive manoeuvre can use — independently of it.
+        # deceleration_limit is not an acceleration limit: on joint2 it is
+        # 2.585 rad/s^2 against libfranka's rated 10, and on the 2026-09-30
+        # ball throws the command sat at this box from the first tick the
+        # filter acted. Empty = the old box, bit-identical.
+        acc = getattr(P, 'qddot_accel_limits', None)
+        if acc:
+            acc = np.asarray(acc, dtype=np.float64).reshape(-1)
+            if acc.shape != qdd_cap.shape or not np.all(acc > 0.0):
+                raise ValueError(f'qddot_accel_limits must be {qdd_cap.size} positive '
+                                 f'values, got {acc.tolist()}')
+            qdd_cap = np.minimum(acc, P.qddot_max_abs)
         self._lb, self._ub = -qdd_cap, qdd_cap
         self._qdot_max = jl['qdot_max']
 
@@ -198,6 +215,7 @@ class CBFSafetyFilter(Node):
         self._rows = ConstraintBuilder(
             P, kin, q_min=self._q_min, q_max=self._q_max,
             acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(),
+            brake_acc=self._brake_acc,
             qdot_max=self._qdot_max, **opt)
 
         # ── 4. QP, preallocated once ────────────────────────────────────
@@ -1207,7 +1225,7 @@ class CBFSafetyFilter(Node):
             q_margin=P.position_margin_rad, brake_eta=P.position_brake_eta,
             dt=self._dt_qp, relax_dt=P.state_box_relax_s,
             out_lb=self._box_lb[:NV], out_ub=self._box_ub[:NV],
-            clip_to_limits=P.accel_box_clip_to_limits)
+            clip_to_limits=P.accel_box_clip_to_limits, brake_acc=self._brake_acc)
         if P.slew_box_enabled:
             self._box_lb[:NV], self._box_ub[:NV] = apply_slew_limit(
                 self._box_lb[:NV], self._box_ub[:NV],

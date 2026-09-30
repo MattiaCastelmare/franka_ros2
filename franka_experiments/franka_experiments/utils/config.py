@@ -615,7 +615,8 @@ CBF_PARAM_SPEC = {
 #: ROS parameters — their types (a string list, an optional float) are outside
 #: what :mod:`utils.params` validates, and both are consumed once at
 #: construction rather than tuned live.
-CBF_RAW_KEYS = ('self_collision_safety_distance', 'self_collision_exclude_pairs')
+CBF_RAW_KEYS = ('self_collision_safety_distance', 'self_collision_exclude_pairs',
+                'qddot_accel_limits')
 
 
 def load_cbf_config(node, pkg: str = 'franka_experiments',

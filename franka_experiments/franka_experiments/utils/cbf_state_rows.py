@@ -1588,7 +1588,7 @@ class ConstraintBuilder:
     def __init__(self, P, kin, *, q_min, q_max, acc_lb, acc_ub,
                  sc_rows=None, sc_kin=None, sc_qi=None, sc_vi=None,
                  sc_q=None, sc_v=None, sing_rows=None, logger=None,
-                 qdot_max=None):
+                 qdot_max=None, brake_acc=None):
         self._P, self._kin, self._log = P, kin, logger
         self._q_min, self._q_max = q_min, q_max
         self._lb, self._ub = acc_lb, acc_ub
@@ -1603,8 +1603,9 @@ class ConstraintBuilder:
         # Braking authority per joint, byte-for-byte the expression
         # hard_accel_box uses, so the joint-limit row horizon and the box agree
         # on where the braking curve starts. Static — computed once.
-        self._a_auth = P.position_brake_eta * np.minimum(np.abs(acc_lb),
-                                                         np.abs(acc_ub))
+        base = (np.minimum(np.abs(acc_lb), np.abs(acc_ub)) if brake_acc is None
+                else np.asarray(brake_acc, dtype=np.float64))
+        self._a_auth = P.position_brake_eta * base
         self._sc_rows, self._sc_kin = sc_rows, sc_kin
         self._sc_qi, self._sc_vi = sc_qi, sc_vi
         self._sc_q, self._sc_v = sc_q, sc_v

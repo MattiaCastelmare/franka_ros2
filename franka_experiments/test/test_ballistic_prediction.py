@@ -79,3 +79,30 @@ def test_disabled_is_a_no_op():
     out, n = add_predicted_hits(cps, [_track(p=(1.5, 0, 0.5), v=(-3, 0, 0))],
                                 PredictionConfig(enabled=False))
     assert n == 0 and out is cps
+
+
+def test_replace_mode_substitutes_the_hit_of_the_same_track():
+    from dataclasses import replace
+    cfg = PredictionConfig(**{**CFG.__dict__, 'replace_current': True})
+    cp = replace(_cp(), distance=0.4, direction=np.array([1.0, 0, 0]),
+                 closest_obstacle_point=np.array([1.0, 0.0, 0.5]), cluster_id=3)
+    ball = _track(p=(1.0, 0.25, 0.5), v=(-3.0, 0.0, 0.0))
+    ball.track_id = 7
+    out, n = add_predicted_hits([cp], [ball], cfg, track_id_of=lambda cid, p: 7 if cid == 3 else 0)
+    assert n == 1
+    r = out[0]
+    assert r.cluster_id == PREDICTED_CLUSTER_ID and r.extras == []     # replaced, not added
+    assert r.distance <= 0.4                                           # never less conservative
+    assert abs(r.direction[0]) < 0.2                                   # ⟂ to the flight, not along it
+
+
+def test_replace_mode_leaves_other_obstacles_alone():
+    from dataclasses import replace
+    cfg = PredictionConfig(**{**CFG.__dict__, 'replace_current': True})
+    cp = replace(_cp(), distance=0.2, direction=np.array([0, 1.0, 0]),
+                 closest_obstacle_point=np.array([0.5, -0.3, 0.5]), cluster_id=1)   # a person
+    ball = _track(p=(1.5, 0.0, 0.5), v=(-3.0, 0.0, 0.0))
+    ball.track_id = 7
+    out, n = add_predicted_hits([cp], [ball], cfg, track_id_of=lambda cid, p: 2 if cid == 1 else 0)
+    assert out[0].cluster_id == 1 and out[0].distance == 0.2           # person row intact
+    assert n == 1 and out[0].extras[0].cluster_id == PREDICTED_CLUSTER_ID

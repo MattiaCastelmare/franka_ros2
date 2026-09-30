@@ -968,6 +968,32 @@ params:
   # previous behaviour exactly.
   qddot_max_abs: 10.0
 
+  # [rad/s^2] per joint: the acceleration box the QP may COMMAND (capped by
+  # qddot_max_abs). Empty = the old box, min(deceleration_limit, qddot_max_abs)
+  # = [6, 2.585, 3.5, 4, 10, 5.5, 10]. deceleration_limit is the parameter of
+  # Franka's position-based velocity envelope, not an acceleration limit
+  # (libfranka rates 10 on every joint), and the braking curve toward the
+  # joint limits KEEPS it whatever this says (cbf_safety_filter._brake_acc).
+  #
+  # 2026-09-30, the ball throws (rosbag/ball_throws_2, _3): the arm tracked
+  # the CBF's q̈ with 4-16 ms lag and gain ~0.9, and the command sat at the old
+  # box from the first tick the filter acted — authority, not tracking, was
+  # the limit. Worst-case joint torque (all joints at the box, worst sign, over
+  # the 4615 recorded poses with the controller's own Pinocchio model, hand
+  # included): old box <= 42 % of the effort limit, this one <= 55 %,
+  # [10, 8, 10, 10, 10, 10, 10] <= 72 %. Replayed, the open-loop clearance the
+  # filter's command adds to the recorded motion at the control point nearest
+  # the ball went +7.8 -> +10.2 / +12.8 cm (this) -> +13.1 / +15.5 cm (the
+  # 10-box), with no more interventions away from the ball. One case gets
+  # WORSE with authority: a ball arriving at mid-arm (link5), 9 -> 4 cm.
+  #
+  # NOT validated closed-loop: an open-loop replay cannot show the velocity
+  # side, because the replayed filter never sees the faster motion its own
+  # command would cause. On the robot watch vrat=/VELHI (joint velocity vs the
+  # firmware envelope) and trk_err in CBFDIAG; go to the 10-box only once a
+  # run shows neither near its limit. [] restores the old box exactly.
+  qddot_accel_limits: [8.0, 5.0, 6.0, 6.0, 10.0, 7.0, 10.0]
+
   # ── State governor: slow the TASK down before a state limit is a reflex ────
   #
   # The zone ladder fades the trajectory as an OBSTACLE closes; it has no
