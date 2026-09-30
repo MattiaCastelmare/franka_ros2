@@ -567,6 +567,7 @@ def main():
     ap.add_argument('--raw-track', action='store_true',
                     help='disable the tracked-velocity conditioning (median + deadband), '
                          'i.e. reproduce the jitter it was added for')
+    ap.add_argument('--set', nargs='*', default=[], help='key=value overrides of any shipped parameter (YAML values)')
     ap.add_argument('--trace', nargs='*', help='scenario names to print a time trace for')
     ap.add_argument('--bag', help='replay this rosbag through the real perception chain instead')
     ap.add_argument('--no-inject', dest='inject', action='store_false')
@@ -582,6 +583,9 @@ def main():
     if args.raw_track:
         over['obstacle_velocity_median'] = 1
         over['obstacle_velocity_track_deadband'] = 0.0
+    for kv in args.set:
+        k, v = kv.split('=', 1)
+        over[k] = yaml.safe_load(v)
     P = shipped_params(**over)
     print(f"flags: source={P.obstacle_velocity_source} floor={P.obstacle_velocity_residual_floor} "
           f"lateral={P.enable_lateral_evasion} outrun={P.enable_outrun_evasion} "

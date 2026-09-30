@@ -356,7 +356,7 @@ def run_pass(rec, p, args, node_factory):
     pk = 0
     dt = 0.01
     steps = int(round((t1 - t0) / dt))
-    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec', 'dw', 'dn']}
+    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec']}
     a_real = np.zeros(7)
     last_nom_t = -1.0
     for s in range(steps):
@@ -425,15 +425,18 @@ def run_pass(rec, p, args, node_factory):
                       f'|a|={np.linalg.norm(con.A[i]):.2f} vobs={con.v_obs[i]:.2f} h_bar={con.h_bar[i]:.3f}')
         if args.qtrace and s % 10 == 0:
             print(f'   t-tc={t - t_c:+5.2f} q={np.round(q, 2)} qd={np.round(qd, 2)} safe={np.round(safe, 1)} nom={np.round(qdd_nom, 1)} box_ub={np.round(node._box_ub[:7], 1)} box_lb={np.round(node._box_lb[:7], 1)}')
+        if args.gtrace and s % 10 == 0:
+            g = node._diag_gov
+            print(f'   t-tc={t - t_c:+5.2f} w_task={node._diag_w_task:.2f} gov_w={(g.w if g else 1):.2f} bind={(g.binding if g else "-")} '
+                  f'slack={np.round(node._diag_slack, 2)} q={np.round(q, 2)} |safe|={np.abs(safe).max():.2f} |nom|={np.abs(qdd_nom).max():.2f}')
         if args.trace and s % 10 == 0:
             print(f'   t-tc={t - t_c:+5.2f} d_obs={d_obs:5.3f} sg={sg:4.2f} ee_err={float(np.linalg.norm(p_d - cmd.ee(q)))*100:5.1f}cm '
                   f'|safe|={np.abs(safe).max():5.2f} |nom|={np.abs(qdd_nom).max():5.2f} |qd|={np.abs(qd).max():4.2f} '
-                  f'clr={_fmt(_ball_at(tt, ok, PB, t), cps, q)} fast={node._rows.diag_fast} wmiss={node._rows.diag_miss_w:.2f} vobs={node._rows.diag_v_obs:.1f} hstd={node._rows.diag_hstand:.2f} dodge_w={node._rows.diag_dodge_w:.2f} gap*={node._rows.diag_dodge_gap:.2f} t*={node._rows.diag_dodge_t:.2f} |dodge|={float(np.linalg.norm(node._dodge_bias)):.1f}')
+                  f'clr={_fmt(_ball_at(tt, ok, PB, t), cps, q)} fast={node._rows.diag_fast} vobs={node._rows.diag_v_obs:.1f} hstd={node._rows.diag_hstand:.2f}')
         def _off(qq):
             e = cmd.ee(qq)
             return float(np.hypot(np.hypot(e[1] - circ.cy, e[2] - circ.cz) - circ.r, e[0] - circ.x))
         log['off_sim'].append(_off(q)); log['off_rec'].append(_off(qr))
-        log['dw'].append(node._rows.diag_dodge_w); log['dn'].append(float(np.linalg.norm(node._dodge_bias)))
         log['t'].append(t); log['safe'].append(safe); log['nom'].append(qdd_nom)
         log['q'].append(q.copy()); log['qd'].append(qd.copy()); log['acc'].append(a_real.copy())
         log['cl_sim'].append(cl_s); log['cl_rec'].append(cl_r)
@@ -642,8 +645,6 @@ def _metrics(log, t_c, dt, envelope):
         qd_peak=float(np.abs(QD[wt]).max()),
         ee_err_max=float(err[wt].max()),
         ee_err_end=float(err[-1]),
-        dodge_lead=next((float(t_c - tt_) for tt_, w_ in zip(t, log['dw']) if w_ > 0.3), float('nan')),
-        dodge_peak=float(np.max(log['dn'])),
         off_sim=float(np.max(np.array(log['off_sim'])[wt])), off_rec=float(np.max(np.array(log['off_rec'])[wt])),
     )
 
@@ -693,6 +694,7 @@ def main():
     ap.add_argument('--trace', action='store_true')
     ap.add_argument('--threat', type=float, default=-1.0, help='AIM the recorded ball at the arm: residual miss to the nearest control-point axis at closest approach [m] (0 = dead centre); negative = as recorded')
     ap.add_argument('--qtrace', action='store_true')
+    ap.add_argument('--gtrace', action='store_true')
     ap.add_argument('--ball-only', action='store_true', help='drop every obstacle row that is not on the ball (isolates the throw response)')
     ap.add_argument('--oracle', type=float, default=0.0, help='EXPERIMENT: perfectly informed sideways dodge, peak m/s²')
     ap.add_argument('--oracle-lead', type=float, default=0.30)
@@ -728,7 +730,7 @@ def main():
         print(f"pass {n} v={p['v']:.1f}  clr {m['clr_rec']*100:5.1f} -> {m['clr_sim']*100:5.1f} cm  "
               f"peak cmd {m['peak_cmd']:5.2f} acc {m['peak_acc']:5.2f}  jerk p99 cmd {m['jerk_cmd_p99']:6.0f} "
               f"real {m['jerk_real_p99']:6.0f}  flips {m['flips']:2d}  vratio {m['vratio_max']:.2f}  "
-              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}  dodge lead {m['dodge_lead']:.2f}s peak {m['dodge_peak']:.1f}", flush=True)
+              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}", flush=True)
     if rows:
         g = lambda k: np.mean([r[k] for r in rows])
         print(f"{args.label or 'run'} MEAN  hits {sum(r['clr_sim'] < 0 for r in rows)}/{len(rows)} clr {100*g('clr_sim'):5.1f}  clr_gain {100*(g('clr_sim')-g('clr_rec')):+5.1f} cm  "
