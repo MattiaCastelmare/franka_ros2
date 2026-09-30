@@ -356,7 +356,7 @@ def run_pass(rec, p, args, node_factory):
     pk = 0
     dt = 0.01
     steps = int(round((t1 - t0) / dt))
-    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec']}
+    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec', 'dobs']}
     a_real = np.zeros(7)
     last_nom_t = -1.0
     for s in range(steps):
@@ -436,7 +436,7 @@ def run_pass(rec, p, args, node_factory):
         def _off(qq):
             e = cmd.ee(qq)
             return float(np.hypot(np.hypot(e[1] - circ.cy, e[2] - circ.cz) - circ.r, e[0] - circ.x))
-        log['off_sim'].append(_off(q)); log['off_rec'].append(_off(qr))
+        log['off_sim'].append(_off(q)); log['off_rec'].append(_off(qr)); log['dobs'].append(d_obs)
         log['t'].append(t); log['safe'].append(safe); log['nom'].append(qdd_nom)
         log['q'].append(q.copy()); log['qd'].append(qd.copy()); log['acc'].append(a_real.copy())
         log['cl_sim'].append(cl_s); log['cl_rec'].append(cl_r)
@@ -632,8 +632,8 @@ def _metrics(log, t_c, dt, envelope):
     dev = np.linalg.norm(S - N, axis=1)
     err = np.array(log['ee_err'])
     return dict(
-        clr_sim=float(np.nanmin(cl_s)) if np.isfinite(cl_s).any() else None,
-        clr_rec=float(np.nanmin(cl_r)) if np.isfinite(cl_r).any() else None,
+        clr_sim=float(np.nanmin(cl_s)) if np.isfinite(cl_s).any() else float('nan'),
+        clr_rec=float(np.nanmin(cl_r)) if np.isfinite(cl_r).any() else float('nan'),
         peak_cmd=float(np.abs(S[wt]).max()),
         peak_acc=float(np.abs(A[wt]).max()),
         jerk_cmd_p99=float(np.percentile(jerk_cmd[w].max(axis=1), 99)),
@@ -645,6 +645,7 @@ def _metrics(log, t_c, dt, envelope):
         qd_peak=float(np.abs(QD[wt]).max()),
         ee_err_max=float(err[wt].max()),
         ee_err_end=float(err[-1]),
+        dmin=float(np.nanmin(np.where(np.isfinite(log['dobs']) & wt, log['dobs'], np.nan))) if np.any(np.isfinite(log['dobs']) & wt) else float('nan'),
         off_sim=float(np.max(np.array(log['off_sim'])[wt])), off_rec=float(np.max(np.array(log['off_rec'])[wt])),
     )
 
@@ -659,6 +660,26 @@ def find_passes(rec, truth):
         cpr.append(np.array([[l.closest_point_robot.x, l.closest_point_robot.y, l.closest_point_robot.z]
                              for l in m.links if l.valid]) if m.links else np.zeros((0, 3)))
     return passes(tt, ok, P, rows_t, cpr, 0.6, 1.5)
+
+
+def find_events(bag, ps, n):
+    """Pseudo-passes at the times the LIVE filter deviated most from the nominal, away from the ball passes."""
+    from ball_throw_eval import QDD_SAFE, QDD_NOM
+    safe, nom = [], []
+    for tp, recv, m in read_bag(bag, {QDD_SAFE, QDD_NOM}):
+        (safe if tp == QDD_SAFE else nom).append((recv, np.array(m.data[:7])))
+    ts = np.array([s_[0] for s_ in safe]); Qs = np.array([s_[1] for s_ in safe])
+    tn = np.array([n_[0] for n_ in nom]); Qn = np.array([n_[1] for n_ in nom])
+    dev = np.linalg.norm(Qs - Qn[np.clip(np.searchsorted(tn, ts) - 1, 0, len(tn) - 1)], axis=1)
+    for p in ps:
+        dev[(ts > p['tc'] - 2.5) & (ts < p['tc'] + 2.5)] = 0.0
+    out = []
+    for i in np.argsort(-dev):
+        if dev[i] <= 1.0 or len(out) >= n:
+            break
+        if all(abs(ts[i] - e['tc']) > 4.0 for e in out):
+            out.append(dict(tc=float(ts[i]), v=0.0, dmin=0.0, t0=ts[i], t1=ts[i]))
+    return sorted(out, key=lambda e: e['tc'])
 
 
 def check_nominal(rec, args):
@@ -692,6 +713,7 @@ def main():
     ap.add_argument('--only', type=int, nargs='*', default=None, help='1-based pass numbers')
     ap.add_argument('--check-nominal', action='store_true')
     ap.add_argument('--trace', action='store_true')
+    ap.add_argument('--events', type=int, default=0, help='instead of the ball passes: the N strongest filter interventions of the live bag that are NOT near a pass (people, scenery)')
     ap.add_argument('--threat', type=float, default=-1.0, help='AIM the recorded ball at the arm: residual miss to the nearest control-point axis at closest approach [m] (0 = dead centre); negative = as recorded')
     ap.add_argument('--qtrace', action='store_true')
     ap.add_argument('--gtrace', action='store_true')
@@ -716,6 +738,8 @@ def main():
         check_nominal(rec, args)
         return
     ps = find_passes(rec, args.truth)
+    if args.events:
+        ps = find_events(args.bag, ps, args.events)
     over = yaml.safe_load(open(args.cbf_overrides)) if args.cbf_overrides else {}
     for kv in args.set:
         k, v = kv.split('=', 1)
@@ -730,14 +754,14 @@ def main():
         print(f"pass {n} v={p['v']:.1f}  clr {m['clr_rec']*100:5.1f} -> {m['clr_sim']*100:5.1f} cm  "
               f"peak cmd {m['peak_cmd']:5.2f} acc {m['peak_acc']:5.2f}  jerk p99 cmd {m['jerk_cmd_p99']:6.0f} "
               f"real {m['jerk_real_p99']:6.0f}  flips {m['flips']:2d}  vratio {m['vratio_max']:.2f}  "
-              f"ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}", flush=True)
+              f"dmin {m['dmin']*100:5.1f} cm  ee_err max {m['ee_err_max']*100:4.1f} end {m['ee_err_end']*100:4.1f} cm  off-path sim {m['off_sim']*100:4.1f} rec {m['off_rec']*100:4.1f}", flush=True)
     if rows:
         g = lambda k: np.mean([r[k] for r in rows])
         print(f"{args.label or 'run'} MEAN  hits {sum(r['clr_sim'] < 0 for r in rows)}/{len(rows)} clr {100*g('clr_sim'):5.1f}  clr_gain {100*(g('clr_sim')-g('clr_rec')):+5.1f} cm  "
               f"min_clr {100*min(r['clr_sim'] for r in rows):5.1f}  peak_cmd {g('peak_cmd'):5.2f}  "
               f"jerk_cmd_p99 {g('jerk_cmd_p99'):6.0f}  jerk_real_p99 {g('jerk_real_p99'):6.0f}  "
               f"rev {g('flips'):4.1f} tv {g('tv'):4.0f} rec {np.nanmean([r['recover_s'] for r in rows]):4.2f}s  vratio {g('vratio_max'):.2f} (max {max(r['vratio_max'] for r in rows):.2f})  "
-              f"ee_err_max {100*g('ee_err_max'):4.1f}")
+              f"ee_err_max {100*g('ee_err_max'):4.1f}  dmin mean {100*np.nanmean([r['dmin'] for r in rows]):5.1f} min {100*np.nanmin([r['dmin'] for r in rows]):5.1f} cm")
     if args.json:
         json.dump(rows, open(args.json, 'w'), indent=1)
 
