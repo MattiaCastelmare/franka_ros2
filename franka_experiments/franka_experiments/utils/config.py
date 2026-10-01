@@ -430,6 +430,7 @@ CBF_PARAM_SPEC = {
     'velocity_box_margin': ('float', dict(positive=True, maximum=1.0)),
     'qddot_max_abs': ('float', dict(positive=True, maximum=50.0)),
     'state_governor_enabled': ('bool', dict()),
+    'state_governor_directional': ('bool', dict()),
     'governor_qdot_band': ('float', dict(positive=True, maximum=3.0)),
     'governor_sigma_band': ('float', dict(positive=True, maximum=1.0)),
     'governor_sc_band': ('float', dict(positive=True, maximum=0.5)),

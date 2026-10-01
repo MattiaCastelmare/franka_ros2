@@ -75,7 +75,7 @@ from franka_experiments.utils.cbf_qp_assembly import (
     pad_rows_to_block,
     tangential_bias,
 )
-from franka_experiments.utils.state_governor import governor_from_params
+from franka_experiments.utils.state_governor import directional_fade, governor_from_params
 from franka_experiments.utils.livelock import LivelockDetector, ProgressWindow
 from franka_experiments.utils.cbf_state_rows import (
     FR3_JOINT_KEYS,
@@ -1082,9 +1082,24 @@ class CBFSafetyFilter(Node):
                 dt=self._dt_qp)
             self._diag_gov = gov
             if gov.w < 1.0:
-                qddot_nom = (gov.w * qddot_nom
-                             + (1.0 - gov.w) * (-P.k_brake * qdot))
-                w_task *= gov.w
+                rows_dir = None
+                if (P.state_governor_directional and snap is not None
+                        and gov.binding in ('sing', 'sc')):
+                    grp = G_SING if gov.binding == 'sing' else G_SC
+                    idx = np.flatnonzero(snap.group == grp)
+                    if idx.size:
+                        rows_dir = snap.A[idx]
+                if rows_dir is not None:
+                    # Directional fade: only the part of the nominal that drives the binding margin DOWN
+                    # (a . q_ddot < 0 on that family's rows) is removed, and only the part of the velocity
+                    # heading that way is braked. The rest of the task keeps running, so a pose the task
+                    # itself would leave (joint 6 folded against link 5, sigma_min low) is left instead of
+                    # held by the very fade that is meant to protect it.
+                    qddot_nom = directional_fade(qddot_nom, qdot, rows_dir, 1.0 - gov.w, P.k_brake)
+                else:
+                    qddot_nom = (gov.w * qddot_nom
+                                 + (1.0 - gov.w) * (-P.k_brake * qdot))
+                    w_task *= gov.w
                 if gov.w <= 0.0 and not self._gov_held:
                     self.get_logger().warn(
                         f'GOVERNOR hold: {gov.binding} margin exhausted '

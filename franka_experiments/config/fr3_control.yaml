@@ -1041,6 +1041,19 @@ params:
   # defence.
   state_governor_enabled: true
 
+  # Fade only the part of the task that drives the binding sigma_min / self-collision margin DOWN
+  # (and brake only the velocity heading that way), instead of fading the whole task into braking.
+  # The scalar fade holds the arm in the very pose it is protecting it from: joint 6 folded toward
+  # link 5, the self-collision gap small, the task suspended, nothing left to move it out but the
+  # row. false = the scalar fade exactly as before.
+  # Closed loop on the recorded throws with joint 6 forced into the bad corners at the start of
+  # every window (scripts/ball_closed_loop.py --q6-start): task suspended (weight < 0.5) for
+  # 26.9 % of the time on sigma_min at q6 = 3.6 -> 10.2 %, 21.2 % -> 18.2 % on self-collision at
+  # q6 = 0.55, EE error 53 -> 49 cm, sigma_min and self-collision gap no worse, normal passes
+  # unchanged. A comfort spring on q6 in the commander's null space was tried first and does
+  # NOTHING: the wrist joint is not redundant, the null-space projection removes the term.
+  state_governor_directional: true
+
   # [rad/s] Headroom below the velocity envelope over which the task fades from
   # full to suspended, worst joint wins, measured in the direction of travel.
   #
@@ -1067,8 +1080,8 @@ params:
   # MUST NOT exceed velocity_box_margin (0.7), or the hard box clamps before the
   # governor has faded anything and the ordering the governor exists to create
   # is inverted. 0.65 leaves it half a band of lead. (Was 0.85 against a 0.9 box;
-  # the box moved to 0.7 on 2026-09-30 and this has to follow it. Closed loop on the
-  # recorded throws the governor rarely binds, so the change is neutral there.)
+  # the box moved to 0.7 on 2026-09-30 and this has to follow it. Not free: on the recorded
+  # throws the task is suspended ~2.5 % more of the time during dodges, no change in clearance.)
   governor_envelope_margin: 0.65
 
   # [s] Approach horizon for the velocity and position caps in the box.

@@ -334,6 +334,8 @@ def run_pass(rec, p, args, node_factory):
 
     q, qd = rec.q_at(t0)
     q, qd = q.copy(), qd.copy()
+    if args.q6_start:
+        q[5] = args.q6_start
     cmd = Commander(q_home=args.q_home)
     if args.nom_cap > 0:
         cmd.QDD_MAX = np.minimum(cmd.QDD_MAX, args.nom_cap)
@@ -356,7 +358,7 @@ def run_pass(rec, p, args, node_factory):
     pk = 0
     dt = 0.01
     steps = int(round((t1 - t0) / dt))
-    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec', 'dobs']}
+    log = {k: [] for k in ['t', 'safe', 'nom', 'q', 'qd', 'acc', 'cl_sim', 'cl_rec', 'ee_err', 'off_sim', 'off_rec', 'dobs', 'gw', 'gb', 'q6', 'sig', 'dsc']}
     a_real = np.zeros(7)
     last_nom_t = -1.0
     for s in range(steps):
@@ -437,6 +439,8 @@ def run_pass(rec, p, args, node_factory):
             e = cmd.ee(qq)
             return float(np.hypot(np.hypot(e[1] - circ.cy, e[2] - circ.cz) - circ.r, e[0] - circ.x))
         log['off_sim'].append(_off(q)); log['off_rec'].append(_off(qr)); log['dobs'].append(d_obs)
+        g_ = node._diag_gov; log['gw'].append(g_.w if g_ else 1.0); log['gb'].append(g_.binding if g_ else '-'); log['q6'].append(float(q[5]))
+        log['sig'].append(float(getattr(node._rows, 'diag_sigma', np.nan) or np.nan)); log['dsc'].append(float(node._con.d_sc_min) if node._con is not None else np.inf)
         log['t'].append(t); log['safe'].append(safe); log['nom'].append(qdd_nom)
         log['q'].append(q.copy()); log['qd'].append(qd.copy()); log['acc'].append(a_real.copy())
         log['cl_sim'].append(cl_s); log['cl_rec'].append(cl_r)
@@ -645,6 +649,11 @@ def _metrics(log, t_c, dt, envelope):
         qd_peak=float(np.abs(QD[wt]).max()),
         ee_err_max=float(err[wt].max()),
         ee_err_end=float(err[-1]),
+        gov_frac=float(np.mean(np.array(log['gw']) < 0.5)),
+        gov_sing=float(np.mean([(w < 0.5 and b == 'sing') for w, b in zip(log['gw'], log['gb'])])),
+        gov_sc=float(np.mean([(w < 0.5 and b == 'sc') for w, b in zip(log['gw'], log['gb'])])),
+        sig_min=float(np.nanmin(log['sig'])) if np.isfinite(log['sig']).any() else float('nan'), dsc_min=float(np.min(log['dsc'])),
+        q6_min=float(np.min(log['q6'])), q6_max=float(np.max(log['q6'])),
         dmin=float(np.nanmin(np.where(np.isfinite(log['dobs']) & wt, log['dobs'], np.nan))) if np.any(np.isfinite(log['dobs']) & wt) else float('nan'),
         off_sim=float(np.max(np.array(log['off_sim'])[wt])), off_rec=float(np.max(np.array(log['off_rec'])[wt])),
     )
@@ -713,6 +722,7 @@ def main():
     ap.add_argument('--only', type=int, nargs='*', default=None, help='1-based pass numbers')
     ap.add_argument('--check-nominal', action='store_true')
     ap.add_argument('--trace', action='store_true')
+    ap.add_argument('--q6-start', type=float, default=0.0, help='start every window with joint 6 forced to this angle (stress test)')
     ap.add_argument('--events', type=int, default=0, help='instead of the ball passes: the N strongest filter interventions of the live bag that are NOT near a pass (people, scenery)')
     ap.add_argument('--threat', type=float, default=-1.0, help='AIM the recorded ball at the arm: residual miss to the nearest control-point axis at closest approach [m] (0 = dead centre); negative = as recorded')
     ap.add_argument('--qtrace', action='store_true')
@@ -761,7 +771,7 @@ def main():
               f"min_clr {100*min(r['clr_sim'] for r in rows):5.1f}  peak_cmd {g('peak_cmd'):5.2f}  "
               f"jerk_cmd_p99 {g('jerk_cmd_p99'):6.0f}  jerk_real_p99 {g('jerk_real_p99'):6.0f}  "
               f"rev {g('flips'):4.1f} tv {g('tv'):4.0f} rec {np.nanmean([r['recover_s'] for r in rows]):4.2f}s  vratio {g('vratio_max'):.2f} (max {max(r['vratio_max'] for r in rows):.2f})  "
-              f"ee_err_max {100*g('ee_err_max'):4.1f}  dmin mean {100*np.nanmean([r['dmin'] for r in rows]):5.1f} min {100*np.nanmin([r['dmin'] for r in rows]):5.1f} cm")
+              f"ee_err_max {100*g('ee_err_max'):4.1f}  dmin mean {100*np.nanmean([r['dmin'] for r in rows]):5.1f} min {100*np.nanmin([r['dmin'] for r in rows]):5.1f} cm  governor<0.5: {100*g('gov_frac'):.1f}% (sing {100*g('gov_sing'):.1f}% sc {100*g('gov_sc'):.1f}%)  sigma_min {np.nanmin([r['sig_min'] for r in rows]):.3f} d_sc_min {min(r['dsc_min'] for r in rows)*100:.1f}cm  q6 [{min(r['q6_min'] for r in rows):.2f},{max(r['q6_max'] for r in rows):.2f}]")
     if args.json:
         json.dump(rows, open(args.json, 'w'), indent=1)
 
