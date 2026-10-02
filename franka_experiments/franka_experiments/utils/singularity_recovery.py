@@ -17,10 +17,14 @@ A small state machine, pure numpy and clock-agnostic (the caller passes ``t``):
     IDLE ──stuck for stall_s──▶ RETURNING ──arrived──▶ SETTLING ──settle_s──▶ COOLDOWN ──▶ IDLE
                                     (quintic q → q_home)           (task resumes here)
 
-* **Stuck** = σ_min below ``sigma_thr`` **and** the end-effector (almost) not
-  moving **and** a real task error, all continuously for ``stall_s``. σ_min
-  alone is not enough (a path may graze a singularity while moving); the three
-  together are the "cannot get out" signature.
+* **Stuck** = σ_min below ``sigma_thr`` **and** a real task error (> ``err_thr``)
+  that has NOT improved by ``progress_eps`` for ``stall_s``. σ_min alone is not
+  enough (a path may graze a singularity and come out the other side); the
+  lack of progress is the "cannot get out" signature. It is deliberately NOT
+  "the end-effector is not moving": measured on hardware (2026-10-02) the arm
+  sat at σ_min ≈ 0.036 with a 1.2 m error for 2 minutes while the EE kept
+  moving at ~0.2 m/s and |q̇| ≈ 1 rad/s, i.e. it limit-cycled in place. A
+  speed test never fires on that; a progress test does.
 * **Return** is a quintic in joint space from the measured (q, q̇) to
   ``q_home`` with zero velocity/acceleration at the end. Its duration is the
   shortest one that keeps the sampled peak velocity under ``vmax`` and the peak
@@ -99,14 +103,14 @@ def plan_duration(q0, v0, q1, vmax, amax, t_min=1.0, samples=200):
 class SingularityRecovery:
     IDLE, RETURNING, SETTLING, COOLDOWN = 'idle', 'returning', 'settling', 'cooldown'
 
-    def __init__(self, *, sigma_thr: float = 0.07, speed_eps: float = 0.01,
-                 err_thr: float = 0.02, stall_s: float = 1.5,
+    def __init__(self, *, sigma_thr: float = 0.07, progress_eps: float = 0.05,
+                 err_thr: float = 0.02, stall_s: float = 3.0,
                  vmax=0.5, amax=2.0, t_min: float = 1.0,
                  settle_s: float = 0.5, cooldown_s: float = 5.0):
         if stall_s <= 0.0 or t_min <= 0.0:
             raise ValueError(f'stall_s={stall_s}, t_min={t_min} must be > 0')
         self.sigma_thr = float(sigma_thr)
-        self.speed_eps = float(speed_eps)
+        self.progress_eps = float(progress_eps)
         self.err_thr = float(err_thr)
         self.stall_s = float(stall_s)
         self.vmax = np.asarray(vmax, dtype=np.float64)
@@ -117,6 +121,7 @@ class SingularityRecovery:
         self.state = self.IDLE
         self.n_recoveries = 0
         self._stuck_since: Optional[float] = None
+        self._ref_err = 0.0          # error when the no-progress window opened
         self._t_start = 0.0
         self._T = 0.0
         self._c = None
@@ -144,18 +149,21 @@ class SingularityRecovery:
         self._c = None
 
     # ── detection ──────────────────────────────────────────────────────────
-    def is_stuck(self, sigma_min, ee_speed, cart_err) -> bool:
+    def is_stuck(self, sigma_min, cart_err) -> bool:
+        """Instantaneous part: near a singularity with a real task error."""
         return (np.isfinite(sigma_min) and sigma_min < self.sigma_thr
-                and ee_speed < self.speed_eps and cart_err > self.err_thr)
+                and cart_err > self.err_thr)
 
     # ── the tick ───────────────────────────────────────────────────────────
     def update(self, t: float, q, qdot, q_home, sigma_min: float,
-               ee_speed: float, cart_err: float
+               cart_err: float
                ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         if self.state == self.IDLE:
-            if self.is_stuck(sigma_min, ee_speed, cart_err):
-                if self._stuck_since is None:
-                    self._stuck_since = t
+            if self.is_stuck(sigma_min, cart_err):
+                if (self._stuck_since is None
+                        or cart_err < self._ref_err - self.progress_eps):
+                    # window opens, or the error improved: progress, restart
+                    self._stuck_since, self._ref_err = t, cart_err
                 if t - self._stuck_since >= self.stall_s:
                     self._begin(t, q, qdot, q_home)
             else:

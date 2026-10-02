@@ -16,7 +16,7 @@ DT = 0.01
 
 
 def _rec(**kw):
-    d = dict(stall_s=1.0, vmax=0.5, amax=2.0, t_min=1.0, settle_s=0.5,
+    d = dict(stall_s=1.0, progress_eps=0.05, vmax=0.5, amax=2.0, t_min=1.0, settle_s=0.5,
              cooldown_s=2.0)
     d.update(kw)
     return SingularityRecovery(**d)
@@ -26,8 +26,8 @@ def _run(rec, seconds, stuck=True, q=Q0, qdot=Z, t0=0.0):
     """Tick with a stuck (or healthy) signature; returns (refs, events)."""
     refs, events, t = [], [], t0
     for _ in range(int(round(seconds / DT))):
-        sig, spd, err = (0.01, 0.0, 0.1) if stuck else (0.5, 0.1, 0.0)
-        refs.append(rec.update(t, q, qdot, QH, sig, spd, err))
+        sig, err = (0.01, 0.1) if stuck else (0.5, 0.0)
+        refs.append(rec.update(t, q, qdot, QH, sig, err))
         e = rec.pop_event()
         if e:
             events.append((round(t, 2), e))
@@ -69,13 +69,12 @@ def test_plan_respects_velocity_and_acceleration_limits():
         assert np.abs(ddq).max() <= 2.0 + 1e-9
 
 
-def test_no_trigger_while_moving_or_away_from_the_singularity_or_without_error():
-    for sig, spd, err in ((0.5, 0.0, 0.1),     # far from a singularity
-                          (0.01, 0.1, 0.1),    # near one but moving
-                          (0.01, 0.0, 0.0)):   # near one, nothing to track
+def test_no_trigger_away_from_the_singularity_or_without_error():
+    for sig, err in ((0.5, 0.1),     # far from a singularity
+                     (0.01, 0.0)):   # near one, nothing to track
         rec, t = _rec(), 0.0
         for _ in range(500):
-            assert rec.update(t, Q0, Z, QH, sig, spd, err) is None
+            assert rec.update(t, Q0, Z, QH, sig, err) is None
             t += DT
         assert rec.state == rec.IDLE and rec.n_recoveries == 0
 
@@ -130,7 +129,34 @@ def test_cooldown_blocks_an_immediate_second_recovery_then_rearms():
 
 def test_already_home_uses_the_minimum_duration():
     rec = _rec(t_min=1.0)
-    rec.update(0.0, QH, Z, QH, 0.01, 0.0, 0.1)
+    rec.update(0.0, QH, Z, QH, 0.01, 0.1)
     for k in range(1, 200):
-        rec.update(k * DT, QH, Z, QH, 0.01, 0.0, 0.1)
+        rec.update(k * DT, QH, Z, QH, 0.01, 0.1)
     assert rec.n_recoveries == 1 and rec.duration == pytest.approx(1.0)
+
+
+def test_an_improving_error_is_progress_and_never_triggers():
+    """σ_min low and error large, but the error keeps falling by > progress_eps
+    per window: the task is getting out by itself."""
+    rec, t = _rec(), 0.0
+    for k in range(600):                           # 6 s, 0.6 m -> 0.0 m (0.1 m/s)
+        err = 0.6 * (1.0 - k / 600.0) + 0.021
+        assert rec.update(t, Q0, Z, QH, 0.01, err) is None
+        t += DT
+    assert rec.n_recoveries == 0
+
+
+def test_limit_cycling_in_place_triggers_even_though_the_ee_moves():
+    """The 2026-10-02 hardware signature: σ_min ~ 0.036, error ~1.2 m wobbling
+    by a few cm, never improving. The arm is moving (an 'EE stopped' test would
+    never fire); the lack of progress is what counts."""
+    rec, t, started = _rec(stall_s=3.0), 0.0, None
+    rng = np.random.default_rng(0)
+    for k in range(1000):
+        err = 1.2 + 0.03 * np.sin(2 * np.pi * 0.7 * t) + 0.01 * rng.standard_normal()
+        rec.update(t, Q0, np.full(7, 0.5), QH, 0.036, err)
+        if rec.pop_event() == 'started' and started is None:
+            started = t
+        t += DT
+    # the wobble's first trough still counts as a new low, so allow ~1 cycle
+    assert started is not None and 3.0 <= started <= 5.0

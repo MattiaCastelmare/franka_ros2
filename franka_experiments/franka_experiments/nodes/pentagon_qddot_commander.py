@@ -297,16 +297,16 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('isolation_kd',      12.0)  # joint-space D gain
 
         # ── Singularity recovery ──────────────────────────────────────────
-        # Stuck in a singularity (σ_min(J) < sigma_thr, EE not moving, task
-        # error > err_thr, all for stall_s) → joint-space quintic back to
+        # Stuck in a singularity (σ_min(J) < sigma_thr and a task error >
+        # err_thr that has not improved by progress_eps for stall_s) → joint-space quintic back to
         # q_home, hold settle_s, then the task restarts by itself (see
         # utils/singularity_recovery.py). The Cartesian loop cannot leave a
         # singularity; a joint-space move has no Jacobian to invert.
         self.declare_parameter('singularity_recovery_enabled', True)
         self.declare_parameter('recovery_sigma_thr',  0.07)  # σ_min of the 6x7 J
-        self.declare_parameter('recovery_speed_eps',  0.01)  # [m/s] EE "not moving"
+        self.declare_parameter('recovery_progress_eps', 0.05)  # [m] "improving"
         self.declare_parameter('recovery_err_thr',    0.02)  # [m]   real task error
-        self.declare_parameter('recovery_stall_s',    1.5)   # [s]   stuck this long
+        self.declare_parameter('recovery_stall_s',    3.0)   # [s]   stuck this long
         self.declare_parameter('recovery_vmax',       0.5)   # [rad/s] return peak
         self.declare_parameter('recovery_amax',       2.0)   # [rad/s²] return peak
         self.declare_parameter('recovery_min_s',      1.0)   # [s] shortest return
@@ -388,7 +388,7 @@ class PentagonQddotCommander(Node):
         self._rec_kd = float(self.get_parameter('recovery_kd').value)
         _g = lambda n: float(self.get_parameter(n).value)
         self._recovery = SingularityRecovery(
-            sigma_thr=_g('recovery_sigma_thr'), speed_eps=_g('recovery_speed_eps'),
+            sigma_thr=_g('recovery_sigma_thr'), progress_eps=_g('recovery_progress_eps'),
             err_thr=_g('recovery_err_thr'), stall_s=_g('recovery_stall_s'),
             vmax=_g('recovery_vmax'), amax=_g('recovery_amax'),
             t_min=_g('recovery_min_s'), settle_s=_g('recovery_settle_s'),
@@ -1132,21 +1132,19 @@ class PentagonQddotCommander(Node):
         """Run the stuck detector; while it owns the arm, publish the joint-space
         return to ``_q_home``. Returns True when it published (task skipped).
 
-        σ_min is of the plain 6x7 task Jacobian (``_J_arm``), the EE speed is
-        |J_lin·q̇| and the error is the true (uncapped) Cartesian one from the
-        previous tick. The command is the same as the isolation test's:
+        σ_min is of the plain 6x7 task Jacobian (``_J_arm``) and the error is
+        the true (uncapped) Cartesian one from the previous tick. The command is the same as the isolation test's:
         q̈ = q̈_ff + Kp·(q_d − q) + Kd·(q̇_d − q̇), clamped to ±qddot_max.
         """
         rec = self._recovery
         sigma_min = float(np.linalg.svd(self._J_arm, compute_uv=False)[-1])
-        ee_speed = float(np.linalg.norm(self._J_arm[:3] @ qdot))
-        ref = rec.update(t, js['q'], qdot, self._q_home, sigma_min, ee_speed,
+        ref = rec.update(t, js['q'], qdot, self._q_home, sigma_min,
                          self._diag_cart_err)
         ev = rec.pop_event()
         if ev == 'started':
             self.get_logger().warn(
                 f'SINGULARITY RECOVERY #{rec.n_recoveries}: σ_min={sigma_min:.3f}, '
-                f'EE stopped, error {self._diag_cart_err:.3f} m → joint-space '
+                f'error {self._diag_cart_err:.3f} m not improving → joint-space '
                 f'return to q_home in {rec.duration:.1f} s')
         elif ev == 'arrived':
             self.get_logger().info('SINGULARITY RECOVERY: at q_home, settling')
