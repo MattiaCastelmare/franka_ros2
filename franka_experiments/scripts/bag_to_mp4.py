@@ -45,40 +45,60 @@ def image_msg_to_cv2(msg):
         img = img.astype(np.uint8)
         return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-    raise RuntimeError(f"Encoding non supportato: {msg.encoding}")
+    raise RuntimeError(f"Encoding not supported: {msg.encoding}")
+
+def get_latest_bag(base_dir="experiment_bags"):
+    """Search the latest rosbag saved based on alphabetical order (date format: YYYY-MM-DD_HH-MM-SS)"""
+    if not os.path.isdir(base_dir):
+        return None
+    # Find all subdirectories in experiment_bags
+    subdirs = [os.path.join(base_dir, d) for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
+    if not subdirs:
+        return None
+    # Sort in alphabetical order and take the last one
+    subdirs.sort()
+    return subdirs[-1]
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--bag",
-        default=".",
-        help="Cartella della rosbag, non il file .db3"
+        default="latest",
+        help="Directory of the rosbag. If 'latest', takes the latest one from 'experiment_bags/'"
     )
     parser.add_argument(
         "--topic",
-        required=True,
-        help="Topic immagine da convertire"
+        default="/camera/camera/color/image_raw",
+        help="Image topic to convert"
     )
     parser.add_argument(
         "--out",
         default="output.mp4",
-        help="Nome video output. Se è solo un nome file, viene salvato nella cartella della rosbag"
+        help="Name of the output video. If it is only a filename, it will be saved in the rosbag folder"
     )
     parser.add_argument(
         "--fps",
         type=float,
         default=30.0,
-        help="FPS del video output"
+        help="FPS of the output video"
     )
 
     args = parser.parse_args()
 
-    # Cartella assoluta della rosbag
+    # Logic to find the latest bag automatically
+    if args.bag == "latest":
+        latest_bag = get_latest_bag("experiment_bags")
+        if latest_bag is None:
+            print("No bag found in 'experiment_bags/'. Please specify --bag manually.")
+            return
+        args.bag = latest_bag
+
+    # Absolute path to the bag directory
     bag_dir = os.path.abspath(args.bag)
 
-    # Se --out è solo un nome file, salva il video dentro la cartella della rosbag
-    # Se invece --out è un percorso assoluto, lo usa così com'è
+    # If --out is only a filename, save the video inside the bag directory
+    # If --out is an absolute path, use it as is
     if not os.path.isabs(args.out):
         args.out = os.path.join(bag_dir, args.out)
 
@@ -102,8 +122,8 @@ def main():
     type_map = {t.name: t.type for t in topic_types}
 
     if args.topic not in type_map:
-        print(f"Topic non trovato: {args.topic}")
-        print("\nTopic disponibili:")
+        print(f"Topic not found: {args.topic}")
+        print("\nAvailable topics:")
         for name, typ in type_map.items():
             print(f"  {name}: {typ}")
         rclpy.shutdown()
@@ -141,17 +161,17 @@ def main():
             writer = cv2.VideoWriter(args.out, fourcc, args.fps, (w, h))
 
             if not writer.isOpened():
-                raise RuntimeError(f"Impossibile creare il video: {args.out}")
+                raise RuntimeError(f"Impossible to create the video: {args.out}")
 
         writer.write(frame)
         frame_count += 1
 
     if writer is not None:
         writer.release()
-        print(f"\nCreato video: {args.out}")
-        print(f"Frame scritti: {frame_count}")
+        print(f"\nVideo created: {args.out}")
+        print(f"Frame written: {frame_count}")
     else:
-        print("\nNessun frame trovato per quel topic.")
+        print("\nNo frame found for that topic.")
 
     rclpy.shutdown()
 
