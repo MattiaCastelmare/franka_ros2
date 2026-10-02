@@ -78,6 +78,7 @@ from franka_experiments.utils.timing_law import (
     LinearTimingLaw, ExponentialTimingLaw, TrapezoidalTimingLaw,
 )
 from franka_experiments.utils.logging_utils import ThrottledLogger, vec_to_str
+from franka_experiments.utils.singularity_recovery import SingularityRecovery
 
 
 class PentagonQddotCommander(Node):
@@ -295,6 +296,25 @@ class PentagonQddotCommander(Node):
         self.declare_parameter('isolation_kp',      40.0)  # joint-space P gain
         self.declare_parameter('isolation_kd',      12.0)  # joint-space D gain
 
+        # ── Singularity recovery ──────────────────────────────────────────
+        # Stuck in a singularity (σ_min(J) < sigma_thr, EE not moving, task
+        # error > err_thr, all for stall_s) → joint-space quintic back to
+        # q_home, hold settle_s, then the task restarts by itself (see
+        # utils/singularity_recovery.py). The Cartesian loop cannot leave a
+        # singularity; a joint-space move has no Jacobian to invert.
+        self.declare_parameter('singularity_recovery_enabled', True)
+        self.declare_parameter('recovery_sigma_thr',  0.07)  # σ_min of the 6x7 J
+        self.declare_parameter('recovery_speed_eps',  0.01)  # [m/s] EE "not moving"
+        self.declare_parameter('recovery_err_thr',    0.02)  # [m]   real task error
+        self.declare_parameter('recovery_stall_s',    1.5)   # [s]   stuck this long
+        self.declare_parameter('recovery_vmax',       0.5)   # [rad/s] return peak
+        self.declare_parameter('recovery_amax',       2.0)   # [rad/s²] return peak
+        self.declare_parameter('recovery_min_s',      1.0)   # [s] shortest return
+        self.declare_parameter('recovery_settle_s',   0.5)   # [s] hold at home
+        self.declare_parameter('recovery_cooldown_s', 5.0)   # [s] detector off after
+        self.declare_parameter('recovery_kp',         40.0)  # joint-space P
+        self.declare_parameter('recovery_kd',         12.0)  # joint-space D
+
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
         q_des_topic    = self.get_parameter('q_des_topic').value
         ee_des_topic   = str(self.get_parameter('ee_desired_topic').value)
@@ -363,6 +383,16 @@ class PentagonQddotCommander(Node):
         self.iso_freq_hz      = float(self.get_parameter('isolation_freq_hz').value)
         self.iso_kp           = float(self.get_parameter('isolation_kp').value)
         self.iso_kd           = float(self.get_parameter('isolation_kd').value)
+        self._rec_on = bool(self.get_parameter('singularity_recovery_enabled').value)
+        self._rec_kp = float(self.get_parameter('recovery_kp').value)
+        self._rec_kd = float(self.get_parameter('recovery_kd').value)
+        _g = lambda n: float(self.get_parameter(n).value)
+        self._recovery = SingularityRecovery(
+            sigma_thr=_g('recovery_sigma_thr'), speed_eps=_g('recovery_speed_eps'),
+            err_thr=_g('recovery_err_thr'), stall_s=_g('recovery_stall_s'),
+            vmax=_g('recovery_vmax'), amax=_g('recovery_amax'),
+            t_min=_g('recovery_min_s'), settle_s=_g('recovery_settle_s'),
+            cooldown_s=_g('recovery_cooldown_s'))
         self._dt       = 1.0 / self.rate_hz
 
         # Per-joint q̈ clamps from fr3_control.yaml joint_limits column [3].
@@ -863,6 +893,8 @@ class PentagonQddotCommander(Node):
         # CBF is holding back. Scaling dt (not s_dot afterwards) keeps the
         # timing law's own soft-start and its s_ddot consistent.
         self._gov_sigma = self._governor_sigma(time.monotonic())
+        if self._rec_on and not self._iso_stop and self._tick_recovery(t, js, qdot):
+            return
         if self._iso_stop:
             # Hard zero, BELOW the governor_sigma_min floor. That floor exists
             # so a fixed obstacle on the path gets walked past instead of
@@ -1093,6 +1125,75 @@ class PentagonQddotCommander(Node):
                 f'max_sat={self._diag_max_sat:.2f} nsat={self._diag_num_sat} '
                 f'sync_p={self._diag_sync_pos_norm:.4f} '
                 f'sync_v={self._diag_sync_vel_norm:.4f} λ²={self._lambda_sq:.2e}')
+
+    # ── Singularity recovery ────────────────────────────────────────────────
+
+    def _tick_recovery(self, t: float, js: dict, qdot: np.ndarray) -> bool:
+        """Run the stuck detector; while it owns the arm, publish the joint-space
+        return to ``_q_home``. Returns True when it published (task skipped).
+
+        σ_min is of the plain 6x7 task Jacobian (``_J_arm``), the EE speed is
+        |J_lin·q̇| and the error is the true (uncapped) Cartesian one from the
+        previous tick. The command is the same as the isolation test's:
+        q̈ = q̈_ff + Kp·(q_d − q) + Kd·(q̇_d − q̇), clamped to ±qddot_max.
+        """
+        rec = self._recovery
+        sigma_min = float(np.linalg.svd(self._J_arm, compute_uv=False)[-1])
+        ee_speed = float(np.linalg.norm(self._J_arm[:3] @ qdot))
+        ref = rec.update(t, js['q'], qdot, self._q_home, sigma_min, ee_speed,
+                         self._diag_cart_err)
+        ev = rec.pop_event()
+        if ev == 'started':
+            self.get_logger().warn(
+                f'SINGULARITY RECOVERY #{rec.n_recoveries}: σ_min={sigma_min:.3f}, '
+                f'EE stopped, error {self._diag_cart_err:.3f} m → joint-space '
+                f'return to q_home in {rec.duration:.1f} s')
+        elif ev == 'arrived':
+            self.get_logger().info('SINGULARITY RECOVERY: at q_home, settling')
+        elif ev == 'resumed':
+            self.get_logger().info(
+                'SINGULARITY RECOVERY: done — restarting the task from home')
+            self._start_trajectory(js, capture_home=False)
+            return False
+        if ref is None:
+            return False
+
+        q_d, dq_d, ddq_d = ref
+        np.copyto(self._q_d, q_d)
+        np.copyto(self._dq_d, dq_d)
+        np.copyto(self._qddot_cmd, ddq_d)
+        self._qddot_cmd += self._rec_kp * (q_d - js['q'])
+        self._qddot_cmd += self._rec_kd * (dq_d - qdot)
+        np.clip(self._qddot_cmd, -self.qddot_max, self.qddot_max,
+                out=self._qddot_cmd)
+        np.copyto(self._q_ddot, self._qddot_cmd)
+        # Keep the open-loop nominal channel on the same reference so the
+        # nominal-vs-real log does not read the recovery as a CBF deviation.
+        np.copyto(self._q_nom, q_d)
+        np.copyto(self._dq_nom, dq_d)
+
+        for i in range(NUM_JOINTS):
+            self._out_msg.data[i] = float(self._q_ddot[i])
+        self.pub.publish(self._out_msg)
+        self._sp_msg.header.stamp = self.get_clock().now().to_msg()
+        for i in range(NUM_JOINTS):
+            self._sp_msg.position[i] = float(q_d[i])
+            self._sp_msg.velocity[i] = float(dq_d[i])
+            self._sp_msg.effort[i]   = float(self._q_ddot[i])
+        self._sp_pub.publish(self._sp_msg)
+
+        # Cartesian columns are meaningless here (see _tick_isolation).
+        self._e6[:] = 0.0
+        if self._csv_writer is not None:
+            zero3 = (0.0, 0.0, 0.0)
+            self._compute_tau_des()
+            self._log_data(t, js['q'], qdot, self._p_ee, zero3, zero3,
+                           0.0, 0.0, 0.0, 0.0, 0.0)
+        if self._tlog.due(t):
+            self._tlog.info(
+                f'[RECOVERY {rec.state} t={t:.1f}s] σ_min={sigma_min:.3f} '
+                f'|q−q_home|={float(np.linalg.norm(js["q"] - self._q_home)):.3f} rad')
+        return True
 
     # ── Sequential Joint Isolation Test (TEMPORARY diagnostic) ──────────────
 
@@ -1346,7 +1447,7 @@ class PentagonQddotCommander(Node):
         self._dq_nom += self._qddot_nom * dt
         self._q_nom  += self._dq_nom * dt
 
-    def _start_trajectory(self, js: dict) -> None:
+    def _start_trajectory(self, js: dict, capture_home: bool = True) -> None:
         """Assemble the phase-driven path + timing law rooted at the current EE.
 
         The composite path begins exactly at the current EE position (no jump),
@@ -1388,8 +1489,10 @@ class PentagonQddotCommander(Node):
         # Seed the velocity low-pass filter at the measured velocity
         np.copyto(self._dq_filt, js['qdot'])
 
-        # Capture the start configuration as the null-space home posture
-        np.copyto(self._q_home, js['q'])
+        # Capture the start configuration as the null-space home posture. NOT on
+        # a restart after a singularity recovery: home must stay the original.
+        if capture_home:
+            np.copyto(self._q_home, js['q'])
 
         self._running = True
         self.get_logger().info(
