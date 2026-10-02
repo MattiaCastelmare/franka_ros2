@@ -556,12 +556,23 @@ params:
   # rate — the barrier keeps its authority, it just cannot be met in one step.
   slew_box_enabled: true
 
-  # [rad/s^2 per tick] At qp_rate_hz=100 this is 500 rad/s^3. Braking is not
-  # impeded: joint4 goes 0 -> -4 (its full authority) in one tick. The wrist
-  # joints, whose bound is 17, need 4 ticks (40 ms) to saturate. LOWER it if
-  # trk_err stays high; RAISE it if the CBF reacts visibly late to a fast
-  # approach. Watch the `slew=` field in CBFDIAG to see which joints it binds.
-  max_qddot_delta: 5.0
+  # [rad/s^2 per tick] At qp_rate_hz=100, 1.5 is 150 rad/s^3: the command can go from 0 to
+  # 6 rad/s^2 in 40 ms. It was 5.0 (500 rad/s^3, 0 -> 10 rad/s^2 in 20 ms), and on the
+  # 2026-09-30 ball throws (ball_throws_3, live) the command spent its time
+  # stepping between the two ends of the box: |q̈_safe| at 10 for 1 % of the ticks, sign flips
+  # every 100-150 ms. Closed loop on the recorded throws (scripts/ball_closed_loop.py, 15
+  # passes, the real filter + an arm identified on ball_throws_3):
+  #     max_qddot_delta   cmd jerk p99   realised jerk p99   clearance gain (bt2 / bt3)
+  #           5.0              500              441-453         +3.0 / +3.5 cm
+  #           2.0              200              192             +2.9 / +3.3
+  #           1.0              100               96             +2.9 / +3.0
+  # i.e. a 3-5x smoother command for 0.2-0.5 cm of clearance: the arm is limited by
+  # the TIME it is warned, not by how fast the command may change. Braking toward a joint
+  # limit is not impeded: the state box is intersected with this one, and the braking curve
+  # starts early enough (position_brake_eta) for a 40 ms ramp. LOWER it if the arm still looks
+  # jerky, RAISE it if the CBF reacts visibly late to a fast approach. Watch the `slew=`
+  # field in CBFDIAG to see which joints it binds.
+  max_qddot_delta: 1.5
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
   # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: iso_tau_rate_max (qddot_to_torque, post-dynamics) | flagged: 2026-09-01
@@ -946,7 +957,17 @@ params:
   # with a feasibility guard collapsing the box onto lb (hardest legal braking)
   # if the demands conflict.
 
-  velocity_box_margin: 0.9   # fraction of the official qdot_max actually allowed
+  # fraction of the official qdot_max actually allowed. 0.9 -> 0.7 on 2026-09-30.
+  # Closed loop on the recorded throws AIMED at the arm (scripts/ball_closed_loop.py --threat 0, the
+  # hardest dodges the filter will be asked for), peak joint velocity against the FIRMWARE envelope
+  # (libfranka's position-based curve, the thing joint_velocity_violation trips on):
+  #     velocity_box_margin    0.9         0.75        0.6         0.45
+  #     peak |qdot|/envelope   0.92-0.94   0.78        0.62        0.46
+  #     hits / clearance       5/9 5/6     5/9 5/6     5/9 5/6     5/9 5/6   (-0.1..-0.3 cm per step)
+  # i.e. the cap costs nothing measurable in clearance and takes the worst case from "one step from a
+  # firmware abort" to 0.7. It is also the headroom config/safety/watchman_profile.md asks for
+  # (<= 0.83 so that SLS-J can sit 20 % above the software cap). The tracked path needs < 1.0 rad/s.
+  velocity_box_margin: 0.7
 
   # [rad/s^2] Ceiling on the per-joint acceleration authority the QP may use.
   #
@@ -968,6 +989,44 @@ params:
   # previous behaviour exactly.
   qddot_max_abs: 10.0
 
+  # [rad/s^2] per joint: the acceleration box the QP may COMMAND (capped by
+  # qddot_max_abs). Empty = the old box, min(deceleration_limit, qddot_max_abs)
+  # = [6, 2.585, 3.5, 4, 10, 5.5, 10]. deceleration_limit is the parameter of
+  # Franka's position-based velocity envelope, not an acceleration limit
+  # (libfranka rates 10 on every joint), and the braking curve toward the
+  # joint limits KEEPS it whatever this says (cbf_safety_filter._brake_acc).
+  #
+  # 2026-09-30, the ball throws (rosbag/ball_throws_2, _3): the arm tracked
+  # the CBF's q̈ with 4-16 ms lag and gain ~0.9, and the command sat at the old
+  # box from the first tick the filter acted — authority, not tracking, was
+  # the limit. Worst-case joint torque (all joints at the box, worst sign, over
+  # the 4615 recorded poses with the controller's own Pinocchio model, hand
+  # included): old box <= 42 % of the effort limit, this one <= 55 %,
+  # [10, 8, 10, 10, 10, 10, 10] <= 72 %. Replayed, the open-loop clearance the
+  # filter's command adds to the recorded motion at the control point nearest
+  # the ball went +7.8 -> +10.2 / +12.8 cm (this) -> +13.1 / +15.5 cm (the
+  # 10-box), with no more interventions away from the ball. One case gets
+  # WORSE with authority: a ball arriving at mid-arm (link5), 9 -> 4 cm.
+  #
+  # NOT validated closed-loop: an open-loop replay cannot show the velocity
+  # side, because the replayed filter never sees the faster motion its own
+  # command would cause. On the robot watch vrat=/VELHI (joint velocity vs the
+  # firmware envelope) and trk_err in CBFDIAG; go to the 10-box only once a
+  # run shows neither near its limit. [] restores the old box exactly.
+  # REVERTED on the robot the same day: with [8, 5, 6, 6, 10, 7, 10] the arm
+  # was visibly jerky (live run ball_throws_4 vs ball_throws_3: trk_err p90
+  # 4.7 -> 9.5 rad/s^2, p99 11.8 -> 20.8, slew-limited ticks 1 -> 4 %, peak
+  # joint velocity 0.65 -> 0.94 of the firmware envelope). The torque loop
+  # does not realise the bigger steps, and 0.94 is one step from a
+  # joint_velocity_violation abort. Needs a jerk/slew and tracking rework
+  # before the box can grow.
+  # 2026-09-30 (closed loop, scripts/ball_closed_loop.py): the LOWER box
+  # [6, 2.585, 3.5, 4, 6, 5.5, 6] (joints 5 and 7 at 6 instead of 10) gives the same clearance
+  # (+2.7 / +3.3 cm against +3.0 / +3.5 for the old box, 15 recorded passes) and a 40 % lower peak
+  # command; at 4 rad/s^2 on the wrists the gain falls to +1.8 / +2.5 cm. The extra wrist authority
+  # was never what limited the dodge.
+  qddot_accel_limits: [6.0, 2.585, 3.5, 4.0, 6.0, 5.5, 6.0]
+
   # ── State governor: slow the TASK down before a state limit is a reflex ────
   #
   # The zone ladder fades the trajectory as an OBSTACLE closes; it has no
@@ -981,6 +1040,19 @@ params:
   # as under the zone ladder's hold rung: this removes the demand, never the
   # defence.
   state_governor_enabled: true
+
+  # Fade only the part of the task that drives the binding sigma_min / self-collision margin DOWN
+  # (and brake only the velocity heading that way), instead of fading the whole task into braking.
+  # The scalar fade holds the arm in the very pose it is protecting it from: joint 6 folded toward
+  # link 5, the self-collision gap small, the task suspended, nothing left to move it out but the
+  # row. false = the scalar fade exactly as before.
+  # Closed loop on the recorded throws with joint 6 forced into the bad corners at the start of
+  # every window (scripts/ball_closed_loop.py --q6-start): task suspended (weight < 0.5) for
+  # 26.9 % of the time on sigma_min at q6 = 3.6 -> 10.2 %, 21.2 % -> 18.2 % on self-collision at
+  # q6 = 0.55, EE error 53 -> 49 cm, sigma_min and self-collision gap no worse, normal passes
+  # unchanged. A comfort spring on q6 in the commander's null space was tried first and does
+  # NOTHING: the wrist joint is not redundant, the null-space projection removes the term.
+  state_governor_directional: true
 
   # [rad/s] Headroom below the velocity envelope over which the task fades from
   # full to suspended, worst joint wins, measured in the direction of travel.
@@ -1005,10 +1077,12 @@ params:
   governor_resume_s: 0.5
 
   # Fraction of the firmware velocity envelope the governor measures against.
-  # MUST NOT exceed velocity_box_margin (0.9), or the hard box clamps before the
+  # MUST NOT exceed velocity_box_margin (0.7), or the hard box clamps before the
   # governor has faded anything and the ordering the governor exists to create
-  # is inverted. 0.85 leaves it half a band of lead.
-  governor_envelope_margin: 0.85
+  # is inverted. 0.65 leaves it half a band of lead. (Was 0.85 against a 0.9 box;
+  # the box moved to 0.7 on 2026-09-30 and this has to follow it. Not free: on the recorded
+  # throws the task is suspended ~2.5 % more of the time during dodges, no change in clearance.)
+  governor_envelope_margin: 0.65
 
   # [s] Approach horizon for the velocity and position caps in the box.
   #
@@ -1254,6 +1328,32 @@ params:
   # obstacle_velocity_min_frames: 8 was "~265 ms at 30 Hz".
   obstacle_velocity_min_span_s: 0.265
 
+  # ── FAST-TRACK TRUST (cbf_state_rows._fast_track) ─────────────────────────
+  # The span gate above holds a track's velocity at 0 for ~265 ms, and a thrown
+  # object is faster than that: on the 2026-09-30 throws (rosbag/ball_throws_2,
+  # a tennis-size ball at 2.6-4.5 m/s) it reached the arm first in every pass,
+  # so the barrier only ever saw its POSITION and acted 30-110 ms before
+  # contact. A young track is trusted anyway when its closing speed clears k
+  # sigma of its own velocity covariance:
+  #
+  #     n̂ᵀv − k·σ_n >= fast_speed   and   frames_seen >= fast_min_frames
+  #
+  # which a prior-dominated two-frame track cannot do (its sigma is as large as
+  # its speed) and static clutter cannot either (closing-speed p99 0.86 m/s).
+  # A trusted fast track also skips the median's rising edge (not its decay),
+  # reaches the standoff, and is clamped at fast_max instead of
+  # obstacle_velocity_max / vobs_hdot_max — both 2 m/s, half the ball's speed.
+  #
+  # Replay of that bag with the perception tuned the same day
+  # (scripts/ball_throw_eval.py): passes on the ball in 7/9 throws, ~180 ms
+  # before closest approach; ~15 rows/min elsewhere, the throwers' arms
+  # included. CBFDIAG fast= counts the rows. OFF restores the old behaviour.
+  obstacle_velocity_fast_trust: true
+  obstacle_velocity_fast_min_frames: 3
+  obstacle_velocity_fast_speed: 1.0   # [m/s]
+  obstacle_velocity_fast_k_sigma: 2.0
+  obstacle_velocity_fast_max: 6.0     # [m/s]
+
   # [Hz] the perception rate the gates are sized with until the stream has been
   # measured — a claim about the camera profile, corrected at runtime with a
   # log line. Keep it equal to the profile in launch_defaults.yaml.
@@ -1415,7 +1515,33 @@ params:
   # to a body-centroid track. At 0.35 m a 0.3 m/s approach still gets ~1 s of
   # anticipation before d_safe. 0 applies the floor everywhere (the previous
   # behaviour).
-  obstacle_velocity_residual_floor_gap: 0.35
+  #
+  # WIDENED 0.35 -> 0.7 (Sep 2026, thrown-ball dodge investigation), to match
+  # distance.thresholds.max_thresh in fr3_complete.yaml: 0.7 m is the whole
+  # range the publish gate ever lets the CBF see, so this now covers the
+  # entire visible approach rather than only its last third.
+  #
+  # Reason: test_track_lifecycle.py::test_the_residual_floor_is_still_on_so_the_gate_is_not_a_blindfold
+  # documents the design intent as "the residual needs no identity and no
+  # history, so the gap [obstacle_velocity_min_frames, 8 frames / ~265 ms
+  # continuous] is covered" for a genuinely new obstacle — but gated at 0.35 m
+  # that is only true inside the last 35 cm. A small, fast object that never
+  # holds a confirmed track for 265 ms straight (see cluster_min_points above)
+  # got v_obs pinned at 0 — the static-obstacle assumption — from 0.7 m down to
+  # 0.35 m: no k1 anticipation, no velocity_standoff, no latency compensation,
+  # no outrun-evasion bias, for most of its approach.
+  #
+  # This was a MEASURED, deliberate choice for people (residual p99 on a
+  # static scene is 0.017-0.029 m/s and does not need gating for noise — see
+  # the comment above the deadband) — the narrow gate was about not paying
+  # for exposure "bought for nothing" once the tracker already had it covered,
+  # which does not hold when the tracker path is the one failing. NOT
+  # re-validated against rosbag/{arm_complex,arm_repeated}'s static-scene jerk
+  # metric (docs/reactivity_evasion_report.md) — do that before trusting this
+  # on hardware; the residual is still not deadbanded, so this is the one
+  # change here that revisits noise-floor reasoning rather than only adding a
+  # tighten-only term.
+  obstacle_velocity_residual_floor_gap: 0.7
 
   # ── Obstacle-velocity feedforward (cbf_safety_filter, Phase 1) ─────────────
   # A SECOND, separately tunable use of the v_obs estimate the k1 term already
@@ -1516,11 +1642,28 @@ params:
   # blind time (0.085 s, Phase 0) plus the ~0.1 s the arm needs to build a
   # retreat speed: +6 cm for a hand at 0.3 m/s, +20 cm at 1 m/s. INITIAL
   # estimate, not tuned on hardware.
-  velocity_standoff_time_s: 0.20
+  #
+  # RAISED 0.20 -> 0.25 together with the cap below (Sep 2026, thrown-ball
+  # dodge investigation): a hardware run threw a ball at ~1.5-1.6 m/s
+  # (measured via cbf_v_obs_cond) directly at fr3_link8; the arm commanded
+  # essentially its full acceleration authority (qddot_delta_norm ~20 rad/s^2)
+  # and still ran min_h to about -0.067 m (raw clearance ~8 cm, no contact).
+  # Prediction was not the problem there — v_obs_cond was already >1 m/s well
+  # before the deepest point. This is a SPEED-PROPORTIONAL, tighten-only
+  # change: it leaves a slow reach (~0.3 m/s) at +0.075 m (was +0.06 m),
+  # barely different, while a fast throw now gets meaningfully more head
+  # start. Left base d_safe (0.15) untouched on purpose, since that also sets
+  # how close the arm may sit next to a SLOW/static obstacle, which past
+  # sessions deliberately tuned down. NOT hardware-validated.
+  velocity_standoff_time_s: 0.25
 
   # [m] clamp. Reached at 1.0 m/s with the time above, so the term is linear
   # over the 0-1 m/s a person moves at and flat beyond.
-  velocity_standoff_max: 0.20
+  #
+  # RAISED 0.20 -> 0.35 (see time_s above): the saturation point moves from
+  # 1.0 to 1.4 m/s, so a throw in the 1-1.6 m/s range that used to saturate
+  # at +0.20 m now keeps gaining standoff up to +0.35 m.
+  velocity_standoff_max: 0.35
 
   # [-] EMA on the standoff's DECAY only (rise is instant), per control point,
   # at the 50 Hz rebuild: 0.8 is a ~100 ms constant. Keeps a slowing or
@@ -1881,9 +2024,20 @@ params:
   # latency_margin_max. Gated on obstacle_velocity_min_frames like the other
   # track-derived terms.
   #
-  # OFF by default, as specified. With the flag off no term is evaluated and
-  # the rows are bit-identical (regression-tested).
-  enable_latency_compensation: false
+  # Was OFF by default, as specified; with the flag off no term is evaluated
+  # and the rows are bit-identical (regression-tested).
+  #
+  # TURNED ON (Sep 2026, thrown-ball dodge investigation): Phase 4 measured
+  # constant-velocity prediction matching truth within the filter's own 2σ,
+  # tighten-only, clamped at latency_margin_max — a validated, bounded win
+  # that was sitting unused. It is gated on obstacle_velocity_min_frames like
+  # every other track-derived term, so it only helps once a track is
+  # confirmed (see cluster_min_points / obstacle_velocity_residual_floor_gap
+  # above); it buys back the 48-85 ms measured blind time on top of that.
+  # NOT validated on hardware since being turned on — launch_defaults.yaml's
+  # latency_compensation must also be true for this to take effect via the
+  # launch file.
+  enable_latency_compensation: true
 
   # [s] the blind time to predict over. The measured p95 at 30 fps; use 0.168
   # if the camera is left at the driver's 15 fps default. Zero disables the
@@ -1897,6 +2051,78 @@ params:
   # covariance and a spurious acceleration would otherwise drive the barrier
   # deeply negative — the failure this filter has been bitten by before.
   latency_margin_max: 0.25
+
+  # ── Sensor range uncertainty (cbf_safety_filter) ────────────────────────────
+  #   sigma_z(z) = z^2 / (sensor_range_f_px * sensor_range_baseline_m) * sensor_range_sigma_d_px
+  #   h -= min(sensor_range_k_sigma * sigma_z, sensor_range_margin_max)
+  #
+  # A NEW, INDEPENDENT term from enable_uncertainty_margin above.
+  # uncertainty_margin prices what the TRACKER admits it does not know about
+  # the obstacle's VELOCITY (a Kalman filter's own covariance) -- it has
+  # nothing to say about a brand-new detection with no track yet, and nothing
+  # to say about how sure the sensor itself is of the RANGE the whole pipeline
+  # is built from. This term does: structured-light / stereo depth sensors
+  # measure a disparity (or an equivalent phase/time offset) and convert it to
+  # range through z = f*B/disparity, so a roughly CONSTANT disparity error
+  # sigma_d turns into a range error that grows QUADRATICALLY with range. It
+  # is present on the very first frame of a brand-new track (unlike
+  # uncertainty_margin, this term is NOT gated on obstacle_velocity_min_frames)
+  # and does not shrink as a track accumulates measurements, because it is a
+  # property of THIS frame's pixel, not of history. The two terms are
+  # ADDITIVE -- see test_cbf_sensor_range_uncertainty.py's composition test --
+  # never alternatives, and neither may ever loosen the barrier.
+  #
+  # z is the RAW camera-frame range to the winning obstacle pixel
+  # (LinkDistance.range_m), NOT the surface gap `distance` (radius and
+  # dilation margin already subtracted) and NOT a base-frame Euclidean
+  # distance recomputed from the extrinsic -- that round trip would
+  # reintroduce the extrinsic's own several-centimetre calibration bias
+  # (utils/calibration_check) into a term that is supposed to be about the
+  # sensor alone.
+  #
+  # OFF by default. With the flag off the term is not evaluated and the QP
+  # rows are bit-identical to the pre-Phase-3-range build (regression-tested).
+  # NOT enabled in launch_defaults.yaml: unlike enable_velocity_standoff this
+  # has not been validated on hardware (see scripts/range_noise_calibration.py
+  # and scripts/compare_range_noise.py) and must not be turned on for a real
+  # run without that validation and explicit sign-off.
+  enable_sensor_range_uncertainty: false
+
+  # [px] focal length. fx and fy are equal to within manufacturing tolerance
+  # on the RealSense cameras this rig uses (the same simplification
+  # distance_engine's dilation-margin correction makes), so one scalar
+  # suffices. Read off CameraInfo.k[0] at calibration time -- see
+  # scripts/range_noise_calibration.py's reported "f_px measured at capture
+  # time" line -- NOT re-read live per frame, so a camera profile change (a
+  # different resolution or FOV) requires re-running the calibration script.
+  sensor_range_f_px: 428.8
+
+  # [m] the sensor's physical stereo/structured-light baseline. THIS IS NOT
+  # tracking.calibration_check.baseline_m in fr3_complete.yaml -- that is an
+  # unrelated drift-detector reference offset (a model-vs-measured residual)
+  # that happens to share a name. This one is the manufacturer's physical
+  # baseline spec (a RealSense D455 is ~0.095 m), a geometric constant of the
+  # sensor, not a calibration residual.
+  sensor_range_baseline_m: 0.095
+
+  # [px] disparity (or equivalent) measurement error, approximately constant
+  # for a given sensor. FITTED, not guessed -- see
+  # scripts/range_noise_calibration.py, which points the camera at a static
+  # flat target at several known distances and regresses this constant
+  # against the quadratic law above. Placeholder until that calibration run
+  # is done; the flag stays off regardless.
+  sensor_range_sigma_d_px: 0.20
+
+  # [-] standard deviations of range error to reserve. Same convention as
+  # uncertainty_k_sigma and latency_k_sigma: 2.0 ~ 95% of a Gaussian's
+  # one-sided mass.
+  sensor_range_k_sigma: 2.0
+
+  # [m] clamp, for the same reason every other margin_max in this file has
+  # one: an implausible single reading (a reflective surface, a sensor
+  # glitch) must not drive the barrier deeply negative and have the QP answer
+  # with a maximal retreat.
+  sensor_range_margin_max: 0.25
 
   # ── Risk-weighted slack (cbf_safety_filter, Phase 2) ───────────────────────
   # One slack per FAMILY is shared by every row in it, so when rows conflict the
@@ -2099,6 +2325,10 @@ params:
   path_center_xyz: [0.4, 0.0, 0.45]  # [m] circle/lissajous centre, plane_frame
   path_type: circle                  # circle | lissajous | pentagon
   path_radius: 0.25                  # [m] circle radius in the selected plane
+  path_cycle_time: 6.0               # [s] one full lap; speed = 2*pi*radius/this
+                                     # (10 s = 0.16 m/s, 6 s = 0.26 m/s, 3 s = 0.52 m/s on the 0.25 m circle)
+  path_kp_cart: 20.0                 # [N/m] Cartesian PD gains of pentagon_qddot_commander
+  path_kd_cart: 9.0                  # [N.s/m] kd ~ 2*sqrt(kp) for near-critical damping
 
   # DEPRECATED/UNUSED: not read by any code. DistanceEngine reads its EMA weight
   # from `lpf_alpha` in fr3_complete.yaml (the `distance:` section), NOT from this

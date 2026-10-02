@@ -330,6 +330,15 @@ a configuration** — nothing in this repository touches Watchman.
 
 ---
 
+## Evaluating avoidance without the robot
+
+`scripts/ball_closed_loop.py` runs the real `cbf_safety_filter` against the recorded ball throws with a modelled
+arm (clearance, command/realised jerk, peak velocity vs the firmware envelope, aimed-throw hit rate). The method,
+the numbers behind the shipped smoothing parameters, what was tried and dropped, and the next hardware-run
+checklist are in [`docs/ball_throw_closed_loop.md`](docs/ball_throw_closed_loop.md). Companions:
+`scripts/smoothness_report.py` (jerk / chatter of any bag), `scripts/pass_plot.py` (one figure per pass),
+`scripts/throw_lead.py` (perception warning time per pass).
+
 ## Configuration files
 
 | File | Purpose | Key parameters |

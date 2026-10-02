@@ -108,6 +108,19 @@ meshes:
     fr3_link7: meshes/robot_arms/fr3/collision/link7.stl
     fr3_link8: meshes/robot_ee/franka_hand_white/collision/hand.stl
 
+# ── Camera geometry: which optical frame camera_extrinsics.yaml really is ──
+# The hand-eye node labels it base -> camera_COLOR_optical_frame, and this node
+# applies it to the RAW depth image, whose optical frame is 5.9 cm away on the
+# D455 (/camera/camera/extrinsics/depth_to_color t = [-0.0591, 0, 0.0002]).
+# Composing that offset in was TRIED on 2026-09-30 (replay of
+# rosbag/ball_throws_2) and made things worse on both independent checks: the
+# robot mask's coverage of the measured arm fell 91 % -> 84 % and the arm read
+# as its own obstacle (CBF overriding the nominal on half the ticks), and the
+# distance rows moved AWAY from the colour-tracked ball ground truth. So the
+# calibration, as used, behaves as base -> DEPTH optical, and no offset is
+# applied. If the hand-eye procedure changes, re-check with calibration_check
+# (coverage, residual) before assuming the label.
+
 topics:
   depth_image: /camera/camera/depth/image_rect_raw
   depth_camera_info: /camera/camera/depth/camera_info
@@ -131,9 +144,31 @@ topics:
 distance: # in meters
   min_depth_m: 0.15
   max_depth_m: 4.0
-  pixel_step: 10
+  # Sampling stride [px]. Was 10. A tennis-size ball (~7 cm) 1.4-2.2 m from
+  # the D455 covers ~15-25 px of the 848x480 depth image, so at stride 10 it
+  # got 2-3 samples — under tracking.cluster_min_points — and never got a
+  # track: on the 2026-09-30 throws (rosbag/ball_throws_2) the ball was in the
+  # distance rows in 9/9 passes and tracked in 0/9. Replayed at 6 it is
+  # tracked in 9/9 (scripts/ball_throw_eval.py); 8 and 10 track 5/9.
+  # Cost: all= 9.3 -> ~9.7 ms per frame (11.1 ms budget at 90 Hz), and more
+  # robot pixels leaking through the mask (leak= ~7 -> ~24 per frame).
+  pixel_step: 6
   image_margin_px: 10
-  roi_pad_px: 90
+  # [px] padding of the depth search box around the robot's silhouette. Was
+  # 90. Nothing outside this box is sampled, so a ball thrown at the arm was
+  # invisible until it was almost there: on the 2026-09-30 hardware throws the
+  # CBF could act only ~150 ms before closest approach. At 180 (replay of
+  # rosbag/ball_throws_2 and _3, scripts/ball_throw_eval.py) the ball is in
+  # the rows ~290-360 ms ahead and the CBF acts ~250-270 ms ahead (was
+  # ~150-160), with ~2x the avoidance effort before contact and no increase in
+  # interventions away from the ball. 300 gave no further gain at +40 %
+  # compute. Cost at 180: all= ~10.3-11.2 ms per frame against the 11.1 ms
+  # budget at 90 Hz — close the OpenCV window (booleans.visualize) for fast
+  # experiments, it costs ~2.6 ms live.
+  # The WHOLE image (any pad >= 848 px; compute_roi clamps to the frame) was
+  # tried in replay: 16.8-18.5 ms per frame (~55 Hz), no gain in how early the
+  # CBF acts, and less clearance (the extra clutter saturates max_clusters).
+  roi_pad_px: 180
 
   # ── Publish gate for the whole frame (NOT a per-CP filter) ───────────────
   # real_time_distance builds `valid` = CPs whose distance falls in this band.
@@ -357,7 +392,22 @@ tracking:
   # on noise. NOTE it interacts with distance.pixel_step (10): a 0.15 m object
   # at 1.5 m lands only ~10-25 samples on that grid, so raising pixel_step
   # without lowering this makes small obstacles invisible to the tracker.
-  cluster_min_points: 10
+  #
+  # LOWERED 10 -> 5 (Sep 2026, thrown-ball dodge investigation). At 10, this
+  # file's own numbers above put a 0.15 m object at 1.5 m right at the
+  # threshold (10-25 samples, so sometimes below it) and an 0.08 m sphere at
+  # 1.8 m always below it (~8 samples) — exactly ball-sized objects at
+  # ball-throwing range. test_track_lifecycle.py's
+  # test_a_flickering_object_births_repeatedly_and_dies_young names the
+  # resulting failure: the cluster itself appears and disappears frame to
+  # frame, so the tracker never accumulates confirm_hits and no track (hence
+  # no velocity) ever forms — matching "sometimes dodges it, sometimes
+  # doesn't" better than any downstream (CBF-side) explanation. 5 still
+  # rejects single-digit-pixel speckle; confirm_hits (M-of-N birth) and the
+  # velocity conditioning (median + deadband) downstream absorb the rest.
+  # NOT validated on hardware — watch TrackManager's death_stats() (births vs.
+  # reaped_young) on the next ball-throw run to confirm this was the cause.
+  cluster_min_points: 5
 
   # [m] DEPTH DISCONTINUITY that separates two objects. THE parameter that
   # keeps a foreground obstacle from fusing with the background it is
@@ -447,6 +497,45 @@ tracking:
   max_clusters: 16
   max_tracks: 20
 
+  # When the table is full, a new cluster may take the slot of the unconfirmed
+  # track that has gone longest without a measurement (>= 1 missed frame);
+  # confirmed tracks and tentative ones still being hit are never evicted.
+  # Why: the 2026-09-30 run sat at 20/20 all along and refused 85 % of new
+  # clusters (cap=), so a thrown ball arriving often got no slot. Replayed
+  # (scripts/ball_throw_eval.py): refusals 7592 -> 70, ball tracked 8/9 -> 9/9
+  # passes, fast-trusted 6/9 -> 8/9; CBF interventions away from the ball
+  # unchanged. `evict=` in the log line counts them. false = old behaviour.
+  evict_stale_tentative: true
+
+  # Predicted impact points (utils/ballistic_prediction.py): a fast track is
+  # propagated ballistically over horizon_s and, where it is predicted to pass
+  # within publish_gap_m of a control point, that point gets one more obstacle
+  # row at the PREDICTED position (zone 'predicted' on the wire, no track
+  # velocity). OFF: measured on both 2026-09-30 bags it added only 0-50 ms of
+  # CBF lead on top of roi_pad_px 180 (the CBF's own tracked-velocity terms
+  # already act as soon as a fast track exists), while raising interventions
+  # away from the ball by 30-100 % (fast-moving people get predicted too).
+  # Worth re-testing for slower, longer throws, where the flight is long
+  # enough for the prediction to lead the velocity terms.
+  prediction:
+    enabled: false
+    horizon_s: 0.5
+    step_s: 0.01
+    min_speed: 1.0          # [m/s] and |v| - k_sigma*sigma >= min_speed
+    k_sigma: 2.0
+    min_frames: 3
+    object_radius_m: 0.035
+    publish_gap_m: 0.30     # [m] predicted surface gap below which a row is emitted
+    min_time_s: 0.03        # closest approach must still be ahead
+    assume_ballistic: true  # gravity when the track has no IMM mode estimate
+    # Replace the control point's hit ON THE SAME TRACK with the predicted one
+    # (a collision-cone barrier on the miss distance, pushing sideways instead
+    # of along the flight). Measured with the clearance metric
+    # (rosbag/replay_cfg/clearance.py): +5.4 / +7.5 cm against +7.8 / +7.8 cm
+    # for the ordinary rows — moving along the ball's velocity also clears
+    # these not-quite-centred throws, and does it with more authority. Off.
+    replace_current: false
+
   # [m] slack added to a cluster's radius when deciding whether a control
   # point's closest_point_human belongs to it. Needed because the radius is
   # measured over VOXEL CENTROIDS while the query is a RAW surface point, so a
@@ -467,6 +556,14 @@ tracking:
   # overshoot.
   q_jerk: 2.0
   sigma_meas_m: 0.01
+  # [m/s] prior on a NEW track's velocity (was the code default 1.0, not
+  # configurable). It pulls a young track toward zero: on the 2026-09-30 throws
+  # the tracked speed read 0.83x the true one over the first 5 frames at 1.0,
+  # 0.97x at 2.0 (|error| 0.51 -> 0.32 m/s; scripts/ball_throw_eval.py). 3.0
+  # was no better. It also widens the first association gate, which a thrown
+  # object needs; fast-track trust in the CBF reads the resulting covariance,
+  # so a larger prior cannot open that gate by itself.
+  sigma_v0: 2.0
 
   # Association gate, in units of the filter's OWN uncertainty (chi^2 with 3
   # DoF: 3.0 admits ~97% of true associations). Mahalanobis and not Euclidean
@@ -474,7 +571,34 @@ tracking:
   # a re-appearing obstacle is re-associated instead of spawning a duplicate id.
   # A fixed radius cannot do both jobs: sized for the occlusion case it would
   # swap ids between two close obstacles every frame.
-  gate_mahalanobis: 3.0
+  #
+  # RAISED 3.0 -> 4.0 (Sep 2026, thrown-ball dodge investigation), i.e.
+  # chi^2_3 threshold 9.0 -> 16.0 (~97% -> ~99.85% of true associations
+  # admitted). Measured on the first hardware ball-throw run after lowering
+  # cluster_min_points (10 -> 5, above): the node's own status line
+  # (real_time_distance's "leak=.../births=.../reaped=.../unassoc=.../cap="
+  # log, throttled every distance.log_throttle_s) showed births=2259 over a
+  # 66 s run, 1990 of them (88%) reaped_young, and unassoc growing to roughly
+  # half of every cluster observation in the run — i.e. a track surviving
+  # long enough to be confirmed (9-of-15 hits in confirm_window_s) was the
+  # exception, and the experiment log showed cbf_v_obs_cond reading exactly
+  # 0.0 at the closest-approach instants because cp_n_tracked was 0 right
+  # then: no track existed, not merely an old one coasting.
+  #
+  # Smaller admitted clusters (the same cluster_min_points change) have
+  # noisier centroids than sigma_meas_m was characterised against, which
+  # tightens this gate RELATIVE to real frame-to-frame jitter without the
+  # obstacle actually having jumped. Raising the gate (not sigma_meas_m, which
+  # sets the Kalman filter's own bandwidth and was deliberately tuned onto the
+  # responsive side of its knee — see q_jerk above) targets exactly that,
+  # while gate_max_m below is UNCHANGED as the hard backstop against a real
+  # identity swap between two distinct nearby obstacles.
+  #
+  # NOT hardware-validated after this change. Watch the births/reaped_young
+  # ratio on the next ball-throw run; if it is still dominated by young
+  # deaths, the next candidate per test_track_lifecycle.py is max_missed
+  # (max_coast_s), not this gate again.
+  gate_mahalanobis: 4.0
 
   # [m] hard Euclidean ceiling on top of that gate. The Mahalanobis gate widens
   # WITHOUT BOUND while a track coasts, and after enough missed frames it would
@@ -493,8 +617,73 @@ tracking:
   # a per-frame phenomenon. Scaling the COUNT instead would confirm a 33 ms
   # speckle at 90 fps. 0.167 s x 0.6 rounds to 3-of-5 at 30 Hz (the tuning
   # these were measured at) and to 9-of-15 at 90 Hz: 100 ms to birth either way.
-  confirm_window_s: 0.167
+  #
+  # SHORTENED to 0.056 s (3-of-5 at 90 Hz, the 2-of-3 floor at 30 Hz) on
+  # 2026-09-30: a ball thrown at the arm is in the rows ~260 ms before it
+  # arrives, and a 100 ms birth ate most of that. Replayed on the throws, a
+  # velocity the CBF can trust (cbf obstacle_velocity_fast_trust) then exists
+  # ~180 ms before closest approach instead of never. Junk tracks do confirm
+  # sooner too; the CBF-side fast-track test is what keeps them out of the QP.
+  confirm_window_s: 0.056
   confirm_hits_frac: 0.6
+
+  # ── Ballistic (gravity-aware) velocity model (utils/obstacle_tracker.IMMTrack) ──
+  # A thrown ball's acceleration is one of the most predictable things in
+  # physics (constant, known, ~9.81 m/s^2 downward), but a new track's
+  # acceleration prior is uninformed (sigma_a0 above) and takes several
+  # frames to discover that from noisy centroids -- the same "first ~100 ms"
+  # cost the residual-floor-gap and gate_mahalanobis changes above have
+  # already been fighting. A ballistic and a reaching-hand track are close to
+  # the same physical size, so no size heuristic tells them apart up front;
+  # this runs BOTH hypotheses (an Interacting Multiple Model filter) and lets
+  # the data decide, rather than biasing every track toward "always falling"
+  # (which would be actively wrong for the reach case this tracker exists
+  # for -- see IMMTrack's own class docstring for the measured reasoning).
+  #
+  # OFF by default: with it off, TrackManager builds plain KalmanTracks and
+  # behaviour is bit-identical to before this existed (regression-tested,
+  # test_obstacle_imm.py + the full suite both green with this false).
+  imm_enabled: true   # TEMPORARY for hardware validation (Sep 2026) — flip back to false if anything looks off
+
+  # [m^2/s^5] jerk PSD for the ballistic model. Empty/absent = same as q_jerk
+  # above (IMMTrack's own default and the measured right answer: a LOWER
+  # number here does not measurably speed up the early discrimination that
+  # actually matters -- that comes from the differing acceleration MEAN
+  # below, not from process noise -- and it measurably introduces a slow,
+  # unwanted drift toward "confidently ballistic" on a long static or
+  # reaching scene, purely because a much tighter model looks more confident
+  # once both have converged to the same answer, not because it fits better.
+  # Leave commented out unless a specific hardware measurement justifies
+  # diverging it.
+  # imm_ballistic_q_jerk: 2.0
+
+  # [m/s^2] the ballistic model's initial acceleration UNCERTAINTY. Moderate
+  # on purpose (tighter than sigma_a0's 5.0, not tiny): a soft prior around
+  # imm_gravity_mps2, not a belief the ordinary Kalman gain cannot correct
+  # out of on a genuine mismatch (a static object, a caught ball).
+  imm_ballistic_sigma_a0: 2.0
+
+  # [m/s^2] the ballistic model's initial acceleration MEAN, in the base/world
+  # frame the tracker already runs in (rotation is applied before the filter
+  # ever sees a measurement -- see obstacle_track_pipeline's module docstring).
+  imm_gravity_mps2: [0.0, 0.0, -9.81]
+
+  # [-] "stay in the same mode" probability of the 2x2 Markov transition
+  # matrix [[p, 1-p], [1-p, p]]. MEASURED trade-off, not guessed: 0.97 lets
+  # real evidence get diluted by the mixing step before the two modes can
+  # separate at all; 0.999 barely lets go of a wrong mode within any
+  # practical window after a catch/bounce. 0.99 reaches >0.8 ballistic
+  # confidence within ~165 ms of a real throw (90 fps) and holds it through a
+  # realistic flight, while still decaying noticeably within about a second
+  # once the object stops behaving ballistically -- erring toward "cautious
+  # a bit longer than necessary" is the safe direction for a term that only
+  # ever tightens a barrier.
+  imm_mode_transition_stay_prob: 0.99
+
+  # [-] starting [generic, ballistic] mode probability. Deliberately even: no
+  # size- or shape-based classification anywhere in this pipeline, the data
+  # decides which model explains a given track.
+  imm_initial_mode_prob: [0.5, 0.5]
 
   # ── Self-detection guard (utils/self_detection.py) ───────────────────────
   # The distance pipeline defines "obstacle" as "not robot", so the moment the

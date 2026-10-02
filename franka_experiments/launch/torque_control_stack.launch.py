@@ -130,6 +130,7 @@ _ALL_PARAMS = [
     'livelock_escape', 'latency_compensation',
     'zone_ladder', 'obstacle_velocity_normal_guard', 'obstacle_identity_guard',
     'uncertainty_margin', 'sim_obstacle', 'depth_bag',
+    'start_rosbag', 'rosbag_output_dir', 'rosbag_delay_s',
     'multi_obstacle_k', 'vobs_in_hdot', 'velocity_standoff',
     'iso_enabled', 'iso_mode', 'iso_ssm_speed_rows', 'iso_monitor_enabled',
     'torque_iso_monitor_delay_s', 'link_speed_max', 'retreat_cap_max_speed',
@@ -141,7 +142,7 @@ _ALL_PARAMS = [
     'start_rviz', 'trajectory_viz_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
-    'rl_target_sequence', 'rl_action_scale',
+    'rl_target_sequence', 'rl_action_scale', 'isolation_test',
     'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
     'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
     'torque_world_tf_delay_s', 'torque_camera_tf_delay_s',
@@ -213,9 +214,30 @@ def _profile_fps(profile: str) -> float | None:
     return fps if 1.0 <= fps <= 1000.0 else None
 
 
+def _profile_wh(profile: str) -> tuple[int, int] | tuple[None, None]:
+    """The (width, height) out of a RealSense profile string, e.g. ``848x480x90``.
+
+    Feeds trajectory_overlay's window size, so that viewer opens at the SAME
+    on-screen size as real_time_distance's — which auto-sizes to this same
+    depth stream — even though trajectory_overlay draws on the color stream,
+    whose own resolution the driver picks independently. ``(None, None)`` when
+    the profile is empty or unparseable, which leaves the window at the color
+    frame's native resolution.
+    """
+    parts = str(profile).strip().lower().split('x')
+    if len(parts) != 3:
+        return None, None
+    try:
+        w, h = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+    return (w, h) if w > 0 and h > 0 else (None, None)
+
+
 def _rtd_config_with_overrides(path: str, *, tracking: bool,
                                sim_obstacle: bool,
-                               depth_rate_hz: float | None = None) -> str:
+                               depth_rate_hz: float | None = None,
+                               visualize: bool | None = None) -> str:
     """Return ``path``, or a copy of it with the two perception switches forced.
 
     ``real_time_distance`` reads its perception configuration from a YAML rather
@@ -227,10 +249,13 @@ def _rtd_config_with_overrides(path: str, *, tracking: bool,
     and is written into ``distance.depth_rate_hz``, which is what sizes every
     frame-counted perception threshold before the stream has been measured.
 
+    ``visualize`` forces ``booleans.visualize`` (the OpenCV window) when not
+    None — a headless bag replay must not try to open one.
+
     Returns the ORIGINAL path when nothing has to be forced, so the common case
     touches no filesystem and the node reads exactly the installed file.
     """
-    if not (tracking or sim_obstacle or depth_rate_hz):
+    if not (tracking or sim_obstacle or depth_rate_hz or visualize is not None):
         return path
     import os
     import tempfile
@@ -242,11 +267,40 @@ def _rtd_config_with_overrides(path: str, *, tracking: bool,
         cfg.setdefault('sim_obstacle', {})['enabled'] = True
     if depth_rate_hz:
         cfg.setdefault('distance', {})['depth_rate_hz'] = float(depth_rate_hz)
+    if visualize is not None:
+        cfg.setdefault('booleans', {})['visualize'] = bool(visualize)
     out = os.path.join(tempfile.gettempdir(),
                        f'fr3_complete_launch_{os.getpid()}.yaml')
     with open(out, 'w') as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     return out
+
+
+def _bag_topics(bag: str) -> set:
+    """Topic names recorded in a rosbag2 directory (empty if unreadable)."""
+    import os
+    try:
+        with open(os.path.join(bag, 'metadata.yaml')) as f:
+            info = (yaml.safe_load(f) or {}).get('rosbag2_bagfile_information', {})
+        return {t['topic_metadata']['name'] for t in info.get('topics_with_message_count', [])}
+    except (OSError, KeyError, TypeError, yaml.YAMLError):
+        return set()
+
+
+def _depth_source_topics(bag: str, depth: str, info: str) -> tuple[str, str]:
+    """The (image, camera_info) pair to replay: the RAW depth stream when the
+    bag has it, else the aligned one the older bags carry.
+
+    Raw first because it is what real_time_distance consumes live — 848x480 at
+    the camera's native rate. The aligned stream is re-projected onto the colour
+    camera (1280x720) and published at the COLOUR rate (30 Hz), so a replay of
+    it exercises a different resolution, a different rate and a different
+    intrinsic matrix than the robot ever sees.
+    """
+    if depth in _bag_topics(bag):
+        return depth, info
+    return ('/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/aligned_depth_to_color/camera_info')
 
 
 def _depth_bag_player(bag: str, cfg_path: str):
@@ -257,7 +311,9 @@ def _depth_bag_player(bag: str, cfg_path: str):
     replayed: they must come from the robot that is actually running, or the
     mask would be built for one pose while the arm is in another — which is not
     a degraded measurement, it is a wrong one, and it is wrong in the direction
-    of thinking the workspace is emptier than it is.
+    of thinking the workspace is emptier than it is. (bag_replay.launch.py is
+    the other case: it replays TF and joints TOGETHER with the depth they were
+    recorded with, and no robot.)
 
     ``--loop`` because the point is to keep the depth stream alive for as long
     as the stack runs, not to reproduce one recording end to end.
@@ -268,14 +324,63 @@ def _depth_bag_player(bag: str, cfg_path: str):
         topics = (yaml.safe_load(f) or {}).get('topics', {}) or {}
     depth = topics.get('depth_image', '/camera/camera/depth/image_rect_raw')
     info = topics.get('depth_camera_info', '/camera/camera/depth/camera_info')
-    # The bags in this repo carry the ALIGNED depth stream under its own name.
-    src_depth = '/camera/camera/aligned_depth_to_color/image_raw'
-    src_info = '/camera/camera/aligned_depth_to_color/camera_info'
-    return ExecuteProcess(
-        cmd=['ros2', 'bag', 'play', bag, '--loop',
-             '--topics', src_depth, src_info,
-             '--remap', f'{src_depth}:={depth}', f'{src_info}:={info}'],
-        output='screen')
+    src_depth, src_info = _depth_source_topics(bag, depth, info)
+    cmd = ['ros2', 'bag', 'play', bag, '--loop', '--topics', src_depth, src_info]
+    if (src_depth, src_info) != (depth, info):
+        cmd += ['--remap', f'{src_depth}:={depth}', f'{src_info}:={info}']
+    return ExecuteProcess(cmd=cmd, output='screen')
+
+
+def _cbf_parameters(p) -> list:
+    """cbf_safety_filter's ROS parameters from the launch arguments.
+
+    A function so bag_replay.launch.py runs the filter with EXACTLY the
+    parameters the live stack gives it, rather than a copy that drifts.
+
+    These are ordinary ROS parameters, so they override the YAML without
+    rewriting it — declare_from_spec reads the parameter back after declaring
+    it with the YAML value as the default.
+    """
+    fps = _profile_fps(p['camera_depth_profile'])
+    return [{
+        'obstacle_velocity_source': p['obstacle_velocity_source'],
+        'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
+        'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
+        # The perception rate, from the camera profile — the one place it
+        # is written down. It sizes the evidence gates behind v_obs until
+        # the filter has measured the distance stream itself; a stream that
+        # does not match says so in a WARN and the gates are re-derived.
+        **({'obstacle_input_rate_hz': fps} if fps else {}),
+        'enable_livelock_escape':   _as_bool(p['livelock_escape']),
+        'enable_latency_compensation': _as_bool(p['latency_compensation']),
+        'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
+        'enable_zone_ladder':       _as_bool(p['zone_ladder']),
+        'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
+        'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
+        # ── ISO 10218-1/-2:2025 layer ────────────────────────────────
+        # All four default FALSE in launch_defaults.yaml: with them off
+        # the filter's numerical output is exactly what it was before
+        # the ISO layer existed. iso_enabled is the master flag; the
+        # other three do nothing without it.
+        'iso_enabled':          _as_bool(p['iso_enabled']),
+        'iso_mode':             str(p['iso_mode']),
+        'iso_ssm_speed_rows':   _as_bool(p['iso_ssm_speed_rows']),
+        'iso_monitor_enabled':  _as_bool(p['iso_monitor_enabled']),
+    }, *_speed_ceiling_overrides(p), {
+        # A launch BOOL onto a threshold parameter: the guard's "off" state
+        # is 0.0 rad, and exposing the angle on the command line would
+        # invite tuning a number whose right value is a property of the
+        # depth sensor, not of the run. 0.15 rad is derived in
+        # fr3_control.yaml; change it there if the hardware says so.
+        'obstacle_velocity_normal_rot_max':
+            (0.15 if _as_bool(p['obstacle_velocity_normal_guard']) else 0.0),
+        # Same bool-onto-a-threshold shape, and for the same reason: the
+        # guard's "off" state is 0.0 m, and the right value of the jump
+        # floor is a property of the depth sensor's argmin noise, not of
+        # the run. 0.10 m is derived in fr3_control.yaml.
+        'obstacle_velocity_identity_jump':
+            (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
+    }]
 
 
 def _launch_all(context):
@@ -622,49 +727,7 @@ def _launch_all(context):
         # all, so they belong in ~/.ros/log/<run>/launch.log too.
         output='both',
         additional_env=_SINGLE_THREAD_BLAS,
-        # These three are ordinary ROS parameters, so they override the YAML
-        # without rewriting it — declare_from_spec reads the parameter back
-        # after declaring it with the YAML value as the default.
-        parameters=[{
-            'obstacle_velocity_source': p['obstacle_velocity_source'],
-            'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
-            'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
-            # The perception rate, from the camera profile — the one place it
-            # is written down. It sizes the evidence gates behind v_obs until
-            # the filter has measured the distance stream itself; a stream that
-            # does not match says so in a WARN and the gates are re-derived.
-            **({'obstacle_input_rate_hz': _profile_fps(p['camera_depth_profile'])}
-               if _profile_fps(p['camera_depth_profile']) else {}),
-            'enable_livelock_escape':   _as_bool(p['livelock_escape']),
-            'enable_latency_compensation': _as_bool(p['latency_compensation']),
-            'enable_uncertainty_margin': _as_bool(p['uncertainty_margin']),
-            'enable_zone_ladder':       _as_bool(p['zone_ladder']),
-            'enable_vobs_in_hdot':      _as_bool(p['vobs_in_hdot']),
-            'enable_velocity_standoff': _as_bool(p['velocity_standoff']),
-            # ── ISO 10218-1/-2:2025 layer ────────────────────────────────
-            # All four default FALSE in launch_defaults.yaml: with them off
-            # the filter's numerical output is exactly what it was before
-            # the ISO layer existed. iso_enabled is the master flag; the
-            # other three do nothing without it.
-            'iso_enabled':          _as_bool(p['iso_enabled']),
-            'iso_mode':             str(p['iso_mode']),
-            'iso_ssm_speed_rows':   _as_bool(p['iso_ssm_speed_rows']),
-            'iso_monitor_enabled':  _as_bool(p['iso_monitor_enabled']),
-        }, *_speed_ceiling_overrides(p), {
-            # A launch BOOL onto a threshold parameter: the guard's "off" state
-            # is 0.0 rad, and exposing the angle on the command line would
-            # invite tuning a number whose right value is a property of the
-            # depth sensor, not of the run. 0.15 rad is derived in
-            # fr3_control.yaml; change it there if the hardware says so.
-            'obstacle_velocity_normal_rot_max':
-                (0.15 if _as_bool(p['obstacle_velocity_normal_guard']) else 0.0),
-            # Same bool-onto-a-threshold shape, and for the same reason: the
-            # guard's "off" state is 0.0 m, and the right value of the jump
-            # floor is a property of the depth sensor's argmin noise, not of
-            # the run. 0.10 m is derived in fr3_control.yaml.
-            'obstacle_velocity_identity_jump':
-                (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
-        }],
+        parameters=_cbf_parameters(p),
     )
     # qddot_to_torque subscribes directly to qddot_safe (the CBF-filtered
     # acceleration) and converts it to torque — no remap needed.
@@ -810,7 +873,13 @@ def _launch_all(context):
             # reads it from config/fr3_control.yaml (params: path_center_xyz,
             # path_type, path_radius) as its declare_parameter defaults. Launch
             # files carry wiring, not tunables.
-
+            #
+            # isolation_test IS threaded through explicitly (as a real bool,
+            # not the raw LaunchConfiguration string) because it defaults to
+            # False on the node itself and nothing else in this launch file
+            # ever set it — a run that does not pass isolation_test:=true is
+            # therefore identical to before this argument existed.
+            parameters=[{'isolation_test': _as_bool(p['isolation_test'])}],
         )
         commander_label = 'pentagon_qddot_commander'
     actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
@@ -847,19 +916,26 @@ def _launch_all(context):
     # isolated set. Turn them off for measurement runs.
     if _as_bool(p['start_trajectory_viz']):
         show_window = _as_bool(p['trajectory_overlay_window'])
+        win_w, win_h = _profile_wh(p['camera_depth_profile'])
+        traj_overlay_params = {
+            # The SAME file real_time_distance projects with, on purpose:
+            # two viewers of one calibration must not be able to disagree.
+            'camera_extrinsics_path': p['camera_extrinsics_yaml'],
+            'trail_seconds': float(p['trajectory_trail_seconds']),
+            'show_window': show_window,
+        }
+        if win_w is not None:
+            # Matches real_time_distance's window, which auto-sizes to this
+            # same depth profile — see _profile_wh.
+            traj_overlay_params['window_width'] = win_w
+            traj_overlay_params['window_height'] = win_h
         traj_overlay_node = Node(
             package='franka_experiments',
             executable='trajectory_overlay_node',
             name='trajectory_overlay',
             output='screen',
             additional_env=_SINGLE_THREAD_BLAS,
-            parameters=[{
-                # The SAME file real_time_distance projects with, on purpose:
-                # two viewers of one calibration must not be able to disagree.
-                'camera_extrinsics_path': p['camera_extrinsics_yaml'],
-                'trail_seconds': float(p['trajectory_trail_seconds']),
-                'show_window': show_window,
-            }],
+            parameters=[traj_overlay_params],
         )
         actions.append(TimerAction(
             period=float(p['trajectory_viz_delay_s']),
@@ -919,6 +995,40 @@ def _launch_all(context):
     else:
         actions.append(LogInfo(
             msg='[torque_stack] [Viz]             trajectory_visualization DISABLED'))
+
+    # ── [Recording] everything bag_replay.launch.py and ball_throw_eval.py need ──
+    # Raw depth (what the robot sees), colour + aligned depth (ground truth for
+    # a coloured object), TF, the FAST joint states the CBF reads, and the
+    # pipeline's outputs. zstd per file: 90 Hz raw depth plus colour fill a
+    # disk in minutes otherwise.
+    if _as_bool(p['start_rosbag']):
+        import os as _os, time as _time
+        out = str(p['rosbag_output_dir']).strip() or _os.path.expanduser(
+            _time.strftime('~/ros2_bags/rosbag_%Y%m%d_%H%M%S'))
+        topics = [
+            '/camera/camera/depth/image_rect_raw', '/camera/camera/depth/camera_info',
+            '/camera/camera/depth/metadata',
+            '/camera/camera/color/image_raw', '/camera/camera/color/camera_info',
+            '/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/aligned_depth_to_color/camera_info',
+            '/camera/camera/extrinsics/depth_to_color',
+            '/tf', '/tf_static',
+            '/NS_1/joint_states', '/NS_1/franka/joint_states',
+            '/NS_1/qddot_nom', '/NS_1/qddot_safe', '/NS_1/torque_cmd', '/NS_1/cbf_status',
+            '/NS_1/ee_actual', '/NS_1/ee_desired',
+            '/cbf/per_link_distances',
+        ]
+        recorder = ExecuteProcess(
+            cmd=['ros2', 'bag', 'record', '-o', out,
+                 '--compression-mode', 'file', '--compression-format', 'zstd', *topics],
+            output='screen', name='rosbag_record',
+            # FILE compression runs at shutdown and a 90 s run is ~20 GB raw:
+            # launch's default 5 s SIGTERM escalation killed it mid-compression
+            # on 2026-09-30 (no metadata.yaml, a truncated .zstd). Let it finish.
+            sigterm_timeout='600', sigkill_timeout='600')
+        actions.append(TimerAction(period=rtd_delay + float(p['rosbag_delay_s']),
+                                   actions=[recorder]))
+        actions.append(LogInfo(msg=f'[torque_stack] [Recording]       rosbag -> {out}'))
 
     return actions
 
@@ -1063,6 +1173,19 @@ def generate_launch_description():
                 default_value=str(_DEFAULTS.get('rl_action_scale', '1.0')),
                 description='Derate in (0,1] applied to the policy output: '
                             'q̈_nom = a·q̈_max·action_scale. Use 0.3 for a first run'),
+            # pentagon_qddot_commander's TEMPORARY per-joint step-response
+            # diagnostic (see that node's isolation_test parameter and
+            # _tick_isolation): sweeps joints 1-7 in turn, 2 s each, with a
+            # 0.4 rad raised-cosine bump, then self-stops. Off by default —
+            # not wired to any fr3_control.yaml/launch_defaults.yaml value on
+            # purpose, so this arg can never silently change a default run.
+            DeclareLaunchArgument(
+                'isolation_test',
+                default_value='false',
+                description='pentagon_qddot_commander: run the joint-by-joint '
+                            'isolation/step-response diagnostic instead of the '
+                            'normal pentagon trajectory. Self-terminating '
+                            '(14 s, 7 joints x 2 s)'),
 
             # ── Wiring / sequencing (defaults in config/launch_defaults.yaml) ──
             DeclareLaunchArgument(
@@ -1308,6 +1431,20 @@ def generate_launch_description():
                 'torque_finger_pub_rate_hz',
                 default_value=str(_DEFAULTS.get('torque_finger_pub_rate_hz', '10.0')),
                 description='[Hz] MoveIt finger joint-state publisher rate'),
+
+            DeclareLaunchArgument(
+                'start_rosbag',
+                default_value=str(_DEFAULTS.get('start_rosbag', 'false')),
+                description='Record a bag with every topic bag_replay.launch.py '
+                            'and scripts/ball_throw_eval.py need (zstd)'),
+            DeclareLaunchArgument(
+                'rosbag_output_dir',
+                default_value=str(_DEFAULTS.get('rosbag_output_dir', '')),
+                description='Bag directory; empty = ~/ros2_bags/rosbag_<time>'),
+            DeclareLaunchArgument(
+                'rosbag_delay_s',
+                default_value=str(_DEFAULTS.get('rosbag_delay_s', '3.0')),
+                description='[s] after real_time_distance starts'),
 
             DeclareLaunchArgument(
                 'rt_pin_cpu',

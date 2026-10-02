@@ -322,6 +322,318 @@ class KalmanTrack:
                 f'v={np.round(self.x[IV], 3).tolist()})')
 
 
+class IMMTrack:
+    """Two constant-acceleration models run in parallel: a generic one (the
+    exact filter :class:`KalmanTrack` runs) and a BALLISTIC one, whose
+    acceleration is expected to sit near gravity and to barely change frame to
+    frame. Everything a consumer reads — ``position``/``velocity``/
+    ``acceleration``/``velocity_cov``/``position_cov``/``pos_vel_cov`` — is the
+    probability-weighted BLEND of the two, so this is a drop-in replacement for
+    :class:`KalmanTrack` wherever one is constructed: same public surface
+    (``predict``, ``update``, ``predicted_measurement``, ``mahalanobis``,
+    ``speed_variance_along``, ``track_id``/``frames_seen``/``missed``/``age``).
+
+    WHY TWO MODELS RATHER THAN ONE MODEL WITH A GRAVITY-BIASED PRIOR
+    ------------------------------------------------------------------
+    A reaching hand and a thrown ball are close to the same physical size, so
+    no size-based heuristic reliably tells them apart before the fact — and
+    this tracker exists because a previous version fabricated motion on a
+    superficially similar signal (the centroid-wander regression fixed by the
+    residual floor and the velocity deadband). Hard-biasing every track's
+    acceleration toward "always falling" would reproduce exactly that
+    failure on a reaching arm. Running both hypotheses and weighting them by
+    which one actually explains the measurements — the standard Interacting
+    Multiple Model (IMM) construction — lets the ballistic hypothesis win
+    fast on a real projectile while a hand-shaped acceleration series (any
+    direction, decelerating at the end of the reach) keeps the mode
+    probability on the generic model, the same way :class:`KalmanTrack`
+    already behaves today.
+
+    THE MECHANICS, IN THE SAME predict()/update() SHAPE AS KalmanTrack
+    --------------------------------------------------------------------
+    ``predict(dt)`` does the IMM MIXING step first: each model's initial
+    condition for this step is a probability-weighted blend of BOTH models'
+    previous estimates (not just its own), weighted by the mode-transition
+    matrix ``Pi`` applied to the current mode probabilities. That mixed state
+    is what each model then predicts forward with its OWN process noise. The
+    mode probabilities themselves are advanced to their PREDICTED values
+    (``Pi.T @ mu``) here — correct whether or not ``update()`` follows: a
+    coasting track (no measurement this frame) keeps exactly this predicted
+    distribution, chaining correctly over consecutive missed frames.
+
+    ``update(z)`` runs an ordinary Joseph-form Kalman update per model against
+    the SAME measurement `z`, then re-weights the mode probabilities by each
+    model's Gaussian innovation likelihood (Bayes' rule, in the log domain for
+    numerical safety). The combined state/covariance exposed afterward is the
+    probability-weighted mixture, with the standard IMM "spread of means" term
+    added to the covariance: when the two models actively disagree, the
+    reported uncertainty is WIDER than either model's own, which only ever
+    tightens a downstream barrier — the same conservative-when-unsure
+    convention as every other estimate in this pipeline.
+
+    WHY BOTH MODELS SHARE THE SAME q_jerk (measured, not assumed)
+    ----------------------------------------------------------------
+    The obvious design is to also give the ballistic model much LOWER process
+    noise (a projectile's acceleration barely changes, unlike a limb's).
+    Measured on synthetic data and rejected: the early-frame discrimination
+    that actually matters comes almost entirely from the DIFFERING ACCELERATION
+    MEAN the two models start from (0 vs ``gravity``), not from their process
+    noise — sweeping ``ballistic_q_jerk`` from 2.0 down to 0.01 left the
+    mode probability at a ballistic frame 15 unchanged to three digits
+    (0.722–0.724). What a much lower ``ballistic_q_jerk`` DOES do is make the
+    ballistic model persistently more confident (a smaller steady-state P)
+    than the generic one, for as long as a track lives — and on a scene where
+    both eventually converge to the same, correct, near-zero acceleration
+    (a person standing still, a hand held steady), the tighter model then wins
+    the likelihood ratio purely by being more confident, not more correct: a
+    static scene's mean ballistic-mode probability drifted from 0.50 at
+    ``ballistic_q_jerk = q_jerk`` up to 0.61 at ``ballistic_q_jerk = 0.01``,
+    entirely as an artefact of the mismatched confidence, over several
+    seconds of drift with nothing in the scene to justify it. Keeping the same
+    ``q_jerk`` for both means their steady-state covariances converge to the
+    same value, so this bias vanishes (measured back to 0.50) while the
+    useful early-frame transient — the SIGMA_A0 asymmetry below, which fades
+    naturally as both models converge to the same steady state instead of
+    persisting — is untouched. ``ballistic_q_jerk`` stays a separate,
+    independently tunable argument in case future hardware measurement finds
+    a good reason to diverge it; the DEFAULT is intentionally "no reason
+    found yet".
+
+    Both models share ``sigma_meas`` (the same physical sensor/centroid noise)
+    and ``sigma_v0`` (an initial velocity guess is not what distinguishes the
+    two hypotheses). They differ in the ACCELERATION prior only — mean and
+    ``sigma_a0``: generic starts at zero with a wide prior exactly like
+    :class:`KalmanTrack`; ballistic starts at ``gravity`` with a moderate, not
+    tiny, prior — soft enough that a genuine mismatch (a static object, a
+    caught ball) still corrects out through the ordinary Kalman gain, not a
+    belief the filter cannot escape.
+
+    Args:
+        p0 / q_jerk / sigma_meas / sigma_v0 / sigma_a0 / track_id: exactly
+            :class:`KalmanTrack`'s own arguments, forwarded to model 0
+            (generic) unchanged.
+        ballistic_q_jerk: jerk PSD for model 1. ``None`` (default) means
+            "same as ``q_jerk``" — see the section above for why a smaller
+            number here measurably does NOT help and measurably does hurt.
+        ballistic_sigma_a0: [m/s²] model 1's initial acceleration
+            uncertainty. Moderate on purpose (2.0, tighter than the generic
+            model's 5.0 but not tiny): a soft prior around ``gravity``, not
+            a belief the filter cannot correct out of.
+        gravity: [m/s²] model 1's initial acceleration MEAN, in the same
+            base/world frame the tracker already runs in.
+        mode_transition_stay_prob: [-] the 2×2 Markov transition matrix is
+            ``[[p, 1-p], [1-p, p]]``. Measured trade-off (synthetic throw +
+            static-scene + catch-recovery sweeps): 0.97 lets real evidence
+            get diluted by the mixing step before it can separate the modes
+            at all; 0.999 barely lets go of a wrong mode within any
+            practical window. 0.99 is the middle ground shipped here —
+            confident (>0.8) within ~165 ms of a real throw and staying
+            there through a realistic flight, while still decaying
+            noticeably within about a second of the object stopping being
+            ballistic. Erring toward "stays cautious a bit longer than
+            strictly necessary" is the safe direction for a term that only
+            ever tightens a barrier.
+        initial_mode_prob: [-] starting ``[generic, ballistic]`` prior.
+            Deliberately ``(0.5, 0.5)`` — no size- or shape-based
+            classification, the data decides.
+    """
+
+    def __init__(
+        self,
+        p0: np.ndarray,
+        *,
+        q_jerk: float = 2.0,
+        sigma_meas: float = 0.01,
+        sigma_v0: float = 1.0,
+        sigma_a0: float = 5.0,
+        track_id: int = 0,
+        ballistic_q_jerk: Optional[float] = None,
+        ballistic_sigma_a0: float = 2.0,
+        gravity: np.ndarray = (0.0, 0.0, -9.81),
+        mode_transition_stay_prob: float = 0.99,
+        initial_mode_prob: np.ndarray = (0.5, 0.5),
+    ) -> None:
+        self.track_id = int(track_id)
+        # Model 0 = generic/"reach" (KalmanTrack's own numbers). Model 1 =
+        # ballistic. Kept as a 2-vector of jerk PSDs so every per-model loop
+        # below is a plain `for j in (0, 1)` over the same two arrays.
+        # None (the default) means "same as q_jerk" -- see the class
+        # docstring for why that, not a smaller number, is the measured
+        # right answer.
+        bqj = q_jerk if ballistic_q_jerk is None else ballistic_q_jerk
+        self.q_jerk = np.array([float(q_jerk), float(bqj)])
+        self.sigma_meas = float(sigma_meas)
+        self.R = (self.sigma_meas ** 2) * np.eye(3)
+        self.gravity = np.asarray(gravity, dtype=np.float64).ravel()
+
+        p0 = np.asarray(p0, dtype=np.float64).ravel()
+        self._x = np.zeros((2, NX))
+        self._P = np.zeros((2, NX, NX))
+        for j, a0, sa0 in ((0, np.zeros(3), sigma_a0),
+                           (1, self.gravity, ballistic_sigma_a0)):
+            self._x[j, IP] = p0
+            self._x[j, IA] = a0
+            self._P[j, IP, IP] = (self.sigma_meas ** 2) * np.eye(3)
+            self._P[j, IV, IV] = (float(sigma_v0) ** 2) * np.eye(3)
+            self._P[j, IA, IA] = (float(sa0) ** 2) * np.eye(3)
+
+        p = float(mode_transition_stay_prob)
+        assert 0.0 < p <= 1.0, 'mode_transition_stay_prob must be in (0, 1]'
+        self._Pi = np.array([[p, 1.0 - p], [1.0 - p, p]])
+        mu0 = np.asarray(initial_mode_prob, dtype=np.float64).ravel()
+        self._mu = mu0 / mu0.sum()
+
+        self.frames_seen = 1
+        self.missed = 0
+        self.age = 1
+        self._x_comb = np.zeros(NX)
+        self._P_comb = np.zeros((NX, NX))
+        self._combine()
+
+    # ── Estimates (the blend — every property mirrors KalmanTrack's) ────────
+
+    @property
+    def position(self) -> np.ndarray:
+        return self._x_comb[IP].copy()
+
+    @property
+    def velocity(self) -> np.ndarray:
+        return self._x_comb[IV].copy()
+
+    @property
+    def acceleration(self) -> np.ndarray:
+        return self._x_comb[IA].copy()
+
+    @property
+    def velocity_cov(self) -> np.ndarray:
+        return self._P_comb[IV, IV].copy()
+
+    @property
+    def position_cov(self) -> np.ndarray:
+        return self._P_comb[IP, IP].copy()
+
+    @property
+    def pos_vel_cov(self) -> np.ndarray:
+        return self._P_comb[IP, IV].copy()
+
+    @property
+    def mode_prob(self) -> np.ndarray:
+        """(2,) ``[generic, ballistic]`` mode probability. Diagnostic — nothing
+        downstream of the tracker reads this, but it is what makes the IMM
+        inspectable rather than a black box: measured on a synthetic throw,
+        ``mode_prob[1]`` passes 0.8 by ~15 frames (~165 ms at 90 Hz) and stays
+        there through the flight; on a scene with no discriminating
+        acceleration (a level reach, a static object) it settles near neutral
+        (~0.5) rather than confidently either way — see IMMTrack's own class
+        docstring for why that is the correct and safe behaviour, not a
+        symptom to tune away."""
+        return self._mu.copy()
+
+    def speed_variance_along(self, n_hat: np.ndarray) -> float:
+        n = np.asarray(n_hat, dtype=np.float64).ravel()
+        return max(float(n @ self._P_comb[IV, IV] @ n), 0.0)
+
+    # ── Combination ───────────────────────────────────────────────────────────
+
+    def _combine(self) -> None:
+        """Probability-weighted blend of the two models, IMM "spread of
+        means" form: disagreement between the models WIDENS the reported
+        covariance rather than averaging it away."""
+        x = self._mu[0] * self._x[0] + self._mu[1] * self._x[1]
+        P = np.zeros((NX, NX))
+        for j in (0, 1):
+            d = self._x[j] - x
+            P += self._mu[j] * (self._P[j] + np.outer(d, d))
+        self._x_comb = x
+        self._P_comb = 0.5 * (P + P.T)
+
+    # ── Filter ──────────────────────────────────────────────────────────────
+
+    def predict(self, dt: float) -> None:
+        """Mixing, then a per-model predict. See the class docstring — the
+        same non-positive/absurd ``dt`` guard as :class:`KalmanTrack`, for the
+        same reason (a duplicated or reordered camera stamp)."""
+        dt = float(dt)
+        if not (1e-6 < dt < 1.0):
+            return
+        # Mixing: c[j] = predicted mode prob of model j; mix_w[i, j] = P(was i
+        # | now j), used to blend model i's PREVIOUS estimate into model j's
+        # starting point for this step.
+        c = self._Pi.T @ self._mu
+        c = np.maximum(c, 1e-12)
+        mix_w = (self._Pi * self._mu[:, None]) / c[None, :]
+        x0 = np.zeros((2, NX))
+        P0 = np.zeros((2, NX, NX))
+        for j in (0, 1):
+            x0[j] = mix_w[0, j] * self._x[0] + mix_w[1, j] * self._x[1]
+            for i in (0, 1):
+                d = self._x[i] - x0[j]
+                P0[j] += mix_w[i, j] * (self._P[i] + np.outer(d, d))
+        F = transition(dt)
+        for j in (0, 1):
+            self._x[j] = F @ x0[j]
+            self._P[j] = F @ P0[j] @ F.T + process_noise(dt, self.q_jerk[j])
+        self._mu = c
+        self.missed += 1
+        self.age += 1
+        self._combine()
+
+    def update(self, z: np.ndarray) -> None:
+        """Per-model Joseph-form update against the same measurement, then a
+        Bayes update of the mode probabilities from each model's innovation
+        likelihood. Log-domain, and shifted by the best model's log-likelihood
+        before exponentiating: a large innovation on either model can still
+        drive its raw likelihood to underflow, and the ratio between the two
+        must survive that even when neither is near it — cheap insurance,
+        not a response to a specific measured failure."""
+        z = np.asarray(z, dtype=np.float64).ravel()
+        log_l = np.zeros(2)
+        for j in (0, 1):
+            S = self._P[j][IP, IP] + self.R
+            y = z - self._x[j][IP]
+            Sinv = np.linalg.inv(S)
+            K = self._P[j] @ H.T @ Sinv
+            self._x[j] = self._x[j] + K @ y
+            IKH = np.eye(NX) - K @ H
+            self._P[j] = IKH @ self._P[j] @ IKH.T + K @ self.R @ K.T
+            self._P[j] = 0.5 * (self._P[j] + self._P[j].T)
+            sign, logdet = np.linalg.slogdet(S)
+            log_l[j] = -0.5 * float(y @ Sinv @ y) - 0.5 * logdet
+        log_l -= log_l.max()
+        num = self._mu * np.exp(log_l)
+        denom = num.sum()
+        if denom > 1e-300:
+            self._mu = num / denom
+        # else: a degenerate step (both likelihoods underflowed together) —
+        # keep the previous mode probabilities rather than divide by ~0.
+        self.missed = 0
+        self.frames_seen += 1
+        self._combine()
+
+    # ── Association support (against the COMBINED predicted state, so an
+    # IMMTrack gates exactly like a single KalmanTrack from the association
+    # algorithm's point of view) ─────────────────────────────────────────────
+
+    def predicted_measurement(self) -> np.ndarray:
+        return self._x_comb[IP].copy()
+
+    def innovation_cov(self) -> np.ndarray:
+        return self._P_comb[IP, IP] + self.R
+
+    def mahalanobis(self, z: np.ndarray) -> float:
+        y = np.asarray(z, dtype=np.float64).ravel() - self._x_comb[IP]
+        try:
+            return float(np.sqrt(max(y @ np.linalg.solve(self.innovation_cov(), y), 0.0)))
+        except np.linalg.LinAlgError:
+            return float('inf')
+
+    def __repr__(self) -> str:      # pragma: no cover - diagnostic only
+        return (f'IMMTrack(id={self.track_id} seen={self.frames_seen} '
+                f'missed={self.missed} mu={np.round(self._mu, 2).tolist()} '
+                f'p={np.round(self._x_comb[IP], 3).tolist()} '
+                f'v={np.round(self._x_comb[IV], 3).tolist()})')
+
+
 # ── Track management ─────────────────────────────────────────────────────────
 #
 # WHY A LIFECYCLE AT ALL
@@ -394,6 +706,16 @@ class TrackManager:
             exclusion mask failing, the whole scene reading as obstacle) can
             otherwise produce hundreds of clusters and hence hundreds of tracks,
             and the association cost is O(T·C).
+        evict_stale_tentative: when the table is full, a new cluster may take
+            the slot of the UNCONFIRMED track that has gone longest without a
+            measurement (at least one missed frame). Confirmed tracks and
+            tentative tracks still being hit are never evicted. OFF = the old
+            "refuse the birth" behaviour, bit-identical.
+        imm_enabled: births an :class:`IMMTrack` (generic + ballistic model,
+            blended) instead of a plain :class:`KalmanTrack`. OFF by default —
+            with it off every track built here is bit-identical to before this
+            class existed. The five ``imm_*`` args below are forwarded only
+            when it is on.
     """
 
     def __init__(
@@ -409,6 +731,13 @@ class TrackManager:
         confirm_window: int = 5,
         max_missed: int = 5,
         max_tracks: int = 12,
+        evict_stale_tentative: bool = False,
+        imm_enabled: bool = False,
+        imm_ballistic_q_jerk: Optional[float] = None,
+        imm_ballistic_sigma_a0: float = 2.0,
+        imm_gravity: np.ndarray = (0.0, 0.0, -9.81),
+        imm_mode_transition_stay_prob: float = 0.99,
+        imm_initial_mode_prob: np.ndarray = (0.5, 0.5),
     ) -> None:
         self.q_jerk = float(q_jerk)
         self.sigma_meas = float(sigma_meas)
@@ -420,6 +749,16 @@ class TrackManager:
         self.confirm_window = int(confirm_window)
         self.max_missed = int(max_missed)
         self.max_tracks = int(max_tracks)
+        self.evict_stale_tentative = bool(evict_stale_tentative)
+        self.imm_enabled = bool(imm_enabled)
+        # None (IMMTrack's own default) means "same as q_jerk" -- see
+        # IMMTrack's docstring for the measurement behind that default.
+        self.imm_ballistic_q_jerk = (None if imm_ballistic_q_jerk is None
+                                     else float(imm_ballistic_q_jerk))
+        self.imm_ballistic_sigma_a0 = float(imm_ballistic_sigma_a0)
+        self.imm_gravity = imm_gravity
+        self.imm_mode_transition_stay_prob = float(imm_mode_transition_stay_prob)
+        self.imm_initial_mode_prob = imm_initial_mode_prob
 
         self.tracks: list = []
         self._next_id = 1        # ids start at 1: 0 is the message's "no track"
@@ -457,6 +796,7 @@ class TrackManager:
         self.n_reaped_young = 0      # died before it was ever confirmed
         self.n_unassociated = 0      # clusters that matched no existing track
         self.n_over_capacity = 0     # clusters dropped because max_tracks was hit
+        self.n_evicted = 0           # stale tentative tracks evicted to make room
         self.life_sum = 0            # summed age, in perception frames
         self.life_n = 0
 
@@ -560,14 +900,25 @@ class TrackManager:
             # how often max_tracks was the thing that bit. Conflating the two
             # would hide a saturated tracker behind a tight gate.
             self.n_unassociated += 1
-            if len(self.tracks) >= self.max_tracks:
+            if len(self.tracks) >= self.max_tracks and not self._evict_one():
                 self.n_over_capacity += 1
                 continue
             self.n_births += 1
-            born = KalmanTrack(
-                zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
-                sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
-                track_id=self._next_id)
+            if self.imm_enabled:
+                born = IMMTrack(
+                    zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
+                    sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
+                    track_id=self._next_id,
+                    ballistic_q_jerk=self.imm_ballistic_q_jerk,
+                    ballistic_sigma_a0=self.imm_ballistic_sigma_a0,
+                    gravity=self.imm_gravity,
+                    mode_transition_stay_prob=self.imm_mode_transition_stay_prob,
+                    initial_mode_prob=self.imm_initial_mode_prob)
+            else:
+                born = KalmanTrack(
+                    zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
+                    sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
+                    track_id=self._next_id)
             self.tracks.append(born)
             self.last_assoc[ci] = born
             self._record(self._next_id, True)
@@ -614,6 +965,36 @@ class TrackManager:
         if track_id not in self._confirmed and sum(h) >= self.confirm_hits:
             self._confirmed.add(track_id)
 
+    def _evict_one(self) -> bool:
+        """Free one slot for a birth, or return False.
+
+        WHY. On the 2026-09-30 hardware run the table sat at max_tracks for the
+        whole run and 85 % of unmatched clusters were refused a track. The slots
+        were held by tentative tracks of flickering clutter that would be reaped
+        within max_missed frames anyway, while a thrown ball arriving meanwhile
+        got no track. A track that is unconfirmed AND has missed its latest
+        frame(s) is the least informative thing in the table; a new cluster
+        has at least the same claim to the slot.
+
+        Never touches a confirmed track (it may be carrying a velocity the CBF
+        uses) nor a tentative one hit on its last frame (it may be the ball,
+        three frames from confirmation).
+        """
+        if not self.evict_stale_tentative:
+            return False
+        cand = [t for t in self.tracks
+                if t.track_id not in self._confirmed and t.missed >= 1]
+        if not cand:
+            return False
+        victim = max(cand, key=lambda t: (t.missed, -t.track_id))
+        self.tracks.remove(victim)
+        self.n_evicted += 1
+        self.n_reaped_young += 1
+        self.life_sum += int(victim.frames_seen)
+        self.life_n += 1
+        self._hits.pop(victim.track_id, None)
+        return True
+
     def _reap(self) -> None:
         keep = []
         for t in self.tracks:
@@ -649,6 +1030,7 @@ class TrackManager:
             'reaped_young': self.n_reaped_young,
             'unassociated': self.n_unassociated,
             'over_capacity': self.n_over_capacity,
+            'evicted': self.n_evicted,
             'mean_life': (self.life_sum / self.life_n) if self.life_n else 0.0,
             'alive': len(self.tracks),
             'confirmed': len(self._confirmed),

@@ -241,3 +241,26 @@ def governor_from_params(P, log=None):
     if log is not None:
         log.info(gov.describe())
     return gov
+
+
+def directional_fade(qddot_nom, qdot, rows, fade, k_brake):
+    """Fade only what drives the binding margin DOWN.
+
+    ``rows`` are the gradient rows ``a`` of the binding family (sigma_min or self-collision gap), with the
+    convention of the rest of the filter: ``a . q_ddot`` > 0 raises the margin. For each row the component of
+    the nominal along ``a`` is removed (times ``fade`` = 1 - w) when it is negative, and the velocity
+    heading down the margin (``a . qdot`` < 0) is braked along ``a``. A nominal that helps the margin, or is
+    orthogonal to it, passes through unchanged; ``fade = 0`` is the identity.
+    """
+    out = np.array(qddot_nom, dtype=np.float64, copy=True)
+    for a in rows:
+        n2 = float(a @ a)
+        if n2 < 1e-12:
+            continue
+        c = float(a @ out)
+        if c < 0.0:
+            out -= fade * c * a / n2
+        v = float(a @ qdot)
+        if v < 0.0:
+            out -= fade * k_brake * v * a / n2
+    return out

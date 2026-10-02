@@ -334,7 +334,8 @@ def test_the_shipped_config_states_durations():
         cfg = yaml.safe_load(fh)
     trk, dist = cfg['tracking'], cfg['distance']
     assert trk['max_coast_s'] == pytest.approx(0.167)
-    assert trk['confirm_window_s'] == pytest.approx(0.167)
+    # 0.167 until 2026-09-30, shortened for thrown objects (see the yaml).
+    assert trk['confirm_window_s'] == pytest.approx(0.056)
     assert trk['confirm_hits_frac'] == pytest.approx(0.6)
     sd = trk['self_detection']
     assert (sd['window_s'], sd['confirm_s'], sd['release_s']) == \

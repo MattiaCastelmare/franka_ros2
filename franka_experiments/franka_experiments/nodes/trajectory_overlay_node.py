@@ -157,6 +157,13 @@ class TrajectoryOverlayNode(Node):
 
         self._show = declare_bool(self, 'show_window', True)
         self._win = declare_str(self, 'window_name', 'EE trajectory overlay')
+        # 0 = leave the window at the color frame's native resolution. The
+        # launch file fills these in from camera_depth_profile so this window
+        # lands at the SAME on-screen size as real_time_distance's — that one
+        # is auto-sized to the depth stream, which is usually a different
+        # resolution than this node's color stream.
+        self._win_w = declare_int(self, 'window_width', 0, minimum=0, maximum=8000)
+        self._win_h = declare_int(self, 'window_height', 0, minimum=0, maximum=8000)
         publish = declare_bool(self, 'publish_overlay', True)
 
         # Same settings for both: the two curves are meant to be compared, and
@@ -390,6 +397,8 @@ class TrajectoryOverlayNode(Node):
         try:
             if not self._win_open:
                 cv2.namedWindow(self._win, cv2.WINDOW_NORMAL)
+                if self._win_w > 0 and self._win_h > 0:
+                    cv2.resizeWindow(self._win, self._win_w, self._win_h)
                 self._win_open = True
             cv2.imshow(self._win, img)
             cv2.waitKey(1)

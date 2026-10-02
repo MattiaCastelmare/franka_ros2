@@ -709,6 +709,107 @@ def latency_compensation_terms(
     return h_pred, h_unc
 
 
+# ── Sensor range uncertainty ─────────────────────────────────────────────────
+#
+# uncertainty_margin and latency_compensation_terms above both price what the
+# TRACKER admits it does not know — a Kalman filter's own covariance. Neither
+# says anything about the RAW DEPTH READING itself: a structured-light /
+# stereo sensor's per-pixel range error is not a tracking artefact, it is a
+# property of the sensor, present on the very first frame of a brand-new
+# detection, before any track exists to have a covariance at all.
+#
+# Depth sensors of this kind measure a DISPARITY (or an equivalent phase/time
+# offset) and convert it to range through z = f*B/disparity, so a roughly
+# CONSTANT disparity error sigma_d [px] turns into a range error that grows
+# QUADRATICALLY with range:
+#
+#     sigma_z(z) = z^2 / (f_px * baseline_m) * sigma_d_px
+#
+# (differentiate z = f*B/d w.r.t. d and take |dz/dd|*sigma_d). This is a
+# textbook property of every stereo/structured-light depth camera on this
+# rig — it is not measured per-track, it is fit ONCE offline
+# (scripts/range_noise_calibration.py) against a static target at known
+# distances, and the fitted constants live in configuration like every other
+# sensor calibration value.
+
+
+def sensor_range_uncertainty(
+    z: float,
+    *,
+    f_px: float,
+    baseline_m: float,
+    sigma_d_px: float,
+    k_sigma: float,
+    margin_max: float,
+) -> float:
+    """[m] barrier tightening bought by the depth SENSOR's own range noise.
+
+        sigma_z = z^2 / (f_px * baseline_m) * sigma_d_px
+        margin  = min(k_sigma * sigma_z, margin_max)
+
+    This is a NEW, independent term from :func:`uncertainty_margin` — that one
+    prices the TRACKER's velocity covariance, this one prices the RAW RANGE
+    MEASUREMENT the tracker (and the residual estimator) is built from. They
+    answer different questions ("how sure is the filter about the velocity it
+    inferred" vs "how sure is the sensor about the distance it just read") and
+    are ADDITIVE, never alternatives: a fresh detection with no track yet has
+    zero tracker uncertainty and full sensor uncertainty; an old, well-tracked
+    obstacle still sits behind depth noise that does not shrink with more
+    frames, because it is a property of THIS frame's pixel, not of history.
+
+    Args:
+        z: [m] raw range from the camera to the nearest obstacle point — the
+            camera-frame depth of the winning pixel, NOT the surface gap `h`
+            (which has the capsule radius and dilation margin subtracted) and
+            NOT a base-frame Euclidean distance (which would reintroduce the
+            extrinsic calibration's own several-centimetre bias into a term
+            that is supposed to be about the sensor alone).
+        f_px: [px] focal length. fx and fy are equal to within sensor
+            manufacturing tolerance on the RealSense cameras this rig uses
+            (see distance_engine's dilation-margin comment for the same
+            simplification), so one scalar suffices.
+        baseline_m: [m] the sensor's physical stereo/structured-light
+            baseline — NOT `tracking.calibration_check.baseline_m` in
+            fr3_complete.yaml, which is an unrelated drift-detector reference
+            offset that happens to share a name.
+        sigma_d_px: [px] disparity (or equivalent) measurement error,
+            approximately constant for a given sensor — the number
+            scripts/range_noise_calibration.py fits.
+        k_sigma: how many standard deviations to reserve. 2.0 ~ 95% of a
+            Gaussian's one-sided mass, the same convention every other
+            k_sigma in this module uses.
+        margin_max: [m] clamp, for the same reason every other margin_max in
+            this module has one: an implausible single reading (a reflective
+            surface, a sensor glitch) must not drive the barrier deeply
+            negative and have the QP answer with a maximal retreat.
+
+    Returns:
+        A NON-NEGATIVE tightening to SUBTRACT from the barrier. Never
+        negative and never NaN: `z <= 0`, a non-finite input, or a
+        non-positive `f_px * baseline_m` all yield exactly 0.0 rather than a
+        guess, the same discipline :func:`uncertainty_margin` holds itself to
+        for a malformed covariance.
+    """
+    zf = float(z)
+    if not np.isfinite(zf) or zf <= 0.0 or k_sigma <= 0.0:
+        return 0.0
+    f = float(f_px)
+    b = float(baseline_m)
+    denom = f * b
+    if not np.isfinite(denom) or denom <= 0.0:
+        return 0.0
+    sd = float(sigma_d_px)
+    if not np.isfinite(sd) or sd < 0.0:
+        return 0.0
+    sigma_z = (zf * zf / denom) * sd
+    if not np.isfinite(sigma_z):
+        return 0.0
+    mm = float(margin_max)
+    if not np.isfinite(mm) or mm <= 0.0:
+        return 0.0
+    return float(min(k_sigma * sigma_z, mm))
+
+
 # ── Risk-weighted slack ──────────────────────────────────────────────────────
 #
 # The QP relaxes a family with ONE slack variable shared by every row in it:
@@ -1258,6 +1359,14 @@ class Obstacle(NamedTuple):
     # is the pre-fix behaviour and what the replay harness and the unit tests
     # construct. Identical to the fixed path whenever nothing is dropped.
     cp_label: str = ''
+    # ── Sensor range uncertainty (enable_sensor_range_uncertainty) ──────────
+    # RAW range from the camera to this obstacle point, camera frame [m] — see
+    # LinkDistance.range_m. Independent of the track fields above: this is a
+    # property of the CURRENT frame's pixel, not of accumulated evidence, so
+    # unlike v_vec/vel_cov it is never gated on frames_seen. None (the "no
+    # measurement" default, same convention as v_vec) contributes exactly
+    # zero.
+    range_m: Optional[float] = None
 
 
 class ObstacleSnap(NamedTuple):
@@ -1479,7 +1588,7 @@ class ConstraintBuilder:
     def __init__(self, P, kin, *, q_min, q_max, acc_lb, acc_ub,
                  sc_rows=None, sc_kin=None, sc_qi=None, sc_vi=None,
                  sc_q=None, sc_v=None, sing_rows=None, logger=None,
-                 qdot_max=None):
+                 qdot_max=None, brake_acc=None):
         self._P, self._kin, self._log = P, kin, logger
         self._q_min, self._q_max = q_min, q_max
         self._lb, self._ub = acc_lb, acc_ub
@@ -1494,8 +1603,9 @@ class ConstraintBuilder:
         # Braking authority per joint, byte-for-byte the expression
         # hard_accel_box uses, so the joint-limit row horizon and the box agree
         # on where the braking curve starts. Static — computed once.
-        self._a_auth = P.position_brake_eta * np.minimum(np.abs(acc_lb),
-                                                         np.abs(acc_ub))
+        base = (np.minimum(np.abs(acc_lb), np.abs(acc_ub)) if brake_acc is None
+                else np.asarray(brake_acc, dtype=np.float64))
+        self._a_auth = P.position_brake_eta * base
         self._sc_rows, self._sc_kin = sc_rows, sc_kin
         self._sc_qi, self._sc_vi = sc_qi, sc_vi
         self._sc_q, self._sc_v = sc_q, sc_v
@@ -1536,6 +1646,14 @@ class ConstraintBuilder:
         self._min_frames_eff = int(P.obstacle_velocity_min_frames)
         self._ff_min_frames_eff = int(P.velocity_feedforward_min_frames)
         self._apply_input_rate(self._in_hz)
+        # Fast-track trust: see _fast_track. Read once; getattr so a config
+        # that predates the block keeps the old behaviour exactly.
+        self._fast_on = bool(getattr(P, 'obstacle_velocity_fast_trust', False))
+        self._fast_min_frames = int(getattr(P, 'obstacle_velocity_fast_min_frames', 3))
+        self._fast_v = float(getattr(P, 'obstacle_velocity_fast_speed', 1.0))
+        self._fast_k = float(getattr(P, 'obstacle_velocity_fast_k_sigma', 2.0))
+        self._fast_max = float(getattr(P, 'obstacle_velocity_fast_max',
+                                       P.obstacle_velocity_max))
         self._qlim_stuck, self._fid_cache = {}, {}
         # Per-label smoothing state for the uncertainty margin.
         self._unc_ema: dict = {}
@@ -1567,6 +1685,7 @@ class ConstraintBuilder:
         self.diag_v_obs_link = ''
         self.diag_vapp = self.diag_hbrake = 0.0
         self.diag_hunc = 0.0
+        self.diag_hrng = 0.0        # largest sensor-range tightening [m]
         # ISO layer (iso_ssm_speed_rows): tightest SSM speed cap and largest
         # S_p of the last rebuild. inf / 0.0 mean the ISO rows contributed
         # nothing, which is also their flag-off state.
@@ -1578,6 +1697,7 @@ class ConstraintBuilder:
         self.diag_vobs_hdot = 0.0
         self.diag_vobs_hdot_n = 0
         self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
+        self.diag_fast = 0          # rows whose track passed the fast-track test
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
         self.diag_outrun_r = 0.0    # largest closing/outrunnable ratio this rebuild
@@ -1708,11 +1828,13 @@ class ConstraintBuilder:
         self.diag_hbrake = 0.0     # largest braking-distance tightening [m]
         self.diag_hunc   = 0.0     # largest uncertainty tightening [m]
         self.diag_hlat   = 0.0     # largest latency-compensation tightening [m]
+        self.diag_hrng   = 0.0     # largest sensor-range tightening [m]
         self.diag_vobs_hdot   = 0.0
         self.diag_vobs_hdot_n = 0
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
         self.diag_hstand = 0.0
+        self.diag_fast = 0
         # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
         # inf/0.0 with the flag off, which is how the CBFDIAG line says
         # 'the ISO rows are not doing anything' without the config open.
@@ -1855,6 +1977,9 @@ class ConstraintBuilder:
             # only ever tighten the QP, never loosen it. Trusting the receding
             # half would mean relaxing a barrier on a 30 Hz vision estimate.
             v_o = 0.0
+            fast = self._fast_track(ob, n_w)
+            if fast:
+                self.diag_fast += 1
             if self._P.obstacle_velocity_enabled:
                 if self._P.obstacle_velocity_source == 'tracker':
                     # The tracked 3D velocity projected on n̂. The residual's
@@ -1976,7 +2101,11 @@ class ConstraintBuilder:
                 else:
                     while len(hist) > k_med:
                         hist.pop(0)
-                v_o = float(np.median([x[1] for x in hist]))
+                v_med = float(np.median([x[1] for x in hist]))
+                # A fast-trusted track is not the artefact the median exists
+                # for (see _fast_track): its rising edge passes at once, the
+                # median still governs the decay and every other row.
+                v_o = max(v_med, v_o) if fast else v_med
 
             # ── Tracked obstacle velocity INSIDE ḣ (enable_vobs_in_hdot) ─────
             # ḣ = aᵀq̇ − n̂ᵀv_obs with the track's own 3D velocity, SIGNED: an
@@ -1989,10 +2118,11 @@ class ConstraintBuilder:
             # retreat cap and the evasion keep using v_o.
             v_hdot, vobs_track = v_o, False
             if (vobs_in_hdot and ob.v_vec is not None
-                    and ob.frames_seen >= self._min_frames_eff):
+                    and (ob.frames_seen >= self._min_frames_eff or fast)):
                 vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
                 if np.isfinite(vn):
-                    v_hdot = float(np.clip(vn, -vobs_hdot_max, vobs_hdot_max))
+                    lim = max(vobs_hdot_max, self._fast_max) if fast else vobs_hdot_max
+                    v_hdot = float(np.clip(vn, -lim, lim))
                     vobs_track = True
             # NOT appended here. v_obs is indexed BY ROW in the QP
             # (h_qp = k1*(A@qdot - v_obs) + ...), so it has to be appended in
@@ -2090,6 +2220,26 @@ class ConstraintBuilder:
                 if h_lat > self.diag_hlat:
                     self.diag_hlat = h_lat
 
+            # ── Sensor range uncertainty (enable_sensor_range_uncertainty) ──
+            # After the smoothing store, like every term above, so it never
+            # compounds. UNLIKE Phase 3/4 this is NOT gated on n_seen /
+            # obstacle_velocity_min_frames: it prices the raw depth pixel THIS
+            # frame's row was built from, not an accumulated track estimate,
+            # so it is exactly as available on a brand-new detection (frame 1)
+            # as on a track that has been confirmed for a second. Additive
+            # with Phase 3/4 — three independent `h -=` statements, no shared
+            # clamp between them; see the composition test.
+            if self._P.enable_sensor_range_uncertainty and ob.range_m is not None:
+                h_rng = sensor_range_uncertainty(
+                    ob.range_m, f_px=self._P.sensor_range_f_px,
+                    baseline_m=self._P.sensor_range_baseline_m,
+                    sigma_d_px=self._P.sensor_range_sigma_d_px,
+                    k_sigma=self._P.sensor_range_k_sigma,
+                    margin_max=self._P.sensor_range_margin_max)
+                h -= h_rng
+                if h_rng > self.diag_hrng:
+                    self.diag_hrng = h_rng
+
             # ── Speed-proportional standoff (enable_velocity_standoff) ──────
             # d_safe_eff = d_safe + time_s·v_app: the barrier moves out
             # LINEARLY with the closing speed, so a fast obstacle is avoided
@@ -2105,7 +2255,7 @@ class ConstraintBuilder:
             # releases the barrier smoothly instead of stepping it by k0·h_std.
             if stand_on:
                 raw = (velocity_standoff(v_o, time_s=stand_t, max_m=stand_max)
-                       if n_seen >= self._P.obstacle_velocity_min_frames else 0.0)
+                       if (n_seen >= self._P.obstacle_velocity_min_frames or fast) else 0.0)
                 prev = self._stand_ema.get(lbl)
                 h_std = raw if (prev is None or raw >= prev) else (
                     stand_alpha * prev + (1.0 - stand_alpha) * raw)
@@ -2737,6 +2887,49 @@ class ConstraintBuilder:
             depth_gain=self._P.retreat_cap_depth_gain, depth_speed_ref=self._P.retreat_cap_depth_speed_ref,
             engage_gap=self._P.retreat_cap_engage_gap, max_speed=self._P.retreat_cap_max_speed)
 
+    def _fast_track(self, ob, n_w: np.ndarray) -> bool:
+        """Is this a young track whose CLOSING speed is beyond doubt?
+
+        WHY A SECOND GATE
+        -----------------
+        ``obstacle_velocity_min_frames`` / ``_min_span_s`` hold every track's
+        velocity at 0 for ~265 ms, because on hardware most tracks live two
+        frames and report their own prior (sigma_v0) as a velocity. That is the
+        right default and the wrong answer for a thrown object: on the
+        2026-09-30 ball throws (rosbag/ball_throws_2, 2.6-4.5 m/s) the ball
+        reached the arm in less than the gate, so its velocity never reached
+        the QP and the barrier acted on position alone, 30-110 ms before
+        contact.
+
+        The two cases differ in something the track REPORTS about itself: a
+        prior-dominated track has a velocity covariance as large as its
+        velocity, a real fast object has a closing speed several sigma above
+        zero. So a track younger than the span gate is trusted when
+
+            n̂ᵀv − k·sqrt(n̂ᵀ P_vv n̂)  >=  v_fast   and   frames_seen >= n_min
+
+        Measured on the replay of that bag (scripts/ball_throw_eval.py,
+        k=2, v_fast=1.0 m/s): true on the ball in 7 of 9 passes, a median
+        ~180 ms before closest approach; everywhere else ~15 rows a minute, the
+        throwers' own arms included. Static clutter never passes it: its
+        closing speed p99 is 0.86 m/s at sigma 0.06.
+
+        Only the APPROACHING half can pass (v_fast > 0), so the gate can only
+        tighten the QP, like every other term on this path.
+        """
+        if not self._fast_on or ob.v_vec is None or ob.frames_seen < self._fast_min_frames:
+            return False
+        vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
+        if not np.isfinite(vn) or vn < self._fast_v:
+            return False
+        sn = 0.0
+        if ob.vel_cov is not None:
+            C = np.asarray(ob.vel_cov, dtype=np.float64)
+            sn = float(np.sqrt(max(float(n_w @ C @ n_w), 0.0)))
+            if not np.isfinite(sn):
+                return False
+        return vn - self._fast_k * sn >= self._fast_v
+
     def _obstacle_speed_tracked(self, ob, n_w: np.ndarray, lbl: str = '',
                                 t_cap: float = 0.0) -> float:
         """Component of the TRACKED obstacle velocity along n̂, in m/s.
@@ -2801,16 +2994,20 @@ class ConstraintBuilder:
         gate on MEASUREMENTS, not on age: a track coasting through an occlusion
         does not accumulate evidence it does not have.
         """
-        if ob.v_vec is None or ob.frames_seen < self._min_frames_eff:
+        fast = self._fast_track(ob, n_w)
+        if ob.v_vec is None or (ob.frames_seen < self._min_frames_eff and not fast):
             return 0.0
         v = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
         if not np.isfinite(v):
             return 0.0
         # Same clamp as the residual path, and for the same reason: one bad
         # depth frame must not be able to fabricate metres per second. The
-        # tracker makes that far less likely, not impossible.
-        v = float(np.clip(v, -self._P.obstacle_velocity_max,
-                          self._P.obstacle_velocity_max))
+        # tracker makes that far less likely, not impossible. A fast-trusted
+        # track has already shown its speed clears its own uncertainty, so it
+        # gets the higher ceiling a thrown object needs.
+        vmax = max(self._P.obstacle_velocity_max, self._fast_max) if fast \
+            else self._P.obstacle_velocity_max
+        v = float(np.clip(v, -vmax, vmax))
         db = float(self._P.obstacle_velocity_track_deadband)
         if db > 0.0:
             # SOFT threshold, not a gate: subtracting keeps the map continuous.

@@ -75,7 +75,7 @@ from franka_experiments.utils.cbf_qp_assembly import (
     pad_rows_to_block,
     tangential_bias,
 )
-from franka_experiments.utils.state_governor import governor_from_params
+from franka_experiments.utils.state_governor import directional_fade, governor_from_params
 from franka_experiments.utils.livelock import LivelockDetector, ProgressWindow
 from franka_experiments.utils.cbf_state_rows import (
     FR3_JOINT_KEYS,
@@ -153,6 +153,28 @@ class CBFSafetyFilter(Node):
         # rated 10 (libfranka kMaxJointAcceleration). See qddot_max_abs in
         # fr3_control.yaml for the measurement that made this necessary.
         qdd_cap = np.minimum(jl['decel_max'], P.qddot_max_abs)
+        # The braking curve toward the joint limits keeps deceleration_limit
+        # whatever the box is: it is the number the firmware's own velocity
+        # envelope is built from, so the position side cannot change.
+        self._brake_acc = qdd_cap.copy()
+        # qddot_accel_limits (fr3_control.yaml) widens the box the QP may
+        # COMMAND — what an evasive manoeuvre can use — independently of it.
+        # deceleration_limit is not an acceleration limit: on joint2 it is
+        # 2.585 rad/s^2 against libfranka's rated 10, and on the 2026-09-30
+        # ball throws the command sat at this box from the first tick the
+        # filter acted. Empty = the old box, bit-identical.
+        acc = getattr(P, 'qddot_accel_limits', None)
+        if acc:
+            acc = np.asarray(acc, dtype=np.float64).reshape(-1)
+            if acc.shape != qdd_cap.shape or not np.all(acc > 0.0):
+                raise ValueError(f'qddot_accel_limits must be {qdd_cap.size} positive '
+                                 f'values, got {acc.tolist()}')
+            qdd_cap = np.minimum(acc, P.qddot_max_abs)
+            # A box NARROWER than the braking authority must narrow the curve too: the curve assumes the
+            # joint can decelerate at brake_eta * brake_acc, and a box that cannot deliver that (wrists at
+            # 6 rad/s^2 with a curve sized for 10 x 0.6 = 6) leaves no margin at all for stopping at a
+            # limit. Widening the box leaves the curve where it was (this min is then the old value).
+            self._brake_acc = np.minimum(self._brake_acc, qdd_cap)
         self._lb, self._ub = -qdd_cap, qdd_cap
         self._qdot_max = jl['qdot_max']
 
@@ -198,6 +220,7 @@ class CBFSafetyFilter(Node):
         self._rows = ConstraintBuilder(
             P, kin, q_min=self._q_min, q_max=self._q_max,
             acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(),
+            brake_acc=self._brake_acc,
             qdot_max=self._qdot_max, **opt)
 
         # ── 4. QP, preallocated once ────────────────────────────────────
@@ -731,6 +754,7 @@ class CBFSafetyFilter(Node):
                 track_id=int(ld.track_id),
                 cp_label=cp_label,
                 **self._latency_fields(ld),
+                **self._range_field(ld),
             ))
         items = tuple(parsed)
         now = self._now()
@@ -788,6 +812,17 @@ class CBFSafetyFilter(Node):
             pos_cov=np.asarray(ld.position_covariance, dtype=np.float64).reshape(3, 3),
             pv_cov=np.asarray(ld.position_velocity_covariance,
                               dtype=np.float64).reshape(3, 3))
+
+    @staticmethod
+    def _range_field(ld) -> dict:
+        """``{'range_m': ...}`` from a LinkDistance, or an empty dict when the
+        message package predates the field (Obstacle.range_m then stays
+        None and enable_sensor_range_uncertainty's term evaluates to 0.0) or
+        when this entry did not carry a raw range (the 0.0 wire sentinel —
+        see LinkDistance.range_m)."""
+        if not hasattr(ld, 'range_m') or ld.range_m <= 0.0:
+            return {}
+        return dict(range_m=float(ld.range_m))
 
     # ═════════════════════════════════════════════════════════════════════
     #  Perception rate (50 Hz) — geometry only; Pinocchio lives here
@@ -1047,9 +1082,24 @@ class CBFSafetyFilter(Node):
                 dt=self._dt_qp)
             self._diag_gov = gov
             if gov.w < 1.0:
-                qddot_nom = (gov.w * qddot_nom
-                             + (1.0 - gov.w) * (-P.k_brake * qdot))
-                w_task *= gov.w
+                rows_dir = None
+                if (P.state_governor_directional and snap is not None
+                        and gov.binding in ('sing', 'sc')):
+                    grp = G_SING if gov.binding == 'sing' else G_SC
+                    idx = np.flatnonzero(snap.group == grp)
+                    if idx.size:
+                        rows_dir = snap.A[idx]
+                if rows_dir is not None:
+                    # Directional fade: only the part of the nominal that drives the binding margin DOWN
+                    # (a . q_ddot < 0 on that family's rows) is removed, and only the part of the velocity
+                    # heading that way is braked. The rest of the task keeps running, so a pose the task
+                    # itself would leave (joint 6 folded against link 5, sigma_min low) is left instead of
+                    # held by the very fade that is meant to protect it.
+                    qddot_nom = directional_fade(qddot_nom, qdot, rows_dir, 1.0 - gov.w, P.k_brake)
+                else:
+                    qddot_nom = (gov.w * qddot_nom
+                                 + (1.0 - gov.w) * (-P.k_brake * qdot))
+                    w_task *= gov.w
                 if gov.w <= 0.0 and not self._gov_held:
                     self.get_logger().warn(
                         f'GOVERNOR hold: {gov.binding} margin exhausted '
@@ -1195,7 +1245,7 @@ class CBFSafetyFilter(Node):
             q_margin=P.position_margin_rad, brake_eta=P.position_brake_eta,
             dt=self._dt_qp, relax_dt=P.state_box_relax_s,
             out_lb=self._box_lb[:NV], out_ub=self._box_ub[:NV],
-            clip_to_limits=P.accel_box_clip_to_limits)
+            clip_to_limits=P.accel_box_clip_to_limits, brake_acc=self._brake_acc)
         if P.slew_box_enabled:
             self._box_lb[:NV], self._box_ub[:NV] = apply_slew_limit(
                 self._box_lb[:NV], self._box_ub[:NV],

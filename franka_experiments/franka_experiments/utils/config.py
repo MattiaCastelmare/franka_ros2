@@ -430,6 +430,7 @@ CBF_PARAM_SPEC = {
     'velocity_box_margin': ('float', dict(positive=True, maximum=1.0)),
     'qddot_max_abs': ('float', dict(positive=True, maximum=50.0)),
     'state_governor_enabled': ('bool', dict()),
+    'state_governor_directional': ('bool', dict()),
     'governor_qdot_band': ('float', dict(positive=True, maximum=3.0)),
     'governor_sigma_band': ('float', dict(positive=True, maximum=1.0)),
     'governor_sc_band': ('float', dict(positive=True, maximum=0.5)),
@@ -450,6 +451,13 @@ CBF_PARAM_SPEC = {
     'obstacle_velocity_median_s': ('float', dict(minimum=0.0, maximum=1.0)),
     'obstacle_velocity_rot_hold_s': ('float', dict(minimum=0.0, maximum=1.0)),
     'obstacle_velocity_min_span_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    # Fast-track trust (cbf_state_rows._fast_track): a young track whose
+    # closing speed clears k sigma of its own covariance bypasses the span gate.
+    'obstacle_velocity_fast_trust': ('bool', dict()),
+    'obstacle_velocity_fast_min_frames': ('int', dict(minimum=1, maximum=100)),
+    'obstacle_velocity_fast_speed': ('float', dict(positive=True, maximum=10.0)),
+    'obstacle_velocity_fast_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
+    'obstacle_velocity_fast_max': ('float', dict(positive=True, maximum=10.0)),
     'velocity_feedforward_min_span_s': ('float', dict(minimum=0.0, maximum=2.0)),
     # [Hz] the perception rate the gates are sized with BEFORE the stream has
     # been measured. A claim about the camera profile, corrected at runtime.
@@ -461,6 +469,16 @@ CBF_PARAM_SPEC = {
     'enable_uncertainty_margin': ('bool', dict()),
     'uncertainty_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
     'uncertainty_margin_alpha': ('float', dict(minimum=0.0, maximum=0.99)),
+    # Sensor range uncertainty: prices the raw depth READING's own noise,
+    # independent of (and additive with) uncertainty_margin above, which
+    # prices the tracker's velocity covariance. See cbf_state_rows.
+    # sensor_range_uncertainty.
+    'enable_sensor_range_uncertainty': ('bool', dict()),
+    'sensor_range_f_px': ('float', dict(positive=True, maximum=5000.0)),
+    'sensor_range_baseline_m': ('float', dict(positive=True, maximum=1.0)),
+    'sensor_range_sigma_d_px': ('float', dict(minimum=0.0, maximum=10.0)),
+    'sensor_range_k_sigma': ('float', dict(minimum=0.0, maximum=10.0)),
+    'sensor_range_margin_max': ('float', dict(positive=True, maximum=1.0)),
     'enable_lateral_evasion': ('bool', dict()),
     'lateral_evasion_gain': ('float', dict(minimum=0.0, maximum=50.0)),
     'lateral_evasion_max_bias': ('float', dict(positive=True, maximum=100.0)),
@@ -598,7 +616,8 @@ CBF_PARAM_SPEC = {
 #: ROS parameters — their types (a string list, an optional float) are outside
 #: what :mod:`utils.params` validates, and both are consumed once at
 #: construction rather than tuned live.
-CBF_RAW_KEYS = ('self_collision_safety_distance', 'self_collision_exclude_pairs')
+CBF_RAW_KEYS = ('self_collision_safety_distance', 'self_collision_exclude_pairs',
+                'qddot_accel_limits')
 
 
 def load_cbf_config(node, pkg: str = 'franka_experiments',
