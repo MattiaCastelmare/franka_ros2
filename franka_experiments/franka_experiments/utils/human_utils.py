@@ -123,10 +123,13 @@ def extract_arm_landmarks(
     landmarks = {}
     for name, index in zip(keypoint_names, indices):
         point = pose_landmarks.landmark[index]
+        # MediaPipe extrapolates out-of-frame landmarks: clipped to the border
+        # they would read the depth of an unrelated pixel, so they are not visible
+        in_frame = 0.0 <= point.x <= 1.0 and 0.0 <= point.y <= 1.0
         landmarks[name] = {
             "x_px": float(np.clip(point.x * width, 0, width - 1)),
             "y_px": float(np.clip(point.y * height, 0, height - 1)),
-            "visibility": float(getattr(point, "visibility", 0.0)),
+            "visibility": float(getattr(point, "visibility", 0.0)) if in_frame else 0.0,
         }
     return landmarks
 

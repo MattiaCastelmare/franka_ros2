@@ -29,7 +29,7 @@ from franka_experiments.utils.ros import (
     resolve_controller_manager_name,
 )
 
-DEFAULT_BAG_PATH = '/bags/arm_repeated'
+DEFAULT_BAG_PATH = '/bags/varied'
 
 # Caricamento dei default per il robot (necessari per la parte real)
 _LAUNCH_DEFAULTS, _LAUNCH_DEFAULTS_PATH = load_launch_defaults()

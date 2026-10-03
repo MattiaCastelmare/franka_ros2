@@ -9,6 +9,7 @@ capsule-based representation for CBF control.
 import os
 import rclpy
 from functools import partial
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Float32
 from sensor_msgs.msg import JointState
@@ -61,8 +62,7 @@ class HumanDistance(Node):
         # Initialize Pinocchio
         self.pin_ok, self.model, self.data = init_pinocchio_from_xacro(self)
         if not self.pin_ok:
-            self.get_logger().error('Pinocchio initialization failed. Shutting down.')
-            return
+            raise RuntimeError('Pinocchio initialization failed.')
 
         # Arm joint names (fingers are locked) and cached link frame ids
         self.joint_names = list(self.model.names)[1:]
@@ -142,12 +142,6 @@ class HumanDistance(Node):
 
     def distance_loop(self):
         """Hybrid distance computation: Robot Control Points vs All Valid Human Capsules."""
-        if self.latest_joint_state is None:
-            return
-        q = self.joint_positions()
-        if q is None:
-            return
-
         # Stamp with the camera frame the arm states come from
         header = next(iter(self.latest_arm_states.values())).header
 
@@ -158,9 +152,9 @@ class HumanDistance(Node):
         # Aggregate Capsules from all tracked arms
         for side in self.active_sides:
             state = self.latest_arm_states[side]
-            
-            # Check basic human tracking validity (shoulder must be valid)
-            if state is None or not state.keypoint_valid[0]:
+
+            # Any valid keypoint is enough: forearm and hand matter even with the shoulder occluded
+            if state is None or not any(state.keypoint_valid):
                 continue
                 
             human_kpts, human_vels, human_valid = extract_human_keypoints(state)
@@ -175,9 +169,17 @@ class HumanDistance(Node):
             confidence_sum += state.confidence
             valid_arms_count += 1
 
-        # If no valid human arms are currently tracked, skip distance computation
+        # No valid human capsule: empty heartbeat ("nothing near"), no robot state needed
         if not all_human_capsules:
             self.per_link_pub.publish(MultiLinkDistance(header=header))
+            return
+
+        # Human present but no robot state: publish nothing, so the controller sees a stale channel
+        if self.latest_joint_state is None:
+            self.get_logger().warn('No joint states yet: distances not published.', throttle_duration_sec=2.0)
+            return
+        q = self.joint_positions()
+        if q is None:
             return
 
         avg_confidence = confidence_sum / valid_arms_count
@@ -196,26 +198,16 @@ class HumanDistance(Node):
         robot_cps = define_control_points(transforms, self.robot_cfg, self.dist_cfg)
         
         msg = MultiLinkDistance(header=header)
-        links_dict = {}
-
-        # Minimum Distance Computation (Robot Control Points vs Human Capsules)
-        for cp in robot_cps:
-            # Compares the single control point against all aggregated human capsules
-            best_dist_info = self.robot_geom.minimum_distance_to_human([cp], all_human_capsules)
-            
-            if best_dist_info is not None:
-                link_name = cp['source_capsule']
-                if link_name not in links_dict or best_dist_info['distance'] < links_dict[link_name]['distance']:
-                    links_dict[link_name] = best_dist_info
-        
         global_min_dist = float('inf')
         closest_capsule_name = ""
 
-        # Populate CBF Message
-        for link_name, info in links_dict.items():
+        # One entry per control point, in the fixed control-point order
+        for cp in robot_cps:
+            # Compares the single control point against all aggregated human capsules
+            info = self.robot_geom.minimum_distance_to_human([cp], all_human_capsules)
+
             ld = LinkDistance()
-            
-            ld.robot_link_name = link_name
+            ld.robot_link_name = cp['source_capsule']
             ld.human_capsule = str(info['human_capsule'])
             ld.distance = float(info['distance'])
             
@@ -271,7 +263,7 @@ def main(args=None):
     node = HumanDistance()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

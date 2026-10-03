@@ -10,8 +10,7 @@ kept outside this node.
 
 import os
 import threading
-import time
-import cv2
+import traceback
 import mediapipe as mp
 import numpy as np
 import rclpy
@@ -33,7 +32,7 @@ from franka_experiments.utils.human_utils import (
     deproject, depth_patch_median, extract_arm_landmarks,
     measurement_age, quaternion_to_rotation, build_arm_state_msg,
     build_prediction_msg, build_2d_landmarks_msg, format_topic,
-    check_engagement_start, check_engagement_loss
+    check_engagement_start, check_engagement_loss, stamp_to_ns
 )
 
 
@@ -93,6 +92,7 @@ class HumanTracker(Node):
         # MediaPipe runs in a separate worker so old camera frames never accumulate
         self.frame_lock = threading.Lock()
         self.pending_rgbd = None
+        self.frame_ready = threading.Event()
         self.stop_event = threading.Event()
 
         # Static camera -> robot-base transform, cached after the first lookup
@@ -136,11 +136,12 @@ class HumanTracker(Node):
         camera_info_topic = str(config["camera_info_topic"])
 
         # Subscribers and Synchronizer
+        rgbd_qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
         self.color_sub = Subscriber(
-            self, Image, color_topic, qos_profile=qos_profile_sensor_data
+            self, Image, color_topic, qos_profile=rgbd_qos
         )
         self.depth_sub = Subscriber(
-            self, Image, depth_topic, qos_profile=qos_profile_sensor_data
+            self, Image, depth_topic, qos_profile=rgbd_qos
         )
         self.rgbd_sync = ApproximateTimeSynchronizer(
             [self.color_sub, self.depth_sub],
@@ -215,39 +216,54 @@ class HumanTracker(Node):
         )
 
     def rgbd_cb(self, color_msg, depth_msg):
-        """Store only the newest synchronized RGB-D pair."""
+        """Store only the newest synchronized RGB-D pair and wake the worker."""
         with self.frame_lock:
             self.pending_rgbd = (color_msg, depth_msg)
+        self.frame_ready.set()
 
     def processing_loop(self):
-        """Process the newest available pair at a limited inference rate."""
-        period = 1.0 / self.inference_hz
-        next_run = time.monotonic()
+        """Process each new pair as soon as it arrives, at most inference_hz.
+
+        The cap works on the image stamps: a frame closer than ~one period to
+        the last processed one is skipped, never delayed, so it adds no latency.
+        """
+        min_spacing_ns = int(0.9e9 / self.inference_hz)  # 10% tolerance on stamp jitter
+        last_stamp_ns = None
 
         while not self.stop_event.is_set():
-            wait_s = max(0.0, next_run - time.monotonic())
-            if self.stop_event.wait(wait_s):
-                break
+            # The timeout only lets a shutdown be noticed while no frame arrives
+            if not self.frame_ready.wait(timeout=0.1):
+                continue
 
             with self.frame_lock:
                 rgbd = self.pending_rgbd
                 self.pending_rgbd = None
+                self.frame_ready.clear()
+            if rgbd is None:
+                continue
 
-            if rgbd is not None:
-                try:
-                    self.process_rgbd(*rgbd)
-                except Exception:
-                    if not rclpy.ok():
-                        break
-                    raise
+            stamp_ns = stamp_to_ns(rgbd[0])
+            if last_stamp_ns is not None and 0 <= stamp_ns - last_stamp_ns < min_spacing_ns:
+                continue
+            last_stamp_ns = stamp_ns
 
-            next_run = max(next_run + period, time.monotonic())
+            try:
+                self.process_rgbd(*rgbd)
+            except Exception:
+                if not rclpy.ok():
+                    break
+                # Keep the worker alive: a dead thread would silently stop every publication
+                self.get_logger().error(
+                    f"Frame processing failed:\n{traceback.format_exc()}",
+                    throttle_duration_sec=2.0,
+                )
 
     def process_rgbd(self, color_msg, depth_msg):
         """Convert and process one synchronized RGB-D pair."""
         try:
+            # MediaPipe wants RGB, which is also the RealSense encoding: no conversion
             self.last_image = self.bridge.imgmsg_to_cv2(
-                color_msg, desired_encoding="bgr8")
+                color_msg, desired_encoding="rgb8")
             self.last_depth = self.bridge.imgmsg_to_cv2(
                 depth_msg, desired_encoding="passthrough")
         except Exception as exc:
@@ -323,6 +339,7 @@ class HumanTracker(Node):
             return list(self.kfs.values())[0].dt
         return float(np.clip(dt, 1e-3, 0.2))
 
+
     # ------------------------------------------------------------------
     # Kalman update and publications
     # ------------------------------------------------------------------
@@ -331,8 +348,7 @@ class HumanTracker(Node):
             return
 
         # Run MediaPipe pose estimation on the latest RGB image and extract 2D keypoints
-        image_rgb = cv2.cvtColor(self.last_image, cv2.COLOR_BGR2RGB)
-        result = self.pose.process(image_rgb)
+        result = self.pose.process(self.last_image)
 
         # Compute current time for dt and engage logic
         current_time = self.current_image_time.nanoseconds * 1e-9
@@ -361,9 +377,9 @@ class HumanTracker(Node):
         # Engage Logic
         if not self.is_engaged:
             if check_engagement_start(self.active_sides, self.visibility_threshold, current_visibilities):
-                if getattr(self, 'first_visible_time', None) is None:
+                if self.first_visible_time is None:
                     self.first_visible_time = current_time
-                elif (current_time - self.first_visible_time) >= getattr(self, 'engage_stability_s', 0.3):
+                elif (current_time - self.first_visible_time) >= self.engage_stability_s:
                     self.is_engaged = True
                     self.first_visible_time = None
                     self.get_logger().info(
@@ -374,6 +390,7 @@ class HumanTracker(Node):
                 self.first_visible_time = None
 
             if not self.is_engaged:
+                self.publish_disengaged_states(current_visibilities)
                 return
 
         # Compute the time delta since the last update
@@ -490,7 +507,8 @@ class HumanTracker(Node):
             for i in range(4):
                 if keypoint_valid[i] and speed[i] > self.max_speed_m_s:
                     self.get_logger().warn(
-                        f"{log_prefix}Anomalous velocity for {self.KEYPOINT_NAMES[i]}: {speed[i]:.2f} m/s. Discard data."
+                        f"{log_prefix}Anomalous velocity for {self.KEYPOINT_NAMES[i]}: {speed[i]:.2f} m/s. Discard data.",
+                        throttle_duration_sec=1.0,
                     )
                     keypoint_valid[i] = False
                     self.kfs[side].reset(i)
@@ -528,9 +546,9 @@ class HumanTracker(Node):
         # Disengage Logic
         if self.is_engaged:
             if check_engagement_loss(self.active_sides, current_validities):
-                if getattr(self, 'first_lost_time', None) is None:
+                if self.first_lost_time is None:
                     self.first_lost_time = current_time
-                elif (current_time - self.first_lost_time) >= getattr(self, 'loss_stability_s', 0.5):
+                elif (current_time - self.first_lost_time) >= self.loss_stability_s:
                     self.is_engaged = False
                     self.first_lost_time = None
                     self.get_logger().warn(
@@ -544,6 +562,20 @@ class HumanTracker(Node):
                         self.last_valid_time[side][:] = np.nan
             else:
                 self.first_lost_time = None
+
+    def publish_disengaged_states(self, visibilities):
+        """Heartbeat while no arm is engaged: a state with every keypoint invalid.
+
+        human_distance turns it into an empty MultiLinkDistance, which the controller
+        reads as "nothing near"; silence would read as a dead perception.
+        """
+        for side in self.active_sides:
+            self.state_pubs[side].publish(build_arm_state_msg(
+                positions=np.full((4, 3), np.nan), velocities=np.full((4, 3), np.nan),
+                visibilities=visibilities[side], measured=np.zeros(4, dtype=bool),
+                keypoint_valid=np.zeros(4, dtype=bool), age=np.full(4, -1.0),
+                header=self.image_header, base_frame=self.base_frame,
+            ))
 
     def stop_worker(self):
         self.stop_event.set()

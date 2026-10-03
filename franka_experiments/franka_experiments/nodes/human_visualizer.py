@@ -116,8 +116,10 @@ class HumanArmVisualizer(Node):
             depth=1,
         )
 
+        # Full-resolution images need RELIABLE
+        image_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self.image_sub = self.create_subscription(
-            Image, color_topic, self.image_cb, sensor_qos
+            Image, color_topic, self.image_cb, image_qos
         )
 
         # --- Dynamic Subscriptions for Arms ---
@@ -144,7 +146,7 @@ class HumanArmVisualizer(Node):
 
         # --- Publishers ---    
         overlay_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
