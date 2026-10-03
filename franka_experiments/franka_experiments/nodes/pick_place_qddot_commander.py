@@ -21,6 +21,7 @@ static friction, and the EE orientation drifts. easy_torque.launch.py wires it.
 
 from __future__ import annotations
 
+import os
 import math
 import threading
 import time
@@ -31,6 +32,7 @@ import pinocchio as pin
 
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
@@ -39,7 +41,7 @@ from franka_experiments.utils.node_runtime import (
     get_namespace_from_config,
     run_node_main,
 )
-from franka_experiments.utils.cbf_utils import load_robot_config
+from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.kinematics import (
     generate_urdf_from_xacro,
     load_pinocchio_model,
@@ -173,98 +175,82 @@ class PickPlaceQddotCommander(Node):
         self._stop_end = 0.0
         self._running = False
 
+        # ── Load config files ────────────────────────────────────────────
+        config_control = os.path.join(
+            get_package_share_directory("franka_experiments"),
+            "config",
+            "fr3_control.yaml",
+        )
+        config_pick = os.path.join(
+            get_package_share_directory("franka_experiments"),
+            "config",
+            "pick_place.yaml",
+        )
+
         # ── Load robot config (topics + per-joint limits) ────────────────
-        _cfg    = load_robot_config('control')
+        _cfg    = load_robot_config(config_control)
         _topics = _cfg['topics']
         _limits = _cfg['joint_limits']
         _jnames = [f'joint{i}' for i in range(1, 8)]
 
-        # ── Parameters ───────────────────────────────────────────────────
-        self.declare_parameter('qddot_safe_topic', _topics.get('qddot_nom', '/NS_1/qddot_nom'))
-        self.declare_parameter('q_des_topic',      '/NS_1/q_des_state')
-        self.declare_parameter('joint_state_topic', AUTO_SENTINEL)
-        self.declare_parameter('ee_frame',         'fr3_hand_tcp')
-        self.declare_parameter('rate_hz',          100.0)
-        self.declare_parameter('warmup_s',         3.0)
-        self.declare_parameter('ramp_s',           2.0)
+        # ── Parameters ────────
+        _pp = load_robot_config(config_pick)
+        for section in _pp.values():
+            for name, value in section.items():
+                self.declare_parameter(name, value)
 
-        # Task geometry offsets
-        self.declare_parameter('lateral_offset',   0.16)
-        self.declare_parameter('down_offset',      0.20)
-        self.declare_parameter('drop_offset',      0.05)
-
-        # Task timing
-        self.declare_parameter('move_time',        3.5)
-        self.declare_parameter('drop_time',        1.0)
-        self.declare_parameter('transfer_time',    3.5)
-        self.declare_parameter('return_time',      3.5)
-        self.declare_parameter('wait_pick',        1.5)
-        self.declare_parameter('wait_drop',        1.0)
-        self.declare_parameter('wait_transfer',    1.5)
-        self.declare_parameter('wait_home',        1.5)
-
-        # Task-space Cartesian gains. Orientation uses the same stiffness and damping as position
-        self.declare_parameter('kp_cart',          40.0)
-        self.declare_parameter('kd_cart',          12.0)
-        self.declare_parameter('kp_rot',           40.0)
-        self.declare_parameter('kd_rot',           12.0)
-
-        # Robustness / stability parameters (Pentagon-style sync & anti-windup)
-        self.declare_parameter('k_sync_pos',       2.0)
-        self.declare_parameter('k_sync_vel',       5.0)
-        self.declare_parameter('soft_reset_thr',   0.02)
-        self.declare_parameter('hard_reset_thr',   0.05)
-        self.declare_parameter('soft_reset_alpha', 0.95)
-        self.declare_parameter('k_null',           3.0)
-        self.declare_parameter('d_null',           2.0)
-        self.declare_parameter('lambda_sq_min',    1e-4)
-        self.declare_parameter('lambda_sq_max',    5e-2)
-        self.declare_parameter('manip_thr',        0.05)
-        self.declare_parameter('cart_err_max',     0.15)
-        self.declare_parameter('q_des_max_error',  0.5)
-        self.declare_parameter('dq_des_max',       2.0)
+        def _f(name: str) -> float:
+            return float(self.get_parameter(name).value)
 
         qddot_topic    = self.get_parameter('qddot_safe_topic').value
+        if qddot_topic == AUTO_SENTINEL:
+            qddot_topic = _topics.get('qddot_nom', '/NS_1/qddot_nom')
         q_des_topic    = self.get_parameter('q_des_topic').value
         js_topic_param = self.get_parameter('joint_state_topic').value
         ee_frame_name  = self.get_parameter('ee_frame').value
-        self.rate_hz   = float(self.get_parameter('rate_hz').value)
-        self.warmup_s  = float(self.get_parameter('warmup_s').value)
-        self.ramp_s    = float(self.get_parameter('ramp_s').value)
+        self.rate_hz   = _f('rate_hz')
+        self.warmup_s  = _f('warmup_s')
+        self.ramp_s    = _f('ramp_s')
 
-        self.lateral_offset = float(self.get_parameter('lateral_offset').value)
-        self.down_offset    = float(self.get_parameter('down_offset').value)
-        self.drop_offset    = float(self.get_parameter('drop_offset').value)
+        self.lateral_offset = _f('lateral_offset')
+        self.down_offset    = _f('down_offset')
+        self.drop_offset    = _f('drop_offset')
 
-        self.move_time     = float(self.get_parameter('move_time').value)
-        self.drop_time     = float(self.get_parameter('drop_time').value)
-        self.transfer_time = float(self.get_parameter('transfer_time').value)
-        self.return_time   = float(self.get_parameter('return_time').value)
-        self.wait_pick     = float(self.get_parameter('wait_pick').value)
-        self.wait_drop     = float(self.get_parameter('wait_drop').value)
-        self.wait_transfer = float(self.get_parameter('wait_transfer').value)
-        self.wait_home     = float(self.get_parameter('wait_home').value)
+        self.move_time     = _f('move_time')
+        self.drop_time     = _f('drop_time')
+        self.transfer_time = _f('transfer_time')
+        self.return_time   = _f('return_time')
+        self.wait_pick     = _f('wait_pick')
+        self.wait_drop     = _f('wait_drop')
+        self.wait_transfer = _f('wait_transfer')
+        self.wait_home     = _f('wait_home')
 
-        self.kp        = float(self.get_parameter('kp_cart').value)
-        self.kd        = float(self.get_parameter('kd_cart').value)
-        self.kp_rot    = float(self.get_parameter('kp_rot').value)
-        self.kd_rot    = float(self.get_parameter('kd_rot').value)
+        self.kp        = _f('kp_cart')
+        self.kd        = _f('kd_cart')
+        self.kp_rot    = _f('kp_rot')
+        self.kd_rot    = _f('kd_rot')
 
-        self.k_sync_pos       = float(self.get_parameter('k_sync_pos').value)
-        self.k_sync_vel       = float(self.get_parameter('k_sync_vel').value)
-        self.soft_reset_thr   = float(self.get_parameter('soft_reset_thr').value)
-        self.hard_reset_thr   = float(self.get_parameter('hard_reset_thr').value)
-        self.soft_reset_alpha = float(self.get_parameter('soft_reset_alpha').value)
-        self.k_null           = float(self.get_parameter('k_null').value)
-        self.d_null           = float(self.get_parameter('d_null').value)
-        self._lambda_sq_min   = float(self.get_parameter('lambda_sq_min').value)
-        self._lambda_sq_max   = float(self.get_parameter('lambda_sq_max').value)
-        self._manip_thr       = float(self.get_parameter('manip_thr').value)
-        self.cart_err_max     = float(self.get_parameter('cart_err_max').value)
+        self.k_sync_pos       = _f('k_sync_pos')
+        self.k_sync_vel       = _f('k_sync_vel')
+        self.soft_reset_thr   = _f('soft_reset_thr')
+        self.hard_reset_thr   = _f('hard_reset_thr')
+        self.soft_reset_alpha = _f('soft_reset_alpha')
+        self.k_null           = _f('k_null')
+        self.d_null           = _f('d_null')
+        self._lambda_sq_min   = _f('lambda_sq_min')
+        self._lambda_sq_max   = _f('lambda_sq_max')
+        self._manip_thr       = _f('manip_thr')
+        self.cart_err_max     = _f('cart_err_max')
 
-        self.q_des_max_error  = float(self.get_parameter('q_des_max_error').value)
-        self.dq_des_max       = float(self.get_parameter('dq_des_max').value)
+        self.q_des_max_error  = _f('q_des_max_error')
+        self.dq_des_max       = _f('dq_des_max')
         self._dt              = 1.0 / self.rate_hz
+
+        # Neutral reference posture for the null space
+        self._q_home_cfg = np.array(self.get_parameter('q_home').value, dtype=np.float64)
+        if self._q_home_cfg.shape != (NUM_JOINTS,):
+            self.get_logger().error(f'q_home must have {NUM_JOINTS} entries')
+            raise SystemExit(1)
 
         self.qddot_max = np.array([_limits[j][3] for j in _jnames], dtype=np.float64)
 
@@ -635,8 +621,7 @@ class PickPlaceQddotCommander(Node):
         np.copyto(self._q_d,  js['q'])
         np.copyto(self._dq_d, js['qdot'])
         
-        # Neutral reference posture for null space
-        self._q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.578, 0.785])
+        np.copyto(self._q_home, self._q_home_cfg)
 
         self._task_start = self.get_clock().now()
         self._running = True

@@ -1,0 +1,59 @@
+# Parameters of pick_place_qddot_commander
+
+io:
+  # qddot_nom / joint_states_fast respectively
+  qddot_safe_topic:  __auto__
+  q_des_topic:       /NS_1/q_des_state
+  joint_state_topic: __auto__
+  ee_frame:          fr3_hand_tcp
+  rate_hz:           100.0     # [Hz]
+  warmup_s:          3.0       # [s] zero q̈ before the task starts
+  ramp_s:            2.0       # [s] cosine envelope at task start
+
+# Task geometry, in fr3_link0 (+y = robot left, +z = up), relative to the EE home pose
+geometry:
+  lateral_offset: 0.24   # [m] ±y of pick / place
+  down_offset:    0.20   # [m] pick / place height below home
+  drop_offset:    0.06   # [m] small descent at pick / place
+
+# Phase durations [s]
+timing:
+  move_time:     2.5  # [s] move to pick / place
+  drop_time:     0.8  # [s] small descent at pick / place
+  transfer_time: 2.5  # [s] lateral transfer
+  return_time:   2.5  # [s] return to home
+  wait_pick:     0.8
+  wait_place:    0.8
+  wait_drop:     0.8
+  wait_transfer: 0.8
+  wait_home:     0.8
+
+# Task-space Cartesian gains
+gains:
+  kp_cart: 40.0
+  kd_cart: 12.0
+  kp_rot:  40.0
+  kd_rot:  12.0
+
+# Reference sync and two-level anti-windup (Pentagon pattern)
+sync:
+  k_sync_pos:       2.0
+  k_sync_vel:       5.0
+  soft_reset_thr:   0.02   # [m] Cartesian error -> blend q_d toward q
+  hard_reset_thr:   0.05   # [m] Cartesian error -> reset q_d = q
+  soft_reset_alpha: 0.95
+  cart_err_max:     0.15   # [m] clamp on the position error (<= 0 disables)
+  q_des_max_error:  0.5    # [rad] |q_d - q| bound
+  dq_des_max:       2.0    # [rad/s] |dq_d| bound
+
+# Null-space posture
+null_space:
+  k_null: 3.0
+  d_null: 2.0
+  q_home: [0.0, -0.785, 0.0, -2.356, 0.0, 1.578, 0.785]   # [rad] neutral posture
+
+# Adaptive damped least-squares
+dls:
+  lambda_sq_min: 1.0e-4
+  lambda_sq_max: 5.0e-2
+  manip_thr:     0.05
