@@ -261,9 +261,9 @@ def _launch_setup(context):
             'publish_debug_image': True,
             'show_selected_landmarks': True,
 
-            'model_complexity': 0,
+            'model_complexity': 1,
             # Re-detect pose each frame instead of propagating a lost hand ROI.
-            'static_image_mode': True,
+            'static_image_mode': False,
 
             'min_tracking_confidence': 0.5,
             'min_detection_confidence': 0.4,

@@ -172,6 +172,24 @@ def generate_launch_description():
         }],
     )
 
+    proximity_estimator = Node(
+        package='franka_experiments',
+        executable='proximity_estimator',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+        }],
+    )
+
+    grasp = Node(
+        package='franka_experiments',
+        executable='grasp',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+        }],
+    )
+
     compare_visualizer = Node(
         package='franka_experiments',
         executable='hand_compare_visualizer',
@@ -225,6 +243,36 @@ def generate_launch_description():
             '--clock',
             '--rate',
             rate,
+            '--topics',
+
+            # Main camera - current naming
+            '/camera/camera/color/image_raw',
+            '/camera/camera/color/camera_info',
+            '/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/aligned_depth_to_color/camera_info',
+            '/camera/camera/extrinsics/depth_to_color',
+
+            # Main camera - legacy bag naming
+            '/camera/color/image_raw',
+            '/camera/color/camera_info',
+            '/camera/aligned_depth_to_color/image_raw',
+            '/camera/aligned_depth_to_color/camera_info',
+            '/camera/extrinsics/depth_to_color',
+
+            # Wrist D405
+            '/d405/d405/color/image_raw',
+            '/d405/d405/color/camera_info',
+            '/d405/d405/aligned_depth_to_color/image_raw',
+            '/d405/d405/aligned_depth_to_color/camera_info',
+            '/d405/d405/extrinsics/depth_to_color',
+
+            # Robot state
+            '/NS_1/franka/joint_states',
+            '/NS_1/joint_states',
+
+            # Transforms
+            '/tf',
+            '/tf_static',
         ],
         output='screen',
     )
@@ -234,9 +282,10 @@ def generate_launch_description():
         # Available bags:
         # /ros2_ws/rosbags/datasets-001/{arm_complex,arm_repeated,handtracker_poses,handratacker_objecy,handover_rosbag2}
         # /ros2_ws/src/rosbags_external/handover_20260924_154930
+        # /ros2_ws/src/rosbags_external/handover_20260929_161100
         DeclareLaunchArgument(
             'bag_path',
-            default_value='/ros2_ws/rosbags/datasets-001/handover_rosbag2',
+            default_value='/ros2_ws/src/rosbags_external/handover_20260929_161100',
         ),
 
         DeclareLaunchArgument(
@@ -252,7 +301,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'model_complexity',
-            default_value='0',
+            default_value='1',
         ),
 
 
@@ -294,9 +343,11 @@ def generate_launch_description():
         kalman,
         estimator,
         end_effector_state,
-        compare_visualizer,
         handover_distance,
         handover_observer,
+        proximity_estimator,
+        grasp,
+        compare_visualizer,
         logger,
         rviz,
         video_recorder,

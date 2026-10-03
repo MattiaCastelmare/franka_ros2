@@ -2,6 +2,7 @@
 
 import time
 from collections import deque
+from types import SimpleNamespace
 
 import cv2
 import mediapipe as mp
@@ -10,6 +11,7 @@ import rclpy
 import yaml
 
 from ament_index_python.packages import get_package_share_directory
+from mediapipe.framework.formats import landmark_pb2
 from cv_bridge import CvBridge
 from franka_msgs.msg import HandTrackingRaw
 from geometry_msgs.msg import Point, Pose, PoseArray, PoseStamped, Vector3
@@ -288,6 +290,11 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         )
         self.drawing_utils = mp.solutions.drawing_utils
         self.hand_connections = mp.solutions.hands.HAND_CONNECTIONS
+        # Re-detection of a hand Holistic lost (see _complete_hands).
+        self.redetector = mp.solutions.hands.Hands(
+            static_image_mode=True, max_num_hands=1, model_complexity=1,
+            min_detection_confidence=0.3)
+        self._last_hands = {}
         # ACTIVE / STANDBY role state.
         #
         # Identity and interaction role are separate:
@@ -610,6 +617,67 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
 
 
 
+    REDETECT_S = 0.5      # re-detect a hand lost for at most this long
+    REDETECT_SCALE = 2.2  # crop side / last hand box side
+
+    def _complete_hands(self, result, rgb, depth, encoding, t):
+        """Holistic hands made robust (evaluation in GRASP.md).
+
+        - A hand seen in the last REDETECT_S but missing now (palm covered by
+          the held object, fast motion) is re-detected by MediaPipe Hands on a
+          crop around its last box, if near it and at the same depth (15 cm).
+        - A hand is kept only if the pose wrist of its side is near it: no
+          hands on the robot when nobody is attached to them.
+        """
+        h, w = rgb.shape[:2]
+        scale = 1e-3 if encoding in ('16UC1', 'mono16') else 1.0
+        out = SimpleNamespace(pose_landmarks=result.pose_landmarks,
+                              left_hand_landmarks=result.left_hand_landmarks,
+                              right_hand_landmarks=result.right_hand_landmarks)
+        for key, wrist_id in (('left_hand_landmarks', 15), ('right_hand_landmarks', 16)):
+            lms, last = getattr(out, key), self._last_hands.get(key)
+            if lms is None and last is not None and t - last[0] <= self.REDETECT_S:
+                lms = self._redetect(rgb, depth, scale, *last[1:])
+            p = None if lms is None else np.array([[q.x * w, q.y * h] for q in lms.landmark])
+            if p is not None and out.pose_landmarks is not None:
+                q = out.pose_landmarks.landmark[wrist_id]
+                if np.hypot(q.x * w - p[0, 0], q.y * h - p[0, 1]) >= 1.5 * max(np.ptp(p, 0).max(), 20):
+                    p = None
+            elif out.pose_landmarks is None:
+                p = None
+            setattr(out, key, None if p is None else lms)
+            if p is not None:
+                self._last_hands[key] = (t, p, self._palm_depth(p, depth, scale))
+        return out
+
+    @staticmethod
+    def _palm_depth(p, depth, scale):
+        h, w = depth.shape[:2]
+        z = [float(depth[int(np.clip(v, 0, h - 1)), int(np.clip(u, 0, w - 1))]) * scale
+             for u, v in p[[0, 5, 9, 17]]]
+        z = [x for x in z if x > 0.1]
+        return float(np.median(z)) if z else np.nan
+
+    def _redetect(self, rgb, depth, scale, last_px, last_z):
+        h, w = rgb.shape[:2]
+        c = (last_px.min(0) + last_px.max(0)) / 2
+        r = max(np.ptp(last_px, 0).max() * self.REDETECT_SCALE, 48) / 2
+        x0, y0 = int(max(0, c[0] - r)), int(max(0, c[1] - r))
+        x1, y1 = int(min(w, c[0] + r)), int(min(h, c[1] + r))
+        crop = rgb[y0:y1, x0:x1]
+        k = 192 / max(1, min(crop.shape[:2]))
+        found = self.redetector.process(cv2.resize(crop, None, fx=k, fy=k) if k > 1 else crop)
+        if not found.multi_hand_landmarks:
+            return None
+        lms = landmark_pb2.NormalizedLandmarkList()
+        for q in found.multi_hand_landmarks[0].landmark:
+            lms.landmark.add(x=(x0 + q.x * (x1 - x0)) / w, y=(y0 + q.y * (y1 - y0)) / h, z=q.z)
+        p = np.array([[q.x * w, q.y * h] for q in lms.landmark])
+        if (np.linalg.norm(p.mean(0) - last_px.mean(0)) >= np.ptp(last_px, 0).max()
+                or not abs(self._palm_depth(p, depth, scale) - last_z) < 0.15):
+            return None
+        return lms
+
     def image_callback(self, rgb_msg, depth_msg):
         start_time = time.perf_counter()
         try:
@@ -637,7 +705,9 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             bgr_image,
             cv2.COLOR_BGR2RGB,
         )
-        result = self.hands.process(rgb_image)
+        result = self._complete_hands(
+            self.hands.process(rgb_image), rgb_image, depth_image, depth_encoding,
+            rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
         (
             active_side,
             hand_landmarks,

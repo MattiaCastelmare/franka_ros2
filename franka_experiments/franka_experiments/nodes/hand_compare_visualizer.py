@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from collections import deque
+
 import cv2
 import numpy as np
 import rclpy
@@ -25,6 +27,7 @@ from rclpy.qos import (
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
 
+from franka_experiments.nodes.grasp import CROP_M
 from franka_experiments.utils.camera_yaml import load_camera_info_yaml
 
 class HandCompareVisualizer(Node):
@@ -65,10 +68,12 @@ class HandCompareVisualizer(Node):
         ).as_matrix()
         self.r_base_camera = self.r_camera_base.T
         self.bridge = CvBridge()
-        self._object_state = None
+
+        # Recent object states: the debug image can lag behind them (RViz load),
+        # so the overlay uses the one closest in time to the image.
+        self._object_states = deque(maxlen=60)
         self.create_subscription(
-            HandObjectState, '/handover/hand_object',
-            lambda msg: setattr(self, '_object_state', msg), 1)
+            HandObjectState, '/handover/hand_object', self._object_states.append, 10)
         self.create_subscription(
             CameraInfo,
             (
@@ -214,28 +219,34 @@ class HandCompareVisualizer(Node):
         return u, v
 
     def _draw_object_overlay(self, image, image_msg, state_msg):
-        msg = self._object_state
+        t_image = self._prediction_stamp_s(image_msg.header.stamp)
+        msg = min(self._object_states, default=None,
+                  key=lambda m: abs(t_image - self._prediction_stamp_s(m.header.stamp)))
         color = (160, 160, 160)
         text = 'Oggetto: dati assenti/scaduti'
         if msg is not None:
-            age = self._prediction_stamp_s(image_msg.header.stamp) - self._prediction_stamp_s(msg.header.stamp)
-            current = (0.0 <= age <= .2 and msg.physical_hand == state_msg.physical_hand
-                       and msg.physical_hand in (1, 2)
+            age = t_image - self._prediction_stamp_s(msg.header.stamp)
+            current = (abs(age) <= .2 and msg.physical_hand == state_msg.physical_hand
                        and msg.header.frame_id == state_msg.header.frame_id)
             if current:
                 text = 'Oggetto: non osservabile'
-                if msg.valid and state_msg.position_valid and state_msg.position_source == HandState.POSITION_SOURCE_MEASURED:
+                if msg.valid:
                     text, color = 'Oggetto: non confermato', (0, 210, 255)
-                    if msg.object_present and 0.0 <= msg.object_age <= .2:
-                        text = f'Oggetto: CONFERMATO  c={msg.object_confidence:.2f}  eta={msg.object_age:.2f}s'
+                    if msg.object_present:
+                        d = msg.dimensions
+                        text = (f'Oggetto: CONFERMATO  c={msg.object_confidence:.2f}  eta={msg.object_age:.2f}s'
+                                f'  dim={100*d.x:.0f}x{100*d.y:.0f}x{100*d.z:.0f} cm')
                         color = (60, 255, 60)
-                        height, width = image.shape[:2]
-                        pixel = self.project(msg.object_centroid_3d, width, height)
-                        if pixel is not None:
-                            cv2.drawMarker(image, pixel, color, cv2.MARKER_CROSS, 18, 2)
-                            cv2.circle(image, pixel, 12, color, 1, cv2.LINE_AA)
-                            cv2.putText(image, 'OGGETTO', (pixel[0]+15, pixel[1]-8),
-                                        cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
+                        contour = np.array(msg.contour_px, np.int32).reshape(-1, 1, 2)
+                        if len(contour) >= 3:
+                            fill = image.copy()
+                            cv2.fillPoly(fill, [contour], color)
+                            cv2.addWeighted(fill, .35, image, .65, 0, image)
+                            cv2.polylines(image, [contour], True, color, 2, cv2.LINE_AA)
+                        u0, v0, u1, v1 = map(int, msg.bbox_px)
+                        cv2.rectangle(image, (u0, v0), (u1, v1), color, 1, cv2.LINE_AA)
+                        cv2.putText(image, f'OGGETTO {100*d.x:.0f}x{100*d.y:.0f} cm', (u0, max(12, v0 - 6)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
         width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)[0][0]
         cv2.rectangle(image, (8, 62), (min(image.shape[1]-8, width+20), 84), (0, 0, 0), -1)
         cv2.putText(image, text, (14, 78), cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
@@ -738,6 +749,21 @@ class HandCompareVisualizer(Node):
             if all(pixel is not None for pixel in pixels):
                 polygon = np.array(pixels, dtype=np.int32,).reshape((-1, 1, 2))
                 cv2.polylines(image, [polygon], True, (255, 0, 255), 2, cv2.LINE_8,)
+
+
+        # Hands23 crop of grasp.py: +-CROP_M around the active palm.
+        if state_msg.position_valid:
+            palm = np.array([state_msg.palm_position.x, state_msg.palm_position.y,
+                             state_msg.palm_position.z])
+            z = (self.r_base_camera @ (palm - self.t_camera_base))[2]
+            centre = self.project(state_msg.palm_position, width, height)
+            if centre is not None and z > 0.1:
+                r = int(CROP_M * self.fx / z)
+                x0, y0 = max(0, centre[0] - r), max(0, centre[1] - r)
+                cv2.rectangle(image, (x0, y0), (min(width - 1, centre[0] + r),
+                              min(height - 1, centre[1] + r)), (0, 200, 255), 1, cv2.LINE_AA)
+                cv2.putText(image, 'ROI oggetto (Hands23)', (x0 + 4, max(14, y0 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 200, 255), 1, cv2.LINE_AA)
         # Physical-hand display episode
         current_side = int(filtered_msg.handedness)
         valid_sides = (HandTrackingFiltered.HAND_LEFT, HandTrackingFiltered.HAND_RIGHT,)
@@ -851,9 +877,12 @@ class HandCompareVisualizer(Node):
         # Visual-only W75 prediction overlay.
         self._draw_prediction_overlay(image, filtered_msg, state_msg, distance_msg,)
         self._draw_object_overlay(image, image_msg, state_msg)
+
         output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8',)
         output.header = image_msg.header
         self.publisher.publish(output)
+
+
 
 def main(args=None):
     rclpy.init(args=args)

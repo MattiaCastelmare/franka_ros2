@@ -9,6 +9,7 @@ import rclpy
 from rclpy.node import Node
 
 from franka_msgs.msg import (
+    HandObjectState,
     HandTrackingRaw,
     HandTrackingFiltered,
     HandState,
@@ -80,6 +81,7 @@ class HandTrackingCsvLogger(Node):
         self.filtered_path = run_dir / 'hand_tracking_filtered.csv'
         self.state_path = run_dir / 'hand_state.csv'
         self.distance_path = run_dir / 'handover_distance.csv'
+        self.object_path = run_dir / 'hand_object.csv'
         self.raw_file = self.raw_path.open(
             'w', newline='', encoding='utf-8'
         )
@@ -92,14 +94,19 @@ class HandTrackingCsvLogger(Node):
         self.distance_file = self.distance_path.open(
             'w', newline='', encoding='utf-8'
         )
+        self.object_file = self.object_path.open(
+            'w', newline='', encoding='utf-8'
+        )
         self.raw_writer = csv.writer(self.raw_file)
         self.filtered_writer = csv.writer(self.filtered_file)
         self.state_writer = csv.writer(self.state_file)
         self.distance_writer = csv.writer(self.distance_file)
+        self.object_writer = csv.writer(self.object_file)
         self.raw_first_timestamp = None
         self.filtered_first_timestamp = None
         self.state_first_timestamp = None
         self.distance_first_timestamp = None
+        self.object_first_timestamp = None
         self.raw_writer.writerow(self.raw_header())
         self.filtered_writer.writerow(self.filtered_header())
         self.state_writer.writerow(
@@ -107,10 +114,12 @@ class HandTrackingCsvLogger(Node):
             + self.prediction_header()
         )
         self.distance_writer.writerow(self.distance_header())
+        self.object_writer.writerow(self.object_header())
         self.raw_file.flush()
         self.filtered_file.flush()
         self.state_file.flush()
         self.distance_file.flush()
+        self.object_file.flush()
         self.create_subscription(
             HandTrackingRaw,
             '/handover/hand_tracking_raw',
@@ -135,10 +144,17 @@ class HandTrackingCsvLogger(Node):
             self.distance_callback,
             10,
         )
+        self.create_subscription(
+            HandObjectState,
+            '/handover/hand_object',
+            self.object_callback,
+            10,
+        )
         self.get_logger().info(f'CSV raw: {self.raw_path}')
         self.get_logger().info(f'CSV filtered: {self.filtered_path}')
         self.get_logger().info(f'CSV state: {self.state_path}')
         self.get_logger().info(f'CSV distance: {self.distance_path}')
+        self.get_logger().info(f'CSV object: {self.object_path}')
 
     @staticmethod
     def timestamp_s(msg):
@@ -273,6 +289,30 @@ class HandTrackingCsvLogger(Node):
             'legacy_ttc_s',
             'tracking_confidence',
             'motion_stability',
+        ]
+
+    @staticmethod
+    def object_header():
+        return [
+            'timestamp_s',
+            'elapsed_s',
+            'frame_id',
+            'valid',
+            'physical_hand',
+            'object_present',
+            'object_confidence',
+            'object_age_s',
+            'centroid_x',
+            'centroid_y',
+            'centroid_z',
+            'bbox_u_min',
+            'bbox_v_min',
+            'bbox_u_max',
+            'bbox_v_max',
+            'dim_1_m',
+            'dim_2_m',
+            'dim_3_m',
+            'contour_points',
         ]
 
     @staticmethod
@@ -539,6 +579,40 @@ class HandTrackingCsvLogger(Node):
         self.distance_writer.writerow(row)
         self.distance_file.flush()
 
+    def object_callback(self, msg):
+        timestamp = self.timestamp_s(msg)
+
+        if self.object_first_timestamp is None:
+            self.object_first_timestamp = timestamp
+
+        centroid = msg.object_centroid_3d
+
+        row = [
+            timestamp,
+            timestamp - self.object_first_timestamp,
+            msg.header.frame_id,
+
+            int(msg.valid),
+            int(msg.physical_hand),
+
+            int(msg.object_present),
+            float(msg.object_confidence),
+            float(msg.object_age),
+
+            float(centroid.x),
+            float(centroid.y),
+            float(centroid.z),
+
+            *map(float, msg.bbox_px),
+            float(msg.dimensions.x),
+            float(msg.dimensions.y),
+            float(msg.dimensions.z),
+            len(msg.contour_px) // 2,
+        ]
+
+        self.object_writer.writerow(row)
+        self.object_file.flush()
+
     def state_callback(self, msg):
         timestamp = self.timestamp_s(msg)
         if self.state_first_timestamp is None:
@@ -580,6 +654,8 @@ class HandTrackingCsvLogger(Node):
             self.state_file.close()
         if not self.distance_file.closed:
             self.distance_file.close()
+        if not self.object_file.closed:
+            self.object_file.close()
         super().destroy_node()
 
 def main(args=None):
