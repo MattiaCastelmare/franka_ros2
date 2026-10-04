@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
 Human Distance Node.
-Reads filtered human arm states (supports both single and dual arms dynamically) 
-and robot joint states to compute real-time geometric distances using a 
+Reads filtered human arm states (supports both single and dual arms dynamically)
+and robot joint states to compute real-time geometric distances using a
 capsule-based representation for CBF control.
+
+Each LinkDistance also carries the obstacle "track" fields that cbf_safety_filter
+consumes with obstacle_velocity_source: tracker. For a closest point at parameter
+alpha on the capsule axis between keypoints a and b (independent Kalman filters):
+    v_h   = (1 - alpha) v_a + alpha v_b
+    Sigma = (1 - alpha)^2 Sigma_a + alpha^2 Sigma_b
 """
 
 import os
@@ -22,8 +28,8 @@ from franka_msgs.msg import HumanArmState, LinkDistance, MultiLinkDistance
 from franka_experiments.utils.capsule_geometry import HumanArmGeometry, RobotGeometry
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
-    extract_human_keypoints, init_pinocchio_from_xacro, 
-    define_control_points, format_topic, get_side
+    extract_human_keypoints, extract_human_covariances, init_pinocchio_from_xacro,
+    define_control_points, format_topic, get_side, fill_track_fields
 )
 
 
@@ -51,6 +57,14 @@ class HumanDistance(Node):
 
         self.declare_parameter('mode', 'capsules')
         self.mode = self.get_parameter('mode').value
+        # /NS_1/joint_states is what the recorded bags contain; on the robot prefer the
+        # 1 kHz /NS_1/franka/joint_states (the 30 Hz topic is republished with fresh stamps)
+        self.declare_parameter('joint_state_topic', '/NS_1/joint_states')
+        # LinkDistance.distance is a surface gap clamped at 0 by contract (the CBF reads it);
+        # /human_robot/distance keeps the signed value
+        self.declare_parameter('clamp_distance', True)
+        joint_state_topic = str(self.get_parameter('joint_state_topic').value)
+        self.clamp_distance = bool(self.get_parameter('clamp_distance').value)
         self.tracker_config = load_robot_config(tracker_path)['human_tracker']
         self.pose_side = str(self.tracker_config["pose_side"]).lower()
         self.active_sides = ["left", "right"] if self.pose_side == "both" else [self.pose_side]
@@ -79,12 +93,12 @@ class HumanDistance(Node):
             hand_radius=0.075
         )
 
-        # Subscribers
+        # Subscribers (best effort, latest only: works with the 1 kHz best-effort feed and with bags)
         self.joint_states_sub = self.create_subscription(
-            JointState, 
-            '/NS_1/joint_states',
+            JointState,
+            joint_state_topic,
             self.joint_state_callback,
-            10,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
 
         # Dynamic subscriptions to human arm states based on tracking mode
@@ -104,7 +118,10 @@ class HumanDistance(Node):
         latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.per_link_pub = self.create_publisher(MultiLinkDistance, '/human/per_link_distances', latest_qos)
         self.global_dist_pub = self.create_publisher(Float32, '/human_robot/distance', 10)
-        self.get_logger().info(f'Human Distance node ready — mode: {self.mode}, tracking: {self.pose_side}')
+        self.get_logger().info(
+            f'Human Distance node ready — mode: {self.mode}, tracking: {self.pose_side}, '
+            f'joint states: {joint_state_topic}'
+        )
 
 
     def arm_state_callback(self, msg: HumanArmState, side: str):
@@ -150,20 +167,26 @@ class HumanDistance(Node):
         valid_arms_count = 0
 
         # Aggregate Capsules from all tracked arms
-        for side in self.active_sides:
+        for side_index, side in enumerate(self.active_sides):
             state = self.latest_arm_states[side]
 
             # Any valid keypoint is enough: forearm and hand matter even with the shoulder occluded
             if state is None or not any(state.keypoint_valid):
                 continue
-                
+
             human_kpts, human_vels, human_valid = extract_human_keypoints(state)
+            P_pp, P_vv, P_pv, frames_seen = extract_human_covariances(state)
             capsules = self.human_geometry.build_capsules(human_kpts, valid=human_valid)
-            
+
             # Prefix capsule names to distinguish left/right in distance logs
             prefix = f"{side}_" if len(self.active_sides) > 1 else ""
             for cap in capsules:
                 cap['name'] = f"{prefix}{cap['name']}"
+                # Capsule k spans keypoints (k, k+1): a stable, nonzero id per side and capsule
+                cap['track_id'] = 1 + 3 * side_index + cap['indices'][0]
+                cap['velocities'] = human_vels
+                cap['covariances'] = (P_pp, P_vv, P_pv)
+                cap['frames_seen'] = frames_seen
                 
             all_human_capsules.extend(capsules)
             confidence_sum += state.confidence
@@ -209,11 +232,14 @@ class HumanDistance(Node):
             ld = LinkDistance()
             ld.robot_link_name = cp['source_capsule']
             ld.human_capsule = str(info['human_capsule'])
-            ld.distance = float(info['distance'])
-            
-            if ld.distance < global_min_dist:
-                global_min_dist = ld.distance
+            signed_distance = float(info['distance'])
+            ld.distance = max(0.0, signed_distance) if self.clamp_distance else signed_distance
+
+            if signed_distance < global_min_dist:
+                global_min_dist = signed_distance
                 closest_capsule_name = ld.human_capsule
+
+            fill_track_fields(ld, info['capsule'], info['alpha'])
 
             # Repulsion direction vector (points from Human to Robot)
             direction_vec = info['robot_position'] - info['closest_human_point']
@@ -237,7 +263,7 @@ class HumanDistance(Node):
             
             ld.valid = True
             ld.confidence = avg_confidence
-            ld.zone = self.get_zone(ld.distance)
+            ld.zone = self.get_zone(signed_distance)
             
             msg.links.append(ld)
 

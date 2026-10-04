@@ -20,12 +20,12 @@ def _vec3(value, name: str) -> np.ndarray:
     return point
 
 
-def point_to_segment_distance(
+def closest_point_on_segment(
     point: np.ndarray,
     start: np.ndarray,
     end: np.ndarray,
 ) -> tuple[float, np.ndarray]:
-    """Distance and closest point from a point to a finite segment."""
+    """Parameter alpha in [0, 1] and closest point start + alpha (end - start)."""
     point = _vec3(point, "point")
     start = _vec3(start, "start")
     end = _vec3(end, "end")
@@ -34,35 +34,43 @@ def point_to_segment_distance(
     axis_length_squared = float(axis @ axis)
 
     if axis_length_squared < 1.0e-12:
-        closest = start
-    else:
-        alpha = float(((point - start) @ axis) / axis_length_squared)
-        alpha = float(np.clip(alpha, 0.0, 1.0))
-        closest = start + alpha * axis
+        return 0.0, start
+    alpha = float(((point - start) @ axis) / axis_length_squared)
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    return alpha, start + alpha * axis
 
-    return float(np.linalg.norm(point - closest)), closest
+
+def point_to_segment_distance(
+    point: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+) -> tuple[float, np.ndarray]:
+    """Distance and closest point from a point to a finite segment."""
+    _, closest = closest_point_on_segment(point, start, end)
+    return float(np.linalg.norm(_vec3(point, "point") - closest)), closest
 
 
 def point_to_capsule_distance(
     point: np.ndarray,
     capsule: Capsule,
     point_radius: float = 0.0,
-) -> tuple[float, np.ndarray]:
+) -> tuple[float, np.ndarray, float]:
     """Signed distance from a point/sphere to a capsule.
 
     Positive: separated. Zero: contact. Negative: overlap.
+    Also returns the closest axis point and its parameter alpha along p0 -> p1.
     """
-    axis_distance, closest_axis_point = point_to_segment_distance(
+    alpha, closest_axis_point = closest_point_on_segment(
         point,
         capsule["p0"],
         capsule["p1"],
     )
     distance = (
-        axis_distance
+        float(np.linalg.norm(_vec3(point, "point") - closest_axis_point))
         - float(point_radius)
         - float(capsule["radius"])
     )
-    return float(distance), closest_axis_point
+    return float(distance), closest_axis_point, alpha
 
 
 class HumanArmGeometry:
@@ -119,6 +127,8 @@ class HumanArmGeometry:
                     "p0": points[start_index].copy(),
                     "p1": points[end_index].copy(),
                     "radius": radius + margin,
+                    # Keypoint indices of p0 / p1, to interpolate per-keypoint data (velocity, covariance)
+                    "indices": (start_index, end_index),
                 }
             )
 
@@ -207,7 +217,7 @@ class RobotGeometry:
 
         for robot_point in control_points:
             for human_capsule in human_capsules:
-                distance, closest_human_point = point_to_capsule_distance(
+                distance, closest_human_point, alpha = point_to_capsule_distance(
                     robot_point["position"],
                     human_capsule,
                     point_radius=float(robot_point["radius"]),
@@ -220,6 +230,8 @@ class RobotGeometry:
                         "human_capsule": human_capsule["name"],
                         "robot_position": robot_point["position"].copy(),
                         "closest_human_point": closest_human_point.copy(),
+                        "alpha": alpha,
+                        "capsule": human_capsule,
                     }
 
         return best
