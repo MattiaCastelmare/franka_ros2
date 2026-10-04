@@ -7,8 +7,27 @@ io:
   joint_state_topic: __auto__
   ee_frame:          fr3_hand_tcp
   rate_hz:           100.0     # [Hz]
-  warmup_s:          3.0       # [s] zero q̈ before the task starts
+  warmup_s:          3.0       # [s] braking q̈ (= hold) before the task starts
   ramp_s:            2.0       # [s] cosine envelope at task start
+  task_phase_topic:     /task/phase      # std_msgs/String, on change (latched)
+  task_cycle_topic:     /task/cycle      # std_msgs/UInt32, on change (latched)
+  task_reference_topic: /task/reference  # geometry_msgs/PoseStamped, every tick
+  task_clock_topic:     /task/clock      # Float64MultiArray [s, s_dot, ee_err], every tick
+
+# Stopping. q̈ = 0 is NOT a stop (rt_torque_controller integrates q̈ into its velocity
+# reference): every stop path brakes with q̈ = -brake_gain·q̇, scaled into the q̈ limits.
+safety:
+  brake_gain:            3.0   # [1/s] velocity decays as exp(-brake_gain·t)
+  joint_state_timeout_s: 0.1   # [s] older joint state -> brake
+
+# Task clock (utils/pick_place_task.TaskClock): the reference advances at s_dot in [0, 1],
+# 1 below clock_e_ok of Cartesian error, 0 at clock_e_stop, so an avoidance delays the
+# phases instead of letting the reference run ahead. clock_enabled: false = timed reference.
+task_clock:
+  clock_enabled:    true
+  clock_e_ok:       0.03   # [m]
+  clock_e_stop:     0.10   # [m] at this tracking error the reference stops and waits
+  clock_s_ddot_max: 2.0    # [1/s^2] s_dot goes 1 -> 0 in 0.5 s at most
 
 # Task geometry, in fr3_link0 (+y = robot left, +z = up), relative to the EE home pose
 geometry:

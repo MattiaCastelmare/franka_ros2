@@ -17,6 +17,14 @@ The published q̈ is only half of the loop. It must also reach the 1 kHz joint
 PD of rt_torque_controller (its ``accel_topic``): the open-loop feedforward
 τ = M·q̈ + C·q̇ alone is too weak on the low-inertia wrist joints to beat their
 static friction, and the EE orientation drifts. easy_torque.launch.py wires it.
+
+Stopping: rt_torque_controller INTEGRATES q̈ into its velocity reference, so
+q̈ = 0 holds the current joint velocity instead of stopping. Every stop path
+(warm-up, stale joint state, shutdown) publishes a braking q̈ = -k_b·q̇.
+
+Task clock: the reference is evaluated at a virtual time s (utils.pick_place_task)
+that slows down when the end-effector falls behind it, e.g. while a safety
+filter pushes the arm away, so phases are delayed instead of skipped.
 """
 
 from __future__ import annotations
@@ -25,16 +33,17 @@ import os
 import math
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import pinocchio as pin
 
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from ament_index_python.packages import get_package_share_directory
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String, UInt32
 
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS, AUTO_SENTINEL
 from franka_experiments.utils.node_runtime import (
@@ -52,117 +61,7 @@ from franka_experiments.utils.kinematics import (
 from sensor_msgs.msg import JointState as SensorJointState
 from franka_experiments.utils.math_utils import cosine_ramp
 from franka_experiments.utils.logging_utils import ThrottledLogger, vec_to_str
-
-
-class TaskPhase:
-    """One timed phase of the cyclic pick-and-place task."""
-    def __init__(self, name: str, start: np.ndarray, goal: np.ndarray, duration: float, moving: bool):
-        self.name = name
-        self.start = start
-        self.goal = goal
-        self.duration = duration
-        self.moving = moving
-
-
-class PickPlaceTrajectory:
-    """Timed sequence of minimum-jerk Cartesian moves and stationary waits matching the trapezoidal profile."""
-
-    def __init__(
-        self,
-        home: np.ndarray,
-        lateral_offset: float,
-        down_offset: float,
-        drop_offset: float,
-        move_time: float,
-        drop_time: float,
-        transfer_time: float,
-        return_time: float,
-        wait_pick: float,
-        wait_drop: float,
-        wait_transfer: float,
-        wait_home: float,
-    ) -> None:
-        home = np.asarray(home, dtype=float).copy()
-
-        # fr3_link0 convention: +y = robot left, -y = robot right, +z = up
-        pick = home + np.array([0.0, -lateral_offset, -down_offset])
-        pick_down = pick - np.array([0.0, 0.0, drop_offset])
-        
-        place = home + np.array([0.0, lateral_offset, -down_offset])
-        place_down = place - np.array([0.0, 0.0, drop_offset])
-
-        self.home = home
-        self.pick = pick
-        self.pick_down = pick_down
-        self.place = place
-        self.place_down = place_down
-
-        self.phases: List[TaskPhase] = [
-            TaskPhase('MOVE_TO_PICK', home, pick, move_time, True),
-            TaskPhase('WAIT_AT_PICK', pick, pick, wait_pick, False),
-            TaskPhase('SMALL_DESCENT_1', pick, pick_down, drop_time, True),
-            TaskPhase('WAIT_AT_DROP_1', pick_down, pick_down, wait_drop, False),
-            TaskPhase('SMALL_ASCENT_1', pick_down, pick, drop_time, True),
-            TaskPhase('WAIT_AFTER_ASCENT_1', pick, pick, wait_drop, False),
-            TaskPhase('LATERAL_TRANSFER', pick, place, transfer_time, True),
-            TaskPhase('WAIT_AT_PLACE', place, place, wait_transfer, False),
-            TaskPhase('SMALL_DESCENT_2', place, place_down, drop_time, True),
-            TaskPhase('WAIT_AT_DROP_2', place_down, place_down, wait_drop, False),
-            TaskPhase('SMALL_ASCENT_2', place_down, place, drop_time, True),
-            TaskPhase('WAIT_AFTER_ASCENT_2', place, place, wait_drop, False),
-            TaskPhase('RETURN_HOME', place, home, return_time, True),
-            TaskPhase('WAIT_AT_HOME', home, home, wait_home, False),
-        ]
-
-        for phase in self.phases:
-            if phase.duration <= 0.0:
-                raise ValueError(f'Phase {phase.name} must have positive duration')
-
-        self._end_times = np.cumsum([phase.duration for phase in self.phases])
-        self.cycle_time = float(self._end_times[-1])
-        self._p_out = np.zeros(3)
-        self._v_out = np.zeros(3)
-        self._a_out = np.zeros(3)
-
-    @staticmethod
-    def _minimum_jerk(u: float) -> Tuple[float, float, float]:
-        u = float(np.clip(u, 0.0, 1.0))
-        u2 = u * u
-        u3 = u2 * u
-        u4 = u3 * u
-        u5 = u4 * u
-        sigma = 10.0 * u3 - 15.0 * u4 + 6.0 * u5
-        dsigma_du = 30.0 * u2 - 60.0 * u3 + 30.0 * u4
-        d2sigma_du2 = 60.0 * u - 180.0 * u2 + 120.0 * u3
-        return sigma, dsigma_du, d2sigma_du2
-
-    def evaluate(self, t: float):
-        t = max(0.0, float(t))
-        cycle_index = int(t // self.cycle_time)
-        cycle_t = t - cycle_index * self.cycle_time
-
-        phase_index = int(np.searchsorted(self._end_times, cycle_t, side='right'))
-        if phase_index >= len(self.phases):
-            phase_index = len(self.phases) - 1
-
-        phase = self.phases[phase_index]
-        phase_start_t = 0.0 if phase_index == 0 else self._end_times[phase_index - 1]
-        local_t = cycle_t - phase_start_t
-
-        if not phase.moving:
-            np.copyto(self._p_out, phase.goal)
-            self._v_out[:] = 0.0
-            self._a_out[:] = 0.0
-            return self._p_out, self._v_out, self._a_out, phase.name, cycle_index
-
-        u = local_t / phase.duration
-        sigma, dsigma_du, d2sigma_du2 = self._minimum_jerk(u)
-        delta = phase.goal - phase.start
-
-        self._p_out[:] = phase.start + sigma * delta
-        self._v_out[:] = (dsigma_du / phase.duration) * delta
-        self._a_out[:] = (d2sigma_du2 / (phase.duration ** 2)) * delta
-        return self._p_out, self._v_out, self._a_out, phase.name, cycle_index
+from franka_experiments.utils.pick_place_task import PickPlaceTrajectory, TaskClock
 
 
 class PickPlaceQddotCommander(Node):
@@ -245,6 +144,15 @@ class PickPlaceQddotCommander(Node):
         self.q_des_max_error  = _f('q_des_max_error')
         self.dq_des_max       = _f('dq_des_max')
         self._dt              = 1.0 / self.rate_hz
+        self.brake_gain       = _f('brake_gain')
+        self.js_timeout_s     = _f('joint_state_timeout_s')
+
+        self.clock = TaskClock(
+            e_ok=_f('clock_e_ok'),
+            e_stop=_f('clock_e_stop'),
+            s_ddot_max=_f('clock_s_ddot_max'),
+            enabled=bool(self.get_parameter('clock_enabled').value),
+        )
 
         # Neutral reference posture for the null space
         self._q_home_cfg = np.array(self.get_parameter('q_home').value, dtype=np.float64)
@@ -328,6 +236,10 @@ class PickPlaceQddotCommander(Node):
         self._prev_tick_time = None
         self._last_phase     = None
         self._last_cycle     = -1
+        self._ee_err         = 0.0               # previous tick's Cartesian error (drives the clock)
+        self._brake_out      = np.zeros(NUM_JOINTS)
+        self._qdot_drift     = np.zeros(NUM_JOINTS)  # ∫ published q̈ dt since the last joint state
+        self._seen_js_ns     = -1
 
         # Messages
         self._sp_msg         = SensorJointState()
@@ -338,8 +250,6 @@ class PickPlaceQddotCommander(Node):
 
         self._out_msg        = Float64MultiArray()
         self._out_msg.data   = [0.0] * NUM_JOINTS
-        self._zero_msg       = Float64MultiArray()
-        self._zero_msg.data  = [0.0] * NUM_JOINTS
 
         # ── Joint state subscriber ────────────────────────────────────────
         self._js_lock  = threading.Lock()
@@ -370,6 +280,24 @@ class PickPlaceQddotCommander(Node):
         self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, js_qos)
         self.pub     = self.create_publisher(Float64MultiArray, qddot_topic, 10)
         self._sp_pub = self.create_publisher(SensorJointState,  q_des_topic,  10)
+
+        # Task state for logging / visualization. Phase and cycle are published on change,
+        # latched so a late subscriber still gets the current value.
+        latched_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._phase_pub = self.create_publisher(String, self.get_parameter('task_phase_topic').value, latched_qos)
+        self._cycle_pub = self.create_publisher(UInt32, self.get_parameter('task_cycle_topic').value, latched_qos)
+        self._ref_pub   = self.create_publisher(PoseStamped, self.get_parameter('task_reference_topic').value, 10)
+        self._clock_pub = self.create_publisher(Float64MultiArray, self.get_parameter('task_clock_topic').value, 10)
+        self._ref_msg   = PoseStamped()
+        self._ref_msg.header.frame_id = 'fr3_link0'
+        q_ref = pin.Quaternion(self._R_des)
+        self._ref_msg.pose.orientation.x = float(q_ref.x)
+        self._ref_msg.pose.orientation.y = float(q_ref.y)
+        self._ref_msg.pose.orientation.z = float(q_ref.z)
+        self._ref_msg.pose.orientation.w = float(q_ref.w)
+        self._clock_msg = Float64MultiArray()
+        self._clock_msg.data = [0.0, 0.0, 0.0]
         self.timer   = self.create_timer(self._dt, self._tick)
         self.t0      = self.get_clock().now()
         self._tlog   = ThrottledLogger(self.get_logger())
@@ -411,16 +339,32 @@ class PickPlaceQddotCommander(Node):
             return
         self._stopping = True
         self._stop_end = time.monotonic() + dur
-        self.get_logger().info(f'Stopping: zero qddot for {dur} s')
+        self.get_logger().info(f'Stopping: braking for {dur} s')
+
+    def _publish_qddot(self, qddot: np.ndarray, dt: float) -> None:
+        for i in range(NUM_JOINTS):
+            self._out_msg.data[i] = float(qddot[i])
+        self.pub.publish(self._out_msg)
+        # rt_torque_controller integrates every published q̈ into its velocity reference
+        self._qdot_drift += qddot * dt
+
+    def _publish_brake(self, js: dict, dt: float) -> None:
+        """Publish q̈ = -k_b·q̇, uniformly scaled into the q̈ limits.
+
+        q̈ = 0 would NOT stop the arm: rt_torque_controller integrates q̈ into its
+        velocity reference, so zero keeps the current velocity. q̇ is the last
+        measured velocity plus every q̈ published since that measurement, i.e.
+        the velocity the controller is actually tracking: with a stale joint state
+        it decays exponentially instead of cruising or reversing.
+        """
+        np.add(js['qdot'], self._qdot_drift, out=self._brake_out)
+        self._brake_out *= -self.brake_gain
+        peak = float(np.max(np.abs(self._brake_out) / self.qddot_max))
+        if peak > 1.0:
+            self._brake_out /= peak
+        self._publish_qddot(self._brake_out, dt)
 
     def _tick(self):
-        if self._stopping:
-            self.pub.publish(self._zero_msg)
-            if time.monotonic() >= self._stop_end:
-                self.timer.cancel()
-                self.done = True
-            return
-
         now_stamp = self.get_clock().now()
         t = (now_stamp - self.t0).nanoseconds * 1e-9
 
@@ -431,29 +375,35 @@ class PickPlaceQddotCommander(Node):
             actual_dt = self._dt
         self._prev_tick_time = now_stamp
 
+        with self._js_lock:
+            js = self._js_read
+        js_age = (now_stamp - self._js_stamp).nanoseconds * 1e-9
+        js_fresh = js['valid'] and js_age <= self.js_timeout_s
+        if self._js_stamp.nanoseconds != self._seen_js_ns:
+            # A new measurement already contains every q̈ published before it
+            self._seen_js_ns = self._js_stamp.nanoseconds
+            self._qdot_drift[:] = 0.0
+
+        if self._stopping:
+            self._publish_brake(js, actual_dt)
+            if time.monotonic() >= self._stop_end:
+                self.timer.cancel()
+                self.done = True
+            return
+
         # Warm-up phase
         if not self._running:
-            self.pub.publish(self._zero_msg)
-            if t >= self.warmup_s:
-                with self._js_lock:
-                    js = self._js_read
-                if js['valid']:
-                    self._start_trajectory(js)
+            self._publish_brake(js, actual_dt)
+            if t >= self.warmup_s and js_fresh:
+                self._start_trajectory(js)
             if self._tlog.due(t):
                 self._tlog.info(f'[WARMUP {t:.1f}/{self.warmup_s}s]')
             return
 
-        with self._js_lock:
-            js = self._js_read
-        if not js['valid']:
-            self.pub.publish(self._zero_msg)
-            return
-        
-        age = (self.get_clock().now() - self._js_stamp).nanoseconds * 1e-9
-        if age > 0.1:
-            self.pub.publish(self._zero_msg)
+        if not js_fresh:
+            self._publish_brake(js, actual_dt)
             if self._tlog.due(t):
-                self.get_logger().warn(f'JS stale {age:.3f}s')
+                self.get_logger().warn(f'JS stale {js_age:.3f}s: braking')
             return
 
         np.copyto(self._q_full, js['q_full'])
@@ -485,23 +435,32 @@ class PickPlaceQddotCommander(Node):
         np.dot(self._R_des, so3_log(self._R_err), out=self._e_rot)
         np.negative(self._e_rot, out=self._e_rot)
 
-        # Task trajectory evaluation
+        # Task trajectory evaluation at virtual time s. The clock is driven by the previous
+        # tick's Cartesian error: it slows the reference while the arm is held back.
         task_t = (now_stamp - self._task_start).nanoseconds * 1e-9
         envelope = cosine_ramp(task_t, self.ramp_s)
-        t_traj = max(0.0, task_t - self.ramp_s)
+        if task_t <= self.ramp_s:
+            # Startup ramp: hold the home reference, the clock does not run yet
+            s, s_dot, s_ddot = 0.0, 0.0, 0.0
+        else:
+            s, s_dot, s_ddot = self.clock.step(actual_dt, self._ee_err)
 
-        p_des, v_des, a_des, phase, cycle = self.trajectory.evaluate(t_traj)
-        if t_traj == 0.0:
+        p_des, v_des, a_des, phase, cycle = self.trajectory.reference(s, s_dot, s_ddot)
+        if task_t <= self.ramp_s:
             phase = "STARTUP_RAMP"
 
-        if phase != self._last_phase or cycle != self._last_cycle:
+        if phase != self._last_phase:
             self.get_logger().info(f'Cycle {cycle + 1} | phase: {phase}')
             self._last_phase = phase
+            self._phase_pub.publish(String(data=phase))
+        if cycle != self._last_cycle:
             self._last_cycle = cycle
+            self._cycle_pub.publish(UInt32(data=int(cycle)))
 
         # 6D Error
         np.subtract(p_des, self._p_ee, out=self._tmp3)
         ee_err = float(np.linalg.norm(self._tmp3))
+        self._ee_err = ee_err
         if self.cart_err_max > 0.0 and ee_err > self.cart_err_max:
             self._tmp3 *= (self.cart_err_max / ee_err)
         self._e6[:3] = self._tmp3
@@ -584,9 +543,7 @@ class PickPlaceQddotCommander(Node):
             self._dq_d *= a; self._dq_d += (1.0 - a) * qdot
 
         # Publish qddot output for the safety filter
-        for i in range(NUM_JOINTS):
-            self._out_msg.data[i] = float(self._q_ddot[i])
-        self.pub.publish(self._out_msg)
+        self._publish_qddot(self._q_ddot, actual_dt)
 
         # Publish JointState setpoint
         self._sp_msg.header.stamp = self.get_clock().now().to_msg()
@@ -595,6 +552,17 @@ class PickPlaceQddotCommander(Node):
             self._sp_msg.velocity[i] = float(self._dq_d[i])
             self._sp_msg.effort[i]   = float(self._q_ddot[i])
         self._sp_pub.publish(self._sp_msg)
+
+        # Publish the task reference and the clock state [s, s_dot, ee_err]
+        self._ref_msg.header.stamp = self._sp_msg.header.stamp
+        self._ref_msg.pose.position.x = float(p_des[0])
+        self._ref_msg.pose.position.y = float(p_des[1])
+        self._ref_msg.pose.position.z = float(p_des[2])
+        self._ref_pub.publish(self._ref_msg)
+        self._clock_msg.data[0] = float(s)
+        self._clock_msg.data[1] = float(s_dot)
+        self._clock_msg.data[2] = ee_err
+        self._clock_pub.publish(self._clock_msg)
 
     def _start_trajectory(self, js: dict) -> None:
         np.copyto(self._q_full, js['q_full'])
@@ -623,6 +591,8 @@ class PickPlaceQddotCommander(Node):
         
         np.copyto(self._q_home, self._q_home_cfg)
 
+        self.clock.reset()
+        self._ee_err = 0.0
         self._task_start = self.get_clock().now()
         self._running = True
         self.get_logger().info(f'Pick & Place trajectory started at home: {vec_to_str(home)}')
