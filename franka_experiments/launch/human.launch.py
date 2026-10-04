@@ -199,6 +199,11 @@ def generate_launch_description():
         PythonExpression(["'", real, "'.lower() not in ['true', '1', 'yes', 'on']"]),
         value_type=bool,
     )
+    # On the robot the 1 kHz state feed; recorded bags only carry the 30 Hz republished one
+    joint_state_topic = PythonExpression([
+        "'/NS_1/franka/joint_states' if '", real,
+        "'.lower() in ['true', '1', 'yes', 'on'] else '/NS_1/joint_states'",
+    ])
 
     publish_camera_tf = LaunchConfiguration('publish_camera_tf')
 
@@ -234,7 +239,10 @@ def generate_launch_description():
         package='franka_experiments',
         executable='human_distance',
         name='human_distance',
-        parameters=[{'use_sim_time': use_sim_time}],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'joint_state_topic': ParameterValue(joint_state_topic, value_type=str),
+        }],
         output='screen',
     )
 
@@ -244,7 +252,8 @@ def generate_launch_description():
         name='human_logger',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'run_name': ParameterValue(run_name, value_type=str)
+            'run_name': ParameterValue(run_name, value_type=str),
+            'robot_state_topic': ParameterValue(joint_state_topic, value_type=str),
         }],
         output='screen'
     )
@@ -272,6 +281,7 @@ def generate_launch_description():
             'ros2', 'bag', 'record',
             '-o', ['experiment_bags/', run_name],
             '/NS_1/joint_states',
+            '/NS_1/franka/joint_states',
             '/camera/camera/aligned_depth_to_color/camera_info',
             '/camera/camera/aligned_depth_to_color/image_raw',
             '/camera/camera/color/camera_info',

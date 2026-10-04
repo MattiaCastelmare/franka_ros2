@@ -6,9 +6,10 @@ from functools import partial
 from pathlib import Path
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, String, UInt32
 from ament_index_python.packages import get_package_share_directory
 from franka_msgs.msg import HumanArmState, HumanArmPrediction, MultiLinkDistance, KalmanDiagnostics
 from franka_experiments.utils.distance_utils import load_robot_config
@@ -119,9 +120,33 @@ class KalmanDiagnosticsLogger(BaseLogger):
         keypoints = ['shoulder', 'elbow', 'wrist', 'hand']
         
         for kp in keypoints:
-            headers.extend([f'{kp}_inn_x', f'{kp}_inn_y', f'{kp}_inn_z', f'{kp}_p_trace'])
-            
+            headers.extend([f'{kp}_inn_x', f'{kp}_inn_y', f'{kp}_inn_z', f'{kp}_p_trace',
+                            f'{kp}_nis', f'{kp}_gated'])
+
         super().__init__(f"{base_path}_kf_diagnostics.csv", headers)
+
+
+class JointVectorLogger(BaseLogger):
+    """Logger for a 7-element joint command (Float64MultiArray, no header: timestamp = reception)."""
+
+    def __init__(self, base_path: str, name: str, column_prefix: str, num_joints: int = 7):
+        headers = [f'{column_prefix}_{i}' for i in range(1, num_joints + 1)]
+        super().__init__(f"{base_path}_{name}.csv", headers)
+
+
+class TaskLogger(BaseLogger):
+    """Logger for the task reference position and the task clock state."""
+
+    def __init__(self, base_path: str):
+        headers = ['ref_x', 'ref_y', 'ref_z', 's', 's_dot', 'ee_err']
+        super().__init__(f"{base_path}_task.csv", headers)
+
+
+class TaskEventLogger(BaseLogger):
+    """Logger for task phase and cycle transitions (one row per change)."""
+
+    def __init__(self, base_path: str):
+        super().__init__(f"{base_path}_task_events.csv", ['event', 'value'])
 
 
 class ControllerDiagnosticsLogger(BaseLogger):
@@ -156,6 +181,10 @@ class ExperimentLoggerNode(Node):
         if not self.has_parameter('run_name'):
             self.declare_parameter('run_name', session_time)
         run_name = self.get_parameter('run_name').get_parameter_value().string_value
+        # Bags carry only the 30 Hz /NS_1/joint_states (republished with fresh stamps, unusable
+        # for accelerations or jerk); on the robot log the 1 kHz /NS_1/franka/joint_states
+        self.declare_parameter('robot_state_topic', '/NS_1/joint_states')
+        robot_state_topic = self.get_parameter('robot_state_topic').value
         base_log_dir = Path(f"experiment_logs/{run_name}")
         base_log_path = str(base_log_dir / "experiment")
 
@@ -165,6 +194,12 @@ class ExperimentLoggerNode(Node):
         self.robot_logger = RobotStateLogger(base_log_path)
         self.distance_logger = SafetyDistanceLogger(base_log_path)
         self.diag_logger = ControllerDiagnosticsLogger(base_log_path)
+        self.qddot_nom_logger = JointVectorLogger(base_log_path, 'qddot_nom', 'qddot_nom')
+        self.qddot_safe_logger = JointVectorLogger(base_log_path, 'qddot_safe', 'qddot_safe')
+        self.torque_cmd_logger = JointVectorLogger(base_log_path, 'torque_cmd', 'tau_ff')
+        self.task_logger = TaskLogger(base_log_path)
+        self.task_event_logger = TaskEventLogger(base_log_path)
+        self.latest_task_clock = [float('nan')] * 3
 
         # State cache for diagnostics
         self.current_controller = "CBF"
@@ -207,8 +242,30 @@ class ExperimentLoggerNode(Node):
 
         # Global subscriptions
         latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+        # Best effort with a short queue: matches the 1 kHz best-effort feed and the reliable bag topic
         self.joint_state_sub = self.create_subscription(
-            JointState, '/NS_1/joint_states', self.robot_state_callback, 10)
+            JointState, robot_state_topic, self.robot_state_callback,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT))
+
+        # Commands along the torque chain (absent topics simply produce empty CSVs)
+        self.command_subs = [
+            self.create_subscription(Float64MultiArray, topic, partial(self.joint_vector_callback, logger=logger), 10)
+            for topic, logger in (
+                ('/NS_1/qddot_nom', self.qddot_nom_logger),
+                ('/NS_1/qddot_safe', self.qddot_safe_logger),
+                ('/NS_1/torque_cmd', self.torque_cmd_logger),
+            )
+        ]
+
+        # Task state from the pick-and-place commander
+        latched_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.task_subs = [
+            self.create_subscription(String, '/task/phase', partial(self.task_event_callback, event='phase'), latched_qos),
+            self.create_subscription(UInt32, '/task/cycle', partial(self.task_event_callback, event='cycle'), latched_qos),
+            self.create_subscription(Float64MultiArray, '/task/clock', self.task_clock_callback, 10),
+            self.create_subscription(PoseStamped, '/task/reference', self.task_reference_callback, 10),
+        ]
 
         self.min_dist_sub = self.create_subscription(
             MultiLinkDistance, '/human/per_link_distances', self.min_distance_callback, latest_qos)
@@ -220,7 +277,9 @@ class ExperimentLoggerNode(Node):
         self.flush_timer = self.create_timer(1.0, self.flush_all)
 
     def all_loggers(self) -> list:
-        loggers = [self.robot_logger, self.distance_logger, self.diag_logger]
+        loggers = [self.robot_logger, self.distance_logger, self.diag_logger,
+                   self.qddot_nom_logger, self.qddot_safe_logger, self.torque_cmd_logger,
+                   self.task_logger, self.task_event_logger]
         for side in self.active_sides:
             loggers += [self.human_raw_loggers[side], self.human_state_loggers[side],
                         self.human_pred_loggers[side], self.kf_diag_loggers[side]]
@@ -289,12 +348,33 @@ class ExperimentLoggerNode(Node):
         self.human_pred_loggers[side].log(row)
 
     def kf_diag_callback(self, msg: KalmanDiagnostics, side: str):
-        """Log KF innovations and covariance traces."""
+        """Log KF innovations, covariance traces, NIS and gate decisions."""
         row = self.times(msg)
         for i in range(4):
             inn = msg.innovations[i]
-            row.extend([inn.x, inn.y, inn.z, msg.p_traces[i]])
+            nis = msg.nis[i] if i < len(msg.nis) else float('nan')
+            gated = int(msg.gated[i]) if i < len(msg.gated) else 0
+            row.extend([inn.x, inn.y, inn.z, msg.p_traces[i], nis, gated])
         self.kf_diag_loggers[side].log(row)
+
+    def now_s(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def joint_vector_callback(self, msg: Float64MultiArray, logger: JointVectorLogger):
+        """Log a headerless joint command; both time columns are the reception time."""
+        now = self.now_s()
+        logger.log([now, now] + list(msg.data))
+
+    def task_event_callback(self, msg, event: str):
+        now = self.now_s()
+        self.task_event_logger.log([now, now, event, msg.data])
+
+    def task_clock_callback(self, msg: Float64MultiArray):
+        self.latest_task_clock = list(msg.data[:3])
+
+    def task_reference_callback(self, msg: PoseStamped):
+        p = msg.pose.position
+        self.task_logger.log(self.times(msg) + [p.x, p.y, p.z] + self.latest_task_clock)
 
     def robot_state_callback(self, msg: JointState):
         """Log robot joint positions, velocities, and torques."""
