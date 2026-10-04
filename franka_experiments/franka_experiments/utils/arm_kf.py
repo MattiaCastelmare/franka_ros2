@@ -11,8 +11,11 @@ White acceleration noise model:
     Q = G G^T sigma_a^2
 
 The filter receives only 3D position measurements. When a measurement is
-invalid (low visibility, zero depth, NaN or Inf), the corresponding filter
-performs prediction only.
+invalid (low visibility, zero depth, NaN or Inf) or fails the Mahalanobis
+gate, the corresponding filter performs prediction only.
+
+A measurement may carry its own 3x3 covariance instead of the isotropic
+R = sigma_m^2 I, e.g. a depth that is only known along the camera ray.
 """
 
 from __future__ import annotations
@@ -80,6 +83,11 @@ class ArmKalmanFilter:
 
         self.innovation = np.zeros((self.num_keypoints, self.MEASUREMENT_SIZE), dtype=float)
         self.p_trace = np.zeros(self.num_keypoints, dtype=float)
+        # Normalized innovation squared (chi^2_3 for a consistent filter), NaN without a measurement
+        self.nis = np.full(self.num_keypoints, np.nan, dtype=float)
+        self.gated = np.zeros(self.num_keypoints, dtype=bool)
+        # Accepted measurements since the last (re)initialization
+        self.update_count = np.zeros(self.num_keypoints, dtype=np.int64)
 
         self._set_dt(float(dt))
 
@@ -111,11 +119,15 @@ class ArmKalmanFilter:
             ]
         )
 
-    def _initialize_keypoint(self, index: int, position: np.ndarray) -> None:
+    def _initialize_keypoint(self, index: int, position: np.ndarray, R_custom: np.ndarray | None) -> None:
         self.x[index, 0:3] = position
         self.x[index, 3:6] = 0.0
         self.P[index] = self._initial_covariance()
+        if R_custom is not None:
+            # The first estimate is a measurement less certain than usual: widen the prior (stays PSD)
+            self.P[index, 0:3, 0:3] += R_custom
         self.initialized[index] = True
+        self.update_count[index] = 1
 
     def _predict_keypoint(self, index: int) -> None:
         if not self.initialized[index]:
@@ -124,23 +136,26 @@ class ArmKalmanFilter:
         self.x[index] = self.F @ self.x[index]
         self.P[index] = self.F @ self.P[index] @ self.F.T + self.Q
 
-    def _update_keypoint(self, index: int, position: np.ndarray) -> None:
+    def _update_keypoint(self, index: int, position: np.ndarray, R_custom: np.ndarray | None = None) -> bool:
         """Execute the update and return True if the measurement is accepted, False if rejected by the gate."""
         if not self.initialized[index]:
-            self._initialize_keypoint(index, position)
+            self._initialize_keypoint(index, position, R_custom)
             return True
+        R = self.R if R_custom is None else R_custom
 
         innovation = position - self.H @ self.x[index]
         self.innovation[index] = innovation
-        innovation_covariance = self.H @ self.P[index] @ self.H.T + self.R
+        innovation_covariance = self.H @ self.P[index] @ self.H.T + R
 
         # --- INNOVATION GATE (Mahalanobis Distance) ---
         # D^2 = innovation^T * S^-1 * innovation
         inv_S_y = np.linalg.solve(innovation_covariance, innovation)
-        mahalanobis_dist_sq = np.dot(innovation, inv_S_y)
+        mahalanobis_dist_sq = float(np.dot(innovation, inv_S_y))
+        self.nis[index] = mahalanobis_dist_sq
 
         # If the Mahalanobis distance exceeds the threshold, discard the measurement
         if self.mahalanobis_threshold > 0.0 and mahalanobis_dist_sq > self.mahalanobis_threshold:
+            self.gated[index] = True
             return False
 
         # K = P H^T S^-1, computed without explicitly inverting S
@@ -153,8 +168,9 @@ class ArmKalmanFilter:
         correction = self.I - kalman_gain @ self.H
         self.P[index] = (
             correction @ self.P[index] @ correction.T
-            + kalman_gain @ self.R @ kalman_gain.T
+            + kalman_gain @ R @ kalman_gain.T
         )
+        self.update_count[index] += 1
 
         return True
 
@@ -164,6 +180,7 @@ class ArmKalmanFilter:
         visibilities: Sequence[float],
         depths: Sequence[float],
         dt: float | None = None,
+        measurement_covariances: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run one filter cycle for all four keypoints.
 
@@ -172,6 +189,9 @@ class ArmKalmanFilter:
             visibilities: Four MediaPipe visibility values.
             depths: Four depth values. A value ``<= 0`` is invalid.
             dt: Optional elapsed time since the previous call.
+            measurement_covariances: Optional ``(4, 3, 3)`` per-keypoint
+                measurement covariance; a keypoint whose block is not finite
+                uses the default isotropic R.
 
         Returns:
             ``filtered_positions`` with shape ``(4, 3)``;
@@ -198,12 +218,20 @@ class ArmKalmanFilter:
             )
         if depth_array.shape != (self.num_keypoints,):
             raise ValueError(f"depths must have shape ({self.num_keypoints},).")
+        if measurement_covariances is not None:
+            measurement_covariances = np.asarray(measurement_covariances, dtype=float)
+            if measurement_covariances.shape != (self.num_keypoints, 3, 3):
+                raise ValueError(
+                    f"measurement_covariances must have shape ({self.num_keypoints}, 3, 3)."
+                )
 
         if dt is not None:
             self._set_dt(float(dt))
 
-        # Reset innovations to zero at the start of the step (predict-only implies 0 innovation)
+        # Reset per-step diagnostics (predict-only implies 0 innovation and no NIS)
         self.innovation.fill(0.0)
+        self.nis.fill(np.nan)
+        self.gated.fill(False)
 
         finite_measurement = np.all(np.isfinite(positions_array), axis=1)
         valid_mask = (
@@ -220,7 +248,10 @@ class ArmKalmanFilter:
 
             # A valid measurement corrects the prediction, otherwise predict only
             if valid_mask[index]:
-                accepted = self._update_keypoint(index, positions_array[index])
+                R_custom = None
+                if measurement_covariances is not None and np.all(np.isfinite(measurement_covariances[index])):
+                    R_custom = measurement_covariances[index]
+                accepted = self._update_keypoint(index, positions_array[index], R_custom)
                 if not accepted:
                     valid_mask[index] = False
 
@@ -244,6 +275,23 @@ class ArmKalmanFilter:
         """Return the latest innovation vector and the trace of the covariance matrix."""
         return self.innovation.copy(), self.p_trace.copy()
 
+    def get_consistency(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the latest NIS (NaN without a measurement) and the gate-rejection flags."""
+        return self.nis.copy(), self.gated.copy()
+
+    def get_covariances(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the position, velocity and position-velocity covariance blocks, shape (4, 3, 3).
+        
+        Uninitialized keypoints are NaN.
+        """
+        P_pp = np.full((self.num_keypoints, 3, 3), np.nan, dtype=float)
+        P_vv = np.full((self.num_keypoints, 3, 3), np.nan, dtype=float)
+        P_pv = np.full((self.num_keypoints, 3, 3), np.nan, dtype=float)
+        P_pp[self.initialized] = self.P[self.initialized, 0:3, 0:3]
+        P_vv[self.initialized] = self.P[self.initialized, 3:6, 3:6]
+        P_pv[self.initialized] = self.P[self.initialized, 0:3, 3:6]
+        return P_pp, P_vv, P_pv
+
     def reset(self, keypoint: int | str | None = None) -> None:
         """Reset one keypoint or the complete filter bank."""
         if keypoint is None:
@@ -263,3 +311,4 @@ class ArmKalmanFilter:
             self.x[index] = 0.0
             self.P[index] = 0.0
             self.initialized[index] = False
+            self.update_count[index] = 0

@@ -27,9 +27,14 @@ human_tracker:
   loss_stability_s: 0.5
 
   # Kalman filter
+  # sigma_a / sigma_m sets the bandwidth (velocity lag ~0.13 s here, ~0.30 s at 1.0 / 0.05)
   kf_nominal_dt: 0.03333333333333333 # Nominal dt for 30 Hz (1/30 s)
-  kf_process_accel_std: 1.0
-  kf_measurement_std: 0.05
+  kf_process_accel_std: 3.0    # [m/s^2]
+  kf_measurement_std: 0.03     # [m]
+  kf_initial_position_std: 0.05  # [m]
+  kf_initial_velocity_std: 1.0   # [m/s]
+  kf_mahalanobis_threshold: 11.34  # chi^2_3 at 99%; <= 0 disables the gate
+  fallback_depth_std_m: 0.12   # [m] std along the ray of a borrowed depth (+-0.20 m band); <= 0 disables it
   max_state_age_s: 0.30
   reset_after_s: 0.50
   max_speed_m_s: 2.5

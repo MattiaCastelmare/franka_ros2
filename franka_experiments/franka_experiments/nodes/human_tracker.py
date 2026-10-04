@@ -32,7 +32,7 @@ from franka_experiments.utils.human_utils import (
     deproject, depth_patch_median, extract_arm_landmarks,
     measurement_age, quaternion_to_rotation, build_arm_state_msg,
     build_prediction_msg, build_2d_landmarks_msg, format_topic,
-    check_engagement_start, check_engagement_loss, stamp_to_ns
+    check_engagement_start, check_engagement_loss, stamp_to_ns, ray_covariance
 )
 
 
@@ -72,6 +72,8 @@ class HumanTracker(Node):
             float(config["reset_after_s"]),
         )
         self.max_speed_m_s = float(config["max_speed_m_s"])
+        self.measurement_std = float(config["kf_measurement_std"])
+        self.fallback_depth_std_m = float(config["fallback_depth_std_m"])
 
         self.publish_prediction_enabled = bool(
             config["publish_prediction"]
@@ -126,8 +128,11 @@ class HumanTracker(Node):
             self.kfs[side] = ArmKalmanFilter(
                 dt=float(config["kf_nominal_dt"]),
                 process_accel_std=float(config["kf_process_accel_std"]),
-                measurement_std=float(config["kf_measurement_std"]),
+                measurement_std=self.measurement_std,
+                initial_position_std=float(config["kf_initial_position_std"]),
+                initial_velocity_std=float(config["kf_initial_velocity_std"]),
                 visibility_threshold=self.visibility_threshold,
+                mahalanobis_threshold=float(config["kf_mahalanobis_threshold"]),
             )
             self.last_valid_time[side] = np.full(4, np.nan, dtype=float)
 
@@ -409,6 +414,8 @@ class HumanTracker(Node):
             log_prefix = f"[{side.upper()}] " if len(self.active_sides) > 1 else ""
             positions = np.full((4, 3), np.nan, dtype=float)
             depths = np.zeros(4, dtype=float)
+            # NaN = default isotropic R; set only for measurements with a borrowed depth
+            measurement_covs = np.full((4, 3, 3), np.nan, dtype=float)
 
             if landmarks is not None and camera_tf is not None:
                 rotation, translation = camera_tf
@@ -435,8 +442,9 @@ class HumanTracker(Node):
                         depths[i] = depth_m
                         valid_depths.append(depth_m)
 
+                # A keypoint visible in RGB is received by the filter with a ray-shaped covariance
                 fallback_depth = None
-                if len(valid_depths) >= 2:
+                if self.fallback_depth_std_m > 0.0 and len(valid_depths) >= 2:
                     ref_median = float(np.median(valid_depths))
                     consistent = [d for d in valid_depths if abs(d - ref_median) <= 0.20]
                     if len(consistent) >= 2:
@@ -445,7 +453,8 @@ class HumanTracker(Node):
                 for i in range(4):
                     if i not in landmark_pixels:
                         continue
-                    d = depths[i] if depths[i] > 0.0 else fallback_depth
+                    borrowed = depths[i] <= 0.0
+                    d = fallback_depth if borrowed else depths[i]
                     if d is None:
                         continue
                     u, v = landmark_pixels[i]
@@ -453,8 +462,14 @@ class HumanTracker(Node):
                     # Deproject the 2D pixel to 3D in the camera frame and transform to the robot base frame
                     point_camera = deproject(u, v, d, self.fx, self.fy, self.cx, self.cy)
                     point_base = rotation @ point_camera + translation
-                    if np.all(np.isfinite(point_base)):
-                        positions[i] = point_base
+                    if not np.all(np.isfinite(point_base)):
+                        continue
+                    positions[i] = point_base
+                    if borrowed:
+                        depths[i] = d
+                        measurement_covs[i] = ray_covariance(
+                            rotation @ point_camera, self.measurement_std, self.fallback_depth_std_m
+                        )
 
             # Publish raw data for KF post-comparison
             raw_msg = build_arm_state_msg(
@@ -466,7 +481,8 @@ class HumanTracker(Node):
 
             # --- Kalman Filter Update ---
             filtered_pos, filtered_vel, measured = self.kfs[side].step(
-                positions=positions, visibilities=visibilities, depths=depths, dt=dt
+                positions=positions, visibilities=visibilities, depths=depths, dt=dt,
+                measurement_covariances=measurement_covs,
             )
 
             # Update the last valid time for each keypoint
@@ -493,6 +509,7 @@ class HumanTracker(Node):
 
             # Publish KF Diagnostics
             innovations, p_traces = self.kfs[side].get_diagnostics()
+            nis, gated = self.kfs[side].get_consistency()
             diag_msg = KalmanDiagnostics()
             diag_msg.header = self.image_header
             for i in range(4):
@@ -500,6 +517,8 @@ class HumanTracker(Node):
                 vec.x, vec.y, vec.z = float(innovations[i, 0]), float(innovations[i, 1]), float(innovations[i, 2])
                 diag_msg.innovations.append(vec)
                 diag_msg.p_traces.append(float(p_traces[i]))
+                diag_msg.nis.append(float(nis[i]))
+                diag_msg.gated.append(bool(gated[i]))
             self.kf_diag_pubs[side].publish(diag_msg)
 
             # Sanity Check: discard any keypoint whose speed exceeds a reasonable threshold
@@ -515,8 +534,9 @@ class HumanTracker(Node):
 
             # Publish Filtered State
             state_msg = build_arm_state_msg(
-                positions=filtered_pos, velocities=filtered_vel, visibilities=visibilities, measured=measured, 
-                keypoint_valid=keypoint_valid, age=age, header=self.image_header, base_frame=self.base_frame
+                positions=filtered_pos, velocities=filtered_vel, visibilities=visibilities, measured=measured,
+                keypoint_valid=keypoint_valid, age=age, header=self.image_header, base_frame=self.base_frame,
+                covariances=self.kfs[side].get_covariances(), frames_seen=self.kfs[side].update_count,
             )
             self.state_pubs[side].publish(state_msg)
 
