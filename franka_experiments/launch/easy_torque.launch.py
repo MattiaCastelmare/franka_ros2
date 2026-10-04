@@ -4,17 +4,30 @@ Pipeline (identical in both modes):
   pick_place_qddot_commander → /NS_1/qddot_nom → qddot_to_torque → /NS_1/torque_cmd
   → rt_torque_controller → hardware (real FR3) | Gazebo (simulation)
 
+control_mode:=cbf inserts the acceleration-level CBF between the two:
+  /NS_1/qddot_nom → cbf_safety_filter → /NS_1/qddot_safe → qddot_to_torque
+  and rt_torque_controller integrates /NS_1/qddot_safe (the same q̈ that becomes τ_ff).
+
+human:=true adds the human-arm perception (tracker, distance, visualizer, logger);
+human_distance then publishes on /cbf/per_link_distances, the filter's input.
+
 real:=true  (default)  franka bringup (driver + broadcasters) + RT pinning + RViz
+                       (+ RealSense driver with human:=true)
 real:=false            Gazebo + robot_state_publisher + joint_state_publisher +
                        clock bridge + RViz, all under the same namespace as the
                        real robot so every node sees the same topics.
+                       (+ camera topics of human_bag replayed on Gazebo's clock)
 
 Examples
     ros2 launch franka_experiments easy_torque.launch.py              # real robot
     ros2 launch franka_experiments easy_torque.launch.py real:=false  # Gazebo
+    ros2 launch franka_experiments easy_torque.launch.py control_mode:=cbf human:=true
+    ros2 launch franka_experiments easy_torque.launch.py real:=false \\
+        control_mode:=cbf human:=true human_bag:=/bags/varied
 """
 
 import os
+import time
 import xacro
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -22,6 +35,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
@@ -36,6 +50,7 @@ from franka_experiments.utils.config import (
     load_franka_config_defaults,
     load_launch_defaults,
 )
+from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.launch_support import (
     declare_robot_args,
     declare_rt_torque_args,
@@ -48,6 +63,29 @@ _LAUNCH_DEFAULTS, _ = load_launch_defaults()
 _BRINGUP_DEFAULTS, _ = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
 _QDDOT_NOM_TOPIC = '/NS_1/qddot_nom'
+_QDDOT_SAFE_TOPIC = '/NS_1/qddot_safe'
+_FAST_JOINT_STATES = '/NS_1/franka/joint_states'
+_CONTROL_MODES = ('nominal', 'cbf')
+
+# human_distance publishes where cbf_safety_filter reads (topics.per_link_distances)
+_PER_LINK_REMAP = ('/human/per_link_distances', '/cbf/per_link_distances')
+
+# Camera topics of a recorded bag; its robot topics (/NS_1/joint_states, /tf) would
+# fight with the simulated robot, so only these are replayed
+_CAMERA_TOPICS = [
+    '/camera/camera/color/image_raw',
+    '/camera/camera/color/camera_info',
+    '/camera/camera/aligned_depth_to_color/image_raw',
+    '/camera/camera/aligned_depth_to_color/camera_info',
+]
+
+# One BLAS thread per numpy node, as in torque_control_stack.launch.py
+_SINGLE_THREAD_BLAS = {
+    'OPENBLAS_NUM_THREADS': '1',
+    'OMP_NUM_THREADS': '1',
+    'MKL_NUM_THREADS': '1',
+    'NUMEXPR_NUM_THREADS': '1',
+}
 
 # Kd di rt_torque_controller in Gazebo
 _SIM_D_GAINS = [30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 1.0]
@@ -147,9 +185,19 @@ def _real_robot_actions(p, controllers_yaml, cm_name, use_fake):
         )
         actions.append(TimerAction(period=2.0, actions=[pin_rt_thread]))
 
-    actions.append(TimerAction(period=2.5, actions=[_qddot_to_torque_node(False)]))
+    actions.append(TimerAction(period=2.5, actions=_filter_and_dynamics_nodes(p, False)))
     actions.append(TimerAction(period=3.0, actions=[_rviz_node(p, False)]))
     actions.append(TimerAction(period=4.0, actions=[_commander_node(p, False)]))
+
+    if _as_bool(p['human']):
+        # RealSense driver with depth aligned to color, as human.launch.py
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory('realsense2_camera'), 'launch', 'rs_launch.py',
+            )),
+            launch_arguments={'align_depth.enable': 'true'}.items(),
+        ))
+        actions.extend(_human_nodes(p, False))
     return actions
 
 
@@ -225,28 +273,107 @@ def _simulation_actions(p, controllers_yaml, cm_name):
         target_action=spawn_entity, on_exit=[jsb_spawner])))
     actions.append(RegisterEventHandler(OnProcessExit(
         target_action=jsb_spawner,
-        on_exit=[torque_spawner, _qddot_to_torque_node(True)])))
+        on_exit=[torque_spawner, *_filter_and_dynamics_nodes(p, True)])))
     actions.append(RegisterEventHandler(OnProcessExit(
         target_action=torque_spawner,
         on_exit=[TimerAction(period=2.0, actions=[_commander_node(p, True)])])))
 
     actions.append(TimerAction(period=3.0, actions=[_rviz_node(p, True)]))
+
+    if _as_bool(p['human']):
+        actions.extend(_human_nodes(p, True))
+        if p['human_bag']:
+            # Camera topics only and NO --clock: Gazebo owns /clock. The image stamps stay
+            # those of the recording; the tracker only uses their differences, and
+            # cbf_safety_filter falls back to the receipt time for an implausible capture age.
+            actions.append(TimerAction(period=5.0, actions=[ExecuteProcess(
+                cmd=['ros2', 'bag', 'play', os.path.expanduser(p['human_bag']), '--loop',
+                     '--read-ahead-queue-size', '1000', '--topics', *_CAMERA_TOPICS],
+                output='screen',
+            )]))
     return actions
 
 
-def _qddot_to_torque_node(use_sim_time):
+def _cbf_enabled(p) -> bool:
+    return p['control_mode'] == 'cbf'
+
+
+def _filter_and_dynamics_nodes(p, use_sim_time):
+    """qddot_to_torque, preceded by cbf_safety_filter when control_mode:=cbf."""
     # ── Convertitore Dinamico (qddot_to_torque) ──────────────────────────────
-    # Fondamentale: Converte le accelerazioni nominali (q̈) in coppie (τ) usando Pinocchio
-    return Node(
+    # Fondamentale: Converte le accelerazioni (q̈) in coppie (τ) usando Pinocchio.
+    # Its input is /NS_1/qddot_safe: the CBF output, or the nominal q̈ remapped onto it.
+    nodes = [Node(
         package='franka_experiments',
         executable='qddot_to_torque',
         name='qddot_to_torque',
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
         parameters=[{'use_sim_time': use_sim_time}],
-        remappings=[
-            ('/NS_1/qddot_safe', _QDDOT_NOM_TOPIC)
-        ]
+        remappings=[] if _cbf_enabled(p) else [(_QDDOT_SAFE_TOPIC, _QDDOT_NOM_TOPIC)],
+    )]
+    if _cbf_enabled(p):
+        # ── CBF safety filter: /NS_1/qddot_nom → /NS_1/qddot_safe ───────────
+        # Parameters not set here come from fr3_control.yaml. 'tracker' reads the
+        # obstacle velocity human_distance computes from the Kalman filter (the
+        # filter takes max(tracker, residual), so it is never less cautious than
+        # 'residual'); vobs_in_hdot puts its signed component along the normal into ḣ.
+        nodes.append(Node(
+            package='franka_experiments',
+            executable='cbf_safety_filter',
+            name='cbf_safety_filter',
+            output='both',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{
+                'use_sim_time': use_sim_time,
+                'obstacle_velocity_source': p['obstacle_velocity_source'],
+                'enable_vobs_in_hdot': _as_bool(p['vobs_in_hdot']),
+            }],
+        ))
+    return nodes
+
+
+def _human_nodes(p, use_sim_time):
+    """Human-arm perception feeding the CBF (same nodes as human.launch.py)."""
+    pkg_share = get_package_share_directory('franka_experiments')
+    extrinsics = load_robot_config(os.path.join(pkg_share, 'config', 'camera_extrinsics.yaml'))
+    tr, rot = extrinsics['translation'], extrinsics['rotation']
+    camera_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='fr3_to_camera_link',
+        arguments=[
+            '--x', str(tr['x']), '--y', str(tr['y']), '--z', str(tr['z']),
+            '--qx', str(rot['x']), '--qy', str(rot['y']), '--qz', str(rot['z']), '--qw', str(rot['w']),
+            '--frame-id', 'fr3_link0', '--child-frame-id', 'camera_color_optical_frame',
+        ],
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='log',
     )
+
+    def human_node(executable, name, extra_params=None):
+        return Node(
+            package='franka_experiments',
+            executable=executable,
+            name=name,
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{'use_sim_time': use_sim_time, **(extra_params or {})}],
+            remappings=[_PER_LINK_REMAP],
+        )
+
+    return [
+        LogInfo(msg='[easy_torque] human perception: tracker, distance → /cbf/per_link_distances, '
+                    'visualizer, logger'),
+        camera_tf,
+        human_node('human_tracker', 'human_tracker'),
+        human_node('human_distance', 'human_distance', {'joint_state_topic': _FAST_JOINT_STATES}),
+        human_node('human_visualizer', 'human_visualizer'),
+        human_node('human_logging', 'human_logger', {
+            'run_name': p['run_name'],
+            'robot_state_topic': _FAST_JOINT_STATES,
+        }),
+    ]
 
 
 def _commander_node(p, use_sim_time):
@@ -290,7 +417,15 @@ def _launch_all(context):
         'tau_max_scale': LaunchConfiguration('tau_max_scale').perform(context),
         'torque_command_topic': LaunchConfiguration('torque_command_topic').perform(context),
         'rt_pin_cpu': LaunchConfiguration('rt_pin_cpu').perform(context),
+        'control_mode': LaunchConfiguration('control_mode').perform(context).strip().lower(),
+        'human': LaunchConfiguration('human').perform(context),
+        'human_bag': LaunchConfiguration('human_bag').perform(context).strip(),
+        'obstacle_velocity_source': LaunchConfiguration('obstacle_velocity_source').perform(context),
+        'vobs_in_hdot': LaunchConfiguration('vobs_in_hdot').perform(context),
+        'run_name': LaunchConfiguration('run_name').perform(context),
     }
+    if p['control_mode'] not in _CONTROL_MODES:
+        raise RuntimeError(f"control_mode must be one of {_CONTROL_MODES}, got '{p['control_mode']}'")
 
     real = _as_bool(p['real'])
     use_fake = real and _as_bool(p['use_fake_hardware'])
@@ -311,8 +446,9 @@ def _launch_all(context):
         gazebo=p['gazebo'],
         lpf_alpha=float(p['lpf_alpha']),
         tau_max_scale=float(p['tau_max_scale']),
-        # Without CBF the safe qddot is the nominal commander
-        accel_topic=_QDDOT_NOM_TOPIC,
+        # The q̈ the PD integrates must be the one qddot_to_torque turns into τ_ff:
+        # the CBF output with the filter, the nominal commander without it
+        accel_topic=_QDDOT_SAFE_TOPIC if _cbf_enabled(p) else _QDDOT_NOM_TOPIC,
     )
     if not real:
         rt_params['d_gains'] = _SIM_D_GAINS
@@ -344,6 +480,39 @@ def generate_launch_description():
                 'rt_pin_cpu',
                 default_value=str(_DEFAULTS.get('rt_pin_cpu', '3')),
                 description="Isolated CPU for the ros2_control RT thread ('' = no pinning)"
+            ),
+            DeclareLaunchArgument(
+                'control_mode',
+                default_value='nominal',
+                description='nominal = commander q̈ straight to the torque chain; '
+                            'cbf = through cbf_safety_filter'
+            ),
+            DeclareLaunchArgument(
+                'human',
+                default_value='false',
+                description='true = human-arm perception (tracker, distance, visualizer, logger)'
+            ),
+            DeclareLaunchArgument(
+                'human_bag',
+                default_value='',
+                description='real:=false only: bag whose camera topics are replayed for the tracker'
+            ),
+            DeclareLaunchArgument(
+                'obstacle_velocity_source',
+                default_value='tracker',
+                description='cbf_safety_filter: tracker (Kalman velocity from human_distance) | residual'
+            ),
+            DeclareLaunchArgument(
+                'vobs_in_hdot',
+                default_value='false',
+                description='cbf_safety_filter: signed tracked velocity inside ḣ. Off by default as in '
+                            'fr3_control.yaml: the raw Kalman velocity is noisy on a still person '
+                            '(~0.16 m/s median at sigma_a = 3) and a "receding" sample relaxes the row'
+            ),
+            DeclareLaunchArgument(
+                'run_name',
+                default_value=time.strftime('%Y%m%d_%H%M%S'),
+                description='human_logging output folder experiment_logs/<run_name>'
             ),
             OpaqueFunction(function=_launch_all)
         ]
