@@ -267,6 +267,8 @@ def _launch_setup(context):
 
             'min_tracking_confidence': 0.5,
             'min_detection_confidence': 0.4,
+            'hand_backend': p('hand_backend'),
+            'gripper_camera': _as_bool(p('gripper_camera')),
         }],
     )
 
@@ -441,6 +443,14 @@ def _launch_setup(context):
                 package='franka_experiments',
                 executable='proximity_estimator',
                 output='screen',
+                parameters=[{'use_sim_time': False}],
+            ),
+            # object tracking -> /handover/hand_object (needs Hands23)
+            Node(
+                package='franka_experiments',
+                executable='grasp',
+                output='screen',
+                condition=IfCondition(LaunchConfiguration('start_grasp')),
                 parameters=[{'use_sim_time': False}],
             ),
 
@@ -803,6 +813,12 @@ def generate_launch_description():
             'start_logger',
             default_value='true',
         ),
+
+        # hand front-end: mediapipe | rtmw
+        DeclareLaunchArgument('hand_backend', default_value='mediapipe'),
+        # D405 on the gripper as second view of the hand
+        DeclareLaunchArgument('gripper_camera', default_value='true'),
+        DeclareLaunchArgument('start_grasp', default_value='false'),
 
         OpaqueFunction(
             function=_launch_setup

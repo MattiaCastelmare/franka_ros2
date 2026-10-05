@@ -1,0 +1,7 @@
+# Data and logs: the image only needs the sources for rosdep (src is wiped
+# after it). At runtime they are visible through the ./ -> /ros2_ws/src mount.
+datasets/
+franka_experiments/franka_logs/
+franka_experiments/results/
+# Hands23 weights: used through the mount, not copied into the image
+franka_experiments/models/

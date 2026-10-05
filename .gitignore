@@ -24,3 +24,6 @@ franka_experiments/install/
 franka_experiments/log/
 **/__pycache__/
 *.pyo
+
+# Hands23 weights (Dockerfile links them, not in git)
+franka_experiments/models/

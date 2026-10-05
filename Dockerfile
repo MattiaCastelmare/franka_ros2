@@ -230,6 +230,52 @@ print('protobuf ', pb.__version__, '(tensorboard SummaryWriter + mediapipe coexi
 print('osqp OK — franka_sim training stack ready')"
 
 # ============================================================================
+# Hands23 object detector for the grasp node (nodes/grasp.py).
+#
+# Own venv at the path grasp.py expects, so detectron2 and its deps never
+# touch the ROS/mediapipe user site. --system-site-packages: torch 2.13,
+# numpy 1.26.4, cv2 and rclpy come from the stack above (pinned by the
+# constraints). detectron2 is built CPU-only (no nvcc): Hands23 inference
+# uses torchvision's CUDA ops, tested on the RTX 5090 (~20 ms per crop).
+#
+# Weights are NOT baked in: the official host serves an expired TLS
+# certificate. Put model_hands23.pth at
+# franka_experiments/models/hands23/model_hands23.pth (gitignored, seen
+# through the ./ -> /ros2_ws/src mount); the image links to it.
+# ============================================================================
+USER root
+RUN mkdir -p /ros2_ws/offline_object_tests \
+ && chown ${USERNAME}:${USERNAME} /ros2_ws/offline_object_tests
+USER ${USERNAME}
+
+RUN cd /ros2_ws/offline_object_tests \
+ && python3 -m venv --without-pip --system-site-packages venv_hands23 \
+ && printf '%s\n' numpy==1.26.4 torch==2.13.0 'protobuf>=4.25.3,<5' \
+        antlr4-python3-runtime==4.9.3 black==26.10.0 click==8.5.0 \
+        fvcore==0.1.5.post20221221 hydra-core==1.3.7 iopath==0.1.9 \
+        mypy_extensions==1.1.0 omegaconf==2.3.1 pathspec==1.1.1 \
+        platformdirs==4.12.3 portalocker==4.4.0 pycocotools==2.0.11 \
+        pytokens==0.4.1 tabulate==0.10.0 termcolor==3.3.0 tomli==2.4.1 \
+        yacs==0.1.8 > /tmp/h23_constraints.txt \
+ && venv_hands23/bin/python -m pip install --no-cache-dir \
+        -c /tmp/h23_constraints.txt torchvision==0.28.0 \
+ && MAX_JOBS=8 venv_hands23/bin/python -m pip install --no-cache-dir \
+        --no-build-isolation -c /tmp/h23_constraints.txt \
+        "git+https://github.com/facebookresearch/detectron2.git@1e3e13bbf607b54f62205c4c33922521822fb298" \
+ && rm /tmp/h23_constraints.txt \
+ && git clone -q https://github.com/EvaCheng-cty/hands23_detector.git \
+ && git -C hands23_detector checkout -q 1bc0f919ffa7a9f375e7e8042e1d26f3743d5819 \
+ && mkdir -p hands23_detector/model_weights \
+ && ln -s /ros2_ws/src/franka_experiments/models/hands23/model_hands23.pth \
+        hands23_detector/model_weights/model_hands23.pth \
+ && cd hands23_detector \
+ && ../venv_hands23/bin/python -c "\
+import numpy, torch, torchvision, detectron2; \
+from hodetector.modeling import roi_heads; \
+assert numpy.__version__ == '1.26.4' and torch.__version__.startswith('2.13.0'); \
+print('hands23 OK: detectron2', detectron2.__version__, 'torchvision', torchvision.__version__)"
+
+# ============================================================================
 # Entrypoint script (root-owned, executable)
 # ============================================================================
 USER root
