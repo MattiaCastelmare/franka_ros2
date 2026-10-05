@@ -32,3 +32,4 @@ metadata.yaml
 *.tmp
 *.bak
 rosbag/
+results/

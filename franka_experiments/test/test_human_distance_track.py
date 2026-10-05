@@ -77,10 +77,10 @@ def _capsule_with_tracks():
 
 
 def test_track_fields_interpolate_velocity_and_covariance():
-    from franka_experiments.nodes.human_distance import HumanDistance
+    from franka_experiments.utils.human_utils import fill_track_fields
     ld = franka_msgs.LinkDistance()
     alpha = 0.25
-    HumanDistance.fill_track_fields(ld, _capsule_with_tracks(), alpha)
+    fill_track_fields(ld, _capsule_with_tracks(), alpha)
 
     v = ld.obstacle_velocity
     assert (v.x, v.y, v.z) == pytest.approx((0.75, 0.5, 0.0))
