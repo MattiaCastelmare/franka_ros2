@@ -8,11 +8,13 @@ control_mode:=cbf inserts the acceleration-level CBF between the two:
   /NS_1/qddot_nom → cbf_safety_filter → /NS_1/qddot_safe → qddot_to_torque
   and rt_torque_controller integrates /NS_1/qddot_safe (the same q̈ that becomes τ_ff).
 
-human:=true adds the human-arm perception (tracker, distance, visualizer, logger);
-human_distance then publishes on /cbf/per_link_distances, the filter's input.
+On the real robot control_mode:=cbf also starts real_time_distance (depth obstacles,
+/cbf/per_link_distances). human:=true adds the human-arm perception (tracker, distance,
+visualizer, logger); human_distance publishes /human/per_link_distances, which the
+filter merges with the depth obstacles.
 
 real:=true  (default)  franka bringup (driver + broadcasters) + RT pinning + RViz
-                       (+ RealSense driver with human:=true)
+                       (+ RealSense driver with control_mode:=cbf or human:=true)
 real:=false            Gazebo + robot_state_publisher + joint_state_publisher +
                        clock bridge + RViz, all under the same namespace as the
                        real robot so every node sees the same topics.
@@ -68,8 +70,8 @@ _QDDOT_SAFE_TOPIC = '/NS_1/qddot_safe'
 _FAST_JOINT_STATES = '/NS_1/franka/joint_states'
 _CONTROL_MODES = ('nominal', 'cbf')
 
-# human_distance publishes where cbf_safety_filter reads (topics.per_link_distances)
-_PER_LINK_REMAP = ('/human/per_link_distances', '/cbf/per_link_distances')
+# human_distance's output, merged by cbf_safety_filter with real_time_distance's
+_HUMAN_PER_LINK_TOPIC = '/human/per_link_distances'
 
 # Camera topics of a recorded bag; its robot topics (/NS_1/joint_states, /tf) would
 # fight with the simulated robot, so only these are replayed
@@ -190,7 +192,7 @@ def _real_robot_actions(p, controllers_yaml, cm_name, use_fake):
     actions.append(TimerAction(period=3.0, actions=[_rviz_node(p, False)]))
     actions.append(TimerAction(period=4.0, actions=[_commander_node(p, False)]))
 
-    if _as_bool(p['human']):
+    if _cbf_enabled(p) or _as_bool(p['human']):
         # RealSense driver with depth aligned to color, as human.launch.py
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
@@ -199,6 +201,9 @@ def _real_robot_actions(p, controllers_yaml, cm_name, use_fake):
             # publish_tf off: the driver's camera_color_frame -> camera_color_optical_frame
             launch_arguments={'align_depth.enable': 'true', 'publish_tf': 'false'}.items(),
         ))
+    if _cbf_enabled(p):
+        actions.append(TimerAction(period=2.5, actions=[_real_time_distance_node()]))
+    if _as_bool(p['human']):
         actions.extend(_human_nodes(p, False))
     return actions
 
@@ -330,9 +335,26 @@ def _filter_and_dynamics_nodes(p, use_sim_time):
                 'use_sim_time': use_sim_time,
                 'obstacle_velocity_source': p['obstacle_velocity_source'],
                 'enable_vobs_in_hdot': _as_bool(p['vobs_in_hdot']),
+                'extra_distance_topics': [_HUMAN_PER_LINK_TOPIC if _as_bool(p['human']) else ''],
             }],
         ))
     return nodes
+
+
+def _real_time_distance_node():
+    """Depth-image obstacles (table, objects, people) → /cbf/per_link_distances."""
+    pkg_share = get_package_share_directory('franka_experiments')
+    return Node(
+        package='franka_experiments',
+        executable='real_time_distance',
+        name='real_time_distance',
+        output='log',
+        additional_env=_SINGLE_THREAD_BLAS,
+        parameters=[{
+            'robot_config_path': os.path.join(pkg_share, 'config', 'fr3_complete.yaml'),
+            'camera_extrinsics_path': os.path.join(pkg_share, 'config', 'camera_extrinsics.yaml'),
+        }],
+    )
 
 
 def _human_nodes(p, use_sim_time):
@@ -361,11 +383,10 @@ def _human_nodes(p, use_sim_time):
             output='screen',
             additional_env=_SINGLE_THREAD_BLAS,
             parameters=[{'use_sim_time': use_sim_time, **(extra_params or {})}],
-            remappings=[_PER_LINK_REMAP],
         )
 
     return [
-        LogInfo(msg='[easy_torque] human perception: tracker, distance → /cbf/per_link_distances, '
+        LogInfo(msg=f'[easy_torque] human perception: tracker, distance → {_HUMAN_PER_LINK_TOPIC}, '
                     'visualizer, logger'),
         camera_tf,
         human_node('human_tracker', 'human_tracker'),

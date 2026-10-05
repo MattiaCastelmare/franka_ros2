@@ -1367,6 +1367,9 @@ class Obstacle(NamedTuple):
     # measurement" default, same convention as v_vec) contributes exactly
     # zero.
     range_m: Optional[float] = None
+    # CAPTURE time of the message this entry came from; None = ObstacleSnap.t_cap.
+    # Set per entry when several distance sources share one snapshot.
+    t_cap: Optional[float] = None
 
 
 class ObstacleSnap(NamedTuple):
@@ -1950,6 +1953,7 @@ class ConstraintBuilder:
                 k_fb = link_seen.get(ob.link, 0)
                 link_seen[ob.link] = k_fb + 1
                 lbl = f'{ob.link}#{k_fb}'
+            t_cap = obs.t_cap if ob.t_cap is None else ob.t_cap
             h_prev = self._h_smooth.get(lbl)
             if h_prev is None or h_raw <= h_prev:
                 h = h_raw                       # closer, or first sight
@@ -1962,7 +1966,7 @@ class ConstraintBuilder:
             # Before any velocity estimate, because every velocity filter below
             # assumes the two frames it differences belong to the same body.
             # _h_smooth is deliberately NOT reset — see the method.
-            if self._obstacle_identity_changed(lbl, ob, obs.t_cap):
+            if self._obstacle_identity_changed(lbl, ob, t_cap):
                 self.diag_ident_reset += 1
                 self._obs_vel.pop(lbl, None)
                 self._obs_frames.pop(lbl, None)
@@ -1988,7 +1992,7 @@ class ConstraintBuilder:
                     # filter, or switching source at runtime would hand the new
                     # one the old one's memory.
                     v_o = max(self._obstacle_speed_tracked(
-                        ob, n_w, lbl, obs.t_cap), 0.0)
+                        ob, n_w, lbl, t_cap), 0.0)
                     n_seen = int(ob.frames_seen)
                     # ── Residual floor ──────────────────────────────────────
                     # The tracked velocity is the velocity of a CLUSTER
@@ -2031,7 +2035,7 @@ class ConstraintBuilder:
                     if (self._P.obstacle_velocity_residual_floor
                             and (gap_gate <= 0.0 or h < gap_gate)):
                         v_res = max(self._obstacle_speed(
-                            lbl, ob.d, obs.t_cap, float(a @ js.qdot), n_w), 0.0)
+                            lbl, ob.d, t_cap, float(a @ js.qdot), n_w), 0.0)
                         if v_res > v_o:
                             v_o = v_res
                         # The frame gates read "enough evidence behind this
@@ -2039,7 +2043,7 @@ class ConstraintBuilder:
                         n_seen = max(n_seen, self._obs_frames.get(lbl, 0))
                 else:
                     v_o = max(self._obstacle_speed(
-                        lbl, ob.d, obs.t_cap, float(a @ js.qdot), n_w), 0.0)
+                        lbl, ob.d, t_cap, float(a @ js.qdot), n_w), 0.0)
                     n_seen = self._obs_frames.get(lbl, 0)
                 if v_o > self.diag_v_obs:
                     self.diag_v_obs = v_o
@@ -2082,12 +2086,12 @@ class ConstraintBuilder:
             k_med = int(self._P.obstacle_velocity_median)
             if k_med > 1:
                 hist = self._obs_vmed.setdefault(lbl, [])
-                if hist and obs.t_cap - hist[-1][0] <= 1e-4:
-                    hist[-1] = (obs.t_cap, v_o)
+                if hist and t_cap - hist[-1][0] <= 1e-4:
+                    hist[-1] = (t_cap, v_o)
                 else:
-                    hist.append((obs.t_cap, v_o))
+                    hist.append((t_cap, v_o))
                 if self._vmed_window_s > 0.0:
-                    t_min = obs.t_cap - self._vmed_window_s
+                    t_min = t_cap - self._vmed_window_s
                     while len(hist) > 2 and hist[0][0] < t_min:
                         hist.pop(0)
                     # A constant cap on top, purely so a stalled stream cannot

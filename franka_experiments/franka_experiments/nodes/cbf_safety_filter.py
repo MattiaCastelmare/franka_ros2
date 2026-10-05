@@ -338,10 +338,20 @@ class CBFSafetyFilter(Node):
         self.create_subscription(
             Float64MultiArray, topics['qddot_nom'], self._on_qddot_nom,
             QoSProfile(depth=1), callback_group=grp_io)
-        self.create_subscription(
-            MultiLinkDistance, topics['per_link_distances'], self._on_distances,
-            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
-            callback_group=grp_io)
+        # Source 0 is per_link_distances; extra sources (e.g. human_distance) are
+        # merged into the same snapshot, each with its own labels and capture time.
+        self.declare_parameter('extra_distance_topics', [''])
+        extra = [t for t in self.get_parameter('extra_distance_topics').value if t]
+        self._dist_topics = [topics['per_link_distances']] + extra
+        self._obs_src = {}
+        for src, topic in enumerate(self._dist_topics):
+            self.create_subscription(
+                MultiLinkDistance, topic,
+                lambda msg, src=src: self._on_distances(msg, src),
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+                callback_group=grp_io)
+        if extra:
+            self.get_logger().info(f'distance sources: {self._dist_topics}')
 
         self._pub = self.create_publisher(
             Float64MultiArray, topics['qddot_safe'], 10)
@@ -713,7 +723,7 @@ class CBFSafetyFilter(Node):
                 f'the same counts',
                 throttle_duration_sec=10.0)
 
-    def _on_distances(self, msg: MultiLinkDistance) -> None:
+    def _on_distances(self, msg: MultiLinkDistance, src: int = 0) -> None:
         P = self.P
         # The four track fields are read UNCONDITIONALLY, even in 'residual'
         # mode. They are cheap (one Vector3 and one 9-vector already in the
@@ -752,7 +762,7 @@ class CBFSafetyFilter(Node):
                 vel_cov=np.asarray(ld.velocity_covariance,
                                    dtype=np.float64).reshape(3, 3),
                 track_id=int(ld.track_id),
-                cp_label=cp_label,
+                cp_label=cp_label if src == 0 else f'{src}:{cp_label}',
                 **self._latency_fields(ld),
                 **self._range_field(ld),
             ))
@@ -774,9 +784,19 @@ class CBFSafetyFilter(Node):
                     throttle_duration_sec=5.0)
                 self._cap_warned = True
             t_cap = now
-        self._diag_cap_age = age
-        self._obs = ObstacleSnap(items, now, t_cap)
-        self._track_input_rate(t_cap)
+        self._obs_src[src] = ObstacleSnap(items, now, t_cap)
+        # Rate and capture age of one stream only: the lowest source publishing
+        if src == min(self._obs_src):
+            self._diag_cap_age = age
+            self._track_input_rate(t_cap)
+        if len(self._obs_src) > 1:
+            snaps = self._obs_src.values()
+            items = tuple(ob._replace(t_cap=s.t_cap) for s in snaps for ob in s.items)
+            # The oldest source sets the staleness: any dead source is a fault
+            self._obs = ObstacleSnap(items, min(s.stamp for s in snaps),
+                                     min(s.t_cap for s in snaps))
+        else:
+            self._obs = self._obs_src[src]
 
         # ── Empty-frame run (roadmap Step 7) ────────────────────────────
         # Perception keeps publishing (the heartbeat is deliberate — it is how a

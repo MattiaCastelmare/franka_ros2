@@ -61,7 +61,7 @@ class HumanDistance(Node):
         # 1 kHz /NS_1/franka/joint_states (the 30 Hz topic is republished with fresh stamps)
         self.declare_parameter('joint_state_topic', '/NS_1/joint_states')
         # LinkDistance.distance is a surface gap clamped at 0 by contract (the CBF reads it);
-        # /human_robot/distance keeps the signed value
+        # /human/robot_distance keeps the signed value
         self.declare_parameter('clamp_distance', True)
         joint_state_topic = str(self.get_parameter('joint_state_topic').value)
         self.clamp_distance = bool(self.get_parameter('clamp_distance').value)
@@ -117,7 +117,7 @@ class HumanDistance(Node):
         # Publishers
         latest_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.per_link_pub = self.create_publisher(MultiLinkDistance, '/human/per_link_distances', latest_qos)
-        self.global_dist_pub = self.create_publisher(Float32, '/human_robot/distance', 10)
+        self.global_dist_pub = self.create_publisher(Float32, '/human/robot_distance', 10)
         self.get_logger().info(
             f'Human Distance node ready — mode: {self.mode}, tracking: {self.pose_side}, '
             f'joint states: {joint_state_topic}'
