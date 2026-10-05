@@ -62,6 +62,7 @@ from franka_experiments.utils.launch_support import (
 _LAUNCH_DEFAULTS, _ = load_launch_defaults()
 _BRINGUP_DEFAULTS, _ = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
+_DEFAULTS['load_gripper'] = 'true'
 _QDDOT_NOM_TOPIC = '/NS_1/qddot_nom'
 _QDDOT_SAFE_TOPIC = '/NS_1/qddot_safe'
 _FAST_JOINT_STATES = '/NS_1/franka/joint_states'
@@ -195,7 +196,8 @@ def _real_robot_actions(p, controllers_yaml, cm_name, use_fake):
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('realsense2_camera'), 'launch', 'rs_launch.py',
             )),
-            launch_arguments={'align_depth.enable': 'true'}.items(),
+            # publish_tf off: the driver's camera_color_frame -> camera_color_optical_frame
+            launch_arguments={'align_depth.enable': 'true', 'publish_tf': 'false'}.items(),
         ))
         actions.extend(_human_nodes(p, False))
     return actions

@@ -166,7 +166,8 @@ def _launch_real_robot(context):
         PythonLaunchDescriptionSource(PathJoinSubstitution([
             FindPackageShare('realsense2_camera'), 'launch', 'rs_launch.py',
         ]).perform(context)),
-        launch_arguments={'align_depth.enable': 'true'}.items(),
+        # publish_tf off: the driver's camera_color_frame -> camera_color_optical_frame
+        launch_arguments={'align_depth.enable': 'true', 'publish_tf': 'false'}.items(),
     )
     actions.append(realsense_driver)
 
