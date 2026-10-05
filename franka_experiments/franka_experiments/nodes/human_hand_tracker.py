@@ -31,6 +31,7 @@ from franka_experiments.utils.hand_visualization import (
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.tf_manager import TFManager
 from franka_experiments.utils.active_hand_selector import ActiveHandSelectorMixin
+from franka_experiments.utils.gripper_camera import GripperCamera
 from franka_experiments.utils.palm import PalmGeometryMixin
 from pathlib import Path
 
@@ -279,6 +280,17 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         #   - hand landmarks
         #
         # No global Hands+Holistic double inference.
+        # Front-end: mediapipe (Holistic) | rtmw (RTMW whole-body, GPU). Both give
+        # the same Holistic-shaped result; the rest of the pipeline is identical.
+        self.hand_backend = str(self._tracking_param('hand_backend').value)
+        self.rtmw = None
+        if self.hand_backend == 'rtmw':
+            try:
+                from franka_experiments.utils.rtmw_frontend import RtmwHolistic
+                self.rtmw = RtmwHolistic(mode=str(self._tracking_param('rtmw_mode').value))
+            except Exception as error:  # no GPU / rtmlib: keep the tracker running
+                self.get_logger().warn(f'RTMW unavailable ({error}): hand_backend=mediapipe')
+                self.hand_backend = 'mediapipe'
         self.hands = mp.solutions.holistic.Holistic(
             static_image_mode=self.static_image_mode,
             model_complexity=self.model_complexity,
@@ -290,6 +302,12 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         )
         self.drawing_utils = mp.solutions.drawing_utils
         self.hand_connections = mp.solutions.hands.HAND_CONNECTIONS
+        self.arm_bridge_s = float(self._tracking_param('arm_bridge_s').value)
+        self.palm_normal_method = str(self._tracking_param('palm_normal_method').value)
+        if self.hand_backend == 'rtmw' and self.palm_normal_method == 'mediapipe':
+            self.palm_normal_method = 'depth'  # RTMW hands have no z
+        self.get_logger().info(
+            f'hand_backend={self.hand_backend}, palm_normal_method={self.palm_normal_method}')
         # Re-detection of a hand Holistic lost (see _complete_hands).
         self.redetector = mp.solutions.hands.Hands(
             static_image_mode=True, max_num_hands=1, model_complexity=1,
@@ -472,6 +490,15 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             ),
             logger=self.get_logger(),
         )
+        # Gripper camera: second view of the hand, only while its images and the
+        # robot TF arrive (see utils/gripper_camera.py).
+        self.gripper = None
+        self._last_active = None  # (t, side, palm in base) of the last measured ACTIVE hand
+        if bool(self._tracking_param('gripper_camera').value):
+            self.gripper = GripperCamera(
+                self, config_dir + 'd405_extrinsics.yaml',
+                lambda link, stamp: self.selector_tf_manager.lookup_best_effort([link], stamp).get(link),
+                str(self._tracking_param('gripper_camera_namespace').value), debug=self.publish_debug)
         # Per-physical-hand lightweight distance histories.
         self._interaction_distance_history = {
             HandTrackingRaw.HAND_LEFT:
@@ -617,6 +644,69 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
 
 
 
+    POSE_ARM = {HandTrackingRaw.HAND_LEFT: (15, 13), HandTrackingRaw.HAND_RIGHT: (16, 14)}  # wrist, elbow
+
+    def _pose_point(self, pose, index, shape, depth, encoding):
+        if pose is None or pose.landmark[index].visibility < 0.5:
+            return None
+        return self.landmark_to_3d(pose.landmark[index], shape, depth, encoding)
+
+    def _store_arm_anchor(self, pose, side, points_camera, shape, depth, encoding, t):
+        """Palm landmarks relative to the pose wrist, while the hand is observed."""
+        if side not in self.POSE_ARM or any(points_camera.get(i) is None for i in self.LANDMARK_IDS):
+            return
+        wrist = self._pose_point(pose, self.POSE_ARM[side][0], shape, depth, encoding)
+        points = np.array([points_camera[i] for i in self.LANDMARK_IDS])
+        if wrist is None or np.linalg.norm(points.mean(0) - wrist) > 0.25:  # wrist depth on background
+            return
+        elbow = self._pose_point(pose, self.POSE_ARM[side][1], shape, depth, encoding)
+        self._arm_anchor = (t, side, points - wrist, wrist, elbow)
+
+    def _arm_prediction(self, pose, shape, depth, encoding, t):
+        """Lost ACTIVE hand: pose wrist (RGB-D) + last wrist->palm offsets, rotated with the
+        forearm. Offline (6 bags): 1.4 cm median at 0.2 s, 2.0 cm at 1 s, against 2.1 / 10 cm
+        of a constant-velocity prediction. Only extends the hand being tracked."""
+        anchor = getattr(self, '_arm_anchor', None)
+        if anchor is None or not 0.0 < t - anchor[0] <= self.arm_bridge_s:
+            return None
+        t0, side, offsets, wrist0, elbow0 = anchor
+        if side != self.active_hand_side:
+            return None
+        wrist = self._pose_point(pose, self.POSE_ARM[side][0], shape, depth, encoding)
+        if wrist is None or np.linalg.norm(wrist - wrist0) > 0.1 + 2.0 * (t - t0):  # <= 2 m/s
+            return None
+        elbow = self._pose_point(pose, self.POSE_ARM[side][1], shape, depth, encoding)
+        R = np.eye(3)
+        if elbow is not None and elbow0 is not None:
+            a, b = wrist0 - elbow0, wrist - elbow
+            if min(np.linalg.norm(a), np.linalg.norm(b)) > 0.05:
+                R = Rotation.align_vectors([b], [a])[0].as_matrix()
+        return side, list(wrist + offsets @ R.T)
+
+    def _publish_gripper_hand(self, stamp, t, start_time):
+        """ACTIVE hand lost by the main camera but seen by the gripper camera near its
+        last position (<= 1 s, <= 1 m/s): publish that measurement."""
+        last = self._last_active
+        if self.gripper is None or last is None or not 0.0 < t - last[0] <= 1.0:
+            return False
+        side = last[1]
+        if side != self.active_hand_side:
+            return False
+        hand = self.gripper.hand_near(last[2], t, 0.15 + 1.0 * (t - last[0]))
+        if hand is None:
+            return False
+        right = side == HandTrackingRaw.HAND_RIGHT
+        n = self.gripper.palm_normal(hand, right)
+        points = hand['pts']
+        valid = [p for p in points if p is not None]
+        self.publish_tracking(
+            stamp, HandTrackingRaw.TRACKING_FULL if len(valid) == 4 else HandTrackingRaw.TRACKING_PARTIAL,
+            points, [HandTrackingRaw.DIRECT if p is not None else HandTrackingRaw.INVALID for p in points],
+            start_time, handedness=side, handedness_score=1.0,
+            palm_plane_normal=n, palm_anchor_cross=n if right else -n,)
+        self._last_active = (t, side, np.mean(valid, axis=0))
+        return True
+
     REDETECT_S = 0.5      # re-detect a hand lost for at most this long
     REDETECT_SCALE = 2.2  # crop side / last hand box side
 
@@ -664,6 +754,8 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         r = max(np.ptp(last_px, 0).max() * self.REDETECT_SCALE, 48) / 2
         x0, y0 = int(max(0, c[0] - r)), int(max(0, c[1] - r))
         x1, y1 = int(min(w, c[0] + r)), int(min(h, c[1] + r))
+        if x1 - x0 < 8 or y1 - y0 < 8:  # last box left the image
+            return None
         crop = rgb[y0:y1, x0:x1]
         k = 192 / max(1, min(crop.shape[:2]))
         found = self.redetector.process(cv2.resize(crop, None, fx=k, fy=k) if k > 1 else crop)
@@ -705,9 +797,15 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             bgr_image,
             cv2.COLOR_BGR2RGB,
         )
-        result = self._complete_hands(
-            self.hands.process(rgb_image), rgb_image, depth_image, depth_encoding,
-            rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
+        if self.rtmw is not None:
+            result = self.rtmw.process(
+                bgr_image, depth_image,
+                1e-3 if depth_encoding in ('16UC1', 'mono16') else 1.0, self.fx,
+                rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
+        else:
+            result = self._complete_hands(
+                self.hands.process(rgb_image), rgb_image, depth_image, depth_encoding,
+                rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
         (
             active_side,
             hand_landmarks,
@@ -727,7 +825,26 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             standby_landmarks,
             standby_side,
         )
+        stamp_s = rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec
         if hand_landmarks is None:
+            if self._publish_gripper_hand(rgb_msg.header.stamp, stamp_s, start_time):
+                self.get_logger().info('ACTIVE hand from the gripper camera', throttle_duration_sec=2.0)
+                if debug_image is not None:
+                    draw_status(debug_image, 'HAND FROM GRIPPER CAMERA')
+                self.publish_debug_image(debug_image, rgb_msg,)
+                return
+            predicted = self._arm_prediction(
+                result.pose_landmarks, bgr_image.shape, depth_image, depth_encoding, stamp_s)
+            if predicted is not None:
+                side, points_camera = predicted
+                self.publish_tracking(
+                    rgb_msg.header.stamp, HandTrackingRaw.TRACKING_ESTIMATED,
+                    [self.apply_transform(p) for p in points_camera], [HandTrackingRaw.ESTIMATED] * 4,
+                    start_time, handedness=side, handedness_score=1.0,)
+                if debug_image is not None:
+                    draw_status(debug_image, 'HAND FROM ARM (pose)')
+                self.publish_debug_image(debug_image, rgb_msg,)
+                return
             self.publish_tracking(
                 rgb_msg.header.stamp,
                 HandTrackingRaw.NO_HAND, [None] * 4, [HandTrackingRaw.INVALID] * 4, start_time,)
@@ -743,8 +860,9 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         # by the Holistic body-aware frontend.
         raw_handedness = int(active_side)
         raw_handedness_score = 1.0
+        right = raw_handedness == HandTrackingRaw.HAND_RIGHT
         (geometry_plane, geometry_anchor,) = self.compute_palm_geometry_candidate(
-            hand, bgr_image.shape, depth_image, depth_encoding,)
+            hand, bgr_image.shape, depth_image, depth_encoding, right=right)
         if debug_image is not None:
             wrist_2d = hand[0]
             height, width = debug_image.shape[:2]
@@ -787,9 +905,19 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             tracking_state = HandTrackingRaw.TRACKING_ESTIMATED
         else:
             tracking_state = HandTrackingRaw.TRACKING_FULL
+        if valid_count:
+            palm = np.mean([p for p in points_base if p is not None], axis=0)
+            self._last_active = (stamp_s, raw_handedness, palm)
+            # The gripper camera sees the palm from close by: its normal wins.
+            seen = None if self.gripper is None else self.gripper.hand_near(palm, stamp_s, 0.06)
+            if seen is not None:
+                geometry_plane = self.gripper.palm_normal(seen, right)
+                geometry_anchor = geometry_plane if right else -geometry_plane
         self.publish_tracking(rgb_msg.header.stamp, tracking_state, points_base, measurement_types,
             start_time, handedness=raw_handedness, handedness_score=raw_handedness_score,
             palm_plane_normal=geometry_plane, palm_anchor_cross=geometry_anchor,)
+        self._store_arm_anchor(result.pose_landmarks, raw_handedness, points_camera,
+                               bgr_image.shape, depth_image, depth_encoding, stamp_s)
         wrist = points_base[0]
         if wrist is None:
             if debug_image is not None:
@@ -893,6 +1021,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if node.gripper is not None:
+            node.gripper.stop()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -39,6 +39,8 @@ DEPTH_BAND_M = 0.15    # object pixels must be this close to the palm depth
 MIN_IN_BAND = 0.2      # ... at least this fraction (thin objects: rest is background)
 MAX_OBJ_HAND = 2.5     # object box / hand box size (rejects table, robot)
 JUMP_M = 0.20          # palm jump meaning "another hand": forget the object
+MAX_CENTROID_M = 0.20  # visible object surface farther than this from the palm: background
+MAX_LATERAL_M = 0.12   # centroid this far to the side of the hand (half hand + object radius): not in it
 OBJECT_CONTACT = 3     # Hands23 contact state "object contact"
 NON_PREHENSILE = (0, 1)     # Hands23 grasp: NP-Palm, NP-Fin
 TOUCHED_ONLY = (0, 3, 5)    # Hands23 touch: tool / container / neither "touched"
@@ -112,8 +114,12 @@ class Hands23:
                       'score': float(score[o])}
 
 
-def measure(obj, depth, K):
-    """Outline, box, centroid (camera) and principal extents of the object."""
+def measure(obj, depth, K, palm_z):
+    """Outline, box, centroid (camera) and principal extents of the object.
+
+    3D only from object pixels near the palm depth: the mask of a thin object
+    (pen) or one bleeding onto the background has mostly background depth.
+    """
     m = obj['mask'].astype(np.uint8)
     cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contour = cv2.approxPolyDP(max(cs, key=cv2.contourArea), 1.5, True).reshape(-1, 2)
@@ -125,7 +131,7 @@ def measure(obj, depth, K):
     for m in (obj['mask'] & ~hand, obj['mask']):  # whole mask if fingers cover it
         v, u = np.nonzero(m)
         z = depth[v, u]
-        keep = z > 0.1
+        keep = (z > 0.1) & (np.abs(z - palm_z) < DEPTH_BAND_M)
         if keep.sum() >= 30:
             break
     else:
@@ -177,12 +183,17 @@ class Grasp(Node):
                                  self.depth.append, qos_profile_sensor_data)
         self.create_subscription(HandState, '/handover/hand_state', self.on_state, 10)
         self.ms = deque(maxlen=50)
-        self.create_timer(5.0, lambda: self.ms and self.get_logger().info(
-            f'Hands23 {np.median(self.ms):.0f} ms/detection, present={self.present}'),
-            clock=Clock(clock_type=ClockType.STEADY_TIME))  # sim time jumps at bag start
+        self.create_timer(5.0, self.log_rate,
+                          clock=Clock(clock_type=ClockType.STEADY_TIME))  # sim time jumps at bag start
         self.stopping = threading.Event()
         self.thread = threading.Thread(target=self.worker, daemon=True)
         self.thread.start()
+
+    def log_rate(self):
+        # only while detections are running (silent once the bag/camera stops)
+        if self.ms:
+            self.get_logger().info(f'Hands23 {np.median(self.ms):.0f} ms/detection, present={self.present}')
+            self.ms.clear()
 
     def reset(self):
         self.palm_ref, self.pos, self.neg, self.present = None, 0, 0, False
@@ -202,6 +213,16 @@ class Grasp(Node):
     def palm(state):
         p = state.palm_position
         return np.array([p.x, p.y, p.z])
+
+    @classmethod
+    def lateral(cls, state, c_base):
+        """Distance of the object centroid from the hand's own plane (wrist -> fingers,
+        palm normal): an object held in the hand lies across it, not beside it (table
+        under a side palm, neighbouring objects). 0 if the hand axes are unknown."""
+        n, u = state.palm_normal, state.palm_longitudinal
+        side = np.cross([n.x, n.y, n.z], [u.x, u.y, u.z])
+        norm = np.linalg.norm(side)
+        return 0.0 if not norm > 0.5 else abs(float((c_base - cls.palm(state)) @ side) / norm)
 
     # ------------------------------------------------------------ detection
     def next_job(self, done):
@@ -236,10 +257,16 @@ class Grasp(Node):
             observed, obj = self.detector(bgr, depth, palm_px, palm_cam[2], self.K[0])
             self.ms.append(1e3 * (time.perf_counter() - t0))
             if obj is not None:
-                obj = measure(obj, depth, self.K)
-                obj.update(palm_px=palm_px, palm=self.palm(state))
-                if obj['centroid'] is not None:
-                    obj['centroid'] = self.R @ obj['centroid'] + self.t
+                obj = measure(obj, depth, self.K, palm_cam[2])
+                c = obj['centroid']
+                c_base = None if c is None else self.R @ c + self.t
+                if c is not None and (np.linalg.norm(c - palm_cam) > MAX_CENTROID_M
+                                      or self.lateral(state, c_base) > MAX_LATERAL_M):
+                    obj = None
+                else:
+                    obj.update(palm_px=palm_px, palm=self.palm(state))
+                    if c is not None:
+                        obj['centroid'] = c_base
             self.update(stamp(rgb), self.palm(state), observed, obj)
 
     def update(self, t, palm, observed, obj):

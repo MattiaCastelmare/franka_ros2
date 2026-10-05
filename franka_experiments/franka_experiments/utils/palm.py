@@ -7,9 +7,20 @@ Selection, ROS orchestration and RGB-D reconstruction live in
 their dedicated modules.
 """
 
-import numpy as np
 import math
 from collections import deque
+
+import numpy as np
+
+
+def signed_palm_normal(points, right):
+    """Normal of the wrist + MCP plane (21 hand points), out of the palm."""
+    P = np.asarray(points, dtype=float)
+    Q = P[[0, 5, 9, 13, 17]] - P[[0, 5, 9, 13, 17]].mean(0)
+    n = np.linalg.eigh(Q.T @ Q)[1][:, 0]
+    a = np.cross(P[5] - P[0], P[17] - P[0]) * (1.0 if right else -1.0)
+    return n if n @ a >= 0.0 else -n
+
 
 class PalmGeometryMixin:
     """Palm geometry operations used by HumanHandTracker."""
@@ -40,6 +51,33 @@ class PalmGeometryMixin:
         return vector / norm
 
     def compute_palm_geometry_candidate(
+        self,
+        hand,
+        image_shape,
+        depth_image,
+        depth_encoding,
+        right=None,
+    ):
+        """
+        palm_normal_method (hand_tracking.yaml):
+          depth     : RGB-D plane below (sign resolved downstream)
+          mediapipe : MediaPipe 3D landmarks, palm-signed per frame
+        Signed methods return anchor = +-normal (RIGHT +, LEFT -): the estimator
+        then takes the sign as is instead of propagating it in time.
+        """
+        if self.palm_normal_method != 'depth' and right is not None:
+            return self._signed_palm_geometry(hand, image_shape, right)
+        return self._depth_palm_geometry(hand, image_shape, depth_image, depth_encoding)
+
+    def _signed_palm_geometry(self, hand, image_shape, right):
+        h, w = image_shape[:2]
+        V = np.array([[p.x * w, p.y * h, p.z * w] for p in hand])  # weak perspective
+        n = self._normalise_geometry_vector(self.camera_rotation @ signed_palm_normal(V, right))
+        if n is None:
+            return None, None
+        return n, (n if right else -n)
+
+    def _depth_palm_geometry(
         self,
         hand,
         image_shape,

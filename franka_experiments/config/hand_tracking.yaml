@@ -12,6 +12,20 @@ human_hand_tracker:
     min_tracking_confidence: 0.5
     min_detection_confidence: 0.4
     max_num_hands: 2
+    # Lost ACTIVE hand: palm rebuilt from the pose wrist/elbow for up to this
+    # long (published as ESTIMATED). 0 disables.
+    arm_bridge_s: 1.0
+    # Hand front-end: mediapipe (Holistic, CPU) | rtmw (RTMW whole-body via
+    # rtmlib, GPU, Apache-2.0). Same HandTrackingRaw and pipeline after it.
+    hand_backend: mediapipe
+    rtmw_mode: lightweight
+    # Palm normal: depth (RGB-D plane) | mediapipe (3D landmarks; with rtmw
+    # the tracker uses depth, RTMW hands have no z).
+    palm_normal_method: mediapipe
+    # Gripper camera (D405): second view of the hand, used only while its
+    # images and the robot TF arrive. Extrinsics: config/d405_extrinsics.yaml.
+    gripper_camera: true
+    gripper_camera_namespace: /d405/d405
 
     # Interaction selector V3.4.1
     interaction_switch_confirm_frames: 3

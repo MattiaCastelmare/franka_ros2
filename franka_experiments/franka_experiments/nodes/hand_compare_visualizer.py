@@ -19,6 +19,8 @@ from franka_msgs.msg import (
 )
 from message_filters import Subscriber, TimeSynchronizer
 from rclpy.node import Node
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener
 from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
@@ -57,6 +59,7 @@ class HandCompareVisualizer(Node):
             encoding='utf-8',
         ) as file:
             extrinsics = yaml.safe_load(file)
+        self.base_frame = extrinsics['parent_frame']
         t = extrinsics['translation']
         q = extrinsics['rotation']
         self.t_camera_base = np.array(
@@ -137,6 +140,22 @@ class HandCompareVisualizer(Node):
             queue_size=3,
         )
         self.sync.registerCallback(self.callback)
+        # Gripper camera (D405) view: same overlay on its image, which the tracker
+        # publishes only while the camera is present and placed with the robot TF.
+        with open(config_dir + 'd405_extrinsics.yaml', 'r', encoding='utf-8') as file:
+            gripper = yaml.safe_load(file)
+        q, t = gripper['rotation'], gripper['translation']
+        self.gripper_link = gripper['parent_frame']
+        self.r_link_gripper = Rotation.from_quat([q['x'], q['y'], q['z'], q['w']]).as_matrix()
+        self.t_link_gripper = np.array([t['x'], t['y'], t['z']], dtype=float)
+        self.gripper_k, self._latest = None, None
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.create_subscription(
+            CameraInfo, '/d405/d405/aligned_depth_to_color/camera_info',
+            self.gripper_info_callback, qos_profile_sensor_data)
+        self.create_subscription(Image, '/handover/gripper_debug_image_raw', self.gripper_callback, qos)
+        self.gripper_publisher = self.create_publisher(Image, '/handover/gripper_debug_image', 2)
         # Visual-only FUTURE W75 forecast.
         #
         # The current dropout bridge is now owned by the
@@ -218,7 +237,7 @@ class HandCompareVisualizer(Node):
             return None
         return u, v
 
-    def _draw_object_overlay(self, image, image_msg, state_msg):
+    def _draw_object_overlay(self, image, image_msg, state_msg, pixels=True):
         t_image = self._prediction_stamp_s(image_msg.header.stamp)
         msg = min(self._object_states, default=None,
                   key=lambda m: abs(t_image - self._prediction_stamp_s(m.header.stamp)))
@@ -237,6 +256,7 @@ class HandCompareVisualizer(Node):
                         text = (f'Oggetto: CONFERMATO  c={msg.object_confidence:.2f}  eta={msg.object_age:.2f}s'
                                 f'  dim={100*d.x:.0f}x{100*d.y:.0f}x{100*d.z:.0f} cm')
                         color = (60, 255, 60)
+                    if msg.object_present and pixels:  # contour / box are main-camera pixels
                         contour = np.array(msg.contour_px, np.int32).reshape(-1, 1, 2)
                         if len(contour) >= 3:
                             fill = image.copy()
@@ -735,7 +755,47 @@ class HandCompareVisualizer(Node):
             ) and velocity_age_s <= 0.10 + 1e-9 and filter_state in tracking_states)
 
     def callback(self, image_msg, filtered_msg, state_msg, distance_msg,):
+        self._latest = (filtered_msg, state_msg, distance_msg)
         image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8',)
+        self._draw(image, image_msg, filtered_msg, state_msg, distance_msg)
+        output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8',)
+        output.header = image_msg.header
+        self.publisher.publish(output)
+
+    def gripper_info_callback(self, msg):
+        if msg.k[0] > 0.0:
+            self.gripper_k = (float(msg.k[0]), float(msg.k[4]), float(msg.k[2]), float(msg.k[5]))
+
+    def gripper_callback(self, image_msg):
+        """Overlay of the latest HandState on the D405 image, projected with the
+        D405 pose (TF base -> fr3_link8 + d405_extrinsics.yaml) and intrinsics."""
+        image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8',)
+        latest, k = self._latest, self.gripper_k
+        try:
+            tf = self.tf_buffer.lookup_transform(self.base_frame, self.gripper_link, Time())
+        except Exception:
+            tf = None
+        if (latest is not None and k is not None and tf is not None and abs(
+                self._prediction_stamp_s(image_msg.header.stamp)
+                - self._prediction_stamp_s(latest[1].header.stamp)) <= 0.2):
+            q, t = tf.transform.rotation, tf.transform.translation
+            r_link = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+            camera = (self.fx, self.fy, self.cx, self.cy, self.r_base_camera, self.t_camera_base)
+            display = {key: value for key, value in vars(self).items() if key.startswith(
+                ('_palm_ud', '_display_hand', '_prediction_anchor', '_visual_'))}
+            self.fx, self.fy, self.cx, self.cy = k
+            self.r_base_camera = (r_link @ self.r_link_gripper).T
+            self.t_camera_base = r_link @ self.t_link_gripper + np.array([t.x, t.y, t.z])
+            try:
+                self._draw(image, image_msg, *latest, main=False)
+            finally:  # main-camera projection and display state untouched
+                self.fx, self.fy, self.cx, self.cy, self.r_base_camera, self.t_camera_base = camera
+                vars(self).update(display)
+        output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8',)
+        output.header = image_msg.header
+        self.gripper_publisher.publish(output)
+
+    def _draw(self, image, image_msg, filtered_msg, state_msg, distance_msg, main=True):
         height, width = image.shape[:2]
         # DISPLAY ONLY:
         # distinguish a metric candidate from a temporally
@@ -812,7 +872,7 @@ class HandCompareVisualizer(Node):
         # v + d overlay
         timestamp_s = (
             float(image_msg.header.stamp.sec) + 1e-9 * float(image_msg.header.stamp.nanosec))
-        raw_tracking_state = (self._raw_state_for_image(image_msg))
+        raw_tracking_state = (self._raw_state_for_image(state_msg))  # same stamp as the main image
         raw_no_hand_value = int(getattr(HandTrackingRaw, 'NO_HAND', 0,))
         raw_full_value = int(
             getattr(HandTrackingRaw, 'FULL', getattr(HandTrackingRaw, 'TRACKING_FULL', 2,),))
@@ -876,11 +936,7 @@ class HandCompareVisualizer(Node):
                     0.38, (0, 255, 255), 1, cv2.LINE_AA)
         # Visual-only W75 prediction overlay.
         self._draw_prediction_overlay(image, filtered_msg, state_msg, distance_msg,)
-        self._draw_object_overlay(image, image_msg, state_msg)
-
-        output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8',)
-        output.header = image_msg.header
-        self.publisher.publish(output)
+        self._draw_object_overlay(image, image_msg, state_msg, pixels=main)
 
 
 

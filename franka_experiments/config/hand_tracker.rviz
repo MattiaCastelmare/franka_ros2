@@ -18,3 +18,10 @@ Visualization Manager:
       Topic:
         Value: /handover/hand_debug_image
       Value: true
+    # Gripper camera (D405): same overlay; empty when the D405 is not present.
+    - Class: rviz_default_plugins/Image
+      Name: Gripper Camera Debug (D405)
+      Enabled: true
+      Topic:
+        Value: /handover/gripper_debug_image
+      Value: true

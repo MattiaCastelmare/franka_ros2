@@ -923,6 +923,10 @@ class HandStateEstimator(Node):
         state = (
             self.semantic_normal_state
         )
+        # anchor == +-plane: the tracker already signed the normal
+        # (palm_normal_method mediapipe, gripper camera), take it as is.
+        if abs(float(np.dot(plane, anchor))) > 0.9999:
+            state = None
         # Same physical hand + recent geometry:
         # resolve only the arbitrary PCA +/- ambiguity using
         # temporal continuity.

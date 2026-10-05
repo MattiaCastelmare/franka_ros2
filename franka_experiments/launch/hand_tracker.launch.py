@@ -2,6 +2,7 @@
 
 from launch import LaunchDescription
 from launch.actions import (
+    SetEnvironmentVariable,
     DeclareLaunchArgument,
     ExecuteProcess,
     TimerAction,
@@ -37,6 +38,9 @@ def generate_launch_description():
     model_complexity = LaunchConfiguration(
         'model_complexity'
     )
+    arm_bridge_s = LaunchConfiguration('arm_bridge_s')
+    hand_backend = LaunchConfiguration('hand_backend')
+    gripper_camera = LaunchConfiguration('gripper_camera')
 
 
     static_image_mode = LaunchConfiguration(
@@ -110,6 +114,9 @@ def generate_launch_description():
                 model_complexity,
                 value_type=int,
             ),
+            'arm_bridge_s': ParameterValue(arm_bridge_s, value_type=float),
+            'hand_backend': ParameterValue(hand_backend, value_type=str),
+            'gripper_camera': ParameterValue(gripper_camera, value_type=bool),
             'static_image_mode': ParameterValue(
                 static_image_mode,
                 value_type=bool,
@@ -279,13 +286,20 @@ def generate_launch_description():
 
     return LaunchDescription([
 
+        # Replay isolated from the lab network: a real robot / camera on the
+        # same ROS domain would mix its /tf and images with the bag's.
+        # Other terminals: export ROS_DOMAIN_ID=73 to see these topics.
+        DeclareLaunchArgument('isolate', default_value='true'),
+        SetEnvironmentVariable('ROS_DOMAIN_ID', '73', condition=IfCondition(LaunchConfiguration('isolate'))),
+        SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1', condition=IfCondition(LaunchConfiguration('isolate'))),
+
         # Available bags:
         # /ros2_ws/rosbags/datasets-001/{arm_complex,arm_repeated,handtracker_poses,handratacker_objecy,handover_rosbag2}
         # /ros2_ws/src/rosbags_external/handover_20260924_154930
         # /ros2_ws/src/rosbags_external/handover_20260929_161100
         DeclareLaunchArgument(
             'bag_path',
-            default_value='/ros2_ws/src/rosbags_external/handover_20260929_161100',
+            default_value='/ros2_ws/src/rosbags_external/handover_20260924_154930',
         ),
 
         DeclareLaunchArgument(
@@ -303,6 +317,14 @@ def generate_launch_description():
             'model_complexity',
             default_value='1',
         ),
+
+        # palm rebuilt from the arm when the hand is lost [s], 0 = off
+        DeclareLaunchArgument('arm_bridge_s', default_value='1.0'),
+
+        # hand front-end: mediapipe | rtmw
+        DeclareLaunchArgument('hand_backend', default_value='mediapipe'),
+        # D405 on the gripper as second view (used only if its images + TF arrive)
+        DeclareLaunchArgument('gripper_camera', default_value='true'),
 
 
         DeclareLaunchArgument(
