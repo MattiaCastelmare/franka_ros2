@@ -39,6 +39,26 @@ human_tracker:
   reset_after_s: 0.50
   max_speed_m_s: 2.5
 
+  # Plausibility of the 3D keypoints before the Kalman filter (utils/human_validation.py)
+  validation:
+    enabled: true
+    # Off: on the gravcomp bag the keypoint depth (the shoulder above all, 0.2-0.4 m)
+    # gives implausible lengths in 40-70 % of the frames of a real person
+    check_segments: false               # anthropometric bands + learned lengths
+    check_torso: false                  # shoulders/hips, engagement only
+    check_workspace: true
+    engage_visibility_threshold: 0.60   # to START tracking; visibility_threshold keeps it
+    workspace_min: [-1.7, -1.7, -0.5]   # [m] fr3_link0: FR3 reach + d_safe + arm speed x horizon
+    workspace_max: [1.7, 1.7, 2.2]
+    segment_bands:                      # [m] wide anthropometric bands
+      upper_arm: [0.20, 0.40]
+      forearm: [0.18, 0.33]
+      hand: [0.04, 0.20]
+    learn_frames: 15                    # frames to learn the person's lengths after engagement
+    learned_tolerance: 0.25             # relative deviation from the learned lengths
+    shoulder_width_band: [0.25, 0.55]   # [m] torso check, engagement only
+    torso_length_band: [0.30, 0.75]     # [m] used only when both hips are visible
+
   # Constant-velocity prediction
   publish_prediction: true
   prediction_dt: 0.10

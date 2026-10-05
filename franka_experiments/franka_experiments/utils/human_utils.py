@@ -119,9 +119,25 @@ def extract_arm_landmarks(
             lm.LEFT_INDEX,
         )
 
+    return _pixel_landmarks(pose_landmarks, image_shape, zip(keypoint_names, indices))
+
+
+TORSO_NAMES = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
+
+
+def extract_torso_landmarks(pose_landmarks, image_shape):
+    """Extract both shoulders and both hips (for the torso check of human_validation)."""
+    if pose_landmarks is None:
+        return None
+    lm = mp.solutions.pose.PoseLandmark
+    indices = (lm.LEFT_SHOULDER, lm.RIGHT_SHOULDER, lm.LEFT_HIP, lm.RIGHT_HIP)
+    return _pixel_landmarks(pose_landmarks, image_shape, zip(TORSO_NAMES, indices))
+
+
+def _pixel_landmarks(pose_landmarks, image_shape, named_indices):
     height, width = image_shape[:2]
     landmarks = {}
-    for name, index in zip(keypoint_names, indices):
+    for name, index in named_indices:
         point = pose_landmarks.landmark[index]
         # MediaPipe extrapolates out-of-frame landmarks: clipped to the border
         # they would read the depth of an unrelated pixel, so they are not visible

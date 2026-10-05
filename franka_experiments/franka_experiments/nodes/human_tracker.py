@@ -32,8 +32,10 @@ from franka_experiments.utils.human_utils import (
     deproject, depth_patch_median, extract_arm_landmarks,
     measurement_age, quaternion_to_rotation, build_arm_state_msg,
     build_prediction_msg, build_2d_landmarks_msg, format_topic,
-    check_engagement_start, check_engagement_loss, stamp_to_ns, ray_covariance
+    check_engagement_start, check_engagement_loss, stamp_to_ns, ray_covariance,
+    extract_torso_landmarks, TORSO_NAMES,
 )
+from franka_experiments.utils.human_validation import HumanValidator
 
 
 class HumanTracker(Node):
@@ -72,6 +74,7 @@ class HumanTracker(Node):
             float(config["reset_after_s"]),
         )
         self.max_speed_m_s = float(config["max_speed_m_s"])
+        self.validator = HumanValidator(config["validation"], self.visibility_threshold)
         self.measurement_std = float(config["kf_measurement_std"])
         self.fallback_depth_std_m = float(config["fallback_depth_std_m"])
 
@@ -379,9 +382,15 @@ class HumanTracker(Node):
                 build_2d_landmarks_msg(landmarks, self.KEYPOINT_NAMES, self.image_header)
             )
 
-        # Engage Logic
+        if self.validator.rejects:
+            self.get_logger().info(f"Validation rejects: {self.validator.summary()}",
+                                   throttle_duration_sec=5.0)
+
+        # Engage Logic (higher visibility and a plausible torso to start, see human_validation)
         if not self.is_engaged:
-            if check_engagement_start(self.active_sides, self.visibility_threshold, current_visibilities):
+            if (check_engagement_start(self.active_sides, self.validator.engage_visibility_threshold,
+                                       current_visibilities)
+                    and self.torso_ok(result.pose_landmarks)):
                 if self.first_visible_time is None:
                     self.first_visible_time = current_time
                 elif (current_time - self.first_visible_time) >= self.engage_stability_s:
@@ -478,6 +487,10 @@ class HumanTracker(Node):
                 age=np.zeros(4), header=self.image_header, base_frame=self.base_frame
             )
             self.raw_state_pubs[side].publish(raw_msg)
+
+            # Rejected keypoints become NaN: the filter only predicts them this frame
+            direct = np.isnan(measurement_covs[:, 0, 0])
+            positions = self.validator.filter_arm(side, positions, direct)
 
             # --- Kalman Filter Update ---
             filtered_pos, filtered_vel, measured = self.kfs[side].step(
@@ -580,8 +593,32 @@ class HumanTracker(Node):
                     for side in self.active_sides:
                         self.kfs[side].reset()
                         self.last_valid_time[side][:] = np.nan
+                    self.validator.reset()
             else:
                 self.first_lost_time = None
+
+    def torso_ok(self, pose_landmarks):
+        """Torso check of the validator on shoulders and hips in the base frame."""
+        if not self.validator.check_torso:
+            return True
+        camera_tf = self.get_camera_to_base_transform()
+        landmarks = extract_torso_landmarks(pose_landmarks, self.last_image.shape)
+        points = np.full((len(TORSO_NAMES), 3), np.nan)
+        if landmarks is not None and camera_tf is not None:
+            rotation, translation = camera_tf
+            for i, name in enumerate(TORSO_NAMES):
+                landmark = landmarks[name]
+                if landmark["visibility"] < self.visibility_threshold:
+                    continue
+                u, v = int(round(landmark["x_px"])), int(round(landmark["y_px"]))
+                depth_m = depth_patch_median(
+                    self.last_depth, u, v, self.depth_patch_radius,
+                    self.min_depth_m, self.max_depth_m,
+                )
+                if depth_m is not None:
+                    point_camera = deproject(u, v, depth_m, self.fx, self.fy, self.cx, self.cy)
+                    points[i] = rotation @ point_camera + translation
+        return self.validator.torso_ok(points[:2], points[2:])
 
     def publish_disengaged_states(self, visibilities):
         """Heartbeat while no arm is engaged: a state with every keypoint invalid.
