@@ -132,3 +132,39 @@ def test_covariances_are_symmetric_and_nan_when_uninitialized():
     assert P_pp.shape == P_vv.shape == P_pv.shape == (4, 3, 3)
     assert np.allclose(P_pp[0], P_pp[0].T) and np.allclose(P_vv[0], P_vv[0].T)
     assert np.isnan(P_pp[1:]).all() and np.isnan(P_vv[1:]).all()
+
+MAX_LENGTHS = (0.40, 0.33, 0.20)
+
+
+def _moving_arm_kf(wrist_speed):
+    """A still arm (shoulder, elbow, wrist, index along x) whose wrist moves along +x."""
+    kf = ArmKalmanFilter(dt=DT, process_accel_std=3.0, measurement_std=0.03)
+    arm = np.array([[0.0, 0.0, 0.0], [0.30, 0.0, 0.0], [0.55, 0.0, 0.0], [0.65, 0.0, 0.0]])
+    for k in range(30):
+        p = arm.copy()
+        p[2:, 0] += wrist_speed * k * DT
+        kf.step(p, np.ones(4), np.ones(4), dt=DT)
+    return kf
+
+
+def test_limit_segments_pulls_a_predicted_keypoint_back_to_its_measured_neighbour():
+    """An occluded wrist coasting at 1 m/s stays within the forearm length of the elbow."""
+    kf = _moving_arm_kf(wrist_speed=1.0)
+    p = np.full((4, 3), np.nan)
+    p[:2] = kf.get_estimates()[0][:2]          # shoulder and elbow still measured
+    for _ in range(9):                          # 0.3 s with no wrist and no index
+        _, _, measured = kf.step(p, np.ones(4), np.where(np.isfinite(p[:, 0]), 1.0, 0.0), dt=DT)
+        pos, vel = kf.limit_segments(measured, MAX_LENGTHS)
+    assert np.linalg.norm(pos[2] - pos[1]) == pytest.approx(MAX_LENGTHS[1])
+    assert vel[2, 0] == pytest.approx(0.0, abs=1e-9)   # no velocity left stretching the forearm
+    # The index has no measured neighbour: only its own prediction
+    assert np.linalg.norm(pos[3] - pos[2]) > MAX_LENGTHS[2]
+
+
+def test_limit_segments_leaves_measured_and_short_segments_alone():
+    kf = _moving_arm_kf(wrist_speed=0.0)
+    before = kf.get_estimates()
+    pos, vel = kf.limit_segments(np.ones(4, dtype=bool), MAX_LENGTHS)
+    assert np.allclose(pos, before[0]) and np.allclose(vel, before[1])
+    pos, vel = kf.limit_segments(np.array([True, True, False, True]), MAX_LENGTHS)
+    assert np.allclose(pos, before[0]) and np.allclose(vel, before[1])

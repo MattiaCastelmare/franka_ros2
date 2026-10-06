@@ -77,6 +77,10 @@ class HumanTracker(Node):
         )
         self.max_speed_m_s = float(config["max_speed_m_s"])
         self.validator = HumanValidator(config["validation"], self.visibility_threshold)
+        # A keypoint the filter only predicts stays within the segment band max of a measured
+        # neighbour (ArmKalmanFilter.limit_segments)
+        self.segment_max_m = (
+            [hi for _, hi in self.validator.bands] if bool(config["kf_limit_segments"]) else None)
         self.background = DepthBackground(config["validation"]["background"], self.min_depth_m)
         self.protect_px = float(config["validation"]["background"]["protect_px"])
         # FR3 links whose origins make the polyline of the robot check (fr3_link0 ... fr3_link8)
@@ -486,6 +490,9 @@ class HumanTracker(Node):
                 positions=accepted, visibilities=visibilities, depths=depths, dt=dt,
                 measurement_covariances=measurement_covs,
             )
+            if self.segment_max_m is not None:
+                filtered_pos, filtered_vel = self.kfs[side].limit_segments(
+                    measured, self.segment_max_m)
 
             # Update the last valid time for each keypoint
             self.last_valid_time[side][measured] = current_time

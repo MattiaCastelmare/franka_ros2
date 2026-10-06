@@ -262,6 +262,32 @@ class ArmKalmanFilter:
 
         return filtered_positions, filtered_velocities, valid_mask
 
+    def limit_segments(
+        self, measured: np.ndarray, max_lengths: Sequence[float]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Keep each predicted-only keypoint within a segment length of a measured neighbour.
+
+        The four filters are independent: while one only predicts, its constant velocity can
+        carry it away from the rest of the arm. Such a keypoint is projected back onto the
+        sphere of radius ``max_lengths[k]`` (segment k joins keypoints k and k+1) around its
+        measured neighbour (the proximal one first), and its velocity stretching the segment is
+        removed. Returns the estimates as ``get_estimates``.
+        """
+        for index in np.flatnonzero(self.initialized & ~np.asarray(measured, dtype=bool)):
+            for neighbour in (index - 1, index + 1):
+                if not 0 <= neighbour < self.num_keypoints or not measured[neighbour]:
+                    continue
+                offset = self.x[index, 0:3] - self.x[neighbour, 0:3]
+                length = float(np.linalg.norm(offset))
+                max_length = max_lengths[min(index, neighbour)]
+                if length > max_length:
+                    direction = offset / length
+                    self.x[index, 0:3] = self.x[neighbour, 0:3] + max_length * direction
+                    stretch = np.dot(self.x[index, 3:6] - self.x[neighbour, 3:6], direction)
+                    self.x[index, 3:6] -= max(0.0, stretch) * direction
+                break
+        return self.get_estimates()
+
     def get_estimates(self) -> tuple[np.ndarray, np.ndarray]:
         """Return current positions and velocities; uninitialized states are NaN."""
         positions = np.full((self.num_keypoints, 3), np.nan, dtype=float)
