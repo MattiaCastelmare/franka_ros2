@@ -407,6 +407,7 @@ def _commander_node(p, use_sim_time):
         name='pick_place_qddot_commander',
         namespace=p['namespace'],
         output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
