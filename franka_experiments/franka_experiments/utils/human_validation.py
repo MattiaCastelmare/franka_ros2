@@ -8,12 +8,16 @@ scores cannot tell them apart; the checks here use the scene instead:
 - reach: an elbow/wrist/index sampled on the static scene or on the robot, out of reach
   of its own shoulder, is the object seen where the real arm is hidden (a person walking
   behind a robot);
+- occlusion: a keypoint nearer than its arm neighbour by more than the segment between
+  them can span, lying on the robot or the static scene, reads the depth of what is in
+  front of the arm (occluded), and is placed again with a depth borrowed from the arm;
 - workspace box, anthropometric segment lengths, lengths learned on the tracked person,
   and a torso check required only to start tracking.
 Keypoint order: shoulder, elbow, wrist, index (as human_tracker.KEYPOINT_NAMES).
 """
 
 from collections import Counter
+from itertools import combinations
 
 import numpy as np
 
@@ -212,6 +216,9 @@ class HumanValidator:
                           WRIST: float(cfg["max_reach_m"]["wrist"]),
                           INDEX: float(cfg["max_reach_m"]["index"])}
         self.shoulder_memory_s = float(cfg["shoulder_memory_s"])
+        self.check_occlusion = self.enabled and bool(cfg["check_occlusion"])
+        self.occlusion_margin = float(cfg["occlusion_margin_m"])
+        self.occlusion_clearance = float(cfg["occlusion_robot_clearance_m"])
         self.bands = [tuple(cfg["segment_bands"][name]) for name, _, _ in SEGMENTS]
         self.learn_frames = int(cfg["learn_frames"])
         self.learned_tol = float(cfg["learned_tolerance"])
@@ -263,6 +270,18 @@ class HumanValidator:
             return "on_robot"
         return None
 
+    def on_scene_or_robot(self, point, direct, foreground, robot_nodes, clearance=None):
+        """True if a keypoint lies on the static scene (own depth only) or on the robot.
+
+        clearance: distance from the link polyline that counts as on the robot
+        (robot_clearance_m if None).
+        """
+        clearance = self.robot_clearance if clearance is None else clearance
+        on_scene = self.check_background and direct and foreground is False
+        on_robot = (self.check_robot and robot_nodes is not None and len(robot_nodes) > 1
+                    and robot_distance(point, robot_nodes) < clearance)
+        return on_scene or on_robot
+
     def distal_rejects(self, positions, direct, foreground=None, robot_nodes=None, shoulder_ref=None,
                        points=(WRIST, INDEX)):
         """Indices among points to drop: on the static scene or on the robot, out of reach.
@@ -276,17 +295,43 @@ class HumanValidator:
         drop = []
         for i in points:
             p = positions[i]
-            if not np.all(np.isfinite(p)):
-                continue
-            on_scene = (self.check_background and foreground is not None and direct[i]
-                        and foreground[i] is False)
-            on_robot = (self.check_robot and robot_nodes is not None and len(robot_nodes) > 1
-                        and robot_distance(p, robot_nodes) < self.robot_clearance)
-            if not (on_scene or on_robot):
+            if not np.all(np.isfinite(p)) or not self.on_scene_or_robot(
+                    p, direct[i], None if foreground is None else foreground[i], robot_nodes):
                 continue
             if shoulder_ref is None or np.linalg.norm(p - shoulder_ref) > self.max_reach[i]:
                 drop.append(i)
         return drop
+
+    def occluded(self, positions, depths, direct, foreground=None, robot_nodes=None):
+        """Indices of keypoints whose own depth is that of something in front of the arm.
+
+        Two keypoints of the arm cannot differ in depth by more than the segments between
+        them span (their anthropometric maxima, plus occlusion_margin_m of noise). Every pair
+        with its own depth is compared, so that a neighbour with a borrowed depth in between
+        does not hide the jump. When the bound is broken one reading is wrong; an occluder is
+        always in front, so the nearer one is the suspect, and it is taken as occluded when
+        it lies on the robot or the static scene. The farther one being wrong (depth through
+        a gap) is left alone: pushing the nearer one back would move the arm away from the
+        robot.
+        """
+        if not self.check_occlusion:
+            return []
+        measured = [i for i in range(len(depths)) if direct[i] and depths[i] > 0.0]
+        occluded = []
+        for a, b in combinations(measured, 2):
+            span = sum(self.bands[k][1] for k in range(a, b)) + self.occlusion_margin
+            if abs(depths[a] - depths[b]) <= span:
+                continue
+            near = a if depths[a] < depths[b] else b
+            # The polyline runs through the link origins, not the surface (the elbow casing
+            # sticks out ~0.2 m): a wider clearance, the impossible jump being the evidence
+            if near not in occluded and self.on_scene_or_robot(
+                    positions[near], True, None if foreground is None else foreground[near],
+                    robot_nodes, self.occlusion_clearance):
+                occluded.append(near)
+        if occluded:
+            self.rejects["occluded_depth"] += len(occluded)
+        return occluded
 
     @staticmethod
     def engageable(positions, direct):

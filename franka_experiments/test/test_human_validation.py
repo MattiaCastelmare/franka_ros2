@@ -308,3 +308,50 @@ def test_elbow_on_the_robot_with_the_shoulder_just_hidden(cfg):
     far = np.array([nan, [0.1, 0.0, 0.5], [-0.8, 0.0, 0.3], [-0.85, 0.0, 0.3]])
     out = v.filter_arm('left', far, DIRECT, robot_nodes=ROBOT, t=2.1)
     assert np.isnan(out[1]).all() and np.isfinite(out[2:]).all()
+
+
+def test_occluded_keypoint_is_the_nearer_one_on_the_robot(cfg):
+    v = HumanValidator(*cfg)
+    # arm behind the robot: the elbow pixel falls on the links, its depth 0.6 m nearer
+    arm = np.array([[-0.3, 0.0, 0.6], [0.05, 0.0, 0.5], [-0.3, 0.2, 0.3], [-0.32, 0.25, 0.3]])
+    depths = np.array([2.1, 1.5, 2.1, 2.1])
+    assert v.occluded(arm, depths, DIRECT, robot_nodes=ROBOT) == [1]
+    assert v.rejects['occluded_depth'] == 1
+    # same jump, but the nearer point is in free space: left alone
+    free = arm.copy()
+    free[1] = [-0.3, 0.6, 0.5]
+    assert v.occluded(free, depths, DIRECT, robot_nodes=ROBOT) == []
+    # on the static scene instead of the robot: occluded too
+    assert v.occluded(free, depths, DIRECT, foreground=[True, False, True, True]) == [1]
+    # a jump the segment can span is no occlusion
+    assert v.occluded(arm, np.array([2.1, 1.8, 2.1, 2.1]), DIRECT, robot_nodes=ROBOT) == []
+    # a borrowed depth is never an occluder reading
+    assert v.occluded(arm, depths, np.array([True, False, True, True]), robot_nodes=ROBOT) == []
+
+
+def test_occlusion_switch(cfg):
+    c, vis = cfg
+    v = HumanValidator(dict(c, check_occlusion=False), vis)
+    arm = np.array([[-0.3, 0.0, 0.6], [0.05, 0.0, 0.5], [-0.3, 0.2, 0.3], [-0.32, 0.25, 0.3]])
+    assert v.occluded(arm, np.array([2.1, 1.5, 2.1, 2.1]), DIRECT, robot_nodes=ROBOT) == []
+
+
+def test_occlusion_reaches_the_robot_surface_off_the_link_line(cfg):
+    c, vis = cfg
+    v = HumanValidator(dict(c, check_segments=False), vis)
+    # nearer point 0.20 m from the link line: outside robot_clearance, inside the occlusion one
+    arm = np.array([[-0.3, 0.0, 0.6], [0.20, 0.0, 0.5], [-0.3, 0.2, 0.3], [-0.32, 0.25, 0.3]])
+    assert v.occluded(arm, np.array([2.1, 1.5, 2.1, 2.1]), DIRECT, robot_nodes=ROBOT) == [1]
+    # ...while the identity check keeps its own, tighter clearance
+    assert np.isfinite(v.filter_arm('left', arm, DIRECT, robot_nodes=ROBOT)).all()
+
+
+def test_occlusion_seen_across_a_borrowed_neighbour(cfg):
+    v = HumanValidator(*cfg)
+    # the wrist has a borrowed depth: the index on the robot is compared with the elbow
+    arm = np.array([[-0.3, 0.0, 0.6], [-0.3, 0.2, 0.35], [-0.3, 0.3, 0.35], [0.05, 0.0, 0.5]])
+    direct = np.array([True, True, False, True])
+    depths = np.array([1.95, 2.13, 2.04, 1.35])          # 0.78 m: more than forearm + hand
+    assert v.occluded(arm, depths, direct, robot_nodes=ROBOT) == [3]
+    # within what forearm + hand can span: no occlusion
+    assert v.occluded(arm, np.array([1.95, 2.13, 2.04, 1.75]), direct, robot_nodes=ROBOT) == []

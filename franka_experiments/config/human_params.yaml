@@ -65,6 +65,11 @@ human_tracker:
       wrist: 1.00
       index: 1.15
     shoulder_memory_s: 0.5              # [s] reach measured from the last shoulder this old at most
+    # A keypoint nearer than its arm neighbour by more than the segment can span (band max +
+    # margin), on the robot or the static scene, reads an occluder: its depth is borrowed
+    check_occlusion: true
+    occlusion_margin_m: 0.15
+    occlusion_robot_clearance_m: 0.25   # [m] wider than robot_clearance_m: link surface, not origins
     # MediaPipe keeps following a skeleton it latched onto a robot: after this long it is
     # made to detect again (a reset costs ~45 ms, hence the cooldown)
     redetect_after_s: 0.2

@@ -407,8 +407,9 @@ class HumanTracker(Node):
         robot_nodes = self.robot_nodes() if self.validator.check_robot else None
         measurements = {}
         for side in self.active_sides:
-            positions, depths, measurement_covs, pixels = self.measure_arm(
-                extracted_landmarks[side], current_visibilities[side], camera_tf)
+            pixels, own_depths = self.keypoint_depths(
+                extracted_landmarks[side], current_visibilities[side])
+            positions, depths, measurement_covs = self.deproject_arm(pixels, own_depths, camera_tf)
             # Own depth: NaN covariance = default isotropic R (a borrowed depth has a ray one)
             direct = np.isnan(measurement_covs[:, 0, 0])
             foreground = [
@@ -416,6 +417,16 @@ class HumanTracker(Node):
                 if direct[i] and i in pixels and depths[i] > 0.0 else None
                 for i in range(4)
             ]
+            # A keypoint reading the robot or the scene in front of the arm is placed again,
+            # with a depth borrowed from the rest of the arm (rare: only then deproject twice)
+            occluded = self.validator.occluded(positions, depths, direct, foreground, robot_nodes)
+            if occluded:
+                own_depths[occluded] = 0.0
+                positions, depths, measurement_covs = self.deproject_arm(
+                    pixels, own_depths, camera_tf)
+                direct = np.isnan(measurement_covs[:, 0, 0])
+                for i in occluded:
+                    foreground[i] = None
             # Rejected keypoints become NaN: the filter only predicts them this frame
             accepted = self.validator.filter_arm(
                 side, positions, direct, foreground, robot_nodes, learn=self.is_engaged,
@@ -616,52 +627,58 @@ class HumanTracker(Node):
                 f"MediaPipe re-detection: the tracked pose is not a person ({reason})",
                 throttle_duration_sec=5.0)
 
-    def measure_arm(self, landmarks, visibilities, camera_tf):
-        """3D keypoints of one arm in the base frame from the current RGB-D pair.
+    def keypoint_depths(self, landmarks, visibilities):
+        """Pixel and own depth of each visible keypoint of one arm.
 
-        Returns positions (4, 3) (NaN = not measured), depths (4,) (0 = none), measurement
-        covariances (4, 3, 3) (NaN = default isotropic R; set for a borrowed depth) and the
-        pixel of each visible keypoint.
+        Returns the pixels {index: (u, v)} and depths (4,) [m], 0 where the keypoint is not
+        visible enough or has no valid depth around its pixel.
         """
-        positions = np.full((4, 3), np.nan, dtype=float)
         depths = np.zeros(4, dtype=float)
-        measurement_covs = np.full((4, 3, 3), np.nan, dtype=float)
-        landmark_pixels = {}
-        if landmarks is None or camera_tf is None:
-            return positions, depths, measurement_covs, landmark_pixels
-
-        rotation, translation = camera_tf
-        valid_depths = []
+        pixels = {}
+        if landmarks is None:
+            return pixels, depths
         for i, name in enumerate(self.KEYPOINT_NAMES):
-            # Skip keypoints that are not visible enough or have no valid depth
             if visibilities[i] < self.visibility_threshold:
                 continue
-
             landmark = landmarks[name]
             u = int(round(landmark["x_px"]))
             v = int(round(landmark["y_px"]))
-            landmark_pixels[i] = (u, v)
-
-            # Get the median depth in a small patch around the keypoint, ignoring invalid pixels
+            pixels[i] = (u, v)
+            # Median depth in a small patch around the keypoint, ignoring invalid pixels
             depth_m = depth_patch_median(
                 self.last_depth, u, v, self.depth_patch_radius,
                 self.min_depth_m, self.max_depth_m,
             )
             if depth_m is not None:
                 depths[i] = depth_m
-                valid_depths.append(depth_m)
+        return pixels, depths
 
-        # A keypoint visible in RGB is received by the filter with a ray-shaped covariance
+    def deproject_arm(self, pixels, own_depths, camera_tf):
+        """3D keypoints of one arm in the base frame.
+
+        A visible keypoint without its own depth (own_depths 0) borrows the arm's: it reaches
+        the filter with a ray-shaped covariance. Returns positions (4, 3) (NaN = not
+        measured), the depths used (4,) and the measurement covariances (4, 3, 3) (NaN =
+        default isotropic R, i.e. own depth). own_depths is not modified.
+        """
+        positions = np.full((4, 3), np.nan, dtype=float)
+        depths = own_depths.copy()
+        measurement_covs = np.full((4, 3, 3), np.nan, dtype=float)
+        if camera_tf is None:
+            return positions, depths, measurement_covs
+
+        rotation, translation = camera_tf
+        valid_depths = own_depths[own_depths > 0.0]
         fallback_depth = None
         if self.fallback_depth_std_m > 0.0 and len(valid_depths) >= 2:
             ref_median = float(np.median(valid_depths))
-            consistent = [d for d in valid_depths if abs(d - ref_median) <= 0.20]
+            consistent = valid_depths[np.abs(valid_depths - ref_median) <= 0.20]
             if len(consistent) >= 2:
                 fallback_depth = float(np.median(consistent))
 
-        for i, (u, v) in landmark_pixels.items():
-            borrowed = depths[i] <= 0.0
-            d = fallback_depth if borrowed else depths[i]
+        for i, (u, v) in pixels.items():
+            borrowed = own_depths[i] <= 0.0
+            d = fallback_depth if borrowed else own_depths[i]
             if d is None:
                 continue
 
@@ -676,7 +693,7 @@ class HumanTracker(Node):
                 measurement_covs[i] = ray_covariance(
                     rotation @ point_camera, self.measurement_std, self.fallback_depth_std_m
                 )
-        return positions, depths, measurement_covs, landmark_pixels
+        return positions, depths, measurement_covs
 
     def update_background(self, extracted_landmarks, current_time):
         """Fold the depth frame into the static-scene model; the tracked person is never absorbed."""
