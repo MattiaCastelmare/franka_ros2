@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from franka_experiments.utils.arm_kf import ArmKalmanFilter
-from franka_experiments.utils.human_utils import ray_covariance
+from franka_experiments.utils.human_measurement import ray_covariance
 
 DT = 1.0 / 30.0
 

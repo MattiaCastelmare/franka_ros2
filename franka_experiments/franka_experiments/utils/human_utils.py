@@ -2,12 +2,8 @@
 """
 
 import os
-import cv2
-import math
-import time
 import xacro
 import numpy as np
-import mediapipe as mp
 from typing import Any
 from geometry_msgs.msg import Point, Vector3, Point32
 from std_msgs.msg import Header
@@ -91,108 +87,6 @@ def check_engagement_loss(active_sides, validities_dict: dict) -> bool:
         if np.any(validities_dict[side]):
             return False
     return True
-
-
-def extract_arm_landmarks(
-    pose_landmarks,
-    image_shape,
-    pose_side,
-    keypoint_names,
-):
-    """Extract shoulder, elbow, wrist and index pixel coordinates."""
-    if pose_landmarks is None:
-        return None
-
-    lm = mp.solutions.pose.PoseLandmark
-    if pose_side == "right":
-        indices = (
-            lm.RIGHT_SHOULDER,
-            lm.RIGHT_ELBOW,
-            lm.RIGHT_WRIST,
-            lm.RIGHT_INDEX,
-        )
-    else:
-        indices = (
-            lm.LEFT_SHOULDER,
-            lm.LEFT_ELBOW,
-            lm.LEFT_WRIST,
-            lm.LEFT_INDEX,
-        )
-
-    return _pixel_landmarks(pose_landmarks, image_shape, zip(keypoint_names, indices))
-
-
-TORSO_NAMES = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
-
-
-def extract_torso_landmarks(pose_landmarks, image_shape):
-    """Extract both shoulders and both hips (for the torso check of human_validation)."""
-    if pose_landmarks is None:
-        return None
-    lm = mp.solutions.pose.PoseLandmark
-    indices = (lm.LEFT_SHOULDER, lm.RIGHT_SHOULDER, lm.LEFT_HIP, lm.RIGHT_HIP)
-    return _pixel_landmarks(pose_landmarks, image_shape, zip(TORSO_NAMES, indices))
-
-
-def _pixel_landmarks(pose_landmarks, image_shape, named_indices):
-    height, width = image_shape[:2]
-    landmarks = {}
-    for name, index in named_indices:
-        point = pose_landmarks.landmark[index]
-        # MediaPipe extrapolates out-of-frame landmarks: clipped to the border
-        # they would read the depth of an unrelated pixel, so they are not visible
-        in_frame = 0.0 <= point.x <= 1.0 and 0.0 <= point.y <= 1.0
-        landmarks[name] = {
-            "x_px": float(np.clip(point.x * width, 0, width - 1)),
-            "y_px": float(np.clip(point.y * height, 0, height - 1)),
-            "visibility": float(getattr(point, "visibility", 0.0)) if in_frame else 0.0,
-        }
-    return landmarks
-
-
-def depth_patch_median(
-    depth_image,
-    u,
-    v,
-    radius,
-    min_depth_m,
-    max_depth_m,
-):
-    """Return the median valid depth around one image pixel."""
-    height, width = depth_image.shape[:2]
-    u0, u1 = max(0, u - radius), min(width, u + radius + 1)
-    v0, v1 = max(0, v - radius), min(height, v + radius + 1)
-
-    values = depth_image[v0:v1, u0:u1].astype(np.float32).ravel()
-    values = values[np.isfinite(values) & (values > 0.0)]
-    if values.size == 0:
-        return None
-
-    depth_m = float(np.median(values))
-    if depth_image.dtype == np.uint16 or depth_m > 100.0:
-        depth_m /= 1000.0
-
-    if not min_depth_m <= depth_m <= max_depth_m:
-        return None
-    return depth_m
-
-
-def deproject(u, v, depth_m, fx, fy, cx, cy):
-    """Deproject one RGB-D pixel with the pinhole-camera model."""
-    x = (u - cx) * depth_m / fx
-    y = (v - cy) * depth_m / fy
-    return np.array([x, y, depth_m], dtype=float)
-
-
-def ray_covariance(ray_direction, sigma_perp, sigma_ray):
-    """3x3 covariance with std sigma_ray along the camera ray and sigma_perp across it.
-
-    A depth error moves a deprojected point only along its viewing ray, while
-    the pixel coordinates still fix it across the ray.
-    """
-    r = np.asarray(ray_direction, dtype=float)
-    r = r / np.linalg.norm(r)
-    return sigma_perp**2 * np.eye(3) + (sigma_ray**2 - sigma_perp**2) * np.outer(r, r)
 
 
 def quaternion_to_rotation(qx, qy, qz, qw):
@@ -393,6 +287,19 @@ def build_arm_state_msg(
     return msg
 
 
+def build_disengaged_state_msg(visibilities, header, base_frame) -> HumanArmState:
+    """Heartbeat while no arm is engaged: a state with every keypoint invalid.
+    human_distance turns it into an empty MultiLinkDistance, which the controller reads as
+    "nothing near"; silence would read as a dead perception.
+    """
+    return build_arm_state_msg(
+        positions=np.full((4, 3), np.nan), velocities=np.full((4, 3), np.nan),
+        visibilities=visibilities, measured=np.zeros(4, dtype=bool),
+        keypoint_valid=np.zeros(4, dtype=bool), age=np.full(4, -1.0),
+        header=header, base_frame=base_frame,
+    )
+
+
 def predict_future_positions(positions, velocities, step_dt, num_steps):
     """Predict future positions using a constant-velocity model."""
     future_positions = []
@@ -451,150 +358,3 @@ def build_2d_landmarks_msg(landmarks, keypoint_names, header) -> PointCloud:
 
     msg.channels.append(visibility)
     return msg
-
-
-def landmarks_are_recent(
-    image_stamp_ns,
-    last_valid_landmark_stamp_ns,
-    landmark_hold_s,
-):
-    """Check whether the last pose can still be drawn on the current image."""
-    if last_valid_landmark_stamp_ns is None:
-        return False
-
-    age_s = max(
-        0.0,
-        (image_stamp_ns - last_valid_landmark_stamp_ns) * 1e-9,
-    )
-    return age_s <= landmark_hold_s
-
-
-def update_display_points(
-    target_points,
-    display_points,
-    smoothing_tau_s,
-    max_hz,
-    last_render_monotonic_ns,
-):
-    """Apply the same exponential interpolation used by the visualizer."""
-    if target_points is None:
-        return display_points, last_render_monotonic_ns
-
-    if display_points is None or smoothing_tau_s <= 0.0:
-        return target_points.copy(), time.monotonic_ns()
-
-    now_ns = time.monotonic_ns()
-    if last_render_monotonic_ns is None:
-        dt = 1.0 / max_hz
-    else:
-        dt = max(
-            1e-4,
-            (now_ns - last_render_monotonic_ns) * 1e-9,
-        )
-
-    alpha = 1.0 - math.exp(-dt / smoothing_tau_s)
-    display_points += alpha * (target_points - display_points)
-    return display_points, now_ns
-
-
-def project_to_pixel(point_base, rotation, translation, fx, fy, cx, cy):
-    """Pixel (u, v) of a base-frame point; None if not finite or behind the camera.
-
-    rotation, translation: base -> camera optical frame.
-    """
-    point_camera = rotation @ np.asarray(point_base, dtype=float) + translation
-    if not np.all(np.isfinite(point_camera)) or point_camera[2] <= 0.01:
-        return None
-    return (
-        float(point_camera[0] / point_camera[2] * fx + cx),
-        float(point_camera[1] / point_camera[2] * fy + cy),
-    )
-
-
-def tracked_arm_pixels(landmark_px, measured, valid, predicted_px):
-    """Where to draw each keypoint of an arm as the tracker uses it, None where not drawn.
-
-    Only the keypoints valid in the arm state (what reaches the CBF) are drawn: one measured
-    in this frame at its MediaPipe pixel, one only predicted by the Kalman filter at the
-    projection of its estimate (MediaPipe's pixel for it is a guess). Returns, per keypoint,
-    None or ((u, v), measured).
-
-    landmark_px: (4, 2) MediaPipe pixels or None; measured, valid: from HumanArmState;
-    predicted_px: per keypoint the projected estimate or None.
-    """
-    keypoints = []
-    for i, is_valid in enumerate(valid):
-        pixel = None
-        if is_valid and measured[i] and landmark_px is not None and np.all(np.isfinite(landmark_px[i])):
-            pixel = (float(landmark_px[i][0]), float(landmark_px[i][1]))
-        elif is_valid:
-            pixel = predicted_px[i]
-        keypoints.append(None if pixel is None else (pixel, bool(measured[i])))
-    return keypoints
-
-
-def draw_tracked_arm(image, keypoints, landmark_names, scale, draw_labels):
-    """Draw the keypoints of tracked_arm_pixels: filled = measured, hollow = predicted.
-
-    Segments join consecutive keypoints only when both are drawn.
-    """
-    radius = max(2, int(round(6 * scale)))
-    thickness = max(1, int(round(2 * scale)))
-    points = []
-    for index, keypoint in enumerate(keypoints):
-        if keypoint is None:
-            points.append(None)
-            continue
-        (u, v), measured = keypoint
-        point = (int(round(u * scale)), int(round(v * scale)))
-        points.append(point)
-        cv2.circle(image, point, radius, (0, 255, 0), -1 if measured else thickness)
-        if draw_labels:
-            cv2.putText(
-                image,
-                landmark_names[index],
-                (point[0] + 6, point[1] - 6),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                max(0.3, 0.45 * scale),
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
-
-    for first, second in zip(points[:-1], points[1:]):
-        if first is not None and second is not None:
-            cv2.line(image, first, second, (0, 255, 255), thickness)
-
-
-def draw_predicted_arm(image, steps, scale, color=(0, 0, 255)):
-    """Ghost arms of the constant-velocity prediction, fading with the horizon as in RViz.
-
-    steps: per prediction step, the pixel (u, v) of each keypoint or None. Each ghost is
-    alpha-blended over its bounding box only, so the cost does not grow with the frame size.
-    """
-    radius = max(2, int(round(5 * scale)))
-    thickness = max(1, int(round(3 * scale)))
-    margin = radius + thickness
-    height, width = image.shape[:2]
-    for step in reversed(range(len(steps))):   # nearest ghost drawn last, on top
-        alpha = max(0.05, 0.4 - 0.15 * step)
-        points = [None if p is None else (int(round(p[0] * scale)), int(round(p[1] * scale)))
-                  for p in steps[step]]
-        drawn = [p for p in points if p is not None]
-        if not drawn:
-            continue
-        xs, ys = zip(*drawn)
-        x0, y0 = max(0, min(xs) - margin), max(0, min(ys) - margin)
-        x1, y1 = min(width, max(xs) + margin + 1), min(height, max(ys) + margin + 1)
-        if x0 >= x1 or y0 >= y1:
-            continue
-        roi = image[y0:y1, x0:x1]
-        layer = roi.copy()
-        local = [None if p is None else (p[0] - x0, p[1] - y0) for p in points]
-        for first, second in zip(local[:-1], local[1:]):
-            if first is not None and second is not None:
-                cv2.line(layer, first, second, color, thickness, cv2.LINE_AA)
-        for point in local:
-            if point is not None:
-                cv2.circle(layer, point, radius, color, -1, cv2.LINE_AA)
-        cv2.addWeighted(layer, alpha, roi, 1.0 - alpha, 0.0, dst=roi)

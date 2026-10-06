@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from franka_experiments.utils.human_utils import (
+from franka_experiments.utils.human_overlay import (
     draw_predicted_arm, draw_tracked_arm, project_to_pixel, tracked_arm_pixels,
 )
 

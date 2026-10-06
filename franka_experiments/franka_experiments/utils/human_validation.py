@@ -20,7 +20,6 @@ from collections import Counter
 from itertools import combinations
 
 import numpy as np
-
 from franka_experiments.utils.capsule_geometry import point_to_segment_distance
 
 SEGMENTS = (("upper_arm", 0, 1), ("forearm", 1, 2), ("hand", 2, 3))
@@ -77,7 +76,6 @@ def robot_distance(point, nodes):
 
 def anchor_keypoint(positions, direct):
     """Index of the keypoint that carries the arm's identity: shoulder, else elbow, else None.
-
     Only a keypoint with its own depth counts: a borrowed depth says nothing about what
     surface sits at that pixel.
     """
@@ -93,6 +91,13 @@ def to_meters(depth):
     if depth.dtype == np.uint16:
         return depth.astype(np.float32) * 0.001
     return depth.astype(np.float32)
+
+
+def landmark_regions(landmark_sets, radius_px):
+    """(u, v, radius_px) around every landmark of the given arms (None = arm not detected)."""
+    return [(lm["x_px"], lm["y_px"], radius_px)
+            for landmarks in landmark_sets if landmarks is not None
+            for lm in landmarks.values()]
 
 
 class DepthBackground:
@@ -226,6 +231,7 @@ class HumanValidator:
         self.length_band = tuple(cfg["torso_length_band"])
         self.rejects = Counter()
         self._reported = Counter()
+        self._last_report = None
         # Per side, outcome of the last identity check: None (no shoulder/elbow with its
         # own depth, undecided), "person", or the rejection reason
         self.identity = {}
@@ -422,3 +428,13 @@ class HumanValidator:
         delta = self.rejects - self._reported
         self._reported = Counter(self.rejects)
         return ", ".join(f"{k}={v}" for k, v in sorted(delta.items()))
+
+    def report(self, t, period_s=5.0):
+        """Once per period_s, the rejections of that period (None if none or not yet due).
+
+        A bag loop goes back in time: then too.
+        """
+        if self._last_report is not None and 0.0 <= t - self._last_report < period_s:
+            return None
+        self._last_report = t
+        return self.new_rejects() or None
