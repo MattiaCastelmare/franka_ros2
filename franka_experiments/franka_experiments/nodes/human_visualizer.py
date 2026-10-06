@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Lightweight ROS 2 visualizer for human-arm landmarks.
 
-With sync_to_landmarks the overlay is drawn on the newest camera frame already
-processed by the tracker (constant delay, landmarks aligned with the image).
+The 2D overlay shows the arm as the tracker uses it, like the 3D markers: only the
+keypoints valid in the arm state, filled where measured in that frame (MediaPipe's
+pixel), hollow where only predicted by the Kalman filter (its estimate projected).
+With sync_to_landmarks the overlay is drawn on the newest camera frame the tracker
+has published a state for (constant delay, landmarks aligned with the image).
 Otherwise it renders the newest frame, with landmarks held for short dropouts
 and smoothly interpolated between updates.
 Supports both single arm tracking and dual arm ('both') tracking dynamically.
@@ -34,8 +37,9 @@ from franka_msgs.msg import HumanArmState, MultiLinkDistance, HumanArmPrediction
 
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
-    draw_landmarks, landmarks_are_recent, stamp_to_ns,
-    update_display_points, quaternion_to_rotation, format_topic
+    draw_tracked_arm, extract_human_keypoints, landmarks_are_recent, project_to_pixel,
+    stamp_to_ns, tracked_arm_pixels, update_display_points, quaternion_to_rotation,
+    format_topic,
 )
 
 
@@ -81,10 +85,10 @@ class HumanArmVisualizer(Node):
         # --- Dictionaries for 2D states ---
         self.target_points = {side: None for side in self.active_sides}
         self.display_points = {side: None for side in self.active_sides}
-        self.visibilities = {side: np.zeros(len(self.LANDMARK_NAMES), dtype=np.float32) for side in self.active_sides}
         self.last_valid_landmark_stamp_ns = {side: None for side in self.active_sides}
         self.last_render_monotonic_ns = {side: None for side in self.active_sides}
-        # Stamp of the latest frame processed by the tracker, per side (empty detections included)
+        # Stamp of the latest frame the tracker published an arm state for, per side
+        # (disengaged heartbeats included); its 2D landmarks are published just before
         self.processed_stamp_ns = {side: None for side in self.active_sides}
 
         # --- Camera Intrinsics ---
@@ -153,7 +157,7 @@ class HumanArmVisualizer(Node):
         )
         self.overlay_pub = self.create_publisher(Image, overlay_topic, overlay_qos)
         self.marker_pub = self.create_publisher(MarkerArray, '/human_robot/markers', 10)
-        # Overlay is event-driven (image / landmarks callbacks), markers run on a timer
+        # Overlay is event-driven (image / arm state callbacks), markers run on a timer
         self.marker_timer = self.create_timer(1.0 / self.max_hz, self.publish_markers_cb)
 
         self.get_logger().info(
@@ -224,16 +228,17 @@ class HumanArmVisualizer(Node):
         return self.base_to_camera
 
     def arm_state_cb(self, msg: HumanArmState, side: str) -> None:
+        """Mark the frame as processed: its landmarks and state are both in."""
         self.latest_arm_states[side] = msg
+        self.processed_stamp_ns[side] = stamp_to_ns(msg)
+        self.render_latest()
 
     def pred_cb(self, msg: HumanArmPrediction, side: str) -> None:
         self.latest_arm_predictions[side] = msg
 
     def landmarks_cb(self, msg: PointCloud, side: str) -> None:
-        """Mark the frame as processed and accept complete MediaPipe detections."""
-        self.processed_stamp_ns[side] = stamp_to_ns(msg)
+        """Accept complete MediaPipe detections; the frame is drawn once its state arrives."""
         self.update_landmarks(msg, side)
-        self.render_latest()
 
     def update_landmarks(self, msg: PointCloud, side: str) -> None:
         if len(msg.points) < len(self.LANDMARK_NAMES):
@@ -257,7 +262,6 @@ class HumanArmVisualizer(Node):
             trusted = visibilities >= self.visibility_threshold
             self.target_points[side][trusted] = points[trusted]
 
-        self.visibilities[side] = visibilities
         self.last_valid_landmark_stamp_ns[side] = stamp_to_ns(msg)
 
         if self.display_points[side] is None:
@@ -478,16 +482,20 @@ class HumanArmVisualizer(Node):
     # -------------------------------------------------------------------------
     # 2D Projection Helpers
     # -------------------------------------------------------------------------
-    def _project_point(self, point_msg, R: np.ndarray, t: np.ndarray):
-        """Transforms a 3D base point into a 2D camera pixel."""
-        p_base = np.array([point_msg.x, point_msg.y, point_msg.z])
-        p_cam = R @ p_base + t
-        
-        if p_cam[2] > 0.01:
-            u = int((p_cam[0] / p_cam[2]) * self.fx + self.cx)
-            v = int((p_cam[1] / p_cam[2]) * self.fy + self.cy)
-            return (u, v)
-        return None
+    def _project(self, point_base):
+        """Pixel (u, v) of a base-frame point, or None (no intrinsics/TF, behind the camera)."""
+        if self.fx is None or not self.camera_frame:
+            return None
+        try:
+            R, t = self.lookup_base_to_camera()
+        except Exception:
+            return None
+        return project_to_pixel(point_base, R, t, self.fx, self.fy, self.cx, self.cy)
+
+    def predicted_pixels(self, state: HumanArmState):
+        """Projection of each valid keypoint's Kalman estimate, None for the others."""
+        positions, _, valid = extract_human_keypoints(state)
+        return [self._project(p) if valid[i] else None for i, p in enumerate(positions)]
 
     def _draw_distance_line(self, image: np.ndarray, image_stamp_ns: int) -> None:
         """Projects and draws the shortest geometric distance on the 2D overlay."""
@@ -499,15 +507,13 @@ class HumanArmVisualizer(Node):
 
         try:
             min_link = min(self.latest_distances.links, key=lambda l: l.distance)
-            R, t = self.lookup_base_to_camera()
+            p_robot, p_human = min_link.closest_point_robot, min_link.closest_point_human
+            uv_robot = self._project((p_robot.x, p_robot.y, p_robot.z))
+            uv_human = self._project((p_human.x, p_human.y, p_human.z))
 
-            uv_robot = self._project_point(min_link.closest_point_robot, R, t)
-            uv_human = self._project_point(min_link.closest_point_human, R, t)
-            
             if uv_robot and uv_human:
-                if self.scale < 1.0:
-                    uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
-                    uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
+                uv_robot = (int(uv_robot[0] * self.scale), int(uv_robot[1] * self.scale))
+                uv_human = (int(uv_human[0] * self.scale), int(uv_human[1] * self.scale))
                 
                 cv2.line(image, uv_robot, uv_human, (255, 255, 255), 2)
                 cv2.circle(image, uv_robot, 6, (0, 255, 255), -1)
@@ -549,46 +555,35 @@ class HumanArmVisualizer(Node):
                 image, dsize=None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA
             )
 
-        # Draw Human Landmarks for each active arm
+        # Draw each arm as the tracker uses it: only its valid keypoints (see tracked_arm_pixels)
+        drawn = {}
         for side in self.active_sides:
-            # Check if the state is valid for this arm before rendering it
-            arm_is_valid = False
-            if self.latest_arm_states[side] is not None:
-                arm_is_valid = any(self.latest_arm_states[side].keypoint_valid)
+            state = self.latest_arm_states[side]
+            if state is None or not any(state.keypoint_valid):
+                # Arm lost: clean old 2D pixels to avoid freezing
+                self.display_points[side] = None
+                self.target_points[side] = None
+                drawn[side] = None
+                continue
 
-            if arm_is_valid and landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns[side], self.landmark_hold_s):
+            landmark_px = None
+            if landmarks_are_recent(image_stamp_ns, self.last_valid_landmark_stamp_ns[side], self.landmark_hold_s):
                 # No interpolation needed when the image matches the detection
                 tau = 0.0 if self.sync_to_landmarks else self.smoothing_tau_s
                 self.display_points[side], self.last_render_monotonic_ns[side] = update_display_points(
                     self.target_points[side], self.display_points[side], tau, self.max_hz, self.last_render_monotonic_ns[side]
                 )
-                if self.display_points[side] is not None:
-                    draw_landmarks(
-                        image, self.display_points[side], self.visibilities[side], self.LANDMARK_NAMES, 
-                        self.visibility_threshold, self.scale, self.draw_labels
-                    )
-            else:
-                # If the arm is lost, clean old 2D pixels to avoid freezing
-                self.display_points[side] = None
-                self.target_points[side] = None
+                landmark_px = self.display_points[side]
+            drawn[side] = tracked_arm_pixels(
+                landmark_px, state.measured, state.keypoint_valid, self.predicted_pixels(state))
+            draw_tracked_arm(image, drawn[side], self.LANDMARK_NAMES, self.scale, self.draw_labels)
 
-        # If both arms are active, draw a line between the shoulders if they are visible
+        # If both arms are active, join the shoulders when both are drawn
         if "left" in self.active_sides and "right" in self.active_sides:
-            left_pts = self.display_points["left"]
-            right_pts = self.display_points["right"]
-            
-            if left_pts is not None and right_pts is not None:
-                vis_left_shoulder = self.visibilities["left"][0]
-                vis_right_shoulder = self.visibilities["right"][0]
-                
-                # Check if both shoulders are visible enough to draw the line
-                if (vis_left_shoulder >= self.visibility_threshold and 
-                    vis_right_shoulder >= self.visibility_threshold):
-                    
-                    # Convert to integer pixel coordinates for drawing
-                    pt1 = (int(left_pts[0][0]), int(left_pts[0][1]))
-                    pt2 = (int(right_pts[0][0]), int(right_pts[0][1]))
-                    cv2.line(image, pt1, pt2, (0, 255, 255), 2)
+            shoulders = [drawn[side][0] if drawn[side] else None for side in ("left", "right")]
+            if all(shoulders):
+                pt1, pt2 = [(int(u * self.scale), int(v * self.scale)) for (u, v), _ in shoulders]
+                cv2.line(image, pt1, pt2, (0, 255, 255), 2)
 
         self._draw_distance_line(image, image_stamp_ns)
 

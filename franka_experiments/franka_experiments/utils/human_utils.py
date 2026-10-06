@@ -497,36 +497,57 @@ def update_display_points(
     return display_points, now_ns
 
 
-def draw_landmarks(
-    image,
-    points_px,
-    visibilities,
-    landmark_names,
-    visibility_threshold,
-    scale,
-    draw_labels,
-):
-    """Draw the arm points, labels and connecting segments."""
-    points = []
+def project_to_pixel(point_base, rotation, translation, fx, fy, cx, cy):
+    """Pixel (u, v) of a base-frame point; None if not finite or behind the camera.
+
+    rotation, translation: base -> camera optical frame.
+    """
+    point_camera = rotation @ np.asarray(point_base, dtype=float) + translation
+    if not np.all(np.isfinite(point_camera)) or point_camera[2] <= 0.01:
+        return None
+    return (
+        float(point_camera[0] / point_camera[2] * fx + cx),
+        float(point_camera[1] / point_camera[2] * fy + cy),
+    )
+
+
+def tracked_arm_pixels(landmark_px, measured, valid, predicted_px):
+    """Where to draw each keypoint of an arm as the tracker uses it, None where not drawn.
+
+    Only the keypoints valid in the arm state (what reaches the CBF) are drawn: one measured
+    in this frame at its MediaPipe pixel, one only predicted by the Kalman filter at the
+    projection of its estimate (MediaPipe's pixel for it is a guess). Returns, per keypoint,
+    None or ((u, v), measured).
+    landmark_px: (4, 2) MediaPipe pixels or None; measured, valid: from HumanArmState;
+    predicted_px: per keypoint the projected estimate or None.
+    """
+    keypoints = []
+    for i, is_valid in enumerate(valid):
+        pixel = None
+        if is_valid and measured[i] and landmark_px is not None and np.all(np.isfinite(landmark_px[i])):
+            pixel = (float(landmark_px[i][0]), float(landmark_px[i][1]))
+        elif is_valid:
+            pixel = predicted_px[i]
+        keypoints.append(None if pixel is None else (pixel, bool(measured[i])))
+    return keypoints
+
+
+def draw_tracked_arm(image, keypoints, landmark_names, scale, draw_labels):
+    """Draw the keypoints of tracked_arm_pixels: filled = measured, hollow = predicted.
+
+    Segments join consecutive keypoints only when both are drawn.
+    """
     radius = max(2, int(round(6 * scale)))
     thickness = max(1, int(round(2 * scale)))
-
-    for index, point_px in enumerate(points_px):
-        point = (
-            int(round(float(point_px[0]) * scale)),
-            int(round(float(point_px[1]) * scale)),
-        )
+    points = []
+    for index, keypoint in enumerate(keypoints):
+        if keypoint is None:
+            points.append(None)
+            continue
+        (u, v), measured = keypoint
+        point = (int(round(u * scale)), int(round(v * scale)))
         points.append(point)
-
-        visibility = float(visibilities[index])
-        color = (
-            (0, 255, 0)
-            if visibility >= visibility_threshold
-            else (0, 0, 255)
-        )
-
-        cv2.circle(image, point, radius, color, -1)
-
+        cv2.circle(image, point, radius, (0, 255, 0), -1 if measured else thickness)
         if draw_labels:
             cv2.putText(
                 image,
@@ -540,4 +561,5 @@ def draw_landmarks(
             )
 
     for first, second in zip(points[:-1], points[1:]):
-        cv2.line(image, first, second, (0, 255, 255), thickness)
+        if first is not None and second is not None:
+            cv2.line(image, first, second, (0, 255, 255), thickness)
