@@ -4,8 +4,9 @@ OWNS
 ----
 Observability helpers that any node may use:
 ``ThrottledLogger`` (rate-limited log lines), ``vec_to_str``
-(compact vector formatting) and ``PerfTimer`` (named-stage
-wall-clock profiler, moved here from ``utils.node_utils`` in Phase 2).
+(compact vector formatting), ``PerfTimer`` (named-stage
+wall-clock profiler, moved here from ``utils.node_utils`` in Phase 2)
+and ``quiet_stderr`` (silences native libraries that print to stderr).
 
 DOES NOT OWN
 ------------
@@ -14,6 +15,9 @@ Anything domain-specific: no distance, no CBF, no message construction.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 from typing import Optional
 
 import numpy as np
@@ -64,6 +68,30 @@ class ThrottledLogger:
     @last_t.setter
     def last_t(self, value: float) -> None:
         self._last_t = value
+
+
+@contextlib.contextmanager
+def quiet_stderr(enabled: bool = True):
+    """Silence the process's stderr (file descriptor 2) inside the block.
+
+    For native libraries that write straight to the descriptor, out of reach of
+    Python and ROS logging (MediaPipe/TFLite print a harmless warning every time
+    their graph starts). Keep the block short: whatever this process writes to
+    stderr meanwhile, from any thread and ROS logs included, is lost.
+    """
+    if not enabled:
+        yield
+        return
+    sys.stderr.flush()
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    try:
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
 
 
 def vec_to_str(v: Optional[np.ndarray], fmt: str = '.4f') -> str:

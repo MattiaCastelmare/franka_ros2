@@ -4,8 +4,9 @@
 RGB-D -> MediaPipe -> 3D keypoints in fr3_link0 -> Kalman filter
 -> current arm state and constant-velocity prediction.
 
-Robot geometry, distances, controllers and visualization are intentionally
-kept outside this node.
+Distances, controllers and visualization are intentionally kept outside this
+node. The only robot geometry here is the FR3 link polyline from TF, used by the
+validator to reject MediaPipe "people" detected on the robot itself.
 """
 
 import os
@@ -35,7 +36,8 @@ from franka_experiments.utils.human_utils import (
     check_engagement_start, check_engagement_loss, stamp_to_ns, ray_covariance,
     extract_torso_landmarks, TORSO_NAMES,
 )
-from franka_experiments.utils.human_validation import HumanValidator
+from franka_experiments.utils.human_validation import DepthBackground, HumanValidator
+from franka_experiments.utils.logging_utils import quiet_stderr
 
 
 class HumanTracker(Node):
@@ -75,6 +77,18 @@ class HumanTracker(Node):
         )
         self.max_speed_m_s = float(config["max_speed_m_s"])
         self.validator = HumanValidator(config["validation"], self.visibility_threshold)
+        self.background = DepthBackground(config["validation"]["background"], self.min_depth_m)
+        self.protect_px = float(config["validation"]["background"]["protect_px"])
+        # FR3 links whose origins make the polyline of the robot check (fr3_link0 ... fr3_link8)
+        robot_cfg = load_robot_config(os.path.join(
+            get_package_share_directory("franka_experiments"), "config", "fr3_complete.yaml"))
+        self.robot_links = list(robot_cfg["robot"]["segment_links"])
+        self.robot_tip_offset_m = float(config["validation"]["robot_tip_offset_m"])
+        self.redetect_after_s = float(config["validation"]["redetect_after_s"])
+        self.redetect_cooldown_s = float(config["validation"]["redetect_cooldown_s"])
+        self.not_a_person_since = None
+        self.last_redetect = None
+        self.last_reject_report = None
         self.measurement_std = float(config["kf_measurement_std"])
         self.fallback_depth_std_m = float(config["fallback_depth_std_m"])
 
@@ -122,6 +136,10 @@ class HumanTracker(Node):
                 config["min_tracking_confidence"]
             ),
         )
+        # Start the graph now on an empty frame, with the warnings TFLite prints meanwhile
+        # silenced (see redetect_if_not_a_person)
+        with quiet_stderr():
+            self.pose.process(np.zeros((64, 64, 3), dtype=np.uint8))
 
         # Kalman filter for 3D keypoints
         self.kfs = {}
@@ -382,22 +400,47 @@ class HumanTracker(Node):
                 build_2d_landmarks_msg(landmarks, self.KEYPOINT_NAMES, self.image_header)
             )
 
-        if self.validator.rejects:
-            self.get_logger().info(f"Validation rejects: {self.validator.summary()}",
-                                   throttle_duration_sec=5.0)
+        # 3D measurement and validation run on every frame: tracking starts only on an arm
+        # that is already measured in 3D and passes the identity checks (human_validation)
+        camera_tf = self.get_camera_to_base_transform()
+        self.update_background(extracted_landmarks, current_time)
+        robot_nodes = self.robot_nodes() if self.validator.check_robot else None
+        measurements = {}
+        for side in self.active_sides:
+            positions, depths, measurement_covs, pixels = self.measure_arm(
+                extracted_landmarks[side], current_visibilities[side], camera_tf)
+            # Own depth: NaN covariance = default isotropic R (a borrowed depth has a ray one)
+            direct = np.isnan(measurement_covs[:, 0, 0])
+            foreground = [
+                self.background.foreground(*pixels[i], depths[i])
+                if direct[i] and i in pixels and depths[i] > 0.0 else None
+                for i in range(4)
+            ]
+            # Rejected keypoints become NaN: the filter only predicts them this frame
+            accepted = self.validator.filter_arm(
+                side, positions, direct, foreground, robot_nodes, learn=self.is_engaged,
+                t=current_time)
+            measurements[side] = (positions, accepted, depths, measurement_covs, direct)
+        self.report_rejects(current_time)
+        self.redetect_if_not_a_person(current_time)
 
-        # Engage Logic (higher visibility and a plausible torso to start, see human_validation)
+        # Engage Logic: on one arm, higher visibility, shoulder and elbow measured in 3D and
+        # accepted by the validator, and a plausible torso; all of it for engage_stability_s
         if not self.is_engaged:
-            if (check_engagement_start(self.active_sides, self.validator.engage_visibility_threshold,
+            candidate = any(
+                check_engagement_start([side], self.validator.engage_visibility_threshold,
                                        current_visibilities)
-                    and self.torso_ok(result.pose_landmarks)):
+                and self.validator.engageable(measurements[side][1], measurements[side][4])
+                for side in self.active_sides
+            )
+            if candidate and self.torso_ok(result.pose_landmarks):
                 if self.first_visible_time is None:
                     self.first_visible_time = current_time
                 elif (current_time - self.first_visible_time) >= self.engage_stability_s:
                     self.is_engaged = True
                     self.first_visible_time = None
                     self.get_logger().info(
-                        "Human ENGAGED: at least one arm is stably visible. Start tracking.", 
+                        "Human ENGAGED: at least one arm is stably measured. Start tracking.",
                         throttle_duration_sec=1.0
                     )
             else:
@@ -410,75 +453,14 @@ class HumanTracker(Node):
         # Compute the time delta since the last update
         dt = self.compute_dt(current_time)
 
-        # Compute 3D positions of the keypoints in the robot base frame
-        camera_tf = self.get_camera_to_base_transform()
         speed_logs = []
         current_validities = {}
 
         # Iterate on each active side (left/right) and process the keypoints
         for side in self.active_sides:
-            landmarks = extracted_landmarks[side]
             visibilities = current_visibilities[side]
-
+            positions, accepted, depths, measurement_covs, _ = measurements[side]
             log_prefix = f"[{side.upper()}] " if len(self.active_sides) > 1 else ""
-            positions = np.full((4, 3), np.nan, dtype=float)
-            depths = np.zeros(4, dtype=float)
-            # NaN = default isotropic R; set only for measurements with a borrowed depth
-            measurement_covs = np.full((4, 3, 3), np.nan, dtype=float)
-
-            if landmarks is not None and camera_tf is not None:
-                rotation, translation = camera_tf
-                valid_depths = []
-                landmark_pixels = {}
-
-                for i, name in enumerate(self.KEYPOINT_NAMES):
-                    # Skip keypoints that are not visible enough or have no valid depth
-                    visibility = visibilities[i]
-                    if visibility < self.visibility_threshold:
-                        continue
-
-                    landmark = landmarks[name]
-                    u = int(round(landmark["x_px"]))
-                    v = int(round(landmark["y_px"]))
-                    landmark_pixels[i] = (u, v)
-
-                    # Get the median depth in a small patch around the keypoint, ignoring invalid pixels
-                    depth_m = depth_patch_median(
-                        self.last_depth, u, v, self.depth_patch_radius,
-                        self.min_depth_m, self.max_depth_m,
-                    )
-                    if depth_m is not None:
-                        depths[i] = depth_m
-                        valid_depths.append(depth_m)
-
-                # A keypoint visible in RGB is received by the filter with a ray-shaped covariance
-                fallback_depth = None
-                if self.fallback_depth_std_m > 0.0 and len(valid_depths) >= 2:
-                    ref_median = float(np.median(valid_depths))
-                    consistent = [d for d in valid_depths if abs(d - ref_median) <= 0.20]
-                    if len(consistent) >= 2:
-                        fallback_depth = float(np.median(consistent))
-
-                for i in range(4):
-                    if i not in landmark_pixels:
-                        continue
-                    borrowed = depths[i] <= 0.0
-                    d = fallback_depth if borrowed else depths[i]
-                    if d is None:
-                        continue
-                    u, v = landmark_pixels[i]
-
-                    # Deproject the 2D pixel to 3D in the camera frame and transform to the robot base frame
-                    point_camera = deproject(u, v, d, self.fx, self.fy, self.cx, self.cy)
-                    point_base = rotation @ point_camera + translation
-                    if not np.all(np.isfinite(point_base)):
-                        continue
-                    positions[i] = point_base
-                    if borrowed:
-                        depths[i] = d
-                        measurement_covs[i] = ray_covariance(
-                            rotation @ point_camera, self.measurement_std, self.fallback_depth_std_m
-                        )
 
             # Publish raw data for KF post-comparison
             raw_msg = build_arm_state_msg(
@@ -488,13 +470,9 @@ class HumanTracker(Node):
             )
             self.raw_state_pubs[side].publish(raw_msg)
 
-            # Rejected keypoints become NaN: the filter only predicts them this frame
-            direct = np.isnan(measurement_covs[:, 0, 0])
-            positions = self.validator.filter_arm(side, positions, direct)
-
             # --- Kalman Filter Update ---
             filtered_pos, filtered_vel, measured = self.kfs[side].step(
-                positions=positions, visibilities=visibilities, depths=depths, dt=dt,
+                positions=accepted, visibilities=visibilities, depths=depths, dt=dt,
                 measurement_covariances=measurement_covs,
             )
 
@@ -596,6 +574,137 @@ class HumanTracker(Node):
                     self.validator.reset()
             else:
                 self.first_lost_time = None
+
+    def report_rejects(self, current_time):
+        """Every few seconds, the validator's rejections of that interval (nothing if none)."""
+        # (a bag loop goes back in time: report then too)
+        if self.last_reject_report is not None and 0.0 <= current_time - self.last_reject_report < 5.0:
+            return
+        self.last_reject_report = current_time
+        new = self.validator.new_rejects()
+        if new:
+            self.get_logger().info(
+                f"Validation rejects in the last 5 s: {new} (since start: {self.validator.summary()})")
+
+    def redetect_if_not_a_person(self, current_time):
+        """Make MediaPipe look for a person again when the pose it tracks is not one.
+
+        MediaPipe Pose follows one pose and runs its detector again only once that pose is
+        lost; a skeleton it has latched onto a robot can hold for seconds while a real
+        person walks in, unseen. Its detector alone does not fire on the robots in these
+        scenes: resetting the graph (~45 ms, so at most once per redetect_cooldown_s)
+        drops the ghost and finds the person as soon as one is in view.
+        """
+        reason = self.validator.not_a_person(self.active_sides)
+        if reason is None:
+            self.not_a_person_since = None
+            return
+        if self.not_a_person_since is None or current_time < self.not_a_person_since:
+            self.not_a_person_since = current_time
+        cooldown_over = (self.last_redetect is None or current_time < self.last_redetect
+                         or current_time - self.last_redetect >= self.redetect_cooldown_s)
+        if current_time - self.not_a_person_since >= self.redetect_after_s and cooldown_over:
+            # TFLite prints a warning each time the graph starts, from its own threads: the
+            # first frame waits for the start, so both run with stderr silenced. That frame
+            # (the current one) is also where the detector looks for a person again
+            with quiet_stderr():
+                self.pose.reset()
+                self.pose.process(self.last_image)
+            self.last_redetect = current_time
+            self.not_a_person_since = None
+            self.get_logger().info(
+                f"MediaPipe re-detection: the tracked pose is not a person ({reason})",
+                throttle_duration_sec=5.0)
+
+    def measure_arm(self, landmarks, visibilities, camera_tf):
+        """3D keypoints of one arm in the base frame from the current RGB-D pair.
+
+        Returns positions (4, 3) (NaN = not measured), depths (4,) (0 = none), measurement
+        covariances (4, 3, 3) (NaN = default isotropic R; set for a borrowed depth) and the
+        pixel of each visible keypoint.
+        """
+        positions = np.full((4, 3), np.nan, dtype=float)
+        depths = np.zeros(4, dtype=float)
+        measurement_covs = np.full((4, 3, 3), np.nan, dtype=float)
+        landmark_pixels = {}
+        if landmarks is None or camera_tf is None:
+            return positions, depths, measurement_covs, landmark_pixels
+
+        rotation, translation = camera_tf
+        valid_depths = []
+        for i, name in enumerate(self.KEYPOINT_NAMES):
+            # Skip keypoints that are not visible enough or have no valid depth
+            if visibilities[i] < self.visibility_threshold:
+                continue
+
+            landmark = landmarks[name]
+            u = int(round(landmark["x_px"]))
+            v = int(round(landmark["y_px"]))
+            landmark_pixels[i] = (u, v)
+
+            # Get the median depth in a small patch around the keypoint, ignoring invalid pixels
+            depth_m = depth_patch_median(
+                self.last_depth, u, v, self.depth_patch_radius,
+                self.min_depth_m, self.max_depth_m,
+            )
+            if depth_m is not None:
+                depths[i] = depth_m
+                valid_depths.append(depth_m)
+
+        # A keypoint visible in RGB is received by the filter with a ray-shaped covariance
+        fallback_depth = None
+        if self.fallback_depth_std_m > 0.0 and len(valid_depths) >= 2:
+            ref_median = float(np.median(valid_depths))
+            consistent = [d for d in valid_depths if abs(d - ref_median) <= 0.20]
+            if len(consistent) >= 2:
+                fallback_depth = float(np.median(consistent))
+
+        for i, (u, v) in landmark_pixels.items():
+            borrowed = depths[i] <= 0.0
+            d = fallback_depth if borrowed else depths[i]
+            if d is None:
+                continue
+
+            # Deproject the 2D pixel to 3D in the camera frame and transform to the robot base frame
+            point_camera = deproject(u, v, d, self.fx, self.fy, self.cx, self.cy)
+            point_base = rotation @ point_camera + translation
+            if not np.all(np.isfinite(point_base)):
+                continue
+            positions[i] = point_base
+            if borrowed:
+                depths[i] = d
+                measurement_covs[i] = ray_covariance(
+                    rotation @ point_camera, self.measurement_std, self.fallback_depth_std_m
+                )
+        return positions, depths, measurement_covs, landmark_pixels
+
+    def update_background(self, extracted_landmarks, current_time):
+        """Fold the depth frame into the static-scene model; the tracked person is never absorbed."""
+        if not self.validator.check_background:
+            return
+        protect = []
+        if self.is_engaged:
+            for landmarks in extracted_landmarks.values():
+                if landmarks is not None:
+                    protect += [(lm["x_px"], lm["y_px"], self.protect_px) for lm in landmarks.values()]
+        self.background.update(self.last_depth, current_time, protect)
+
+    def robot_nodes(self):
+        """FR3 link origins in the base frame (latest TF) plus the hand tip; None if unknown."""
+        nodes = []
+        for link in self.robot_links:
+            try:
+                tf_msg = self.tf_buffer.lookup_transform(self.base_frame, link, rclpy.time.Time())
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"Robot check skipped, no TF for {link}: {exc}", throttle_duration_sec=5.0)
+                return None
+            t = tf_msg.transform.translation
+            nodes.append(np.array([t.x, t.y, t.z], dtype=float))
+        q = tf_msg.transform.rotation
+        z_axis = quaternion_to_rotation(q.x, q.y, q.z, q.w)[:, 2]
+        nodes.append(nodes[-1] + self.robot_tip_offset_m * z_axis)
+        return np.asarray(nodes)
 
     def torso_ok(self, pose_landmarks):
         """Torso check of the validator on shoulders and hips in the base frame."""
