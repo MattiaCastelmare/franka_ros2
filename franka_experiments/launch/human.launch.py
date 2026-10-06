@@ -18,27 +18,70 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Pyth
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from rclpy.serialization import deserialize_message
+from rosbag2_py import ConverterOptions, SequentialReader, StorageFilter, StorageOptions
+from tf2_msgs.msg import TFMessage
 
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.ros import (
-    declare_robot_args,
-    declare_rt_blender_args,
-    load_franka_config_defaults,
-    load_launch_defaults,
-    pick_controllers_yaml,
-    resolve_controller_manager_name,
+    declare_robot_args, declare_rt_blender_args,
+    load_franka_config_defaults, load_launch_defaults,
+    pick_controllers_yaml, resolve_controller_manager_name,
 )
 
 DEFAULT_BAG_PATH = '/bags/varied'
 
-# Caricamento dei default per il robot (necessari per la parte real)
+# Loading default values for the robot
 _LAUNCH_DEFAULTS, _LAUNCH_DEFAULTS_PATH = load_launch_defaults()
 _BRINGUP_DEFAULTS, _CONFIG_PATH = load_franka_config_defaults()
 _DEFAULTS = {**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}
 
+# Camera frame of the tracker; the bags also carry the RealSense-internal parent of it
+# (camera_color_frame), not connected to the robot, which must not reach /tf_static
+_CAMERA_FRAME = 'camera_color_optical_frame'
+
+
+def _static_tf_node(name, parent, child, translation, rotation, use_sim_time):
+    return Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name=name,
+        arguments=[
+            '--x', str(translation[0]), '--y', str(translation[1]), '--z', str(translation[2]),
+            '--qx', str(rotation[0]), '--qy', str(rotation[1]),
+            '--qz', str(rotation[2]), '--qw', str(rotation[3]),
+            '--frame-id', parent, '--child-frame-id', child,
+        ],
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='log',
+    )
+
+
+def bag_static_transforms(bag_path):
+    """Static transforms recorded in a bag: {child: (parent, translation, rotation)}."""
+    reader = SequentialReader()
+    reader.open(StorageOptions(uri=bag_path, storage_id=''), ConverterOptions('', ''))
+    reader.set_filter(StorageFilter(topics=['/tf_static']))
+    transforms = {}
+    while reader.has_next():
+        _, data, _ = reader.read_next()
+        for tf in deserialize_message(data, TFMessage).transforms:
+            t, q = tf.transform.translation, tf.transform.rotation
+            transforms.setdefault(tf.child_frame_id, []).append(
+                (tf.header.frame_id, (t.x, t.y, t.z), (q.x, q.y, q.z, q.w)))
+    return transforms
+
 
 def create_bag_player(context):
-    """Create the same rosbag playback process if real:=false"""
+    """Replay the bag if real:=false, with the camera calibration it was recorded with.
+
+    The bag's /tf_static is diverted: in it the camera frame has two parents (the robot
+    base and the RealSense driver's own frames), and which one TF keeps decides whether
+    the tracker can place the camera at all. The camera (re-parented to fr3_link0; in the
+    bags base == fr3_link0) and fr3_link8 are republished from it instead; the
+    camera_extrinsics.yaml of today would be wrong for a bag recorded before the latest
+    calibration.
+    """
     is_real = LaunchConfiguration('real').perform(context).lower() in ('true', '1', 'yes', 'on')
     if is_real:
         return []
@@ -49,13 +92,48 @@ def create_bag_player(context):
     if not bag_path:
         return [LogInfo(msg='bag_path is empty: rosbag was not started.')]
 
-    return [ExecuteProcess(
+    actions = []
+    statics = bag_static_transforms(bag_path)
+    camera = [tf for tf in statics.get(_CAMERA_FRAME, []) if tf[0] in ('base', 'fr3_link0')]
+    if camera:
+        _, translation, rotation = camera[-1]
+        actions.append(_static_tf_node(
+            'bag_camera_tf', 'fr3_link0', _CAMERA_FRAME, translation, rotation, True))
+        actions.append(LogInfo(msg=f'[human] camera from the bag: t={translation}'))
+    else:
+        actions.append(LogInfo(msg='[human] no camera transform in the bag: camera_extrinsics.yaml'))
+        actions.append(_camera_tf_from_extrinsics(True))
+    for parent, translation, rotation in statics.get('fr3_link8', [])[-1:]:
+        actions.append(_static_tf_node(
+            'bag_link8_tf', parent, 'fr3_link8', translation, rotation, True))
+
+    actions.append(ExecuteProcess(
         cmd=[
             'ros2', 'bag', 'play', bag_path,
-            '--loop', '--clock', '100.0', '--read-ahead-queue-size', '1000'
+            '--loop', '--clock', '100.0', '--read-ahead-queue-size', '1000',
+            '--remap', '/tf_static:=/bag/tf_static',
         ],
         output='screen',
-    )]
+    ))
+    return actions
+
+
+def _camera_tf_from_extrinsics(use_sim_time):
+    """fr3_link0 -> camera from today's calibration (config/camera_extrinsics.yaml)."""
+    extrinsics = load_robot_config(os.path.join(
+        get_package_share_directory('franka_experiments'), 'config', 'camera_extrinsics.yaml'))
+    t, r = extrinsics['translation'], extrinsics['rotation']
+    return _static_tf_node(
+        'fr3_to_camera_link', 'fr3_link0', _CAMERA_FRAME,
+        (t['x'], t['y'], t['z']), (r['x'], r['y'], r['z'], r['w']), use_sim_time)
+
+
+def create_camera_tf(context):
+    """Camera TF on the real robot (real:=false takes it from the bag, see create_bag_player)."""
+    is_real = LaunchConfiguration('real').perform(context).lower() in ('true', '1', 'yes', 'on')
+    publish = LaunchConfiguration('publish_camera_tf').perform(context).lower() in (
+        'true', '1', 'yes', 'on')
+    return [_camera_tf_from_extrinsics(False)] if is_real and publish else []
 
 
 def _launch_real_robot(context):
@@ -176,20 +254,11 @@ def _launch_real_robot(context):
 
 def generate_launch_description():
     package_share = get_package_share_directory('franka_experiments')
-    camera_link_extrinsics_path = os.path.join(
-        package_share,
-        'config',
-        'camera_extrinsics.yaml',
-    )
     rviz_config_path = os.path.join(
         package_share,
         'config',
         'human.rviz',
     )
-
-    extrinsics = load_robot_config(camera_link_extrinsics_path)
-    translation = extrinsics['translation']
-    rotation = extrinsics['rotation']
 
     rosbag_record = LaunchConfiguration('rosbag_record')
     run_name = LaunchConfiguration('run_name')
@@ -205,28 +274,6 @@ def generate_launch_description():
         "'/NS_1/franka/joint_states' if '", real,
         "'.lower() in ['true', '1', 'yes', 'on'] else '/NS_1/joint_states'",
     ])
-
-    publish_camera_tf = LaunchConfiguration('publish_camera_tf')
-
-    camera_tf = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='fr3_to_camera_link',
-        condition=IfCondition(publish_camera_tf),
-        arguments=[
-            '--x', str(translation['x']),
-            '--y', str(translation['y']),
-            '--z', str(translation['z']),
-            '--qx', str(rotation['x']),
-            '--qy', str(rotation['y']),
-            '--qz', str(rotation['z']),
-            '--qw', str(rotation['w']),
-            '--frame-id', 'fr3_link0',
-            '--child-frame-id', 'camera_color_optical_frame',
-        ],
-        parameters=[{'use_sim_time': use_sim_time}],
-        output='screen',
-    )
 
     tracker = Node(
         package='franka_experiments',
@@ -280,7 +327,7 @@ def generate_launch_description():
         condition=IfCondition(rosbag_record),
         cmd=[
             'ros2', 'bag', 'record',
-            '-o', ['experiment_bags/', run_name],
+            '-o', ['recorded_bags/', run_name],
             '/NS_1/joint_states',
             '/NS_1/franka/joint_states',
             '/camera/camera/aligned_depth_to_color/camera_info',
@@ -302,7 +349,7 @@ def generate_launch_description():
 
     camera_tf_delayed = TimerAction(
         period=4.0,
-        actions=[camera_tf]
+        actions=[OpaqueFunction(function=create_camera_tf)]
     )
 
     return LaunchDescription(
@@ -312,7 +359,8 @@ def generate_launch_description():
             DeclareLaunchArgument('real', default_value='true', description='True for real robot, False for simulation with bag'),
             DeclareLaunchArgument('rosbag_record', default_value='false'),
             DeclareLaunchArgument('bag_path', default_value=DEFAULT_BAG_PATH),
-            DeclareLaunchArgument('publish_camera_tf', default_value='true'),
+            DeclareLaunchArgument('publish_camera_tf', default_value='true',
+                                  description='real:=true only: publish config/camera_extrinsics.yaml'),
             DeclareLaunchArgument('run_name', default_value=default_run_name),
             DeclareLaunchArgument('control_spawner_delay_s', default_value=str(_DEFAULTS.get('control_spawner_delay_s', '10.0'))),
             DeclareLaunchArgument('use_torque_controller', default_value=str(_DEFAULTS.get('use_torque_controller', 'true'))),
