@@ -117,3 +117,5 @@ human_visualizer:
   smoothing_tau_s: 0.05        # Ignored when sync_to_landmarks is true
   sync_to_landmarks: true      # Draw on the frame MediaPipe processed (aligned, slightly delayed video)
   draw_labels: true
+  draw_prediction: true        # red ghosts of the constant-velocity prediction (as in RViz)
+  prediction_steps_2d: 5       # ghosts drawn: up to 5 x prediction_dt = 0.5 s ahead

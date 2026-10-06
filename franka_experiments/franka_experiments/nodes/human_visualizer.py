@@ -3,7 +3,8 @@
 
 The 2D overlay shows the arm as the tracker uses it, like the 3D markers: only the
 keypoints valid in the arm state, filled where measured in that frame (MediaPipe's
-pixel), hollow where only predicted by the Kalman filter (its estimate projected).
+pixel), hollow where only predicted by the Kalman filter (its estimate projected),
+under the fading red ghosts of the constant-velocity prediction (draw_prediction).
 With sync_to_landmarks the overlay is drawn on the newest camera frame the tracker
 has published a state for (constant delay, landmarks aligned with the image).
 Otherwise it renders the newest frame, with landmarks held for short dropouts
@@ -37,9 +38,9 @@ from franka_msgs.msg import HumanArmState, MultiLinkDistance, HumanArmPrediction
 
 from franka_experiments.utils.distance_utils import load_robot_config
 from franka_experiments.utils.human_utils import (
-    draw_tracked_arm, extract_human_keypoints, landmarks_are_recent, project_to_pixel,
-    stamp_to_ns, tracked_arm_pixels, update_display_points, quaternion_to_rotation,
-    format_topic,
+    draw_predicted_arm, draw_tracked_arm, extract_human_keypoints, landmarks_are_recent,
+    predict_future_positions, project_to_pixel, stamp_to_ns, tracked_arm_pixels,
+    update_display_points, quaternion_to_rotation, format_topic,
 )
 
 
@@ -74,6 +75,12 @@ class HumanArmVisualizer(Node):
         self.landmark_hold_s = max(0.0, float(config['landmark_hold_s']))
         self.smoothing_tau_s = max(0.0, float(config['smoothing_tau_s']))
         self.draw_labels = bool(config['draw_labels'])
+        # Red ghosts of the tracker's constant-velocity prediction, as the 3D markers
+        self.draw_prediction = bool(config['draw_prediction'])
+        self.prediction_dt = float(tracker_config['prediction_dt'])
+        # Only the nearest ghosts on the 2D overlay (the tracker still predicts all its steps)
+        self.prediction_steps = min(int(tracker_config['prediction_steps']),
+                                    int(config['prediction_steps_2d']))
         # Draw on the frame the landmarks were detected on, not the newest one
         self.sync_to_landmarks = bool(config.get('sync_to_landmarks', True))
 
@@ -497,6 +504,21 @@ class HumanArmVisualizer(Node):
         positions, _, valid = extract_human_keypoints(state)
         return [self._project(p) if valid[i] else None for i, p in enumerate(positions)]
 
+    def prediction_pixels(self, state: HumanArmState):
+        """Per step of the prediction, the projection of each valid keypoint (None if not).
+
+        Computed from the arm state as the tracker does (constant velocity): the ghosts belong
+        to the drawn frame, while the prediction topic may still hold the previous one.
+        """
+        positions, velocities, valid = extract_human_keypoints(state)
+        future = [
+            predict_future_positions(positions[i], velocities[i], self.prediction_dt,
+                                     self.prediction_steps) if valid[i] else None
+            for i in range(len(valid))
+        ]
+        return [[None if f is None else self._project(f[step]) for f in future]
+                for step in range(self.prediction_steps)]
+
     def _draw_distance_line(self, image: np.ndarray, image_stamp_ns: int) -> None:
         """Projects and draws the shortest geometric distance on the 2D overlay."""
         if self.fx is None or not self.camera_frame:
@@ -574,6 +596,8 @@ class HumanArmVisualizer(Node):
                     self.target_points[side], self.display_points[side], tau, self.max_hz, self.last_render_monotonic_ns[side]
                 )
                 landmark_px = self.display_points[side]
+            if self.draw_prediction:
+                draw_predicted_arm(image, self.prediction_pixels(state), self.scale)
             drawn[side] = tracked_arm_pixels(
                 landmark_px, state.measured, state.keypoint_valid, self.predicted_pixels(state))
             draw_tracked_arm(image, drawn[side], self.LANDMARK_NAMES, self.scale, self.draw_labels)

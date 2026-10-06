@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from franka_experiments.utils.human_utils import (
-    draw_tracked_arm, project_to_pixel, tracked_arm_pixels,
+    draw_predicted_arm, draw_tracked_arm, project_to_pixel, tracked_arm_pixels,
 )
 
 LANDMARKS = np.array([[100.0, 50.0], [110.0, 80.0], [120.0, 110.0], [125.0, 120.0]])
@@ -50,3 +50,19 @@ def test_predicted_keypoint_is_hollow_measured_is_filled():
     draw_tracked_arm(image, keypoints, ('shoulder', 'elbow', 'wrist', 'index'), 1.0, False)
     assert image[40, 40].any()                            # filled centre
     assert not image[140, 140].any() and image[140, 146].any()   # ring only
+
+
+def test_prediction_ghosts_fade_with_the_horizon_and_skip_invalid_keypoints():
+    image = np.zeros((200, 200, 3), dtype=np.uint8)
+    steps = [
+        [(40.0, 40.0), (60.0, 40.0), None, None],     # +1 step: strongest
+        [(40.0, 120.0), (60.0, 120.0), None, None],   # +3 steps: faint
+        [(40.0, 120.0), (60.0, 120.0), None, None],
+        [None, None, None, None],                     # nothing valid: skipped
+        [(500.0, 500.0), None, None, None],           # outside the frame: skipped
+    ]
+    draw_predicted_arm(image, steps, 1.0)
+    near, far = image[40, 50], image[120, 50]         # on each ghost's segment
+    assert near[2] > far[2] > 0                       # red, fading
+    assert near[0] == near[1] == 0                    # pure red over black
+    assert image[160:, :].sum() == 0 and image[:, 100:].sum() == 0

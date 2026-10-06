@@ -518,6 +518,7 @@ def tracked_arm_pixels(landmark_px, measured, valid, predicted_px):
     in this frame at its MediaPipe pixel, one only predicted by the Kalman filter at the
     projection of its estimate (MediaPipe's pixel for it is a guess). Returns, per keypoint,
     None or ((u, v), measured).
+
     landmark_px: (4, 2) MediaPipe pixels or None; measured, valid: from HumanArmState;
     predicted_px: per keypoint the projected estimate or None.
     """
@@ -563,3 +564,37 @@ def draw_tracked_arm(image, keypoints, landmark_names, scale, draw_labels):
     for first, second in zip(points[:-1], points[1:]):
         if first is not None and second is not None:
             cv2.line(image, first, second, (0, 255, 255), thickness)
+
+
+def draw_predicted_arm(image, steps, scale, color=(0, 0, 255)):
+    """Ghost arms of the constant-velocity prediction, fading with the horizon as in RViz.
+
+    steps: per prediction step, the pixel (u, v) of each keypoint or None. Each ghost is
+    alpha-blended over its bounding box only, so the cost does not grow with the frame size.
+    """
+    radius = max(2, int(round(5 * scale)))
+    thickness = max(1, int(round(3 * scale)))
+    margin = radius + thickness
+    height, width = image.shape[:2]
+    for step in reversed(range(len(steps))):   # nearest ghost drawn last, on top
+        alpha = max(0.05, 0.4 - 0.15 * step)
+        points = [None if p is None else (int(round(p[0] * scale)), int(round(p[1] * scale)))
+                  for p in steps[step]]
+        drawn = [p for p in points if p is not None]
+        if not drawn:
+            continue
+        xs, ys = zip(*drawn)
+        x0, y0 = max(0, min(xs) - margin), max(0, min(ys) - margin)
+        x1, y1 = min(width, max(xs) + margin + 1), min(height, max(ys) + margin + 1)
+        if x0 >= x1 or y0 >= y1:
+            continue
+        roi = image[y0:y1, x0:x1]
+        layer = roi.copy()
+        local = [None if p is None else (p[0] - x0, p[1] - y0) for p in points]
+        for first, second in zip(local[:-1], local[1:]):
+            if first is not None and second is not None:
+                cv2.line(layer, first, second, color, thickness, cv2.LINE_AA)
+        for point in local:
+            if point is not None:
+                cv2.circle(layer, point, radius, color, -1, cv2.LINE_AA)
+        cv2.addWeighted(layer, alpha, roi, 1.0 - alpha, 0.0, dst=roi)
