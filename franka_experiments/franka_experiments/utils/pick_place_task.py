@@ -14,6 +14,7 @@ where p'(s), p''(s) are the timed trajectory's velocity and acceleration.
 
 from __future__ import annotations
 
+import math
 from typing import List, Tuple
 import numpy as np
 
@@ -186,3 +187,45 @@ class TaskClock:
             self.s_ddot = delta / dt
         self.s += self.s_dot * dt
         return self.s, self.s_dot, self.s_ddot
+
+
+class PhaseStats:
+    """Scalar tracking statistics accumulated over one phase (or one cycle), for the log only."""
+
+    def __init__(self) -> None:
+        self.reset(0.0)
+
+    def reset(self, t0: float) -> None:
+        self.t0 = t0
+        self.n = 0
+        self.e_max = 0.0
+        self.e_sq = 0.0
+        self.e_last = 0.0
+        self.rot_max = 0.0
+        self.sdot_min = 1.0
+        self.w_min = math.inf
+        self.sat_n = 0
+        self.scale_min = 1.0
+        self.soft_n = 0
+        self.hard_n = 0
+        self.stale_n = 0
+
+    def update(self, e: float, rot: float, s_dot: float, w: float, scale: float) -> None:
+        self.n += 1
+        self.e_max = max(self.e_max, e)
+        self.e_sq += e * e
+        self.e_last = e
+        self.rot_max = max(self.rot_max, rot)
+        self.sdot_min = min(self.sdot_min, s_dot)
+        self.w_min = min(self.w_min, w)
+        if scale < 1.0:
+            self.sat_n += 1
+            self.scale_min = min(self.scale_min, scale)
+
+    @property
+    def e_rms(self) -> float:
+        return math.sqrt(self.e_sq / self.n) if self.n else 0.0
+
+    @property
+    def sat_pct(self) -> float:
+        return 100.0 * self.sat_n / self.n if self.n else 0.0

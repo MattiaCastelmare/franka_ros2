@@ -34,7 +34,6 @@ import math
 import threading
 import time
 from typing import List, Optional
-
 import numpy as np
 import pinocchio as pin
 
@@ -61,7 +60,7 @@ from franka_experiments.utils.kinematics import (
 from sensor_msgs.msg import JointState as SensorJointState
 from franka_experiments.utils.math_utils import cosine_ramp
 from franka_experiments.utils.logging_utils import ThrottledLogger, vec_to_str
-from franka_experiments.utils.pick_place_task import PickPlaceTrajectory, TaskClock
+from franka_experiments.utils.pick_place_task import PhaseStats, PickPlaceTrajectory, TaskClock
 
 
 class PickPlaceQddotCommander(Node):
@@ -241,6 +240,17 @@ class PickPlaceQddotCommander(Node):
         self._qdot_drift     = np.zeros(NUM_JOINTS)  # ∫ published q̈ dt since the last joint state
         self._seen_js_ns     = -1
 
+        # Diagnostics (log only): per-phase / per-cycle stats and edge-triggered events
+        self._ph_stats       = PhaseStats()
+        self._cyc_stats      = PhaseStats()
+        self._phase_nominal: dict = {}
+        self._in_hard_reset  = False
+        self._clock_stalled  = False
+        self._clock_stall_t  = 0.0
+        self._near_sing      = False
+        self._js_stale       = False
+        self._js_stale_t     = 0.0
+
         # Messages
         self._sp_msg         = SensorJointState()
         self._sp_msg.name    = list(FR3_JOINT_NAMES)
@@ -402,9 +412,19 @@ class PickPlaceQddotCommander(Node):
 
         if not js_fresh:
             self._publish_brake(js, actual_dt)
-            if self._tlog.due(t):
+            self._ph_stats.stale_n += 1
+            self._cyc_stats.stale_n += 1
+            if not self._js_stale:
+                self._js_stale = True
+                self._js_stale_t = t
+                self.get_logger().warn(
+                    f'JS stale {js_age:.3f}s (> {self.js_timeout_s:.3f}s) in {self._last_phase}: braking')
+            elif self._tlog.due(t):
                 self.get_logger().warn(f'JS stale {js_age:.3f}s: braking')
             return
+        if self._js_stale:
+            self._js_stale = False
+            self.get_logger().info(f'JS fresh again after {t - self._js_stale_t:.2f}s outage')
 
         np.copyto(self._q_full, js['q_full'])
         self._qdot_full[:] = 0.0
@@ -450,7 +470,16 @@ class PickPlaceQddotCommander(Node):
             phase = "STARTUP_RAMP"
 
         if phase != self._last_phase:
-            self.get_logger().info(f'Cycle {cycle + 1} | phase: {phase}')
+            if self._last_phase is not None:
+                self._log_phase_summary(task_t)
+            self._ph_stats.reset(task_t)
+            if cycle != self._last_cycle:
+                if self._last_cycle >= 0:
+                    self._log_cycle_summary(task_t)
+                self._cyc_stats.reset(task_t)
+            self.get_logger().info(
+                f'Cycle {cycle + 1} | phase: {phase} '
+                f'(nominal {self._phase_nominal.get(phase, 0.0):.2f}s, s={s:.2f})')
             self._last_phase = phase
             self._phase_pub.publish(String(data=phase))
         if cycle != self._last_cycle:
@@ -486,7 +515,15 @@ class PickPlaceQddotCommander(Node):
         w = math.sqrt(max(0.0, float(np.linalg.det(self._JJT))))
         f_w = (1.0 - w / self._manip_thr) ** 2 if w < self._manip_thr else 0.0
         self._lambda_sq = self._lambda_sq_min + (self._lambda_sq_max - self._lambda_sq_min) * f_w
-        
+        if w < self._manip_thr and not self._near_sing:
+            self._near_sing = True
+            self.get_logger().warn(
+                f'Near singularity in {phase}: w={w:.4f} < {self._manip_thr:.4f}, '
+                f'DLS lambda²={self._lambda_sq:.2e}')
+        elif w > 1.1 * self._manip_thr and self._near_sing:
+            self._near_sing = False
+            self.get_logger().info(f'Singularity cleared in {phase}: w={w:.4f}')
+
         np.copyto(self._JJT_reg, self._JJT)
         for i in range(6):
             self._JJT_reg[i, i] += self._lambda_sq
@@ -537,10 +574,38 @@ class PickPlaceQddotCommander(Node):
         if ee_err > self.hard_reset_thr:
             np.copyto(self._q_d,  js['q'])
             np.copyto(self._dq_d, qdot)
+            self._ph_stats.hard_n += 1
+            self._cyc_stats.hard_n += 1
+            if not self._in_hard_reset:
+                self._in_hard_reset = True
+                self.get_logger().warn(
+                    f'HARD RESET in {phase}: e_pos={ee_err * 1e3:.1f}mm > {self.hard_reset_thr * 1e3:.1f}mm, '
+                    f'p_ee=[{vec_to_str(self._p_ee, ".3f")}] p_des=[{vec_to_str(p_des, ".3f")}]')
         elif ee_err > self.soft_reset_thr:
             a = self.soft_reset_alpha
             self._q_d  *= a; self._q_d  += (1.0 - a) * js['q']
             self._dq_d *= a; self._dq_d += (1.0 - a) * qdot
+            self._ph_stats.soft_n += 1
+            self._cyc_stats.soft_n += 1
+        if self._in_hard_reset and ee_err <= self.soft_reset_thr:
+            self._in_hard_reset = False
+            self.get_logger().info(f'Tracking recovered in {phase}: e_pos={ee_err * 1e3:.1f}mm')
+
+        # Task clock stall (reference waiting for the robot), with hysteresis
+        if task_t > self.ramp_s:
+            if s_dot < 0.1 and not self._clock_stalled:
+                self._clock_stalled = True
+                self._clock_stall_t = task_t
+                self.get_logger().warn(
+                    f'Task clock stalled in {phase}: s_dot={s_dot:.2f}, e_pos={ee_err * 1e3:.1f}mm')
+            elif s_dot > 0.9 and self._clock_stalled:
+                self._clock_stalled = False
+                self.get_logger().info(
+                    f'Task clock resumed in {phase} after {task_t - self._clock_stall_t:.2f}s')
+
+        rot_deg = math.degrees(float(np.linalg.norm(self._e_rot)))
+        self._ph_stats.update(ee_err, rot_deg, s_dot, w, scale)
+        self._cyc_stats.update(ee_err, rot_deg, s_dot, w, scale)
 
         # Publish qddot output for the safety filter
         self._publish_qddot(self._q_ddot, actual_dt)
@@ -591,11 +656,41 @@ class PickPlaceQddotCommander(Node):
         
         np.copyto(self._q_home, self._q_home_cfg)
 
+        self._phase_nominal = {p.name: p.duration for p in self.trajectory.phases}
+        self._phase_nominal['STARTUP_RAMP'] = self.ramp_s
+
         self.clock.reset()
         self._ee_err = 0.0
         self._task_start = self.get_clock().now()
         self._running = True
-        self.get_logger().info(f'Pick & Place trajectory started at home: {vec_to_str(home)}')
+        self.get_logger().info(
+            f'Pick & Place trajectory started at home: {vec_to_str(home)} '
+            f'(cycle {self.trajectory.cycle_time:.2f}s nominal)')
+
+    def _log_phase_summary(self, task_t: float) -> None:
+        """One line for the phase that just ended; WARN if anything abnormal happened in it."""
+        st = self._ph_stats
+        dur = task_t - st.t0
+        nom = self._phase_nominal.get(self._last_phase, 0.0)
+        stretch = dur / nom if nom > 0.0 else 1.0
+        msg = (f'  └ {self._last_phase} done: {dur:.2f}s (nom {nom:.2f}s, x{stretch:.2f}) | '
+               f'e_pos max/rms/end={st.e_max * 1e3:.1f}/{st.e_rms * 1e3:.1f}/{st.e_last * 1e3:.1f}mm '
+               f'e_rot max={st.rot_max:.2f}deg | s_dot min={st.sdot_min:.2f} | w min={st.w_min:.4f} | '
+               f'qdd sat={st.sat_pct:.0f}% (scale min {st.scale_min:.2f}) | '
+               f'reset soft/hard={st.soft_n}/{st.hard_n} | stale={st.stale_n}')
+        if st.hard_n or st.stale_n or stretch > 1.5:
+            self.get_logger().warn(msg)
+        else:
+            self.get_logger().info(msg)
+
+    def _log_cycle_summary(self, task_t: float) -> None:
+        st = self._cyc_stats
+        dur = task_t - st.t0
+        nom = self.trajectory.cycle_time
+        self.get_logger().info(
+            f'=== Cycle {self._last_cycle + 1} done: {dur:.2f}s (nom {nom:.2f}s, x{dur / nom:.2f}) | '
+            f'e_pos max/rms={st.e_max * 1e3:.1f}/{st.e_rms * 1e3:.1f}mm e_rot max={st.rot_max:.2f}deg | '
+            f'qdd sat={st.sat_pct:.0f}% | reset soft/hard={st.soft_n}/{st.hard_n} | stale={st.stale_n} ===')
 
 
 def main(args=None):
