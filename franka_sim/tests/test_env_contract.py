@@ -17,6 +17,7 @@ ROS-free, plain pytest (see §8 gotcha 7 — franka_sim has no package.xml):
         python3 -m pytest franka_sim/tests -q
 """
 
+import copy
 import os
 
 import numpy as np
@@ -366,3 +367,47 @@ def test_path_clearance_is_a_distance_to_the_segment(env):
     assert off_path > on_path + 0.10, (
         f'a sideways obstacle ({off_path:.3f} m) must score well above one on '
         f'the path ({on_path:.3f} m)')
+
+
+# ── Target feasibility (constrained IK, task.target_ik_check) ────────────────
+
+def _ik_env(**task):
+    cfg = copy.deepcopy(_shipped_config())
+    cfg['obstacle']['mode'] = 'static'; cfg['obstacle']['static_fraction'] = 0.0
+    cfg.setdefault('cbf', {})['floor_enable'] = True
+    cfg.setdefault('task', {}).update({'target_ik_check': True, **task})
+    return FrankaCBFEnv(config=cfg)
+
+
+def test_ik_check_rejects_a_measured_infeasible_target():
+    """Held-out static seed 3001 (2026-10-02): no ensemble and none of 50 models
+    held it; the obstacle is 0.287 m from the target, above target_clearance,
+    yet with every control point at d >= d_safe the TCP gets no closer than
+    ~59 mm (tol 50). Seed 3023 has the obstacle even closer (0.261 m) and is
+    reachable, so the check must not reduce to a distance threshold."""
+    env = _ik_env()
+    try:
+        env.reset(seed=0)
+        infeasible = (np.array([0.595, 0.321, 0.269]), np.array([0.354, 0.192, 0.355]))
+        feasible = (np.array([0.319, 0.314, 0.258]), np.array([0.404, 0.371, 0.499]))
+        assert not env._target_ik_feasible(infeasible[0], infeasible[1], np.zeros(3))
+        assert env._target_ik_feasible(feasible[0], feasible[1], np.zeros(3))
+        # an obstacle far from the target never reaches the IK at all
+        assert env._target_ik_feasible(feasible[0], env.obs_box_max, np.zeros(3))
+    finally:
+        env.close()
+
+
+def test_ik_check_leaves_the_env_state_and_rng_alone():
+    """The check runs on a private MjData and its own starts: an accepted draw
+    must be the same episode with the check on or off."""
+    on, off = _ik_env(), _ik_env(target_ik_check=False)
+    try:
+        for seed in SEEDS:
+            on.reset(seed=seed); off.reset(seed=seed)
+            if on.ik_rejects == 0:
+                assert np.allclose(on._target, off._target)
+                assert np.allclose(on.data.qpos, off.data.qpos)
+            on.ik_rejects = 0
+    finally:
+        on.close(); off.close()

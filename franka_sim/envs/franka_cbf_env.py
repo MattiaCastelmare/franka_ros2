@@ -44,6 +44,20 @@ ARM_JOINTS = [f'fr3_joint{i}' for i in range(1, 8)]
 NV = 7
 
 
+def precision_bonus(rw: dict, dist: float):
+    """reward.w_prec · (1 − tanh(dist / prec_scale)): a steep bonus near the target.
+
+    -w_dist·dist has a slope of 1 /m, so a policy parked 6 cm from the target
+    (just outside target_tol) loses almost nothing against one at 4 cm; this
+    term has slope w_prec/prec_scale there. It depends on dist alone, so
+    train.py can relabel an old replay buffer from next_obs. Works on arrays.
+    """
+    w = float(rw.get('w_prec', 0.0))
+    if w == 0.0:
+        return 0.0
+    return w * (1.0 - np.tanh(dist / float(rw.get('prec_scale', 0.05))))
+
+
 def _load_config(config) -> dict:
     if isinstance(config, dict):
         return config
@@ -77,6 +91,14 @@ class FrankaCBFEnv(gym.Env):
         # Obstacle-avoidance rows on/off (hard state-limit + workspace box always
         # stay on). False = ablation baseline: shield without obstacle CBF.
         self.cbf_obstacle_enabled = bool(env_c.get('cbf_obstacle_enabled', True))
+        # Shield mixing (b4): when set, each episode draws the obstacle rows ON
+        # with this probability and overrides cbf_obstacle_enabled. A shield-off
+        # fine-tune keeps meeting shielded episodes, where the policy still
+        # practises reaching past obstacles it has not yet learned to avoid.
+        # The policy is not told which kind of episode it is in. None = off
+        # (no extra RNG draw → existing seeds replay bit-identically).
+        _p_on = env_c.get('cbf_obstacle_on_prob')
+        self.cbf_obstacle_on_prob = None if _p_on is None else float(_p_on)
         # Viewer playback rate: 1.0 = wall-clock real time, 0.5 = half speed for
         # a closer look, 2.0 = fast-forward. Visualisation only.
         self.render_speed = float(env_c.get('render_speed', 1.0))
@@ -108,6 +130,16 @@ class FrankaCBFEnv(gym.Env):
         # Obstacle sphere radius (geom size) — used for the surface distance.
         og = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'obstacle_geom')
         self.r_obs = float(self.model.geom_size[og, 0])
+        self._floor_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
+        self._floor_pts = []
+        self._base_pts = []
+        # Finger collision geoms: the hand control-point sphere does not reach
+        # the fingertips, so they get their own floor rows (bounding radius).
+        self._finger_geoms = [
+            g for g in range(self.model.ngeom)
+            if (mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, g) or '')
+            .endswith('finger_collision')]
+        self._prev_finger_J = {}
         # The MJCF is authoritative, but the deployment node (rl_policy_commander)
         # cannot parse it — it reads `obstacle.radius` from this same config to
         # rebuild the observation's obstacle slot. A silent divergence would shift
@@ -195,6 +227,11 @@ class FrankaCBFEnv(gym.Env):
         self.q_init_noise   = float(task_c.get('q_init_noise', 0.05))
 
         self.obs_mode   = str(obs_c.get('mode', 'sinusoidal'))
+        # Per-episode mix: this fraction of episodes uses a STATIC obstacle, the
+        # rest the configured mode. 0 leaves the RNG stream (and every existing
+        # run) unchanged.
+        self._obs_mode_cfg = self.obs_mode
+        self.static_fraction = float(obs_c.get('static_fraction', 0.0))
         self.obs_box_min = np.array(obs_c.get('box_min', [0.30, -0.40, 0.30]))
         self.obs_box_max = np.array(obs_c.get('box_max', [0.65, 0.40, 0.70]))
         self.obs_amp    = float(obs_c.get('amplitude', 0.30))
@@ -219,6 +256,13 @@ class FrankaCBFEnv(gym.Env):
         # therefore required NO avoidance at all and scored "can it reach a
         # target", which is not what this environment is for.
         self.blocking_fraction = float(task_c.get('blocking_fraction', 0.0))
+        # Targeted curriculum (v12): with probability hard_fraction the target
+        # is drawn LOW (z ≤ hard_target_z_max) and the episode must be a
+        # blocking one — the geometry where v11 still failed most (static,
+        # z < 0.35 m: 41 % lost vs 7-12 % higher up). Unlike raising
+        # obstacle.static_fraction it leaves the static/moving mix untouched.
+        self.hard_fraction = float(task_c.get('hard_fraction', 0.0))
+        self.hard_target_z_max = float(task_c.get('hard_target_z_max', 0.35))
         # [m] how close the sweep must come to the path to count as blocking.
         # None → r_obs + d_safe, i.e. "the barrier would engage on the direct
         # route", which is exactly the condition that forces a detour.
@@ -233,6 +277,45 @@ class FrankaCBFEnv(gym.Env):
         self.reset_fallbacks = 0
         #: Phases used to test whether a target is blocked at EVERY sweep phase.
         self._phases = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+        # [m] obstacle-centre → target distance below which the target counts
+        # as blocked. None → r_obs + d_safe (the historical rule). That rule
+        # ignores the hand control point (radius 0.13 at the hand origin,
+        # ~0.10 m behind the TCP): holding the TCP on the target actually needs
+        # ~r_obs + d_safe + r_hand − 0.10 ≈ 0.26 m, so targets between 0.23 and
+        # 0.26 m were kept and are unreachable without driving h < 0.
+        _tc = task_c.get('target_clearance')
+        self.target_clearance = (float(_tc) if _tc is not None
+                                 else self.r_obs + float(self.cbf.d_safe))
+        # False → reject only targets blocked at EVERY phase (transiently
+        # blocked ones are kept: they can be touched but never held).
+        # True  → reject targets blocked at ANY phase, i.e. every target can be
+        # reached AND held for the whole episode.
+        self.target_free_always = bool(task_c.get('target_free_always', False))
+        # Constrained-IK feasibility of the target (see target_feasibility.py):
+        # target_clearance bounds the target POINT, but the barrier acts on the
+        # hand/elbow spheres, and 7 of the 400 held-out static episodes had no
+        # pose within target_tol with every sphere at d >= d_safe. OFF by
+        # default: it changes which episodes a seed draws, so every existing
+        # run and benchmark stays bit-identical while it is false.
+        self.target_ik_check = bool(task_c.get('target_ik_check', False))
+        # Only targets whose obstacle sweep comes within this distance [m] are
+        # checked; all 22 shared static failures sat at 0.26-0.29 m. None →
+        # target_clearance + 0.06.
+        _ig = task_c.get('ik_check_gate')
+        self.ik_check_gate = (float(_ig) if _ig is not None
+                              else self.target_clearance + 0.06)
+        # A target is feasible when some pose puts the TCP within this distance
+        # [m]. None → target_tol (the physical limit; 0.5·target_tol also drops
+        # the targets that are reachable only in a sliver of the tolerance ball).
+        _it = task_c.get('ik_check_tol')
+        self.ik_check_tol = float(_it) if _it is not None else self.target_tol
+        self.ik_check_starts = int(task_c.get('ik_check_starts', 8))
+        # Moving obstacle: at most this many sweep centres inside the gate are
+        # checked (closest first, >= 5 cm apart), each one separately.
+        self.ik_check_max_points = int(task_c.get('ik_check_max_points', 3))
+        self._target_ik = None
+        #: Draws rejected by the IK check.
+        self.ik_rejects = 0
 
         self.rw = rew_c  # dict of reward weights, read per-step
 
@@ -314,6 +397,14 @@ class FrankaCBFEnv(gym.Env):
     def _ee_pos(self):
         return self.data.site_xpos[self._ee_site].copy()
 
+    def _floor_contact(self):
+        """True when any robot geom touches the floor plane this step."""
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if self._floor_geom in (c.geom1, c.geom2):
+                return True
+        return False
+
     def _point_jac(self, body_id, point):
         """(3, NV) linear point Jacobian for the arm dofs at `point` on `body`."""
         jacp = np.zeros((3, self.model.nv))
@@ -341,6 +432,11 @@ class FrankaCBFEnv(gym.Env):
         # Rows are dropped when the direction is degenerate, but the geometry
         # block is positional, so every control point ALWAYS gets a row here.
         cp_geom = np.zeros((self._n_cp, CP_WIDTH))
+        # (z, r, Jz, J̇z q̇) per control point for the shield's floor rows,
+        # and (p, r, Jp, J̇p q̇) for the base keep-out rows.
+        self._floor_pts = []
+        self._base_pts = []
+        cp_pts = {}
         for i, bid in enumerate(self._cp_body):
             p_cp = self.data.xpos[bid].copy()
             diff = p_cp - p_obs
@@ -360,12 +456,32 @@ class FrankaCBFEnv(gym.Env):
             Jp = self._point_jac(bid, p_cp)
             a = n_hat @ Jp                                   # (NV,)
             # ċ = n̂ᵀ(J̇p q̇) via finite difference of the point Jacobian.
-            cdot = 0.0
+            jdq = np.zeros(3)
             if self._use_jdot and self._prev_a[i] is not None:
-                Jdot = (Jp - self._prev_a[i]) / self.dt
-                cdot = float(n_hat @ (Jdot @ qdot))
+                jdq = ((Jp - self._prev_a[i]) / self.dt) @ qdot
+            cdot = float(n_hat @ jdq)
             self._prev_a[i] = Jp
+            self._floor_pts.append((p_cp[2], self._cp_radius[i], Jp[2], jdq[2]))
+            cp_pts[self._cp_name[i]] = (p_cp, self._cp_radius[i], Jp, jdq)
             obstacles.append(Obstacle(self._cp_name[i], d, a, cdot))
+        for name in ('fr3_link4', 'fr3_link5', 'fr3_link6', 'fr3_link7', 'fr3_hand'):
+            if name in cp_pts:
+                self._base_pts.append(cp_pts[name])
+        # Forearm midpoint: link5's collision mesh spans link4 → link5 origins,
+        # and it is the forearm that hit the base.
+        if 'fr3_link4' in cp_pts and 'fr3_link5' in cp_pts:
+            a, b = cp_pts['fr3_link4'], cp_pts['fr3_link5']
+            self._base_pts.append((0.5 * (a[0] + b[0]), 0.08,
+                                   0.5 * (a[2] + b[2]), 0.5 * (a[3] + b[3])))
+        for g in self._finger_geoms:
+            p_g = self.data.geom_xpos[g].copy()
+            Jg = self._point_jac(int(self.model.geom_bodyid[g]), p_g)
+            jdq_z = 0.0
+            prev = self._prev_finger_J.get(g)
+            if self._use_jdot and prev is not None:
+                jdq_z = float(((Jg[2] - prev) / self.dt) @ qdot)
+            self._prev_finger_J[g] = Jg[2].copy()
+            self._floor_pts.append((p_g[2], float(self.model.geom_rbound[g]), Jg[2], jdq_z))
         # EE point + Jacobian for the hard workspace-box rows.
         ee_pos = self._ee_pos()
         ee_Jp = self._ee_jac()
@@ -574,8 +690,20 @@ class FrankaCBFEnv(gym.Env):
             d = min(d, gap - self.r_obs - self._cp_radius[i])
         return d
 
+    def _sweep_points(self, base, direction):
+        """Obstacle centres over one oscillation — a single point when static.
+
+        ``random_walk`` cannot be predicted, so its start point stands in.
+        """
+        if self.obs_mode in ('static', 'random_walk'):
+            return np.clip(np.asarray(base, float), self.obs_box_min,
+                           self.obs_box_max)[None, :]
+        return np.array([self._obstacle_at(p, base, direction)
+                         for p in self._phases])
+
     def _target_always_blocked(self, target, base, direction):
-        """True when the target is inside ``r_obs + d_safe`` at EVERY phase.
+        """True when the target is inside ``target_clearance`` at EVERY phase
+        (at ANY phase when ``task.target_free_always`` is set).
 
         Only the ALWAYS case is rejected. Measured over 20 000 draws: 41.6 % of
         targets are TRANSIENTLY blocked (the obstacle passes over them), and
@@ -584,11 +712,42 @@ class FrankaCBFEnv(gym.Env):
         and those cannot be reached without driving h < 0: pure reward noise,
         and a hard ceiling on the success rate.
         """
-        pts = np.clip(
-            base + self.obs_amp * np.sin(self._phases)[:, None] * direction,
-            self.obs_box_min, self.obs_box_max)
-        return bool(np.max(np.linalg.norm(pts - target, axis=1))
-                    < self.r_obs + self.cbf.d_safe)
+        dist = np.linalg.norm(self._sweep_points(base, direction) - target, axis=1)
+        worst = dist.min() if self.target_free_always else dist.max()
+        return bool(worst < self.target_clearance)
+
+    def _target_ik_feasible(self, target, base, direction):
+        """True unless constrained IK finds NO pose holding the TCP within
+        ik_check_tol of the target with every control point at d >= d_safe.
+
+        Only obstacle centres within ik_check_gate of the target are checked,
+        so the common case costs one distance computation.
+        """
+        pts = self._sweep_points(base, direction)
+        dist = np.linalg.norm(pts - target, axis=1)
+        near = np.argsort(dist)
+        near = near[dist[near] < self.ik_check_gate]
+        if near.size == 0:
+            return True
+        chosen = []
+        for i in near:
+            if all(np.linalg.norm(pts[i] - pts[j]) >= 0.05 for j in chosen):
+                chosen.append(i)
+            if len(chosen) >= self.ik_check_max_points:
+                break
+        if self._target_ik is None:
+            from .target_feasibility import TargetIK
+            cbf_c = self.cfg.get('cbf', {}) or {}
+            floor = ((self.cbf.floor_z, self.cbf.floor_margin)
+                     if self.cbf.floor_enable else None)
+            self._target_ik = TargetIK(
+                self.model, self.data.qpos.copy(), self._qadr, self._dadr, self._ee_site,
+                self._cp_body, self._cp_radius, self.r_obs, self.cbf.d_safe,
+                self.q_min, self.q_max, q_margin=float(cbf_c.get('position_margin_rad', 0.05)),
+                floor=floor, n_starts=self.ik_check_starts)
+        err = self._target_ik.min_error(target, pts[chosen], self.data.qpos[self._qadr].copy(),
+                                        self.ik_check_tol)
+        return err < self.ik_check_tol
 
     def _path_clearance(self, target, base, direction):
         """Closest approach of the obstacle SWEEP to the straight EE→target line.
@@ -601,8 +760,7 @@ class FrankaCBFEnv(gym.Env):
         """
         a = self._ee_pos()
         b = np.asarray(target, float)
-        pts = np.clip(base + self.obs_amp * np.sin(self._phases)[:, None] * direction,
-                      self.obs_box_min, self.obs_box_max)
+        pts = self._sweep_points(base, direction)
         ab = b - a
         L = float(ab @ ab)
         t = np.clip((pts - a) @ ab / max(L, 1e-12), 0.0, 1.0)
@@ -620,11 +778,16 @@ class FrankaCBFEnv(gym.Env):
         # draw is a Bernoulli over episodes rather than a bias inside the loop.
         want_block = (self.blocking_fraction > 0.0
                       and self._rng.random() < self.blocking_fraction)
+        tgt_max = self.target_box_max
+        if self.hard_fraction > 0.0 and self._rng.random() < self.hard_fraction:
+            want_block = True
+            tgt_max = self.target_box_max.copy()
+            tgt_max[2] = min(tgt_max[2], max(self.target_box_min[2], self.hard_target_z_max))
 
         best = None
         best_blocking = None
         for _ in range(self.reset_max_tries):
-            target = self._rng.uniform(self.target_box_min, self.target_box_max)
+            target = self._rng.uniform(self.target_box_min, tgt_max)
             base   = self._rng.uniform(self.obs_box_min, self.obs_box_max)
             v = self._rng.normal(0, 1, 3)
             n = float(np.linalg.norm(v))
@@ -640,6 +803,9 @@ class FrankaCBFEnv(gym.Env):
             if clearance < self.reset_min_clearance:
                 continue
             if self._target_always_blocked(target, base, direction):
+                continue
+            if self.target_ik_check and not self._target_ik_feasible(target, base, direction):
+                self.ik_rejects += 1
                 continue
 
             if want_block:
@@ -687,6 +853,12 @@ class FrankaCBFEnv(gym.Env):
         self.data.ctrl[self._act] = self._inverse_dynamics(np.zeros(NV))
         mujoco.mj_forward(self.model, self.data)
 
+        if self.static_fraction > 0.0:
+            self.obs_mode = ('static' if self._rng.random() < self.static_fraction
+                             else self._obs_mode_cfg)
+        if self.cbf_obstacle_on_prob is not None:
+            self.cbf_obstacle_enabled = bool(self._rng.random() < self.cbf_obstacle_on_prob)
+
         # Sample task target + obstacle trajectory, rejecting starts that make
         # the episode unsolvable or that begin outside the safe set.
         (self._target, self._obs_base,
@@ -703,6 +875,7 @@ class FrankaCBFEnv(gym.Env):
         self._servo_reset()
         self._prev_a = [None] * self._n_cp
         self._prev_ee_J = None
+        self._prev_finger_J = {}
         self._qddot_prev = np.zeros(NV)
         self._step = 0
         self._p_obs_prev = None
@@ -720,7 +893,9 @@ class FrankaCBFEnv(gym.Env):
         obstacles, ee_pos, ee_Jp, ee_jd, d_min, _ = self._build_obstacles(qdot)
         rows = obstacles if self.cbf_obstacle_enabled else []
         qddot_safe, info = self.cbf.filter(q, qdot, qddot_nom, rows,
-                                           ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd)
+                                           ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd,
+                                           floor_pts=self._floor_pts,
+                                           base_pts=self._base_pts)
 
         # q̈_safe → torque, exactly like qddot_to_torque + the FR3 firmware.
         # τ is recomputed at every SUBSTEP from the current state while q̈_safe
@@ -789,6 +964,7 @@ class FrankaCBFEnv(gym.Env):
             - float(rw.get('w_smooth', 0.001)) * jerk
             - float(rw.get('w_qdot', 0.001)) * float(qdot @ qdot)
             - float(rw.get('w_ws_margin', 0.0)) * ws_pen
+            + precision_bonus(rw, dist)
         )
         # terminate_on_collision: false keeps the episode running and charges
         # collision_penalty on EVERY tick spent inside the obstacle.
@@ -824,6 +1000,7 @@ class FrankaCBFEnv(gym.Env):
             'collision': bool(collision), 'cbf_slack': info.slack,
             'cbf_intervention': info.intervention, 'cbf_n_c': info.n_c,
             'cbf_braking': info.braking, 'obs_pen': obs_pen,
+            'floor_contact': self._floor_contact(),
         }
 
         obs = self._get_obs(d_min, cp_geom)

@@ -58,7 +58,12 @@ def _load_policy(path: str, deterministic: bool = True):
             return sess.run(None, {name: obs[None].astype(np.float32)})[0][0]
         return predict, 'onnx'
 
+    import torch
     from stable_baselines3 import SAC
+    # One thread, like the ONNX session above. Torch's default (one per core,
+    # 20 here) spins on a batch-1 MLP: measured 14.6 → 0.7 ms per call, and
+    # parallel evaluations/recordings slowed each other ~10x.
+    torch.set_num_threads(1)
     model = SAC.load(path, device='cpu')
 
     def predict(obs):

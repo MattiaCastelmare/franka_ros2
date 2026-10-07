@@ -16,6 +16,8 @@ datasets/
 datasets.zip
 franka_experiments/franka_experiments/nodes/experiment_logs/
 franka_experiments/franka_logs/
+franka_experiments/Videos/
+franka_experiments/docs/paper_draft/
 
 # MuJoCo runtime log (rigenerato a ogni run)
 MUJOCO_LOG.TXT
