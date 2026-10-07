@@ -97,12 +97,20 @@ class CalibrationResidual(NamedTuple):
         coverage: fraction of the model's projected pixels that had a valid
             depth measurement. A low value is itself a symptom: the model is
             projecting somewhere the sensor returns nothing.
+        leak_frac: fraction of those pixels whose measurement sits more than
+            ``gate_m`` IN FRONT of the model, i.e. arm pixels the depth gate
+            would keep as obstacle points (phantoms on the arm). NaN when no
+            gate was given. This, not the median, is what says whether
+            ``depth_gate_bias_m + depth_gate_tol_m`` is wide enough.
+        gate_m: the gate that ``leak_frac`` was computed against.
     """
 
     median_m: float
     mad_m: float
     n_pixels: int
     coverage: float
+    leak_frac: float = float('nan')
+    gate_m: float = float('nan')
 
     def is_suspicious(self, baseline_m: Optional[float] = None,
                       tol_m: float = 0.03) -> bool:
@@ -125,6 +133,9 @@ class CalibrationResidual(NamedTuple):
         head = (f'calibration residual measured − model = '
                 f'{self.median_m * 100:+.1f} cm (spread {self.mad_m * 100:.1f} '
                 f'cm) over {self.n_pixels} px, coverage {self.coverage:.0%}')
+        if np.isfinite(self.leak_frac):
+            head += (f', {self.leak_frac:.1%} of them in front of the '
+                     f'{self.gate_m * 100:.0f} cm depth gate (phantoms on the arm)')
         if baseline_m is None:
             return (head + ' — no baseline set, so this is a reading and not a '
                     'verdict. Record it as tracking.calibration_check.'
@@ -149,6 +160,7 @@ def calibration_residual(
     min_depth: float = 0.15,
     max_depth: float = 4.0,
     step: int = 4,
+    gate_m: Optional[float] = None,
 ) -> CalibrationResidual:
     """Compare the projected robot model against the measured depth.
 
@@ -168,6 +180,9 @@ def calibration_residual(
             distance engine's own.
         step: subsample the model points by this factor. The check runs at most
             once a second, and a few thousand samples already pin a median.
+        gate_m: [m] the mask's depth gate (``depth_gate_bias_m +
+            depth_gate_tol_m``). When given, ``leak_frac`` is the share of arm
+            pixels measured more than this in front of the model.
 
     Returns:
         A :class:`CalibrationResidual`.
@@ -214,5 +229,7 @@ def calibration_residual(
     res = meas[valid] - model[covered][valid]
     med = float(np.median(res))
     mad = float(np.median(np.abs(res - med)))
+    leak = float('nan') if gate_m is None else float(np.mean(res < -float(gate_m)))
     return CalibrationResidual(med, mad, int(valid.sum()),
-                               float(valid.sum()) / max(1, n_cov))
+                               float(valid.sum()) / max(1, n_cov), leak,
+                               float('nan') if gate_m is None else float(gate_m))

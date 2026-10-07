@@ -1006,7 +1006,10 @@ class RealTimeDistance(Node):
                 base_pts, self.R_base, self.t_base, self.K,
                 depth.astype(np.float64) * 0.001,
                 min_depth=self.distance_engine.min_depth,
-                max_depth=self.distance_engine.max_depth)
+                max_depth=self.distance_engine.max_depth,
+                gate_m=(self.distance_cfg['depth_gate_bias_m']
+                        + self.distance_cfg['depth_gate_tol_m'])
+                if self.distance_cfg['depth_gate_tol_m'] > 0.0 else None)
             txt = res.describe(self._cal_baseline, self._cal_tol)
             if res.is_suspicious(self._cal_baseline, self._cal_tol):
                 self.get_logger().warn(txt)

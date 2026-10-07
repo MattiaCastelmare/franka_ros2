@@ -290,7 +290,18 @@ mask: # in pixels
   # anything that is not at the arm's own range.
   #
   # 0 disables the gate and restores the pure 2D silhouette exactly.
-  depth_gate_tol_m: 0.06
+  #
+  # 0.06 -> 0.10 on 2026-10-07. Every run that day logged `measured - model =
+  # -2.6 .. -5.3 cm (spread 3.8 .. 5.7 cm)`, and the spread is a MAD: sigma is
+  # ~1.5x it, so with bias + tol = 0.12 m a good share of the arm's own pixels
+  # sat in front of the gate. With an EMPTY scene that gave obstacles 4-9 cm
+  # from links 6-8 flickering frame to frame (0.47 -> 0.09 m), outrun-evasion
+  # kicks during warmup and the ISO monitor's trip. The cost is a 10 cm blind
+  # shell on the arm surface, in depth, inside the arm's silhouette only.
+  # The calibration line now prints the share of arm pixels in front of the
+  # gate ("... in front of the 16 cm depth gate"): aim for well under 1 %, and
+  # bring this back down if it reads ~0 with margin.
+  depth_gate_tol_m: 0.10
 
   # [m] SYSTEMATIC offset subtracted from the model depth before the gate
   # compares, i.e. the gate is `depth < robot_depth - bias - tol`.

@@ -163,3 +163,24 @@ def test_depth_outside_the_validity_band_is_not_counted():
     r = calibration_residual(_model_on_plane(1.5), R, T, K,
                              np.zeros((H, W)), step=1)
     assert r.n_pixels == 0
+
+
+# ── leak_frac: arm pixels the depth gate would keep as obstacle points ──────
+
+def test_leak_frac_counts_pixels_in_front_of_the_gate():
+    """Half the image measured 20 cm in front of the model, half on it: with a
+    12 cm gate half the arm leaks, with a 25 cm gate none does."""
+    depth = _plane_depth(1.5)
+    depth[:, :W // 2] = 1.3
+    model = _model_on_plane(1.5)
+    r12 = calibration_residual(model, R, T, K, depth, step=1, gate_m=0.12)
+    r25 = calibration_residual(model, R, T, K, depth, step=1, gate_m=0.25)
+    assert np.isclose(r12.leak_frac, 0.5, atol=0.05)
+    assert r25.leak_frac == 0.0
+    assert 'depth gate' in r12.describe()
+
+
+def test_no_gate_no_leak_figure():
+    r = calibration_residual(_model_on_plane(1.5), R, T, K, _plane_depth(1.5), step=1)
+    assert np.isnan(r.leak_frac)
+    assert 'depth gate' not in r.describe()

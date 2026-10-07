@@ -329,8 +329,10 @@ def test_the_shipped_config_corrects_the_measured_residual():
     mask = cfg['mask']
     assert mask['depth_gate_bias_m'] == pytest.approx(0.06)
     # The tolerance must keep covering the SPREAD only: a tolerance grown to
-    # swallow the bias is the fix this one replaced.
-    assert mask['depth_gate_tol_m'] <= 0.08
+    # swallow the bias is the fix this one replaced. 0.08 -> 0.12 on 2026-10-07:
+    # the measured spread is a MAD of up to 5.7 cm (sigma ~8.5 cm), so 0.06 left
+    # arm pixels in front of the gate; 0.10 is still the spread, not the bias.
+    assert mask['depth_gate_tol_m'] <= 0.12
     # Denser sampling is the other half of the same fix: it removes part of the
     # bias at the source instead of correcting it downstream.
     assert cfg['meshes']['sample_points_per_link'] >= 3000
