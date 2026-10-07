@@ -457,6 +457,14 @@ def test_real_configs_are_in_sync():
                 'accel_box_clip_to_limits'):
         assert key in sim['cbf'], f'cbf.{key} missing from franka_sim/config.yaml'
         assert key in robot['params'], f'params.{key} missing from fr3_control.yaml'
+        if key == 'max_qddot_delta':
+            # Per TICK on both sides, and the ticks differ (sim CBF at
+            # control_rate_hz, robot QP at qp_rate_hz since 2026-10-07): the
+            # quantity the policy trained against is the jerk bound.
+            sim_jerk = sim['cbf'][key] * sim['env']['control_rate_hz']
+            robot_jerk = robot['params'][key] * robot['params']['qp_rate_hz']
+            assert sim_jerk == pytest.approx(robot_jerk), f'cbf.{key} drift (jerk)'
+            continue
         assert sim['cbf'][key] == robot['params'][key], f'cbf.{key} drift'
 
 

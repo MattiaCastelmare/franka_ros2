@@ -144,7 +144,8 @@ def test_with_the_flag_off_the_saturation_topic_still_reports():
 class _FilterStub:
     def __init__(self, real, **over):
         defaults = dict(iso_enabled=True, iso_brake_frac_min=0.5,
-                        iso_brake_frac_ticks=10, iso_a_stop=1.0)
+                        iso_brake_frac_ticks=10, iso_a_stop=1.0,
+                        qp_rate_hz=100.0)
         defaults.update(over)
         self.P = types.SimpleNamespace(**defaults)
         self._diag_qddot_real = np.asarray(real, dtype=float)

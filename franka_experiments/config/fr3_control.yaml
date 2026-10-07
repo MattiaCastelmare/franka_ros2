@@ -221,7 +221,18 @@ params:
   distance_timeout: 0.5   # [s] stale distance data → passthrough
 
   # ── cbf_safety_filter decoupled rates ───────────────────────────────────
-  qp_rate_hz: 100.0           # QP loop: solve + publish only (no Pinocchio); aligned to pentagon rate_hz (100 Hz) — upstream is camera-limited ~30 Hz, so >100 Hz adds no real safety info and only worsens GIL contention with the 50 Hz constraint rebuild
+  # QP loop: solve + publish only (no Pinocchio). 100 -> 300 Hz on 2026-10-07:
+  # the solve is ~0.05 ms, the state it reads is the 1 kHz joint_states_fast,
+  # and the RT controller integrates q̈_safe as a zero-order hold — 300 Hz cuts
+  # that staircase (and the velocity box's sampling delay) by 3x. It does NOT
+  # make perception faster (rows still rebuild at cbf_update_rate_hz from a
+  # 30-90 Hz camera), and q̈_nom still arrives at the commander's 100 Hz.
+  # Per-tick values elsewhere are defined at 100 Hz and rescaled in code
+  # (filter EMAs, iso_brake_frac_ticks, iso_monitor_ticks, iso_tau_rate_max);
+  # max_qddot_delta is per ACTUAL tick and was cut 1.5 -> 0.5 with this change
+  # to keep 150 rad/s^3. Watch for `_qp_tick gap` warnings (GIL contention
+  # with the rebuild); go back to 100 if they become frequent.
+  qp_rate_hz: 300.0
   cbf_update_rate_hz: 50.0    # constraint geometry rebuild (A, h̄) from 30 Hz input
   nom_timeout: 0.5            # [s] stale qddot_nom → braking -k_brake*qdot
   joint_state_timeout: 0.1    # [s] stale joint state → braking on last known qdot
@@ -556,7 +567,10 @@ params:
   # rate — the barrier keeps its authority, it just cannot be met in one step.
   slew_box_enabled: true
 
-  # [rad/s^2 per tick] At qp_rate_hz=100, 1.5 is 150 rad/s^3: the command can go from 0 to
+  # [rad/s^2 per tick] PER ACTUAL QP TICK: the jerk bound is max_qddot_delta * qp_rate_hz.
+  # 0.5 at 300 Hz = 1.5 at 100 Hz = 150 rad/s^3 (2026-10-07, when qp_rate_hz went 100 -> 300).
+  # Change the two together. The history below is in 100 Hz units.
+  # At qp_rate_hz=100, 1.5 is 150 rad/s^3: the command can go from 0 to
   # 6 rad/s^2 in 40 ms. It was 5.0 (500 rad/s^3, 0 -> 10 rad/s^2 in 20 ms), and on the
   # 2026-09-30 ball throws (ball_throws_3, live) the command spent its time
   # stepping between the two ends of the box: |q̈_safe| at 10 for 1 % of the ticks, sign flips
@@ -572,7 +586,7 @@ params:
   # starts early enough (position_brake_eta) for a 40 ms ramp. LOWER it if the arm still looks
   # jerky, RAISE it if the CBF reacts visibly late to a fast approach. Watch the `slew=`
   # field in CBFDIAG to see which joints it binds.
-  max_qddot_delta: 1.5
+  max_qddot_delta: 0.5
 
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
   # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: iso_tau_rate_max (qddot_to_torque, post-dynamics) | flagged: 2026-09-01
@@ -1071,7 +1085,8 @@ params:
   # [rad/s] Headroom below the velocity envelope over which the task fades from
   # full to suspended, worst joint wins, measured in the direction of travel.
   #
-  # Floor set by one tick of authority: at qddot_max_abs = 10 and qp_rate_hz =
+  # Floor set by one tick of authority (written at 100 Hz; at 300 Hz a tick is
+  # 0.033 rad/s and the band is simply 9 ticks): at qddot_max_abs = 10 and qp_rate_hz =
   # 100 a joint gains 0.1 rad/s per tick, so a band below that cannot act before
   # the hard box clamps and the governor is decoration. 0.30 gives three ticks.
   governor_qdot_band: 0.30
