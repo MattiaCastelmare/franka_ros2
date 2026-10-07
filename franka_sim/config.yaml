@@ -467,7 +467,6 @@ shield_parity:
     - enable_velocity_standoff    # d_safe_eff = d_safe + 0.20 s × closing speed
     - enable_uncertainty_margin
     - enable_lateral_evasion      # biases the QP target
-    - enable_outrun_evasion       # biases the QP target
     - enable_livelock_escape      # biases the QP target
     - enable_vobs_in_hdot
     # MOVED here from robot_only_inactive (Sep 2026, thrown-ball dodge
@@ -486,6 +485,7 @@ shield_parity:
   # Shipped OFF on the robot as well, so they are not part of today's gap.
   # Turning one on WIDENS the gap and fails the test until it is moved up.
   robot_only_inactive:
+    - enable_outrun_evasion       # launch default off since 2026-10-07: fired on phantom obstacles
     - enable_velocity_feedforward
     - enable_weighted_slack
     - enable_sensor_range_uncertainty  # needs LinkDistance.range_m + calibration; not hardware-validated
