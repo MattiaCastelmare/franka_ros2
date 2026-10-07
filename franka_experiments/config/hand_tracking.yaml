@@ -17,8 +17,14 @@ human_hand_tracker:
     arm_bridge_s: 1.0
     # Hand front-end: mediapipe (Holistic, CPU) | rtmw (RTMW whole-body via
     # rtmlib, GPU, Apache-2.0). Same HandTrackingRaw and pipeline after it.
-    hand_backend: mediapipe
+    hand_backend: rtmw
+    # lightweight (RTMW-m) | balanced (RTMW-l)
     rtmw_mode: lightweight
+    # RTMW models compiled by TensorRT in FP16 (needs tensorrt-cu12; first start builds the engines)
+    rtmw_tensorrt: true
+    # RTMW: drop hands on an unsure body wrist / too small for their forearm (per-mode
+    # thresholds in rtmw_frontend.BODY_CUES)
+    rtmw_body_cues: false
     # Palm normal: depth (RGB-D plane) | mediapipe (3D landmarks; with rtmw
     # the tracker uses depth, RTMW hands have no z).
     palm_normal_method: mediapipe
@@ -61,6 +67,13 @@ kalman_hand:
     sigma_accel: 8.0
     lost_timeout: 0.5
     mahalanobis_threshold: 11.345
+    # palm shape recovery: wrist + MCP 5/9/17 as one rigid body. A landmark the gate rejects
+    # but that keeps the palm shape (<= shape_tolerance_m) and is reachable (<= max speed) is
+    # re-acquired; a missing one is rebuilt from the other three. false = previous behaviour.
+    shape_recovery: true
+    shape_tolerance_m: 0.015
+    reacquire_max_speed_m_s: 2.0
+    rigid_fill_sigma: 0.01
 
 distance_handover_estimator:
   ros__parameters:

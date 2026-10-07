@@ -305,24 +305,14 @@ class HandCompareVisualizer(Node):
         state_msg,
     ):
         """
-        Same conservative semantics used by the offline
-        prediction validation.
-
-        Prediction can START only from a fresh/current
-        W75 state. It never starts from HOLD/PREDICT_ONLY.
+        Prediction is drawn from the current HandState when the robot
+        would use it: position and velocity valid, velocity fresh.
         """
         position_valid = bool(
             getattr(
                 state_msg,
                 'position_valid',
                 state_msg.valid,
-            )
-        )
-        position_fresh = bool(
-            getattr(
-                state_msg,
-                'position_fresh',
-                position_valid,
             )
         )
         velocity_valid = bool(
@@ -338,34 +328,6 @@ class HandCompareVisualizer(Node):
                 'velocity_age_s',
                 0.0,
             )
-        )
-        updated_source = int(
-            getattr(
-                HandState,
-                'VELOCITY_SOURCE_UPDATED',
-                1,
-            )
-        )
-        velocity_source = int(
-            getattr(
-                state_msg,
-                'velocity_source',
-                updated_source,
-            )
-        )
-        filter_tracking = (
-            int(state_msg.filter_state)
-            == int(
-                HandTrackingFiltered.TRACKING
-            )
-        )
-        landmarks_tracking = all(
-            int(landmark_state)
-            == int(
-                HandTrackingFiltered.TRACKING
-            )
-            for landmark_state
-            in filtered_msg.landmark_state
         )
         palm = self._prediction_np_point(
             state_msg.palm_position
@@ -387,16 +349,25 @@ class HandCompareVisualizer(Node):
             for point
             in filtered_msg.positions
         )
+        # Same validity the robot uses (HandoverDistance: position_valid and
+        # velocity_valid). Requiring every landmark in TRACKING hid the
+        # forecast whenever the Kalman gate skipped one landmark for a frame
+        # (~80 times/min); the filtered landmarks are still predicted then.
+        landmarks_initialized = all(
+            int(landmark_state)
+            in (
+                int(HandTrackingFiltered.TRACKING),
+                int(HandTrackingFiltered.PREDICT_ONLY),
+            )
+            for landmark_state
+            in filtered_msg.landmark_state
+        )
         return (
             position_valid
-            and position_fresh
             and velocity_valid
-            and velocity_source
-                == updated_source
             and velocity_age_s
                 <= 0.10 + 1e-9
-            and filter_tracking
-            and landmarks_tracking
+            and landmarks_initialized
             and np.all(np.isfinite(palm))
             and np.all(np.isfinite(velocity))
             and landmarks_finite

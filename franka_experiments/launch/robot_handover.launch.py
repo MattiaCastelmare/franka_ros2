@@ -91,6 +91,11 @@ def _poll(name: str, test: str, timeout_s: str) -> ExecuteProcess:
 # MAIN SETUP
 # =============================================================================
 
+# numpy's OpenBLAS keeps one spinning thread per core on the tiny matrices of
+# these nodes (kalman_hand alone took ~2 cores): one thread is enough.
+PERCEPTION_ENV = {'OPENBLAS_NUM_THREADS': '1'}
+
+
 def _launch_setup(context):
 
     def p(key):
@@ -254,6 +259,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='human_hand_tracker',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         parameters=[{
             'use_sim_time': False,
@@ -268,6 +274,8 @@ def _launch_setup(context):
             'min_tracking_confidence': 0.5,
             'min_detection_confidence': 0.4,
             'hand_backend': p('hand_backend'),
+            'rtmw_mode': p('rtmw_mode'),
+            'rtmw_body_cues': _as_bool(p('rtmw_body_cues')),
             'gripper_camera': _as_bool(p('gripper_camera')),
         }],
     )
@@ -281,6 +289,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='kalman_hand',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         parameters=[{
             'use_sim_time': False,
@@ -296,6 +305,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='hand_state_estimator',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         parameters=[{
             'use_sim_time': False,
@@ -312,6 +322,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='end_effector_state',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         parameters=[{
             'use_sim_time': False,
@@ -328,6 +339,7 @@ def _launch_setup(context):
         executable='distance_handover_estimator',
         name='distance_handover_estimator',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         parameters=[{
             'use_sim_time': False,
@@ -343,6 +355,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='handover_observer',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         parameters=[{
             'use_sim_time': False,
@@ -358,6 +371,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='hand_compare_visualizer',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         condition=IfCondition(
             LaunchConfiguration('start_rviz')
@@ -377,6 +391,7 @@ def _launch_setup(context):
         package='franka_experiments',
         executable='hand_logger',
         output='screen',
+        additional_env=PERCEPTION_ENV,
 
         condition=IfCondition(
             LaunchConfiguration('start_logger')
@@ -443,6 +458,7 @@ def _launch_setup(context):
                 package='franka_experiments',
                 executable='proximity_estimator',
                 output='screen',
+                additional_env=PERCEPTION_ENV,
                 parameters=[{'use_sim_time': False}],
             ),
             # object tracking -> /handover/hand_object (needs Hands23)
@@ -450,6 +466,7 @@ def _launch_setup(context):
                 package='franka_experiments',
                 executable='grasp',
                 output='screen',
+                additional_env=PERCEPTION_ENV,
                 condition=IfCondition(LaunchConfiguration('start_grasp')),
                 parameters=[{'use_sim_time': False}],
             ),
@@ -815,7 +832,11 @@ def generate_launch_description():
         ),
 
         # hand front-end: mediapipe | rtmw
-        DeclareLaunchArgument('hand_backend', default_value='mediapipe'),
+        DeclareLaunchArgument('hand_backend', default_value='rtmw'),
+        # RTMW size: lightweight (RTMW-m) | balanced (RTMW-l)
+        DeclareLaunchArgument('rtmw_mode', default_value='lightweight'),
+        # RTMW: body wrist / forearm cues against ghost hands
+        DeclareLaunchArgument('rtmw_body_cues', default_value='false'),
         # D405 on the gripper as second view of the hand
         DeclareLaunchArgument('gripper_camera', default_value='true'),
         DeclareLaunchArgument('start_grasp', default_value='false'),

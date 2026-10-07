@@ -1,20 +1,22 @@
 # Gripper camera (D405, eye-in-hand): fr3_link8 -> d405_color_optical_frame.
 #
 # Self-calibrated from the human hand seen at the same time by the main
-# camera (camera_extrinsics.yaml) and by the D405, gripper static:
-# handover_20260929_161100, 704 hand pairs, residual median 2.3 cm.
-# Re-calibrate if the camera mount changes.
+# camera (camera_extrinsics.yaml, lab calibration 2026-10-05) and by the D405,
+# brought into fr3_link8 with TF (gripper in two poses):
+# handover_20261005_160359, 750 hand pairs, residual median 2.7 cm
+# (4.2 cm on the second half with the fit of the first half).
+# Re-calibrate if the camera mount or the main camera calibration changes.
 
 parent_frame: fr3_link8
 child_frame: d405_color_optical_frame
 
 translation:
-  x: 0.1109
-  y: -0.0418
-  z: 0.0564
+  x: 0.0575
+  y: -0.0246
+  z: 0.0948
 
 rotation:
-  x: -0.01583
-  y: -0.00885
-  z: 0.36491
-  w: 0.93086
+  x: -0.02838
+  y: -0.01417
+  z: 0.36235
+  w: 0.9315

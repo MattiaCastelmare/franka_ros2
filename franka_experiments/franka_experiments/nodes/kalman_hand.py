@@ -64,6 +64,14 @@ class KalmanFilter6D:
         self.P = A @ self.P @ A.T + K @ R @ K.T
         return True, d2
 
+def rigid_fit(A, B):
+    """Least-squares rotation R and translation t with B ~ A R^T + t (Kabsch)."""
+    ca, cb = A.mean(axis=0), B.mean(axis=0)
+    U, _, Vt = np.linalg.svd((A - ca).T @ (B - cb))
+    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
+    R = Vt.T @ D @ U.T
+    return R, cb - R @ ca
+
 from franka_experiments.utils.params import (
     load_hand_tracking_defaults,
     parameter_value,
@@ -93,6 +101,13 @@ class KalmanHand(Node):
         self.last_source = [HandTrackingFiltered.INVALID] * 4
         self.missed_updates = [0] * 4
         self.is_lost = [False] * 4
+        # Palm shape recovery (see _palm_shape_recovery).
+        self.shape_recovery = bool(parameter_value(self, _KALMAN_DEFAULTS, "shape_recovery"))
+        self.shape_tolerance = float(parameter_value(self, _KALMAN_DEFAULTS, "shape_tolerance_m"))
+        self.reacquire_max_speed = float(parameter_value(self, _KALMAN_DEFAULTS, "reacquire_max_speed_m_s"))
+        self.rigid_fill_sigma = float(parameter_value(self, _KALMAN_DEFAULTS, "rigid_fill_sigma"))
+        self.palm_template = None
+        self.last_accepted_z = [None] * 4
         # PHYSICAL_HAND_SWITCH_RESET_V1
         #
         # A confirmed LEFT<->RIGHT interaction-role change is
@@ -150,6 +165,8 @@ class KalmanHand(Node):
                 ] * 4
                 self.missed_updates = [0] * 4
                 self.is_lost = [False] * 4
+                self.palm_template = None
+                self.last_accepted_z = [None] * 4
                 self.get_logger().info(
                     'Kalman physical-hand reset: '
                     f'{old_side} -> {raw_side}'
@@ -164,6 +181,7 @@ class KalmanHand(Node):
         states = [HandTrackingFiltered.UNINITIALIZED] * 4
         measurement_used = [False] * 4
         mahalanobis_sq = [-1.0] * 4
+        measured = [None] * 4
         for i, kf in enumerate(self.filters):
             if kf.initialized:
                 kf.predict(dt)
@@ -172,6 +190,7 @@ class KalmanHand(Node):
                 and raw.measurement_type[i] in (HandTrackingRaw.DIRECT, HandTrackingRaw.ESTIMATED,))
             if valid_measurement:
                 z = np.array([raw.positions[i].x, raw.positions[i].y, raw.positions[i].z,])
+                measured[i] = z
                 sigma = (self.direct_sigma
                     if raw.measurement_type[i] == HandTrackingRaw.DIRECT else self.estimated_sigma)
                 # First observation or recovery after LOST.
@@ -200,6 +219,8 @@ class KalmanHand(Node):
                 states[i] = (HandTrackingFiltered.LOST
                     if age > self.lost_timeout else HandTrackingFiltered.PREDICT_ONLY)
                 self.is_lost[i] = age > self.lost_timeout
+        if self.shape_recovery:
+            self._palm_shape_recovery(now, measured, raw.measurement_type, states, measurement_used)
         msg = HandTrackingFiltered()
         msg.header = raw.header
         # Geometry side-channel:
@@ -245,6 +266,69 @@ class KalmanHand(Node):
             msg.filter_state = HandTrackingFiltered.LOST
         msg.processing_latency_ms = float((time.perf_counter() - t0) * 1000.0)
         self.publisher.publish(msg)
+
+    def _palm_shape_recovery(self, now, measured, types, states, used):
+        """Wrist and MCP 5/9/17 sit on the metacarpals, which move almost as one rigid body
+        (rigid-body gap filling of motion capture). Template = last frame with all four
+        measurements accepted.
+
+        - A measurement rejected by the gate that keeps the palm's shape with the others
+          (rigid fit within shape_tolerance_m) and is physically reachable from its last
+          accepted position (reacquire_max_speed_m_s) is right: the filter lagged a fast
+          motion and, left alone, keeps extrapolating away until lost_timeout. Re-acquire it
+          on the measurement, with the velocity of the accepted landmarks of the same hand.
+        - With three good landmarks, a missing / inconsistent one is rebuilt from the
+          template and fed as a pseudo-measurement (rigid_fill_sigma, normal gate).
+        """
+        template = self.palm_template
+        if template is not None:
+            keys = [i for i in range(4) if measured[i] is not None]
+            while len(keys) >= 3:  # drop the worst point until the rest is one rigid palm
+                A = template[keys]; B = np.array([measured[i] for i in keys])
+                R, t = rigid_fit(A, B)
+                residual = np.linalg.norm(A @ R.T + t - B, axis=1)
+                if residual.max() <= self.shape_tolerance:
+                    break
+                keys.pop(int(np.argmax(residual)))
+            if len(keys) >= 3:
+                velocities = [self.filters[i].x[3:].copy() for i in range(4) if used[i]]
+                hand_velocity = np.mean(velocities, axis=0) if velocities else None
+                for i in keys:
+                    kf = self.filters[i]
+                    if used[i] or not kf.initialized or self.last_accepted_z[i] is None:
+                        continue
+                    reach = 0.05 + self.reacquire_max_speed * (now - self.last_update_time[i])
+                    if np.linalg.norm(measured[i] - self.last_accepted_z[i]) > reach:
+                        continue
+                    kf.initialize(measured[i], self.direct_sigma)
+                    if hand_velocity is not None:
+                        kf.x[3:] = hand_velocity
+                    self.last_update_time[i] = now
+                    self.last_source[i] = types[i]
+                    self.missed_updates[i] = 0
+                    self.is_lost[i] = False
+                    used[i] = True
+                    states[i] = HandTrackingFiltered.TRACKING
+            good = [i for i in range(4) if used[i]]
+            if len(good) == 3:
+                A = template[good]; B = np.array([measured[i] for i in good])
+                R, t = rigid_fit(A, B)
+                if np.linalg.norm(A @ R.T + t - B, axis=1).max() <= self.shape_tolerance:
+                    i = next(j for j in range(4) if not used[j])
+                    kf = self.filters[i]
+                    if kf.initialized and not self.is_lost[i]:
+                        accepted, _ = kf.update(R @ template[i] + t, self.rigid_fill_sigma, self.mahalanobis_threshold)
+                        if accepted:
+                            self.last_update_time[i] = now
+                            self.last_source[i] = HandTrackingRaw.ESTIMATED
+                            self.missed_updates[i] = 0
+                            states[i] = HandTrackingFiltered.TRACKING
+        if all(used):
+            self.palm_template = np.array(measured)
+        for i in range(4):
+            if used[i]:
+                self.last_accepted_z[i] = measured[i]
+
 
 def main(args=None):
     rclpy.init(args=args)

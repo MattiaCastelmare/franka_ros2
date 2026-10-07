@@ -24,6 +24,7 @@ Holistic; the remaining extra detections are mostly real occluded hands):
 """
 
 import ctypes
+import threading
 import time
 from types import SimpleNamespace
 
@@ -57,24 +58,99 @@ class OneEuro:
 class RtmwHolistic:
 
     POSE_FROM_BODY = {0: 0, 5: 11, 6: 12, 7: 13, 8: 14, 9: 15, 10: 16, 11: 23, 12: 24}
-    HANDS = (('left_hand_landmarks', 91, 9), ('right_hand_landmarks', 112, 10))  # key, first kp, body wrist
+    HANDS = (('left_hand_landmarks', 91, 9, 7), ('right_hand_landmarks', 112, 10, 8))  # key, first kp, body wrist, elbow
+    # Body cues per mode, tuned on the Hands23 reference of all bags (palm_eval_tmp/body_grid.py):
+    #   wrist_min: ghost hands come with an unsure body wrist (score 0.6 vs 0.86 on real hands)
+    #   ratio_max: forearm length / hand size above this = hand far too small for its arm
+    #   reacquire: a new hand sitting on a confident body wrist starts at this score (not enter)
+    BODY_CUES = {'lightweight': {'wrist_min': 0.55, 'ratio_max': 3.0, 'reacquire': 0.65},
+                 'balanced': {'wrist_min': 0.6, 'ratio_max': None, 'reacquire': None}}
 
-    def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5):
+    def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5, tensorrt=True, body_cues=True):
         cuda, t0 = ctypes.CDLL('libcuda.so.1'), time.time()
         while cuda.cuInit(0) != 0 and time.time() - t0 < 10.0:  # flaky first cuInit
             time.sleep(0.2)
         import torch  # noqa: F401  loads the CUDA / cuDNN libraries onnxruntime needs
-        from rtmlib import PoseTracker, Wholebody
-        # person detector every det_frequency frames, boxes from the last keypoints in between
-        self.model = PoseTracker(Wholebody, det_frequency=det_frequency, mode=mode,
-                                 tracking=False, backend='onnxruntime', device='cuda')
+        from rtmlib import Wholebody
+        from rtmlib.tools.solution.pose_tracker import pose_to_bbox
+        # As rtmlib's PoseTracker (person boxes from the last keypoints, refreshed by the
+        # person detector every det_frequency frames), but the detector runs in its own
+        # thread: no 10 ms spike every det_frequency frames on the frame path.
+        model = Wholebody(mode=mode, backend='onnxruntime', device='cuda')
+        self.engine = 'CUDA FP32'
+        if tensorrt:
+            self.engine = self._tensorrt(model)
+        self.detector, self.pose, self.pose_to_bbox = model.det_model, model.pose_model, pose_to_bbox
+        self.det_frequency, self.n, self.boxes = det_frequency, 0, []
+        self.det_in, self.det_out = None, None
+        self.det_wake, self.det_stop = threading.Event(), threading.Event()
+        self.det_thread = threading.Thread(target=self._detect_loop, daemon=True)
+        self.det_thread.start()
         self.enter, self.keep = enter, keep
+        self.body = self.BODY_CUES.get(mode, {}) if body_cues else {}
         self.kept, self.centre = set(), None
-        self.filters = {key: OneEuro() for key, _, _ in self.HANDS}
+        self.filters = {key: OneEuro() for key, *_ in self.HANDS}
+
+    @staticmethod
+    def _tensorrt(model):
+        """Same ONNX models compiled by TensorRT in FP16 (RTX 3050: pose 16.5 -> 2.0 ms,
+        YOLOX-tiny 8.1 -> 1.6 ms, outputs within ~1 %). Engines cached on disk: the first
+        start on a new GPU builds them (~2 min). YOLOX-m (balanced detector) does not build
+        with TensorRT (TopK) and stays on CUDA, in its own thread anyway."""
+        import os
+        try:
+            import tensorrt  # noqa: F401  loads libnvinfer for onnxruntime's TensorRT EP
+            import onnxruntime as ort
+        except ImportError:
+            return 'CUDA FP32 (TensorRT not installed)'
+        cache = os.path.expanduser('~/.cache/rtmlib/trt')
+        os.makedirs(cache, exist_ok=True)
+        providers = [('TensorrtExecutionProvider', {
+            'trt_fp16_enable': True, 'trt_engine_cache_enable': True,
+            'trt_engine_cache_path': cache, 'trt_timing_cache_enable': True}), 'CUDAExecutionProvider']
+        done = []
+        for name, tool in (('pose', model.pose_model), ('detector', model.det_model)):
+            if 'yolox_m' in tool.onnx_model:
+                continue
+            try:
+                session = ort.InferenceSession(tool.onnx_model, providers=providers)
+                if session.get_providers()[0] == 'TensorrtExecutionProvider':
+                    tool.session = session
+                    done.append(name)
+            except Exception:  # keep the CUDA session
+                pass
+        return f'TensorRT FP16 ({", ".join(done)})' if done else 'CUDA FP32'
+
+    def stop(self):
+        self.det_stop.set()
+        self.det_wake.set()
+        self.det_thread.join(timeout=1.0)
+
+    def _detect_loop(self):
+        while not self.det_stop.is_set():
+            if not self.det_wake.wait(0.5):
+                continue
+            self.det_wake.clear()
+            image, self.det_in = self.det_in, None
+            if image is not None:
+                self.det_out = list(self.detector(image))
+
+    def _people(self, bgr):
+        self.n += 1
+        if self.n % self.det_frequency == 0 or not self.boxes:
+            self.det_in = bgr
+            self.det_wake.set()
+        if self.det_out is not None:  # newest detection replaces the keypoint boxes
+            self.boxes, self.det_out = self.det_out, None
+        if not self.boxes:
+            return [], []
+        keypoints, scores = self.pose(bgr, bboxes=self.boxes)
+        self.boxes = [self.pose_to_bbox(k) for k in keypoints]
+        return keypoints, scores
 
     def process(self, bgr, depth, depth_scale, fx, t):
         out = SimpleNamespace(pose_landmarks=None, left_hand_landmarks=None, right_hand_landmarks=None)
-        keypoints, scores = self.model(bgr)
+        keypoints, scores = self._people(bgr)
         h, w = bgr.shape[:2]
         person = self._person(keypoints, scores, w)
         if person is None:
@@ -91,12 +167,23 @@ class RtmwHolistic:
             q.x, q.y, q.visibility = k[body, 0] / w, k[body, 1] / h, s[body]
         out.pose_landmarks = pose
         hands = {}
-        for key, first, wrist in self.HANDS:
+        body = self.body
+        for key, first, wrist, elbow in self.HANDS:
             p, c = k[first:first + 21], s[first:first + 21]
             score = float(c.mean())
-            if score < (self.keep if key in self.kept else self.enter):
-                continue
             box = np.r_[p.min(0), p.max(0)]
+            size = max(box[2] - box[0], box[3] - box[1], 10.0)
+            threshold = self.keep if key in self.kept else self.enter
+            if (body.get('reacquire') and key not in self.kept and s[wrist] >= 0.5
+                    and np.linalg.norm(p[0] - k[wrist]) <= 0.5 * size):
+                threshold = body['reacquire']
+            if score < threshold:
+                continue
+            if body.get('wrist_min') and s[wrist] < body['wrist_min']:
+                continue
+            if (body.get('ratio_max') and s[elbow] >= 0.3
+                    and np.linalg.norm(k[wrist] - k[elbow]) / size > body['ratio_max']):
+                continue
             z = self._depth(depth, depth_scale, k[wrist])
             if z is not None and not 0.05 <= max(box[2] - box[0], box[3] - box[1]) * z / fx <= 0.30:
                 continue

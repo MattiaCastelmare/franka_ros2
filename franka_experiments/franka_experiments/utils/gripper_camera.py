@@ -4,6 +4,8 @@
 Passive unless its images and the robot TF arrive: MediaPipe Hands runs in a
 worker thread and the hands are mapped to the base frame with
 TF(base -> fr3_link8) and the fixed transform of config/d405_extrinsics.yaml.
+It runs only while the last ACTIVE palm (<= 1 s old) is in its view: no CPU
+taken from the main tracker when the hand is elsewhere.
 
 Offline (handover_20260929_161100, hand near the gripper): it re-finds 84% of
 the hands the main camera loses inside its view, and its palm normal is right
@@ -11,6 +13,7 @@ on 20/22 labelled hands (main camera 16/22).
 """
 
 import threading
+import time
 
 import cv2
 import mediapipe as mp
@@ -29,7 +32,7 @@ class GripperCamera:
 
     PALM_IDS = (0, 5, 9, 17)  # same landmarks as HandTrackingRaw
 
-    def __init__(self, node, extrinsics_path, tf_lookup, namespace='/d405/d405', debug=False):
+    def __init__(self, node, extrinsics_path, tf_lookup, namespace='/d405/d405', debug=False, target=None):
         with open(extrinsics_path, 'r', encoding='utf-8') as file:
             e = yaml.safe_load(file)
         q, t = e['rotation'], e['translation']
@@ -37,12 +40,14 @@ class GripperCamera:
         self.R_link_cam = Rotation.from_quat([q['x'], q['y'], q['z'], q['w']]).as_matrix()
         self.t_link_cam = np.array([t['x'], t['y'], t['z']], dtype=float)
         self.tf_lookup = tf_lookup
+        self.target = target  # () -> (t, palm in base) of the last ACTIVE hand, or None
         self.logger, self.state = node.get_logger(), None
         self.bridge = CvBridge()
         self.K, self.frame, self.result = None, None, None
         self.hands = mp.solutions.hands.Hands(
             static_image_mode=False, max_num_hands=2, model_complexity=1,
             min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.ms = []
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self.sync = ApproximateTimeSynchronizer(
             [Subscriber(node, Image, f'{namespace}/color/image_raw', qos_profile=qos),
@@ -88,22 +93,53 @@ class GripperCamera:
             R = R_base_link @ self.R_link_cam
             t = R_base_link @ self.t_link_cam + t_base_link
             rgb = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='rgb8')
-            depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
             h, w = rgb.shape[:2]
-            hands = []
-            found = self.hands.process(rgb).multi_hand_landmarks or []
-            for lms in found:
-                V = np.array([[p.x * w, p.y * h, p.z * w] for p in lms.landmark])
-                pts = [self._point(depth, *V[i, :2]) for i in self.PALM_IDS]
-                hands.append({'pts': [None if p is None else R @ p + t for p in pts], 'V': V, 'R': R})
-            self.result = (rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec, hands)
+            t_img = rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec
+            hands, found = [], []
+            if self._in_view(t_img, R, t, w, h):
+                t0 = time.perf_counter()
+                depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+                found = self._detect(rgb)
+                for V in found:
+                    pts = [self._point(depth, *V[i, :2]) for i in self.PALM_IDS]
+                    hands.append({'pts': [None if p is None else R @ p + t for p in pts], 'V': V, 'R': R})
+                self._log_time(1e3 * (time.perf_counter() - t0))
+            self.result = (t_img, hands)
             if self.debug is not None:
                 image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                for lms in found:
-                    mp.solutions.drawing_utils.draw_landmarks(image, lms, mp.solutions.hands.HAND_CONNECTIONS)
+                for V in found:
+                    for a, b in mp.solutions.hands.HAND_CONNECTIONS:
+                        cv2.line(image, tuple(map(int, V[a, :2])), tuple(map(int, V[b, :2])), (255, 255, 255), 2)
+                    for u, v in V[:, :2].astype(int):
+                        cv2.circle(image, (u, v), 3, (0, 0, 255), -1)
                 msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
                 msg.header = rgb_msg.header
                 self.debug.publish(msg)
+
+    def _detect(self, rgb):
+        """MediaPipe hands as 21 x 3 arrays (u, v, z in px)."""
+        h, w = rgb.shape[:2]
+        return [np.array([[p.x * w, p.y * h, p.z * w] for p in lms.landmark])
+                for lms in self.hands.process(rgb).multi_hand_landmarks or []]
+
+    def _log_time(self, ms):
+        self.ms.append(ms)
+        if len(self.ms) >= 150:
+            self.logger.info(f'Gripper camera: {np.median(self.ms):.0f}/{np.percentile(self.ms, 95):.0f} ms '
+                             f'per frame with the hand in view (median/p95)')
+            self.ms = []
+
+    def _in_view(self, t_img, R, t, w, h):
+        """Last ACTIVE palm (<= 1 s) projects inside the image (25 % margin), 5-150 cm away."""
+        last = None if self.target is None else self.target()
+        if last is None or abs(t_img - last[0]) > 1.0:
+            return False
+        q = R.T @ (np.asarray(last[1]) - t)
+        if not 0.05 < q[2] < 1.5:
+            return False
+        fx, fy, cx, cy = self.K
+        u, v = fx * q[0] / q[2] + cx, fy * q[1] / q[2] + cy
+        return -0.25 * w < u < 1.25 * w and -0.25 * h < v < 1.25 * h
 
     def _log_state(self, placed):
         # no TF for ~1 s of images (not just the start-up race): say it once

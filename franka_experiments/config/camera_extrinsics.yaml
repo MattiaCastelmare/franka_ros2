@@ -1,40 +1,47 @@
 # Camera extrinsics for the handover perception pipeline.
 #
-# ACTIVE calibration:
-#   arm_complex / arm_repeated / handtracker_poses / object
+# ACTIVE calibration: lab calibration of 2026-10-05 (commit c0bd63f, "LAB: new
+# calibration done"), bags recorded from then on (handover_20261005_160359).
 #
-# handover_rosbag2 uses the alternative calibration commented below.
+# Bags recorded before (handover_20260924_154930, handover_rosbag2, ...) used
+# the previous camera pose: swap in the block commented at the bottom.
 
 parent_frame: base
 child_frame: camera_color_optical_frame
 
+translation:
+  x: 1.702301
+  y: 0.104185
+  z: 1.0128
+
+rotation:
+  x: 0.55414
+  y: 0.579699
+  z: -0.416541
+  w: -0.428218
+
+# ================================================================
+# PREVIOUS CALIBRATION — bags before 2026-10-05
+# ================================================================
+# translation:
+#   x: 1.754113
+#   y: 0.154097
+#   z: 1.059057
+# rotation:
+#   x: 0.550892
+#   y: 0.586740
+#   z: -0.429626
+#   w: -0.409481
+
+# ================================================================
+# OLDER CALIBRATION — arm_complex / arm_repeated / handtracker_poses / object
+# ================================================================
 # translation:
 #   x: 1.808212
 #   y: 0.086748
 #   z: 1.111983
-
 # rotation:
 #   x: 0.510496
 #   y: 0.615614
 #   z: -0.442613
 #   w: -0.405594
-
-# ================================================================
-# ALTERNATIVE CALIBRATION — handover_rosbag2
-# ================================================================
-# To replay handover_rosbag2, replace the active block above
-# with the values below.
-#
-# parent_frame: base
-# child_frame: camera_color_optical_frame
-#
-translation:
-  x: 1.754113
-  y: 0.154097
-  z: 1.059057
-
-rotation:
-  x: 0.550892
-  y: 0.586740
-  z: -0.429626
-  w: -0.409481

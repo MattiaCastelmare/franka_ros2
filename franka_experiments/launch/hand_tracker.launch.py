@@ -40,6 +40,8 @@ def generate_launch_description():
     )
     arm_bridge_s = LaunchConfiguration('arm_bridge_s')
     hand_backend = LaunchConfiguration('hand_backend')
+    rtmw_mode = LaunchConfiguration('rtmw_mode')
+    rtmw_body_cues = LaunchConfiguration('rtmw_body_cues')
     gripper_camera = LaunchConfiguration('gripper_camera')
 
 
@@ -116,6 +118,8 @@ def generate_launch_description():
             ),
             'arm_bridge_s': ParameterValue(arm_bridge_s, value_type=float),
             'hand_backend': ParameterValue(hand_backend, value_type=str),
+            'rtmw_mode': ParameterValue(rtmw_mode, value_type=str),
+            'rtmw_body_cues': ParameterValue(rtmw_body_cues, value_type=bool),
             'gripper_camera': ParameterValue(gripper_camera, value_type=bool),
             'static_image_mode': ParameterValue(
                 static_image_mode,
@@ -292,6 +296,9 @@ def generate_launch_description():
         DeclareLaunchArgument('isolate', default_value='true'),
         SetEnvironmentVariable('ROS_DOMAIN_ID', '73', condition=IfCondition(LaunchConfiguration('isolate'))),
         SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1', condition=IfCondition(LaunchConfiguration('isolate'))),
+        # numpy's OpenBLAS keeps one spinning thread per core on the tiny matrices of
+        # these nodes (kalman_hand alone took ~2 cores): one thread is enough.
+        SetEnvironmentVariable('OPENBLAS_NUM_THREADS', '1'),
 
         # Available bags:
         # /ros2_ws/rosbags/datasets-001/{arm_complex,arm_repeated,handtracker_poses,handratacker_objecy,handover_rosbag2}
@@ -322,7 +329,11 @@ def generate_launch_description():
         DeclareLaunchArgument('arm_bridge_s', default_value='1.0'),
 
         # hand front-end: mediapipe | rtmw
-        DeclareLaunchArgument('hand_backend', default_value='mediapipe'),
+        DeclareLaunchArgument('hand_backend', default_value='rtmw'),
+        # RTMW size: lightweight (RTMW-m) | balanced (RTMW-l)
+        DeclareLaunchArgument('rtmw_mode', default_value='lightweight'),
+        # RTMW: body wrist / forearm cues against ghost hands
+        DeclareLaunchArgument('rtmw_body_cues', default_value='false'),
         # D405 on the gripper as second view (used only if its images + TF arrive)
         DeclareLaunchArgument('gripper_camera', default_value='true'),
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-import threading
 import time
 
 import numpy as np
@@ -68,12 +67,7 @@ class EndEffectorStateNode(Node):
         self.q_full = pin.neutral(self.model)
         self.qdot_full = np.zeros(self.model.nv)
 
-        self.q = np.zeros(NUM_JOINTS)
-        self.qdot = np.zeros(NUM_JOINTS)
-        self.stamp = None
-        self.has_state = False
-
-        self.lock = threading.Lock()
+        self.last = None  # (q, qdot, stamp) of the newest valid joint state
 
         # Prefer the real-robot fast joint-state stream.
         # Automatically fall back to the recorded/standard stream
@@ -96,20 +90,16 @@ class EndEffectorStateNode(Node):
             10,
         )
 
-        self.create_subscription(
-            JointState,
-            self.primary_joint_topic,
-            self.on_primary_joint_state,
-            1,
-        )
-
+        # The fast joint stream runs at ~1 kHz: a callback per message kept the
+        # Python executor busy (~30-40 % of a core). The subscriptions live on a
+        # node that is never spun; publish_state takes the newest message from
+        # their DDS queue (depth 1) at the publishing rate.
+        self.reader = rclpy.create_node('end_effector_state_joint_reader')
+        self.subs = {'primary': self.reader.create_subscription(
+            JointState, self.primary_joint_topic, lambda msg: None, 1)}
         if self.fallback_joint_topic != self.primary_joint_topic:
-            self.create_subscription(
-                JointState,
-                self.fallback_joint_topic,
-                self.on_fallback_joint_state,
-                1,
-            )
+            self.subs['fallback'] = self.reader.create_subscription(
+                JointState, self.fallback_joint_topic, lambda msg: None, 1)
 
         # 100 Hz is plenty for the handover observer/control layer.
         self.create_timer(
@@ -122,21 +112,42 @@ class EndEffectorStateNode(Node):
             f'v_ee = J_ee(q) qdot'
         )
 
-    def on_primary_joint_state(self, msg):
-        if self.on_joint_state(msg):
-            self.primary_last_valid_wall = time.monotonic()
+    def take(self, key):
+        """Newest message waiting in a subscription queue, or None."""
+        sub, msg = self.subs.get(key), None
+        if sub is None:
+            return None
+        with sub.handle:
+            while True:
+                taken = sub.handle.take_message(sub.msg_type, sub.raw)
+                if taken is None:
+                    return msg
+                msg = taken[0]
 
-    def on_fallback_joint_state(self, msg):
-        if (
+    def latest_state(self):
+        """Newest valid joint state: the fast primary stream, the fallback stream
+        only while the primary has been silent / invalid for primary_hold_s."""
+        now = time.monotonic()
+        msg = self.take('primary')
+        if msg is not None:
+            state = self.parse(msg)
+            if state is not None:
+                self.primary_last_valid_wall = now
+                self.last = state
+                return state
+        primary_alive = (
             self.primary_last_valid_wall is not None
-            and time.monotonic() - self.primary_last_valid_wall
-                <= self.primary_hold_s
-        ):
-            return
+            and now - self.primary_last_valid_wall <= self.primary_hold_s
+        )
+        msg = self.take('fallback')
+        if msg is not None and not primary_alive:
+            state = self.parse(msg)
+            if state is not None:
+                self.last = state
+        return self.last
 
-        self.on_joint_state(msg)
-
-    def on_joint_state(self, msg):
+    @staticmethod
+    def parse(msg):
 
         index = {
             name: i
@@ -155,29 +166,19 @@ class EndEffectorStateNode(Node):
                 or i >= len(msg.position)
                 or i >= len(msg.velocity)
             ):
-                return False
+                return None
 
             q[k] = msg.position[i]
             qdot[k] = msg.velocity[i]
 
-        with self.lock:
-            self.q[:] = q
-            self.qdot[:] = qdot
-            self.stamp = msg.header.stamp
-            self.has_state = True
-
-        return True
+        return q, qdot, msg.header.stamp
 
     def publish_state(self):
 
-        with self.lock:
-
-            if not self.has_state:
-                return
-
-            q = self.q.copy()
-            qdot = self.qdot.copy()
-            stamp = self.stamp
+        state = self.latest_state()
+        if state is None:
+            return
+        q, qdot, stamp = state
 
         np.copyto(
             self.q_full,
@@ -270,6 +271,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.reader.destroy_node()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

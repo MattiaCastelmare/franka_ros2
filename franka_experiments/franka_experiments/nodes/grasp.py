@@ -44,6 +44,17 @@ MAX_LATERAL_M = 0.12   # centroid this far to the side of the hand (half hand + 
 OBJECT_CONTACT = 3     # Hands23 contact state "object contact"
 NON_PREHENSILE = (0, 1)     # Hands23 grasp: NP-Palm, NP-Fin
 TOUCHED_ONLY = (0, 3, 5)    # Hands23 touch: tool / container / neither "touched"
+THIN_RATIO = 2.5       # mask principal axes ratio above which an object is thin and elongated
+
+
+def elongated(mask):
+    """Thin elongated mask (pen, screwdriver): main axis > THIN_RATIO x the other."""
+    v, u = np.nonzero(mask)
+    if len(u) < 5:
+        return False
+    p = np.column_stack([u, v]).astype(float)
+    s = np.linalg.svd(p - p.mean(0), full_matrices=False)[1]
+    return s[0] > THIN_RATIO * s[1]
 
 
 def stamp(msg):
@@ -53,7 +64,7 @@ def stamp(msg):
 class Hands23:
     """Hands23 on a palm-centred crop -> (observed, object mask | None)."""
 
-    def __init__(self, root=H23, input_size=384, device='cuda'):
+    def __init__(self, root=H23, input_size=384, device='cuda', fp16=False, thin_objects=True):
         if device == 'cuda':
             # On this laptop the first cuInit after GPU idle often returns
             # NOT_INITIALIZED: wait until the driver answers before torch does.
@@ -73,48 +84,85 @@ class Hands23:
         cfg.HAND, cfg.FIRSTOBJ, cfg.SECONDOBJ = 0.5, 0.3, 0.3
         cfg.HAND_RELA, cfg.OBJ_RELA = 0.3, 0.7
         self.predictor = DefaultPredictor(cfg)
+        import torch
+        # half precision on the GPU (tensor cores): same detections, faster
+        self.torch, self.fp16 = torch, bool(fp16) and device == 'cuda'
+        self.thin_objects = bool(thin_objects)
 
-    def __call__(self, bgr, depth, palm_px, palm_z, fx):
+    def __call__(self, bgr, depth, palm_px, palm_z, fx, keep=False):
+        observed, obj, gripping = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M, False)
+        if self.thin_objects and keep and observed and obj is None and gripping:
+            # the hand grips something but no object passed: a thin one (pen) is a few pixels
+            # wide at 384 px and its mask bleeds onto the background. Second pass on a crop of
+            # half the side (2x pixels on hand and object), only in these frames. It only keeps
+            # an object already confirmed (keep), never confirms one: cables, table edge and
+            # robot links next to the hand would otherwise pass as short false objects.
+            observed2, obj2, _ = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M / 2, True)
+            if obj2 is not None:
+                return observed2, obj2
+        return observed, obj
+
+    def _detect(self, bgr, depth, palm_px, palm_z, fx, crop_m, clean):
         h, w = depth.shape
-        r = int(CROP_M * fx / palm_z)
+        r = int(crop_m * fx / palm_z)
         x0, y0 = max(0, int(palm_px[0]) - r), max(0, int(palm_px[1]) - r)
         x1, y1 = min(w, int(palm_px[0]) + r), min(h, int(palm_px[1]) + r)
         if x1 - x0 < 32 or y1 - y0 < 32:
-            return False, None
-        inst = self.predictor(bgr[y0:y1, x0:x1])['instances'].to('cpu')
+            return False, None, False
+        with self.torch.autocast('cuda', dtype=self.torch.float16, enabled=self.fp16):
+            inst = self.predictor(bgr[y0:y1, x0:x1])['instances'].to('cpu')
         box = inst.pred_boxes.tensor.numpy() + [x0, y0, x0, y0]
         dz, cls, score = inst.pred_dz.numpy(), inst.pred_classes.numpy(), inst.scores.numpy()
         hands = [i for i in np.flatnonzero(cls == 0)
                  if box[i, 0] <= palm_px[0] <= box[i, 2] and box[i, 1] <= palm_px[1] <= box[i, 3]]
         if not hands:
-            return False, None  # active hand not seen: no evidence either way
+            return False, None, False  # active hand not seen: no evidence either way
         i = max(hands, key=lambda j: score[j])
         o = int(dz[i, 4])
+        gripping = int(dz[i, 8]) == OBJECT_CONTACT and int(dz[i, 6]) not in NON_PREHENSILE
         if int(dz[i, 8]) != OBJECT_CONTACT or o < 0:
-            return True, None
+            return True, None, gripping
         # a flat hand resting on something (marker, table item) is not holding it
         if int(dz[i, 6]) in NON_PREHENSILE and int(dz[o, 7]) in TOUCHED_ONLY:
-            return True, None
+            return True, None, gripping
         size = lambda b: max(b[2] - b[0], b[3] - b[1])
-        if size(box[o]) > MAX_OBJ_HAND * size(box[i]):
-            return True, None
 
         def full(m):
             out = np.zeros((h, w), bool)
             out[y0:y1, x0:x1] = m
             return out
         obj = full(inst.pred_masks[o].numpy())
+        hand = full(inst.pred_masks[i].numpy())
+        if clean:
+            # Keep the parts of the object mask attached to the hand and drop the pieces lying
+            # behind it: a thin object's mask bleeds onto what it points at (robot base, cables).
+            near_hand = cv2.dilate(hand.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+            n, labels = cv2.connectedComponents(obj.astype(np.uint8))
+            kept = np.zeros_like(obj)
+            for c in range(1, n):
+                part = labels == c
+                z = depth[part]
+                z = z[z > 0.1]
+                behind = z.size and np.mean(z > palm_z + DEPTH_BAND_M) > 0.8
+                if (part & near_hand).any() and not behind:
+                    kept |= part
+            obj = kept
+            if obj.sum() < 20:
+                return True, None, gripping
+            v, u = np.nonzero(obj)
+            box[o] = [u.min(), v.min(), u.max(), v.max()]
+        if size(box[o]) > MAX_OBJ_HAND * size(box[i]):
+            return True, None, gripping
         if obj.sum() < 20:
-            return True, None
+            return True, None, gripping
         z = depth[obj]
         z = z[z > 0.1]
         if z.size and np.mean(np.abs(z - palm_z) < DEPTH_BAND_M) < MIN_IN_BAND:
-            return True, None
-        return True, {'mask': obj, 'hand': full(inst.pred_masks[i].numpy()),
-                      'score': float(score[o])}
+            return True, None, gripping
+        return True, {'mask': obj, 'hand': hand, 'score': float(score[o])}, gripping
 
 
-def measure(obj, depth, K, palm_z):
+def measure(obj, depth, K, palm_z, thin_objects=True):
     """Outline, box, centroid (camera) and principal extents of the object.
 
     3D only from object pixels near the palm depth: the mask of a thin object
@@ -128,14 +176,38 @@ def measure(obj, depth, K, palm_z):
            'centroid': None, 'dims': np.full(3, np.nan), 'score': obj['score']}
     # depth of the object only: drop the fingers wrapped around it
     hand = cv2.dilate(obj['hand'].astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
-    for m in (obj['mask'] & ~hand, obj['mask']):  # whole mask if fingers cover it
+    thin = thin_objects and elongated(obj['mask'])
+    mask = obj['mask']
+    if thin:
+        # only the mask pieces attached to the hand: a separate piece is bleeding onto the
+        # background (robot base) and would add its distance to the length
+        near_hand = cv2.dilate(obj['hand'].astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+        n, labels = cv2.connectedComponents(mask.astype(np.uint8))
+        attached = np.isin(labels, [c for c in range(1, n) if (near_hand & (labels == c)).any()])
+        if attached.sum() >= 30:
+            mask = attached
+    for m in (mask & ~hand, mask):  # whole mask if fingers cover it
         v, u = np.nonzero(m)
         z = depth[v, u]
         keep = (z > 0.1) & (np.abs(z - palm_z) < DEPTH_BAND_M)
+        if thin and keep.sum() < 30:
+            continue
+        if thin:
+            # a thin object (shaft, tip, pen) has the depth of what is behind it: put those
+            # pixels at the depth of the object near the fingers, so its length is complete
+            z = np.where(keep, z, np.median(z[keep]))
+            keep = np.ones_like(keep)
+            break
         if keep.sum() >= 30:
             break
     else:
-        return out
+        if not thin:
+            return out
+        v, u = np.nonzero(mask & ~hand)
+        if len(u) < 30:
+            return out
+        z = np.full(len(u), palm_z)
+        keep = np.ones(len(u), bool)
     u, v, z = u[keep], v[keep], z[keep]
     keep = np.abs(z - np.median(z)) < 0.10  # background bleeding at the outline
     fx, fy, cx, cy = K
@@ -158,8 +230,9 @@ class Grasp(Node):
         self.release_s = float(par('release_s', 0.3))
         self.hold_s = float(par('hold_s', 0.6))
         self.max_dt = float(par('max_state_image_dt_s', 0.05))
+        self.thin_objects = bool(par('thin_objects', True))
         self.detector = Hands23(par('hands23_root', H23), int(par('input_size', 384)),
-                                par('device', 'cuda'))
+                                par('device', 'cuda'), bool(par('fp16', True)), self.thin_objects)
 
         ext = yaml.safe_load(open(os.path.join(
             get_package_share_directory('franka_experiments'), 'config', 'camera_extrinsics.yaml')))
@@ -197,6 +270,7 @@ class Grasp(Node):
 
     def reset(self):
         self.palm_ref, self.pos, self.neg, self.present = None, 0, 0, False
+        self.vel_ref, self.t_ref = np.zeros(3), None
         self.obj, self.seen, self.observed = None, None, None
 
     def on_info(self, msg):
@@ -213,6 +287,19 @@ class Grasp(Node):
     def palm(state):
         p = state.palm_position
         return np.array([p.x, p.y, p.z])
+
+    @staticmethod
+    def velocity(state):
+        v = state.palm_velocity
+        v = np.array([v.x, v.y, v.z])
+        return v if state.velocity_valid and np.isfinite(v).all() else np.zeros(3)
+
+    def jump(self, palm, t):
+        """Palm distance from where the reference hand should be now (constant velocity,
+        at most 0.3 s ahead): a fast hand moves >JUMP_M between two detections, another
+        hand does not follow the previous one's motion."""
+        dt = 0.0 if self.t_ref is None else min(max(t - self.t_ref, 0.0), 0.3)
+        return np.linalg.norm(palm - (self.palm_ref + self.vel_ref * dt))
 
     @classmethod
     def lateral(cls, state, c_base):
@@ -254,10 +341,10 @@ class Grasp(Node):
             palm_cam = self.to_camera(self.palm(state))
             palm_px = self.to_pixel(palm_cam)
             t0 = time.perf_counter()
-            observed, obj = self.detector(bgr, depth, palm_px, palm_cam[2], self.K[0])
+            observed, obj = self.detector(bgr, depth, palm_px, palm_cam[2], self.K[0], keep=self.present)
             self.ms.append(1e3 * (time.perf_counter() - t0))
             if obj is not None:
-                obj = measure(obj, depth, self.K, palm_cam[2])
+                obj = measure(obj, depth, self.K, palm_cam[2], self.thin_objects)
                 c = obj['centroid']
                 c_base = None if c is None else self.R @ c + self.t
                 if c is not None and (np.linalg.norm(c - palm_cam) > MAX_CENTROID_M
@@ -267,14 +354,14 @@ class Grasp(Node):
                     obj.update(palm_px=palm_px, palm=self.palm(state))
                     if c is not None:
                         obj['centroid'] = c_base
-            self.update(stamp(rgb), self.palm(state), observed, obj)
+            self.update(stamp(rgb), self.palm(state), self.velocity(state), observed, obj)
 
-    def update(self, t, palm, observed, obj):
+    def update(self, t, palm, velocity, observed, obj):
         # Same hand = continuous palm, not the LEFT/RIGHT label (it flips).
         with self.lock:
-            if self.palm_ref is not None and np.linalg.norm(palm - self.palm_ref) > JUMP_M:
+            if self.palm_ref is not None and self.jump(palm, t) > JUMP_M:
                 self.reset()
-            self.palm_ref = palm
+            self.palm_ref, self.vel_ref, self.t_ref = palm, velocity, t
             if not observed:
                 return
             self.observed = t
@@ -299,7 +386,7 @@ class Grasp(Node):
         palm = self.last_palm  # short tracking gaps: keep the last palm
         with self.lock:
             out.valid = bool(palm is not None and self.palm_ref is not None
-                             and np.linalg.norm(palm - self.palm_ref) <= JUMP_M
+                             and self.jump(palm, t) <= JUMP_M
                              and self.observed is not None and 0 <= t - self.observed <= self.hold_s)
             out.object_present = bool(out.valid and self.present and self.obj is not None)
             if self.seen is not None:

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import queue
+import threading
 import time
 from collections import deque
 from types import SimpleNamespace
@@ -285,9 +287,15 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         self.hand_backend = str(self._tracking_param('hand_backend').value)
         self.rtmw = None
         if self.hand_backend == 'rtmw':
+            mode = str(self._tracking_param('rtmw_mode').value)
+            if mode not in ('lightweight', 'balanced'):
+                self.get_logger().warn(f'rtmw_mode {mode} not supported (lightweight | balanced): lightweight')
+                mode = 'lightweight'
             try:
                 from franka_experiments.utils.rtmw_frontend import RtmwHolistic
-                self.rtmw = RtmwHolistic(mode=str(self._tracking_param('rtmw_mode').value))
+                self.rtmw = RtmwHolistic(mode=mode, tensorrt=bool(self._tracking_param('rtmw_tensorrt').value),
+                                         body_cues=bool(self._tracking_param('rtmw_body_cues').value))
+                self.get_logger().info(f'RTMW {mode}: {self.rtmw.engine}, body cues {self.rtmw.body or "off"}')
             except Exception as error:  # no GPU / rtmlib: keep the tracker running
                 self.get_logger().warn(f'RTMW unavailable ({error}): hand_backend=mediapipe')
                 self.hand_backend = 'mediapipe'
@@ -498,7 +506,8 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             self.gripper = GripperCamera(
                 self, config_dir + 'd405_extrinsics.yaml',
                 lambda link, stamp: self.selector_tf_manager.lookup_best_effort([link], stamp).get(link),
-                str(self._tracking_param('gripper_camera_namespace').value), debug=self.publish_debug)
+                str(self._tracking_param('gripper_camera_namespace').value), debug=self.publish_debug,
+                target=lambda: None if self._last_active is None else (self._last_active[0], self._last_active[2]))
         # Per-physical-hand lightweight distance histories.
         self._interaction_distance_history = {
             HandTrackingRaw.HAND_LEFT:
@@ -541,7 +550,7 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         )
         # Process recent images when inference is slower than the camera.
         image_qos = QoSProfile(
-            depth=1,
+            depth=1,  # always the newest frame: no backlog latency
             reliability=ReliabilityPolicy.RELIABLE,
         )
         self.rgb_sub = Subscriber(
@@ -567,6 +576,13 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             queue_size=2,
             slop=0.05,
         )
+        # Two overlapped stages: the front-end of frame N runs while the worker
+        # finishes frame N-1 (MediaPipe / onnxruntime release the GIL).
+        self._frames = queue.Queue(maxsize=1)  # stage 2 one frame behind at most
+        self._timing = {'stage1': [], 'stage2': [], 'stamps': []}
+        self._stopping = threading.Event()
+        self._worker = threading.Thread(target=self._frame_worker, daemon=True)
+        self._worker.start()
         self.synchronizer.registerCallback(self.image_callback)
         self.published_frames = 0
         self.get_logger().info(
@@ -703,7 +719,7 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             stamp, HandTrackingRaw.TRACKING_FULL if len(valid) == 4 else HandTrackingRaw.TRACKING_PARTIAL,
             points, [HandTrackingRaw.DIRECT if p is not None else HandTrackingRaw.INVALID for p in points],
             start_time, handedness=side, handedness_score=1.0,
-            palm_plane_normal=n, palm_anchor_cross=n if right else -n,)
+            palm_plane_normal=n, palm_anchor_cross=None if n is None else (n if right else -n),)
         self._last_active = (t, side, np.mean(valid, axis=0))
         return True
 
@@ -771,41 +787,77 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         return lms
 
     def image_callback(self, rgb_msg, depth_msg):
+        """Stage 1: only what the hand front-end needs; _finish_frame does the rest."""
         start_time = time.perf_counter()
         try:
-            bgr_image = self.bridge.imgmsg_to_cv2(
-                rgb_msg,
-                desired_encoding='bgr8',
-            )
-            depth_image = self.bridge.imgmsg_to_cv2(
-                depth_msg,
-                desired_encoding='passthrough',
-            )
+            # MediaPipe takes the camera RGB as is; RTMW wants BGR and the depth (hand size gate)
+            image = self.bridge.imgmsg_to_cv2(
+                rgb_msg, desired_encoding='bgr8' if self.rtmw is not None else 'rgb8')
+            depth_image = (self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+                           if self.rtmw is not None else None)
         except Exception as error:
             self.get_logger().warn(
                 f'Error in cv_bridge: {error}',
                 throttle_duration_sec=2.0,
             )
             return
-        depth_encoding = depth_msg.encoding
-        debug_image = (
-            bgr_image.copy()
-            if self.publish_debug
-            else None
-        )
-        rgb_image = cv2.cvtColor(
-            bgr_image,
-            cv2.COLOR_BGR2RGB,
-        )
         if self.rtmw is not None:
-            result = self.rtmw.process(
-                bgr_image, depth_image,
-                1e-3 if depth_encoding in ('16UC1', 'mono16') else 1.0, self.fx,
+            front = self.rtmw.process(
+                image, depth_image,
+                1e-3 if depth_msg.encoding in ('16UC1', 'mono16') else 1.0, self.fx,
                 rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
         else:
-            result = self._complete_hands(
-                self.hands.process(rgb_image), rgb_image, depth_image, depth_encoding,
-                rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
+            front = self.hands.process(image)
+        self._timing['stage1'].append(1e3 * (time.perf_counter() - start_time))
+        try:
+            self._frames.put_nowait((rgb_msg, depth_msg, image, depth_image, front, start_time))
+        except queue.Full:
+            self.get_logger().warn('Tracker stage 2 behind: frame dropped', throttle_duration_sec=2.0)
+
+    def _frame_worker(self):
+        while not self._stopping.is_set():
+            try:
+                job = self._frames.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            t0 = time.perf_counter()
+            try:
+                self._finish_frame(*job)
+            except Exception as error:  # keep the worker alive
+                self.get_logger().error(f'Tracker stage 2: {error}', throttle_duration_sec=2.0)
+            self._log_timing(job[0].header.stamp, 1e3 * (time.perf_counter() - t0))
+
+    def _log_timing(self, stamp, stage2_ms):
+        """Every 150 frames: rate, stage times, camera frames skipped (gaps in the stamps)."""
+        tm = self._timing
+        tm['stage2'].append(stage2_ms)
+        tm['stamps'].append(stamp.sec + 1e-9 * stamp.nanosec)
+        if len(tm['stamps']) < 150:
+            return
+        st = np.array(tm['stamps'])
+        gaps = np.diff(st)
+        period = max(float(gaps.min()), 1e-3)
+        skipped = int(np.sum(np.maximum(np.round(gaps / period) - 1, 0)))
+        self.get_logger().info(
+            f'Tracker {len(gaps) / (st[-1] - st[0]):.1f} Hz | stage1 {np.median(tm["stage1"]):.0f}/'
+            f'{np.percentile(tm["stage1"], 95):.0f} ms | stage2 {np.median(tm["stage2"]):.0f}/'
+            f'{np.percentile(tm["stage2"], 95):.0f} ms (median/p95) | camera frames skipped {skipped}/{len(gaps) + skipped}')
+        for v in tm.values():
+            v.clear()
+
+    def _finish_frame(self, rgb_msg, depth_msg, image, depth_image, front, start_time):
+        """Stage 2: re-detection, active hand, 3D landmarks, palm, publishing."""
+        if depth_image is None:
+            depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+        depth_encoding = depth_msg.encoding
+        bgr_image = rgb_image = image  # below only their shape is used, or RGB by re-detection
+        if self.rtmw is not None:
+            debug_image = image.copy() if self.publish_debug else None
+        else:
+            debug_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) if self.publish_debug else None
+        result = front if self.rtmw is not None else self._complete_hands(
+            front, rgb_image, depth_image, depth_encoding,
+            rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
         (
             active_side,
             hand_landmarks,
@@ -910,9 +962,9 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             self._last_active = (stamp_s, raw_handedness, palm)
             # The gripper camera sees the palm from close by: its normal wins.
             seen = None if self.gripper is None else self.gripper.hand_near(palm, stamp_s, 0.06)
-            if seen is not None:
-                geometry_plane = self.gripper.palm_normal(seen, right)
-                geometry_anchor = geometry_plane if right else -geometry_plane
+            n = None if seen is None else self.gripper.palm_normal(seen, right)
+            if n is not None:
+                geometry_plane, geometry_anchor = n, (n if right else -n)
         self.publish_tracking(rgb_msg.header.stamp, tracking_state, points_base, measurement_types,
             start_time, handedness=raw_handedness, handedness_score=raw_handedness_score,
             palm_plane_normal=geometry_plane, palm_anchor_cross=geometry_anchor,)
@@ -1009,6 +1061,10 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
         self.debug_image_publisher.publish(msg)
 
     def destroy_node(self):
+        self._stopping.set()
+        self._worker.join(timeout=1.0)
+        if self.rtmw is not None:
+            self.rtmw.stop()
         self.hands.close()
         super().destroy_node()
 

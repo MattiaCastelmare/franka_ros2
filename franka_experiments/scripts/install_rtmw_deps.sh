@@ -5,6 +5,7 @@
 # - --no-deps everywhere: numpy, opencv, protobuf (mediapipe) are not touched.
 # - onnxruntime -> onnxruntime-gpu, same version 1.23.2 (same module, CPU
 #   provider included): the two packages cannot coexist.
+# - TensorRT 10 (cu12) for the TensorRT execution provider (RTMW in FP16).
 # - CUDA 12 runtime libs for onnxruntime-gpu next to torch's CUDA 13 ones
 #   (different folders); cuDNN 9 is reused from torch.
 # Tested on franka_labs009 (RTX 5090, torch cu130): RTMW on CUDA ~17 ms/frame.
@@ -26,7 +27,10 @@ $PIP install --user --no-cache-dir --no-deps \
     nvidia-cublas-cu12==12.9.2.10 \
     nvidia-cuda-runtime-cu12==12.9.79 \
     nvidia-cufft-cu12==11.4.1.4 \
-    nvidia-curand-cu12==10.3.10.19
+    nvidia-curand-cu12==10.3.10.19 \
+    tensorrt-cu12==10.16.1.11 \
+    tensorrt-cu12-libs==10.16.1.11 \
+    tensorrt-cu12-bindings==10.16.1.11
 
 # Check (same import order as RtmwHolistic) + download the models once.
 python3 - <<'PY'
@@ -43,6 +47,8 @@ prov = m.det_model.session.get_providers()
 print('onnxruntime', ort.__version__, prov, '| mediapipe', mediapipe.__version__,
       '| numpy', np.__version__)
 assert prov[0] == 'CUDAExecutionProvider', 'RTMW is not on the GPU'
-print('RTMW OK')
+import tensorrt  # TensorRT FP16 for RTMW (rtmw_tensorrt: true)
+assert 'TensorrtExecutionProvider' in ort.get_available_providers()
+print('RTMW OK | tensorrt', tensorrt.__version__)
 PY
 EOF
