@@ -177,7 +177,14 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
             kk0 = con.k0_row
         if getattr(con, 'k1_row', None) is not None:
             kk1 = con.k1_row
-    h_qp = kk1 * (con.A @ qdot_cbf - con.v_obs) + kk0 * con.h_bar + con.jdot_qdot
+    h_k0 = con.h_bar
+    h_pen = getattr(con, 'h_pen_row', None)
+    if h_pen is not None:
+        # Bounded depth push: the k0 term sees h̄ no deeper than the floor, so
+        # the rest speed v_obs + (k0/k1)·|h̄| exceeds the obstacle's own speed
+        # by at most retreat_excess_speed_max. See ConstraintBuilder.
+        h_k0 = np.maximum(h_k0, h_pen)
+    h_qp = kk1 * (con.A @ qdot_cbf - con.v_obs) + kk0 * h_k0 + con.jdot_qdot
     if con.b_ff is not None:
         h_qp += con.b_ff
 

@@ -785,6 +785,20 @@ params:
   # Smoothness is the feature. Lower it for a firmer cap, raise it for a softer.
   retreat_cap_horizon_s: 0.15
 
+  # [m/s] how much faster than the obstacle's own closing speed the arm may flee
+  # because the barrier is VIOLATED. A barrier row rests at
+  # v = v_obs + (k0/k1)*|h_bar|; h_bar carries d_safe plus every speed-
+  # proportional margin (standoff, latency, uncertainty), so that excess used to
+  # grow with the approach speed itself and the arm fled at ~2x it (replay:
+  # 0.3 -> 0.65 m/s, 0.6 -> 1.15 m/s). This floors h_bar in the k0 term at
+  # -excess*k1/k0, which bounds the excess to this value. The k1*v_obs term is
+  # untouched: a faster obstacle is still matched one for one. The retreat cap
+  # could not do this job -- its slack is cheaper than the barrier's, so it
+  # yields exactly when the barrier is violated.
+  # 0 disables it (the previous behaviour). Raise it to let the arm back out of
+  # a static intrusion faster; lower it for a gentler, more proportional flight.
+  retreat_excess_speed_max: 0.25
+
   # ── Task-space speed rows (cbf_safety_filter) ──────────────────────────────
   # "Velocita feasible": a bound on how fast any CONTROL POINT travels, which
   # nothing in the filter had. The joint velocity box bounds qdot per joint, and

@@ -563,6 +563,7 @@ CBF_PARAM_SPEC = {
     'retreat_cap_engage_gap': ('float', dict(positive=True, maximum=2.0)),
     'retreat_cap_max_speed': ('float', dict(positive=True, maximum=5.0)),
     'retreat_cap_horizon_s': ('float', dict(positive=True, maximum=2.0)),
+    'retreat_excess_speed_max': ('float', dict(minimum=0.0, maximum=5.0)),
     'link_speed_rows_enabled': ('bool', dict()),
     'link_speed_max': ('float', dict(positive=True, maximum=5.0)),
     'link_speed_reaction_s': ('float', dict(positive=True, maximum=2.0)),
