@@ -93,6 +93,9 @@ class QddotToTorqueNode(Node):
             self, 'iso_tau_rate_max',
             float(params.get('iso_tau_rate_max', 40.0)),
             positive=True, maximum=1000.0)
+        # The YAML value is N*m per 100 Hz tick; this node runs once per
+        # qddot_safe message, i.e. at qp_rate_hz. Keep the N*m/s rate fixed.
+        self._tau_rate_max *= 100.0 / float(params.get('qp_rate_hz', 100.0))
         jl = load_franka_joint_limits(
             [f'joint{i}' for i in range(1, NUM_JOINTS + 1)])
         self._effort_max = jl['effort_max']
@@ -258,7 +261,7 @@ class QddotToTorqueNode(Node):
                 + ', '.join(str(i + 1) for i in np.flatnonzero(sat))
                 + f' — effort={np.round(np.abs(tau), 1).tolist()} vs '
                 f'{self._effort_max.tolist()} N*m'
-                + (f', rate limit {self._tau_rate_max:.0f} N*m/tick'
+                + (f', rate limit {self._tau_rate_max:.1f} N*m/tick'
                    if hit_rate.any() else '')
                 + ('' if self._iso_enabled
                    else ' (DIAGNOSTIC ONLY: iso_enabled is false, the command '

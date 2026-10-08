@@ -1482,6 +1482,13 @@ class ConstraintSnap(NamedTuple):
                            # actual decision uses the blended weights, never
                            # this argmax. Printed by CBFDIAG so a log line says
                            # which rung the arm believes it is on.
+    h_pen_row: Optional[np.ndarray] = None
+                           # (n_c,) [m] FLOOR on h̄ inside the k0 term of the
+                           # obstacle rows (−inf elsewhere), or None when
+                           # retreat_excess_speed_max is 0. The row's rest
+                           # speed is v_obs + (k0/k1)·|h̄|; flooring |h̄| at
+                           # dv·k1/k0 bounds the part that does NOT come from
+                           # the obstacle's own speed to dv. See build_row_rhs.
 
 
 
@@ -2629,6 +2636,24 @@ class ConstraintBuilder:
                 # calibrated in obstacle metres. Scheduling them off an
                 # obstacle ladder would be a category error that happens to
                 # type-check.
+        # ── Bounded depth push (retreat_excess_speed_max) ────────────────
+        # A barrier row demands n̂ᵀJq̈ ≥ −k1·ḣ − k0·h̄. With h̄ < 0 the k0 term
+        # keeps accelerating the arm until k1·(v_obs − v) + k0·|h̄| = 0, i.e. it
+        # rests at v = v_obs + (k0/k1)·|h̄|. h̄ is NOT the depth inside d_safe
+        # any more: it also carries the speed-proportional margins (standoff,
+        # latency, uncertainty), so the excess over the obstacle's own speed
+        # grew with that speed and with every margin stacked on it — the arm
+        # fled at ~2x the approach speed (0.3 -> 0.65 m/s, 0.6 -> 1.15 m/s in
+        # the closed-loop replay). Flooring h̄ in the k0 term at
+        # −dv·k1/k0 caps that excess at dv. The k1·v_obs term is untouched, so
+        # the arm still matches however fast the obstacle comes in.
+        h_pen_row = None
+        dv_pen = float(getattr(self._P, 'retreat_excess_speed_max', 0.0))
+        if dv_pen > 0.0 and idx_obs.size:
+            kk0 = k0_row if k0_row is not None else np.full(n_c, float(self._P.k0_cbf))
+            kk1 = k1_row if k1_row is not None else np.full(n_c, float(self._P.k1_cbf))
+            h_pen_row = np.full(n_c, -np.inf)
+            h_pen_row[idx_obs] = -dv_pen * kk1[idx_obs] / np.maximum(kk0[idx_obs], 1e-9)
         m_row = None
         self.diag_w = self.diag_wq = None
         if self._P.enable_weighted_slack:
@@ -2731,7 +2756,7 @@ class ConstraintBuilder:
                                     float(esc_w_max),
                                     outrun_v,
                                     lock_dir,
-                                    k0_row, k1_row, zone_row)
+                                    k0_row, k1_row, zone_row, h_pen_row)
 
     def _escape_row(self, ob, a: np.ndarray, Jp: np.ndarray, h: float,
                     v_obs: float, qdot: np.ndarray):

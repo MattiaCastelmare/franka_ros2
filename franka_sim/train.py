@@ -34,7 +34,8 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from franka_sim.envs.franka_cbf_env import FrankaCBFEnv
+from franka_sim.envs.franka_cbf_env import FrankaCBFEnv, precision_bonus
+from franka_sim.envs.obs_layout import spec_from_config
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_HERE, 'config.yaml')
@@ -107,14 +108,22 @@ class EpisodeCheckpointCallback(BaseCallback):
     """
 
     def __init__(self, every: int, save_path: str, export: bool = True,
-                 name_prefix: str = 'sac_ep', verbose: int = 1):
+                 name_prefix: str = 'sac_ep', start_episodes: int = 0,
+                 save_buffer: bool = False, verbose: int = 1):
         super().__init__(verbose)
         self.every = int(every)
         self.save_path = save_path
         self.export = export
         self.name_prefix = name_prefix
-        self.n_episodes = 0
-        self._next_at = self.every
+        # On --resume, continue the count so the new segment's snapshots do not
+        # overwrite the first segment's sac_ep000200..N files.
+        self.n_episodes = int(start_episodes)
+        # SAC.save() does not include the replay buffer, so a resume from a
+        # plain .zip restarts on an empty buffer with no learning_starts
+        # warm-up (sac_b2 segment 2: ent_coef 0.75 -> ~10, critic_loss 1e4 ->
+        # 1e6). Keep ONE rolling copy (~0.5 GB) next to the snapshots.
+        self.save_buffer = save_buffer
+        self._next_at = (self.n_episodes // self.every + 1) * self.every if self.every > 0 else 0
 
     def _on_step(self) -> bool:
         for info in self.locals.get('infos', []):
@@ -127,6 +136,9 @@ class EpisodeCheckpointCallback(BaseCallback):
             base = os.path.join(self.save_path,
                                 f'{self.name_prefix}{self.n_episodes:06d}')
             self.model.save(base)
+            if self.save_buffer:
+                self.model.save_replay_buffer(
+                    os.path.join(self.save_path, 'replay_buffer_latest.pkl'))
             if self.verbose:
                 print(f'\n[episode-ckpt] {self.n_episodes} episodes '
                       f'({self.num_timesteps} steps) -> {base}.zip')
@@ -144,6 +156,181 @@ class EpisodeCheckpointCallback(BaseCallback):
                 print(f'[episode-ckpt] ONNX export skipped: {exc}')
 
 
+class PolicyWarmupCallback(BaseCallback):
+    """No gradient steps for the first `steps` env steps of a resumed run.
+
+    A resume without a replay buffer starts on an EMPTY buffer, and SB3's own
+    warm-up (learning_starts) would fill it with RANDOM actions. Holding
+    gradient_steps at 0 instead fills it with the loaded policy's own
+    (stochastic) behaviour under the NEW config's reward, then restores the
+    configured value — the clean way to fine-tune on a reward term that
+    relabel_buffer cannot reconstruct from the observation (e.g. w_slack).
+    """
+
+    def __init__(self, steps: int, verbose: int = 1):
+        super().__init__(verbose)
+        self.steps = int(steps)
+        self._restore = None
+
+    def _on_training_start(self) -> None:
+        self._end = self.model.num_timesteps + self.steps
+        self._restore = self.model.gradient_steps
+        self.model.gradient_steps = 0
+        if self.verbose:
+            print(f'[policy-warmup] collecting {self.steps} steps with the loaded policy, no updates')
+
+    def _on_step(self) -> bool:
+        if self._restore is not None and self.model.num_timesteps >= self._end:
+            self.model.gradient_steps = self._restore
+            self._restore = None
+            if self.verbose:
+                print(f'[policy-warmup] done at {self.model.num_timesteps}: '
+                      f'buffer {self.model.replay_buffer.size()}, gradient_steps {self.model.gradient_steps}')
+        return True
+
+
+def _obs_reward_terms(cfg: dict, obs, nxt, terminated, slot):
+    """The reward terms of `cfg` that are a function of (obs, next_obs) alone."""
+    rw = cfg.get('reward', {})
+    e, t, d = slot['ee_pos'][0], slot['target'][0], slot['d_min'][0]
+    dist = np.linalg.norm(nxt[..., e:e + 3] - nxt[..., t:t + 3], axis=-1)
+    add = np.asarray(precision_bonus(rw, dist), dtype=np.float64) * np.ones_like(dist)
+    w_obs = float(rw.get('w_obs_margin', 0.0))
+    if w_obs > 0.0:
+        margin = float(rw.get('obs_soft_margin', 0.10))
+        pen = lambda x: np.clip((margin - x) / margin, 0.0, 1.0)
+        pen_s, pen_n = pen(obs[..., d]), pen(nxt[..., d])
+        if str(rw.get('obs_shaping', 'penalty')) == 'potential':
+            gamma = float(rw.get('shaping_gamma', cfg['rl'].get('gamma', 0.99)))
+            add += gamma * (1.0 - terminated) * (-w_obs * pen_n) + w_obs * pen_s
+        else:
+            add -= w_obs * pen_n
+    return add
+
+
+def relabel_buffer(buf, cfg: dict, old_cfg: dict | None = None):
+    """Swap the obs-derivable reward terms of `old_cfg` for those of `cfg`.
+
+    For a fine-tune whose config changes w_prec and/or w_obs_margin (or its
+    shaping mode): the stored rewards become exactly what the new env would
+    have paid (up to float32 obs rounding), so the critic is not fed two
+    reward functions at once. `old_cfg` is the config the buffer was collected
+    with; None means it had both terms at 0 (the v11 behaviour). Everything
+    else (intervention, slack, …) is not in the obs and must be unchanged
+    between the two configs.
+    """
+    slot = {k: (s, w) for k, s, w in spec_from_config(cfg).slots}
+    n = buf.buffer_size if buf.full else buf.pos
+    obs, nxt = buf.observations[:n], buf.next_observations[:n]
+    terminated = buf.dones[:n] * (1.0 - buf.timeouts[:n])
+    add = _obs_reward_terms(cfg, obs, nxt, terminated, slot)
+    if old_cfg is not None:
+        add -= _obs_reward_terms(old_cfg, obs, nxt, terminated, slot)
+    buf.rewards[:n] += add.astype(buf.rewards.dtype)
+    print(f'relabelled {n} transitions: mean added reward {add.mean():+.4f}')
+
+
+def _chronological(buf) -> np.ndarray:
+    """Raw slot indices oldest → newest (an SB3 buffer is circular once full)."""
+    n = buf.buffer_size if buf.full else buf.pos
+    return (np.concatenate([np.arange(buf.pos, n), np.arange(0, buf.pos)])
+            if buf.full else np.arange(n))
+
+
+def widen_buffer(old, new, cfg: dict):
+    """Copy a 24-D buffer into a `new` one whose obs also carries v_obs (b4 / C4).
+
+    v_obs is what the env would have observed: the finite difference of the
+    observed obstacle centre, (p_t − p_{t−1})/dt, and 0 on the first obs after
+    a reset. A transition's next_obs velocity is (p' − p)/dt; its obs velocity
+    is the previous transition's next_obs velocity in the same episode. The
+    oldest transition, whose predecessor is gone, reuses its own next velocity.
+    Raw slots are preserved, so a mask computed on `old` indexes `new` too.
+    """
+    slot = {k: (s, w) for k, s, w in spec_from_config(cfg).slots}
+    po, (pv, wv) = slot['obstacle'][0], slot['v_obs']
+    d_old = old.observations.shape[-1]
+    assert pv == d_old and new.observations.shape[-1] == d_old + wv, 'v_obs must be appended'
+    assert new.buffer_size == old.buffer_size and old.n_envs == new.n_envs == 1
+    dt = 1.0 / float(cfg['env'].get('control_rate_hz', 100.0))
+    order = _chronological(old)
+    o, x = old.observations[order, 0], old.next_observations[order, 0]
+    v_next = (x[:, po:po + 3].astype(np.float64) - o[:, po:po + 3]) / dt
+    v_obs = np.empty_like(v_next)
+    v_obs[0] = v_next[0]
+    v_obs[1:] = v_next[:-1]
+    v_obs[1:][old.dones[order[:-1], 0].astype(bool)] = 0.0
+    n = len(order)
+    for name in ('observations', 'next_observations'):
+        getattr(new, name)[:n, :, :d_old] = getattr(old, name)[:n]
+    new.observations[order, 0, pv:pv + wv] = v_obs
+    new.next_observations[order, 0, pv:pv + wv] = v_next
+    for name in ('actions', 'rewards', 'dones', 'timeouts'):
+        getattr(new, name)[:n] = getattr(old, name)[:n]
+    new.pos, new.full = old.pos, old.full
+    print(f'widened {n} transitions {d_old}→{d_old + wv}-D: |v_obs| p50 '
+          f'{np.median(np.linalg.norm(v_next, axis=1)):.3f} max {np.linalg.norm(v_next, axis=1).max():.3f} m/s')
+
+
+def mask_buffer(buf, valid: np.ndarray):
+    """Keep only the transitions with valid[raw slot] (b4 / C3), compacted, oldest first."""
+    order = _chronological(buf)
+    keep = order[valid[order]]
+    k = len(keep)
+    for name in ('observations', 'next_observations', 'actions', 'rewards', 'dones', 'timeouts'):
+        arr = getattr(buf, name)
+        arr[:k] = arr[keep]
+    buf.pos, buf.full = k % buf.buffer_size, False
+    print(f'buffer mask: kept {k}/{len(order)} transitions ({k / max(1, len(order)):.3f})')
+
+
+def widen_model(old, new):
+    """Copy `old`'s weights + optimizer state into `new`, whose obs is wider (b4 / C4).
+
+    New input columns get ZERO weights (and zero Adam moments), so `new` is the
+    same function as `old` on the old slots whatever the new slots carry:
+    actor first layer [out, obs] → columns appended at the end; critic first
+    layers [out, obs + act] → columns inserted between obs and action.
+    """
+    import torch as th
+    d_old = old.observation_space.shape[0]
+    d_new = new.observation_space.shape[0]
+
+    def pad(key, t_old, shape):
+        if tuple(t_old.shape) == tuple(shape):
+            return t_old.clone()
+        assert t_old.dim() == 2 and t_old.shape[0] == shape[0] and shape[1] - t_old.shape[1] == d_new - d_old, key
+        z = th.zeros(shape[0], d_new - d_old, dtype=t_old.dtype, device=t_old.device)
+        if key.startswith('critic'):
+            return th.cat([t_old[:, :d_old], z, t_old[:, d_old:]], dim=1)
+        return th.cat([t_old, z], dim=1)
+
+    sd_old, sd_new = old.policy.state_dict(), new.policy.state_dict()
+    new.policy.load_state_dict({k: pad(k, sd_old[k].to(v.device), v.shape) for k, v in sd_new.items()})
+
+    def copy_opt(o_old, o_new, names):
+        s_old, s_new = o_old.state_dict(), o_new.state_dict()
+        shapes = {i: sd_new[nm].shape for i, nm in enumerate(names)}
+        for i, st in s_old['state'].items():
+            s_new['state'][i] = {k: (pad(names[i], v.to(sd_new[names[i]].device), shapes[i])
+                                     if th.is_tensor(v) and v.dim() == 2 else v.clone())
+                                 for k, v in st.items()}
+        o_new.load_state_dict(s_new)
+
+    actor_names = [k for k in sd_new if k.startswith('actor.')]
+    critic_names = [k for k in sd_new if k.startswith('critic.')]
+    copy_opt(old.actor.optimizer, new.actor.optimizer, actor_names)
+    copy_opt(old.critic.optimizer, new.critic.optimizer, critic_names)
+    if getattr(old, 'log_ent_coef', None) is not None:
+        with th.no_grad():
+            new.log_ent_coef.copy_(old.log_ent_coef.to(new.log_ent_coef.device))
+        new.ent_coef_optimizer.load_state_dict(old.ent_coef_optimizer.state_dict())
+    new.num_timesteps = old.num_timesteps
+    new._n_updates = old._n_updates
+    print(f'widened model {d_old}→{d_new}-D obs (zero columns), ent_coef '
+          f'{float(th.exp(new.log_ent_coef.detach())):.4f}, timesteps {new.num_timesteps}')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default=_DEFAULT_CONFIG)
@@ -155,6 +342,31 @@ def main():
     ap.add_argument('--checkpoint-every-episodes', type=int, default=None,
                     help='snapshot every N completed episodes (0 disables); '
                          'default: rl.checkpoint_freq_episodes in the config')
+    ap.add_argument('--start-episode', type=int, default=0,
+                    help='episode count to continue from on --resume '
+                         '(e.g. 3000 for sac_ep003000.zip)')
+    ap.add_argument('--save-replay-buffer', action='store_true',
+                    help='with each episode checkpoint, overwrite '
+                         'checkpoints/replay_buffer_latest.pkl')
+    ap.add_argument('--resume-buffer', default=None,
+                    help='replay buffer .pkl to load on --resume')
+    ap.add_argument('--relabel-buffer', action='store_true',
+                    help='on --resume-buffer, add the obs-derivable reward terms '
+                         '(w_prec, w_obs_margin) of THIS config to the stored '
+                         'rewards (the old run must have had them at 0)')
+    ap.add_argument('--relabel-from', default=None,
+                    help='with --relabel-buffer: the config the buffer was COLLECTED with; '
+                         'its obs-derivable terms are subtracted (default: assume they were 0)')
+    ap.add_argument('--buffer-mask', default=None,
+                    help='on --resume-buffer: .npz from scripts/shield_buffer_mask.py; keep only '
+                         'the transitions valid with the obstacle shield OFF')
+    ap.add_argument('--widen-obs', action='store_true',
+                    help='on --resume: the config observes MORE slots than the loaded model '
+                         '(e.g. + obs.obstacle_velocity); new inputs start with zero weights and '
+                         'the loaded buffer gets the new slots relabelled')
+    ap.add_argument('--policy-warmup', type=int, default=0,
+                    help='on --resume: first N steps collect data with the loaded '
+                         'policy and do no gradient updates (use without --resume-buffer)')
     ap.add_argument('--no-episode-onnx', action='store_true',
                     help='skip the ONNX export of each episode checkpoint')
     args = ap.parse_args()
@@ -191,12 +403,8 @@ def main():
     policy_kwargs = dict(net_arch=list(rl.get('net_arch', [256, 256])))
     ent_coef = rl.get('ent_coef', 'auto')
 
-    if args.resume:
-        print(f'Resuming from {args.resume}')
-        model = SAC.load(args.resume, env=train_env, device=device,
-                         tensorboard_log=tb_dir)
-    else:
-        model = SAC(
+    def fresh_model():
+        return SAC(
             rl.get('policy', 'MlpPolicy'), train_env,
             learning_rate=float(rl.get('learning_rate', 3e-4)),
             buffer_size=int(rl.get('buffer_size', 1_000_000)),
@@ -210,6 +418,51 @@ def main():
             policy_kwargs=policy_kwargs,
             device=device, seed=seed, verbose=1, tensorboard_log=tb_dir,
         )
+
+    if args.resume:
+        print(f'Resuming from {args.resume}')
+        # SAC.load restores the SAVED hyper-parameters; take the ones this
+        # config asks for, so a fine-tune can lower the learning rate.
+        lr = float(rl.get('learning_rate', 3e-4))
+        if args.widen_obs:
+            # The saved model cannot be loaded against the wider env (SB3
+            # checks the observation space): build a fresh model from THIS
+            # config and graft the old weights in, zero on the new inputs.
+            old = SAC.load(args.resume, device=device)
+            model = fresh_model()
+            widen_model(old, model)
+        else:
+            model = SAC.load(args.resume, env=train_env, device=device,
+                             tensorboard_log=tb_dir,
+                             custom_objects=dict(
+                                 learning_rate=lr, lr_schedule=lambda _: lr,
+                                 gradient_steps=int(rl.get('gradient_steps', 1)),
+                                 batch_size=int(rl.get('batch_size', 512))))
+        model.set_random_seed(seed)
+        print(f'resume hparams: lr={lr} gradient_steps={model.gradient_steps} '
+              f'batch_size={model.batch_size} seed={seed}')
+        if args.resume_buffer:
+            if args.widen_obs:
+                from stable_baselines3.common.save_util import load_from_pkl
+                old_buf = load_from_pkl(args.resume_buffer)
+                widen_buffer(old_buf, model.replay_buffer, cfg)
+                del old_buf
+            else:
+                model.load_replay_buffer(args.resume_buffer)
+            print(f'Loaded replay buffer ({model.replay_buffer.size()} '
+                  f'transitions) from {args.resume_buffer}')
+            if args.relabel_buffer:
+                old_cfg = None
+                if args.relabel_from:
+                    with open(args.relabel_from) as f:
+                        old_cfg = yaml.safe_load(f)
+                relabel_buffer(model.replay_buffer, cfg, old_cfg)
+            if args.buffer_mask:
+                mask_buffer(model.replay_buffer, np.load(args.buffer_mask)['valid'])
+        else:
+            print('WARNING: resuming with an EMPTY replay buffer')
+    else:
+        model = fresh_model()
 
     print(f'device={model.device}  n_envs={n_envs}  total_timesteps={total}  exp={exp}')
 
@@ -227,10 +480,14 @@ def main():
             n_eval_episodes=10, deterministic=True, render=False),
         SafetyMetricsCallback(log_freq=2000),
     ]
+    if args.policy_warmup > 0:
+        callbacks.insert(0, PolicyWarmupCallback(args.policy_warmup))
     if ep_every > 0:
         callbacks.append(EpisodeCheckpointCallback(
             every=ep_every, save_path=ckpt_dir,
-            export=not args.no_episode_onnx))
+            export=not args.no_episode_onnx,
+            start_episodes=args.start_episode,
+            save_buffer=args.save_replay_buffer))
         print(f'episode checkpoints: every {ep_every} episodes → {ckpt_dir}')
 
     model.learn(total_timesteps=total, callback=callbacks, tb_log_name=exp,

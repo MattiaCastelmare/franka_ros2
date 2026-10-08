@@ -114,7 +114,7 @@ class Sim:
             raw = tangential_bias(qddot_nom, qdot, con, gain=P.cbf_tangential_gain,
                                   engage_margin=P.cbf_tangential_engage_margin,
                                   max_bias=P.cbf_tangential_max_bias)
-            a_t = P.cbf_tangential_filter_alpha
+            a_t = P.cbf_tangential_filter_alpha ** (self.dt / 0.01)  # as the filter: alpha defined at 100 Hz
             tan[:] = a_t * tan + (1.0 - a_t) * raw
             qddot_nom = qddot_nom + tan
         self.qvec[:NV] = -qddot_nom

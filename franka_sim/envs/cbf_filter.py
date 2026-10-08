@@ -231,6 +231,33 @@ class AccelCBFFilter:
         self.ws_margin  = float(p.get('ws_margin', 0.02))
         self.ws_horizon = float(p.get('ws_horizon', 0.25))
 
+        # Floor (hard rows on EVERY control point, sim-only like the ws box).
+        # The ws box only holds the EE point, so links 6/7 and the fingers
+        # could still be driven into the floor. h = z_cp − r_cp − floor_z − margin.
+        self.floor_enable  = bool(p.get('floor_enable', False))
+        self.floor_z       = float(p.get('floor_z', 0.0))
+        self.floor_margin  = float(p.get('floor_margin', 0.03))
+        self.floor_horizon = float(p.get('floor_horizon', 0.30))
+        # Gentler gains than the obstacle rows (k0 25 / k1 10.5): those let the
+        # arm close on the floor fast and then demand more deceleration than the
+        # accel/slew box allows, so the QP went infeasible right above it.
+        self.floor_k0      = float(p.get('floor_k0', 4.0))
+        self.floor_k1      = float(p.get('floor_k1', 4.0))
+
+        # Base keep-out (sim stand-in for the robot's self-collision rows):
+        # a vertical cylinder around the base axis that the forearm, wrist and
+        # hand may not enter below base_height. Without it the policy folded
+        # link5 onto link0/link1, the arm jammed, the QP went infeasible and the
+        # hand slid onto the floor. Same gentle gains as the floor rows.
+        self.base_keepout_enable = bool(p.get('base_keepout_enable', False))
+        self.base_radius  = float(p.get('base_radius', 0.11))
+        self.base_height  = float(p.get('base_height', 0.45))
+        self.base_margin  = float(p.get('base_margin', 0.02))
+        # QP infeasible → re-solve with EVERY row soft before falling back to
+        # the blind −k·q̇ brake. Measured: all floor hits with floor rows on
+        # happened on infeasible ticks, where the brake ignores the floor.
+        self.soft_fallback = bool(p.get('soft_fallback', False))
+
         self.qddot_max = np.asarray(qddot_max, float)
         self.qdot_max  = np.asarray(qdot_max, float)
 
@@ -356,12 +383,17 @@ class AccelCBFFilter:
     # ── Main entry point ─────────────────────────────────────────────────────
 
     def filter(self, q, qdot, qddot_nom, obstacles: List[Obstacle],
-               ee_pos=None, ee_Jp=None, ee_jd_qd=None) -> tuple:
+               ee_pos=None, ee_Jp=None, ee_jd_qd=None, floor_pts=None,
+               base_pts=None) -> tuple:
         """Shield q̈_nom into q̈_safe. Returns (q̈_safe (NV,), CBFInfo).
 
         obstacles : soft HOCBF rows (built by the env from MuJoCo geometry).
         ee_pos/ee_Jp/ee_jd_qd : EE point + its (3,NV) Jacobian + J̇q̇ drift, used
             for the hard workspace-box rows (skip if ws disabled or None).
+        floor_pts : ``[(z, radius, Jz (NV,), J̇z q̇)]`` per control point for the
+            hard floor rows (skip if floor disabled or None).
+        base_pts : ``[(p (3,), radius, Jp (3,NV), J̇p q̇ (3,))]`` for the hard
+            base keep-out rows (skip if disabled or None).
         """
         q = np.asarray(q, float)
         qdot = np.asarray(qdot, float)
@@ -406,6 +438,38 @@ class AccelCBFFilter:
                     rows_a.append(a_row); rows_b.append(b)
                     rows_soft.append(0.0); rows_h.append(h_ws)
 
+        if self.floor_enable and floor_pts:
+            for z, r, a_row, jdq in floor_pts:
+                h_fl = float(z - r - self.floor_z - self.floor_margin)
+                if h_fl >= self.floor_horizon:
+                    continue
+                a_row = np.asarray(a_row, float)
+                b = (-self.floor_k1 * float(a_row @ qdot) - self.floor_k0 * h_fl
+                     - float(jdq))
+                if np.all(np.isfinite(a_row)) and np.isfinite(b):
+                    rows_a.append(a_row); rows_b.append(b)
+                    rows_soft.append(0.0); rows_h.append(h_fl)
+
+        if self.base_keepout_enable and base_pts:
+            for p_pt, r, Jp, jdq in base_pts:
+                if p_pt[2] > self.base_height:
+                    continue
+                rho = float(np.hypot(p_pt[0], p_pt[1]))
+                if rho < 1e-6:
+                    continue
+                u_xy = np.asarray(p_pt[:2], float) / rho     # radial direction
+                h_b = rho - r - self.base_radius - self.base_margin
+                if h_b >= self.floor_horizon:
+                    continue
+                # ρ̈ = û·(J q̈ + J̇ q̇) + ‖ṗ⊥‖²/ρ; dropping the last (≥ 0) term
+                # is conservative.
+                a_row = u_xy @ np.asarray(Jp, float)[:2]
+                b = (-self.floor_k1 * float(a_row @ qdot) - self.floor_k0 * h_b
+                     - float(u_xy @ np.asarray(jdq, float)[:2]))
+                if np.all(np.isfinite(a_row)) and np.isfinite(b):
+                    rows_a.append(a_row); rows_b.append(b)
+                    rows_soft.append(0.0); rows_h.append(h_b)
+
         n_c = len(rows_a)
         info.n_c = n_c
         info.n_obs = n_obs
@@ -439,6 +503,20 @@ class AccelCBFFilter:
             qddot_safe = -self.k_brake * qdot
             info.solved = False
             info.braking = True
+            if self.soft_fallback and G is not None:
+                G_soft = G.copy()
+                G_soft[:, -1] = -1.0
+                l, u = self._osqp_lu(G_soft, h_qp)
+                prob = osqp.OSQP()
+                prob.setup(P=self._P_csc, q=self._qvec, A=self._osqp_A(G_soft),
+                           l=l, u=u, max_iter=self.max_iter, verbose=False,
+                           adaptive_rho_interval=25)
+                r2 = prob.solve()
+                if (r2.info.status_val == osqp.constant('OSQP_SOLVED')
+                        and r2.x is not None and np.all(np.isfinite(r2.x))):
+                    qddot_safe = np.asarray(r2.x[:NV], float)
+                    info.slack = float(r2.x[-1])
+                    info.braking = False
 
         # Every path passes through the hard box+slew clip (as the real node's
         # _finalize_and_publish) so velocity/position/continuity always hold.

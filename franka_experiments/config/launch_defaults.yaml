@@ -215,7 +215,11 @@ lateral_evasion: true
 # Step aside toward the fastest direction orthogonal to v_obs when the joint
 # VELOCITY box says the point cannot outrun the obstacle along the normal
 # (Phase 2, utils/evasion_direction). Also a bias on the QP's target only.
-outrun_evasion: true
+# OFF since 2026-10-07: with an empty scene it fired on phantom obstacle
+# velocities (CBFDIAG outr=2.45/1.00 at ~0.36 m from fr3_link8) right as the
+# RT controller started, and the arm coasted ~1 rad/s away during the
+# commander's warmup. Re-enable once the mask leak is gone.
+outrun_evasion: false
 
 # Livelock escape (Phase 3c): the QP has been bending the nominal while the
 # arm stands still for livelock_stall_s -> a bounded, logged nudge in the

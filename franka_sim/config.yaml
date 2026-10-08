@@ -18,7 +18,7 @@ env:
   # Use `attachment_site` (the bare flange ≡ fr3_link8) only for a hand-less
   # robot, and then set ee_frame:=fr3_link8 to match.
   ee_site: hand_tcp_site          # Franka Hand TCP ≡ fr3_hand_tcp
-  control_rate_hz: 100.0          # policy + CBF tick rate (matches real qp_rate)
+  control_rate_hz: 100.0          # policy + CBF tick rate (= the robot commander; the robot QP runs at 300 Hz since 2026-10-07, same jerk bound)
   sim_timestep: 0.002             # MuJoCo integration step (→ 5 substeps/tick)
   max_episode_steps: 500          # 5 s episodes at 100 Hz
   # Viewer playback rate (--render only; ignored while training and headless).
@@ -467,7 +467,6 @@ shield_parity:
     - enable_velocity_standoff    # d_safe_eff = d_safe + 0.20 s × closing speed
     - enable_uncertainty_margin
     - enable_lateral_evasion      # biases the QP target
-    - enable_outrun_evasion       # biases the QP target
     - enable_livelock_escape      # biases the QP target
     - enable_vobs_in_hdot
     # MOVED here from robot_only_inactive (Sep 2026, thrown-ball dodge
@@ -486,6 +485,7 @@ shield_parity:
   # Shipped OFF on the robot as well, so they are not part of today's gap.
   # Turning one on WIDENS the gap and fails the test until it is moved up.
   robot_only_inactive:
+    - enable_outrun_evasion       # launch default off since 2026-10-07: fired on phantom obstacles
     - enable_velocity_feedforward
     - enable_weighted_slack
     - enable_sensor_range_uncertainty  # needs LinkDistance.range_m + calibration; not hardware-validated

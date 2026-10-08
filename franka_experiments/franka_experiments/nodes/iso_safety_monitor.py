@@ -110,6 +110,16 @@ REASON_NAMES = {
 }
 
 
+
+def trip_ticks(P) -> int:
+    """Consecutive ticks before a trip, at the monitor's actual rate.
+
+    ``iso_monitor_ticks`` is defined at 100 Hz (3 ticks = 30 ms, about one
+    depth frame); the timer runs at ``qp_rate_hz``, so a faster QP must not
+    turn it into one noisy frame read three times.
+    """
+    return max(1, int(round(P.iso_monitor_ticks * P.qp_rate_hz / 100.0)))
+
 class ISOSafetyMonitor(Node):
 
     def __init__(self):
@@ -172,7 +182,7 @@ class ISOSafetyMonitor(Node):
             f'  config: {P.config_path}\n'
             f'  C+Z_d+Z_r = {self._floor:.3f} m   T_r = {P.iso_t_reaction:.3f} s   '
             f'a_s = {P.iso_a_stop:.2f} m/s^2   v_h = {P.iso_v_human:.2f} m/s\n'
-            f'  trip after {P.iso_monitor_ticks} ticks, tol '
+            f'  trip after {trip_ticks(P)} ticks, tol '
             f'{P.iso_speed_tol:.3f} m/s, latch='
             f'{"ON (manual reset)" if P.iso_stop_requires_reset else "off (auto-resume)"}\n'
             f'  NON-SAFETY-RATED. Not a protective stop, not PL d, not certified '
@@ -233,7 +243,7 @@ class ISOSafetyMonitor(Node):
 
         tripped = REASON_NONE
         for reason in (REASON_INSIDE, REASON_SPEED, REASON_FAULT, REASON_STALE):
-            if self._streak[reason] >= P.iso_monitor_ticks:
+            if self._streak[reason] >= trip_ticks(P):
                 tripped = reason
                 break
 

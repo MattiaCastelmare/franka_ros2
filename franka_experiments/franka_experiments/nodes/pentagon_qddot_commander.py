@@ -616,12 +616,21 @@ class PentagonQddotCommander(Node):
         self._js_stamp = self.get_clock().now()
         self._js_imap: Optional[List[int]] = None
 
+        # AUTO -> joint_states_fast (the joint_state_broadcaster's own 1 kHz
+        # output), like cbf_safety_filter and qddot_to_torque. joint_states is
+        # the 30 Hz Python republisher: measured 2026-10-07, 70 % of this
+        # node's 100 Hz ticks saw the SAME q as the tick before, so the
+        # Cartesian PD differentiated a staircase (30 Hz line in ez, ~2 Hz
+        # wobble in q̈_nom). depth=1: the callback only caches, always take
+        # the latest sample.
         js_topic = js_topic_param
         if js_topic == AUTO_SENTINEL:
-            ns = get_namespace_from_config()
-            js_topic = f'/{ns}/joint_states' if ns else '/joint_states'
+            js_topic = _topics.get('joint_states_fast')
+            if not js_topic:
+                ns = get_namespace_from_config()
+                js_topic = f'/{ns}/joint_states' if ns else '/joint_states'
 
-        self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, 10)
+        self._js_sub = self.create_subscription(JointState, js_topic, self._js_cb, 1)
         self._cbf_sub = self.create_subscription(
             Float64MultiArray,
             str(self.get_parameter('cbf_status_topic').value),

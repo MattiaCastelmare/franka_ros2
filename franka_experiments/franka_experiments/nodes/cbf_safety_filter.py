@@ -271,6 +271,16 @@ class CBFSafetyFilter(Node):
         self._lock_bias = np.zeros(NV)   # EMA state, like the other two biases
         self._progress = ProgressWindow(P.livelock_progress_window_s)
         self._dt_qp = 1.0 / P.qp_rate_hz
+        # The per-QP-tick EMAs below (and iso_brake_frac_ticks, in
+        # _brake_authority_fault) were tuned at 100 Hz and
+        # their YAML values stay defined THERE: a = 0.9 means a 100 ms constant
+        # whatever qp_rate_hz is. Re-expressed per actual tick (a**k, n/k with
+        # k = dt_qp / 10 ms) so raising the QP rate does not silently shorten
+        # every filter by the same factor.
+        k_tick = self._dt_qp / 0.01
+        self._a_tan = float(P.cbf_tangential_filter_alpha) ** k_tick
+        self._a_outrun = float(P.outrun_evasion_filter_alpha) ** k_tick
+        self._a_hdot = float(P.cbf_hdot_filter_alpha) ** k_tick
         # Zone ladder for the TASK SWITCH only. The constraint builder owns a
         # second instance for the row gains: two rates, two pieces of state,
         # one factory (utils.cbf_zones.ladder_from_params) so they cannot drift
@@ -1155,7 +1165,7 @@ class CBFSafetyFilter(Node):
         # decided it is blind. Braking stays pure. The EMA still runs on those
         # ticks, so the bias FADES OUT instead of freezing at whatever it was
         # when the feed died.
-        a_tan = P.cbf_tangential_filter_alpha
+        a_tan = self._a_tan
         if n_c > 0:
             raw_bias = tangential_bias(
                 qddot_nom, self._qdot_cbf, con, gain=P.cbf_tangential_gain,
@@ -1197,7 +1207,7 @@ class CBFSafetyFilter(Node):
         # FASTER EMA: the situation it answers is over in a few hundred ms,
         # and the 100 ms constant of the tangential filter would spend most
         # of that ramping up. Same gate, same fade-out as the two above.
-        a_o = P.outrun_evasion_filter_alpha
+        a_o = self._a_outrun
         if n_c > 0 and con is not None and con.outrun_bias is not None:
             self._outrun_bias *= a_o
             self._outrun_bias += (1.0 - a_o) * con.outrun_bias
@@ -1249,7 +1259,7 @@ class CBFSafetyFilter(Node):
             if n_c > 0:
                 qddot_nom = qddot_nom + self._lock_bias
         else:
-            self._lock_bias *= self.P.cbf_tangential_filter_alpha
+            self._lock_bias *= self._a_tan
         self._nom_prev = qddot_nom
 
         # ── STEP 4: the hard state box ──────────────────────────────────
@@ -1341,7 +1351,7 @@ class CBFSafetyFilter(Node):
         value, the row direction, the accel box, the braking fallback and
         every diagnostic keep the raw q̇.
         """
-        a = self.P.cbf_hdot_filter_alpha
+        a = self._a_hdot
         if a > 0.0:
             self._qdot_cbf *= a
             self._qdot_cbf += (1.0 - a) * qdot
@@ -1486,7 +1496,8 @@ class CBFSafetyFilter(Node):
             self._brake_frac_warned = False
             return False
         self._brake_frac_run += 1
-        if self._brake_frac_run < P.iso_brake_frac_ticks:
+        # iso_brake_frac_ticks is defined at 100 Hz, like the EMAs in __init__.
+        if self._brake_frac_run < max(1, round(P.iso_brake_frac_ticks * P.qp_rate_hz / 100.0)):
             return False
         if not self._brake_frac_warned:
             self._brake_frac_warned = True
