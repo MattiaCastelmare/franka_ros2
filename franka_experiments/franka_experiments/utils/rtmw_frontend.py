@@ -66,6 +66,8 @@ class RtmwHolistic:
     BODY_CUES = {'lightweight': {'wrist_min': 0.55, 'ratio_max': 3.0, 'reacquire': 0.65},
                  'balanced': {'wrist_min': 0.6, 'ratio_max': None, 'reacquire': None}}
     SWITCH_M = 0.3  # another person takes over when this much nearer the robot
+    HUMAN_MIN = 0.7  # mean face + best hand keypoint score; the robot arm seen as a person stays below
+    SWITCH_FRAMES = 5  # frames in a row a nearer person must be seen before taking over
 
     def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5, tensorrt=True, body_cues=True,
                  to_base=None):
@@ -91,6 +93,7 @@ class RtmwHolistic:
         self.enter, self.keep = enter, keep
         self.body = self.BODY_CUES.get(mode, {}) if body_cues else {}
         self.kept, self.centre = set(), None
+        self.pending, self.pending_n = None, 0  # nearer person waiting to take over
         self.to_base = to_base  # (u, v, z) -> robot base frame point; None = largest person
         self.filters = {key: OneEuro() for key, *_ in self.HANDS}
 
@@ -210,23 +213,35 @@ class RtmwHolistic:
 
         With the robot geometry (to_base) the person interacting with the robot: the one
         whose torso is nearest the robot base. Someone else takes over only when nearer
-        by SWITCH_M, so a person sitting at a desk behind does not keep the hands."""
+        by SWITCH_M for SWITCH_FRAMES frames, so a person sitting at a desk behind does not
+        keep the hands. Only people with face and hands (HUMAN_MIN) count, not the robot arm."""
         people = []
         for i, (k, s) in enumerate(zip(keypoints, scores)):
             pts = k[:17][s[:17] > 0.3]
             if len(pts) >= 4:
+                human = 0.5 * (s[23:91].mean() + max(s[91:112].mean(), s[112:133].mean()))
                 people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]),
-                               self._robot_distance(k, s, depth, depth_scale)))
+                               self._robot_distance(k, s, depth, depth_scale), human))
         if not people:
             self.centre = None
             return None
         near = [] if self.centre is None else [p for p in people if np.linalg.norm(p[1] - self.centre) < 0.15 * w]
         current = min(near, key=lambda p: np.linalg.norm(p[1] - self.centre)) if near else None
-        located = [p for p in people if p[3] is not None]
-        if located:
-            nearest = min(located, key=lambda p: p[3])
-            if current is None or current[3] is None or nearest[3] < current[3] - self.SWITCH_M:
-                current = nearest
+        # only people take part: RTMW also sees the robot arm as a "person" whose torso sits
+        # on the robot base, so it would always be the nearest (face and hands score low)
+        located = [p for p in people if p[3] is not None and p[4] >= self.HUMAN_MIN]
+        nearest = min(located, key=lambda p: p[3]) if located else None
+        if nearest is not None and current is None:
+            current = nearest
+        elif nearest is not None and nearest[0] != current[0] and (
+                current[3] is None or current[4] < self.HUMAN_MIN or nearest[3] < current[3] - self.SWITCH_M):
+            # takes over only if seen nearer for SWITCH_FRAMES frames in a row
+            same = self.pending is not None and np.linalg.norm(nearest[1] - self.pending) < 0.15 * w
+            self.pending, self.pending_n = nearest[1], (self.pending_n + 1 if same else 1)
+            if self.pending_n >= self.SWITCH_FRAMES:
+                current, self.pending, self.pending_n = nearest, None, 0
+        else:
+            self.pending, self.pending_n = None, 0
         i, self.centre = (current or max(people, key=lambda p: p[2]))[:2]
         return i
 
