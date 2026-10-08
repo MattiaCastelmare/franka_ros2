@@ -326,7 +326,7 @@ def _filter_and_dynamics_nodes(p, use_sim_time):
         # obstacle velocity human_distance computes from the Kalman filter (the
         # filter takes max(tracker, residual), so it is never less cautious than
         # 'residual'); vobs_in_hdot puts its signed component along the normal into ḣ.
-        # cbf_prediction_s acts on the human rows only ('' = the yaml).
+        # cbf_prediction_s / human_k*_cbf act on the human rows only ('' = the yaml).
         nodes.append(Node(
             package='franka_experiments',
             executable='cbf_safety_filter',
@@ -338,7 +338,8 @@ def _filter_and_dynamics_nodes(p, use_sim_time):
                 'obstacle_velocity_source': p['obstacle_velocity_source'],
                 'enable_vobs_in_hdot': _as_bool(p['vobs_in_hdot']),
                 **{name: float(p[arg]) for arg, name in (
-                    ('cbf_prediction_s', 'extra_prediction_horizon_s'),) if p[arg]},
+                    ('cbf_prediction_s', 'extra_prediction_horizon_s'),
+                    ('human_k0_cbf', 'extra_k0_cbf'), ('human_k1_cbf', 'extra_k1_cbf')) if p[arg]},
                 'extra_distance_topics': [_HUMAN_PER_LINK_TOPIC if _as_bool(p['human']) else ''],
             }],
         ))
@@ -471,6 +472,8 @@ def _launch_all(context):
         'obstacle_velocity_source': LaunchConfiguration('obstacle_velocity_source').perform(context),
         'vobs_in_hdot': LaunchConfiguration('vobs_in_hdot').perform(context),
         'cbf_prediction_s': LaunchConfiguration('cbf_prediction_s').perform(context).strip(),
+        'human_k0_cbf': LaunchConfiguration('human_k0_cbf').perform(context).strip(),
+        'human_k1_cbf': LaunchConfiguration('human_k1_cbf').perform(context).strip(),
         'run_name': LaunchConfiguration('run_name').perform(context),
     }
     if p['control_mode'] not in _CONTROL_MODES:
@@ -563,6 +566,18 @@ def generate_launch_description():
                 default_value='',
                 description='cbf_safety_filter: horizon [s] the human rows are tightened over along '
                             "their Kalman velocity (extra_prediction_horizon_s); '' = fr3_control.yaml, 0 = off"
+            ),
+            DeclareLaunchArgument(
+                'human_k0_cbf',
+                default_value='',
+                description="cbf_safety_filter: HOCBF k0 of the human rows only (extra_k0_cbf); "
+                            "'' = fr3_control.yaml, 0 = the global k0_cbf"
+            ),
+            DeclareLaunchArgument(
+                'human_k1_cbf',
+                default_value='',
+                description="cbf_safety_filter: HOCBF k1 of the human rows only (extra_k1_cbf); "
+                            "'' = fr3_control.yaml, 0 = the global k1_cbf"
             ),
             DeclareLaunchArgument(
                 'run_name',

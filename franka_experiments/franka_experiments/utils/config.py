@@ -555,6 +555,8 @@ CBF_PARAM_SPEC = {
     'extra_prediction_max': ('float', dict(positive=True, maximum=1.0)),
     'extra_prediction_alpha': ('float', dict(minimum=0.0, maximum=0.99)),
     'extra_prediction_rise_rate': ('float', dict(minimum=0.0, maximum=10.0)),
+    'extra_k0_cbf': ('float', dict(minimum=0.0, maximum=10000.0)),
+    'extra_k1_cbf': ('float', dict(minimum=0.0, maximum=10000.0)),
     'enable_weighted_slack': ('bool', dict()),
     'slack_weight_max': ('float', dict(minimum=1.0, maximum=100.0)),
     'slack_weight_rho': ('float', dict(positive=True, maximum=3.0)),

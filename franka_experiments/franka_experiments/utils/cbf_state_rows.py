@@ -1816,6 +1816,8 @@ class ConstraintBuilder:
         # move whenever the uncertainty margin or the braking term moved, i.e.
         # the one thing an explicit ladder exists to stop.
         obs_dz: list[float] = []
+        # Distance source of each obstacle row, same append order (extra-source gains)
+        obs_src: list[int] = []
         # Phase-2 slack weights, same per-OBSTACLE-row-in-append-order contract
         # as obs_bff and scattered the same way.
         obs_w: list[float] = []
@@ -2331,6 +2333,7 @@ class ConstraintBuilder:
                         self.diag_vobs_hdot = v_hdot
                 obs_bff.append(b_ff_i)
                 obs_dz.append(float(ob.d))
+                obs_src.append(int(ob.src))
                 # Criticality weight from the barrier value that ACTUALLY goes
                 # into the QP — i.e. after the Phase-1 braking tightening, so
                 # with that flag on the weight is velocity-aware for free.
@@ -2671,6 +2674,22 @@ class ConstraintBuilder:
                 # calibrated in obstacle metres. Scheduling them off an
                 # obstacle ladder would be a category error that happens to
                 # type-check.
+        # ── Gains of the extra-source rows (extra_k0_cbf / extra_k1_cbf) ─────
+        # A row binds at h̄ < (k1/k0)·v_obs and then asks k1 m/s² per m/s of
+        # closing speed: softer gains engage earlier and push less. 0 = global
+        # gain. Overrides the zone ladder on those rows.
+        ek0 = float(getattr(self._P, 'extra_k0_cbf', 0.0))
+        ek1 = float(getattr(self._P, 'extra_k1_cbf', 0.0))
+        if (ek0 > 0.0 or ek1 > 0.0) and idx_obs.size == len(obs_src):
+            idx_extra = idx_obs[np.asarray(obs_src, dtype=np.int64) != 0]
+            if idx_extra.size:
+                if k0_row is None:
+                    k0_row = np.full(n_c, float(self._P.k0_cbf))
+                    k1_row = np.full(n_c, float(self._P.k1_cbf))
+                if ek0 > 0.0:
+                    k0_row[idx_extra] = ek0
+                if ek1 > 0.0:
+                    k1_row[idx_extra] = ek1
         # ── Bounded depth push (retreat_excess_speed_max) ────────────────
         # A barrier row demands n̂ᵀJq̈ ≥ −k1·ḣ − k0·h̄. With h̄ < 0 the k0 term
         # keeps accelerating the arm until k1·(v_obs − v) + k0·|h̄| = 0, i.e. it

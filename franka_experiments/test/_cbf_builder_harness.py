@@ -118,6 +118,8 @@ class P:
     extra_prediction_max = 0.30
     extra_prediction_alpha = 0.8
     extra_prediction_rise_rate = 0.0
+    extra_k0_cbf = 0.0
+    extra_k1_cbf = 0.0
     # uncertainty
     enable_uncertainty_margin = False
     uncertainty_k_sigma = 2.0

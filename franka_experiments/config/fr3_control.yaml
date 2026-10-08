@@ -1713,6 +1713,12 @@ params:
   # to 10 cm near the person (k0*dh = 2.5 m/s^2 of demand at once)
   extra_prediction_rise_rate: 1.0
 
+  # HOCBF gains of the human_distance rows only (0 = k0_cbf / k1_cbf). A row binds
+  # at h < (k1/k0)*v_obs and then asks k1 m/s^2 per m/s of closing speed: 25/10.5
+  # engage 0.42 s ahead, 9/6 (critically damped) 0.67 s ahead with 43 % less push
+  extra_k0_cbf: 0.0
+  extra_k1_cbf: 0.0
+
   # ── Uncertainty-derived tightening (cbf_safety_filter, Phase 3) ────────────
   #   h_eff = h - k_sigma * sqrt(n_hat^T P_vv n_hat) * t_latency
   #

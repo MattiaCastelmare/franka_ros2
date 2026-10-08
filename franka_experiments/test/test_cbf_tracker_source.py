@@ -18,7 +18,7 @@ Drives the real ConstraintBuilder through _cbf_builder_harness. No ROS.
 import numpy as np
 import pytest
 
-from _cbf_builder_harness import (NV, make_builder, make_obstacle, run)
+from _cbf_builder_harness import (NV, P, make_builder, make_obstacle, run)
 
 # n̂ = (pr − ph)/‖·‖ = +y for this geometry, so a velocity along +y is CLOSING.
 PR = (0.5, 0.0, 0.5)
@@ -257,8 +257,8 @@ def test_floor_is_inert_in_residual_mode():
 
 # ── Rows of an extra source (human_distance) ───────────────────────────────
 #
-# The prediction acts only on rows of extra_distance_topics; with it off such
-# a row is built exactly as a source-0 row.
+# Prediction and gains act only on rows of extra_distance_topics; with both off
+# such a row is built exactly as a source-0 row.
 
 def _extra(k, **kw):
     return [ob._replace(src=1) for ob in _moving(k, **kw)]
@@ -307,6 +307,14 @@ def test_prediction_rise_rate_ramps_the_tightening():
         run(b, lambda k: _extra(k, v=(0.0, 1.15, 0.0), frames_seen=20), n_frames=n, qdot=0.05)
         # 1 m/s over the n - 1 rebuild intervals of 1/30 s, up to the 0.25 m prediction
         assert np.isclose(b.diag_hprd, min((n - 1) / 30.0, 0.25))
+
+
+def test_extra_gains_apply_to_extra_rows_only():
+    two = lambda k: _moving(k, frames_seen=20) + _extra(k, frames_seen=20)
+    con = run(make_builder(extra_k0_cbf=9.0, extra_k1_cbf=6.0), two, n_frames=3, qdot=0.05)
+    assert con.k0_row.tolist() == [P.k0_cbf, 9.0] and con.k1_row.tolist() == [P.k1_cbf, 6.0]
+    # Off (the default): no per-row gains at all, the scalar path as before
+    assert run(make_builder(), two, n_frames=3, qdot=0.05).k0_row is None
 
 
 # ── Conditioning of the tracked velocity (deadband + median) ────────────────
