@@ -33,3 +33,4 @@ metadata.yaml
 *.bak
 rosbag/
 results/
+models/

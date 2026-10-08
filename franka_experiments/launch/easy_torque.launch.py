@@ -43,6 +43,7 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -426,6 +427,26 @@ def _rviz_node(p, use_sim_time):
     )
 
 
+def _record_bag_action():
+    # Same recording as human.launch.py: recorded_bags/<run_name>
+    return ExecuteProcess(
+        condition=IfCondition(LaunchConfiguration('rosbag_record')),
+        cmd=[
+            'ros2', 'bag', 'record',
+            '-o', ['recorded_bags/', LaunchConfiguration('run_name')],
+            '/NS_1/joint_states',
+            '/NS_1/franka/joint_states',
+            '/camera/camera/aligned_depth_to_color/camera_info',
+            '/camera/camera/aligned_depth_to_color/image_raw',
+            '/camera/camera/color/camera_info',
+            '/camera/camera/color/image_raw',
+            '/tf',
+            '/tf_static',
+        ],
+        output='screen',
+    )
+
+
 def _launch_all(context):
     p = {
         'real': LaunchConfiguration('real').perform(context),
@@ -538,6 +559,12 @@ def generate_launch_description():
                 default_value=time.strftime('%Y%m%d_%H%M%S'),
                 description='human_logging output folder experiment_logs/<run_name>'
             ),
-            OpaqueFunction(function=_launch_all)
+            DeclareLaunchArgument(
+                'rosbag_record',
+                default_value='false',
+                description='true = ros2 bag record into recorded_bags/<run_name> (as human.launch.py)'
+            ),
+            OpaqueFunction(function=_launch_all),
+            _record_bag_action(),
         ]
     )

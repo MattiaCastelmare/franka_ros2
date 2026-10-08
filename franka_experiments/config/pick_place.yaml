@@ -32,8 +32,8 @@ task_clock:
 # Task geometry, in fr3_link0 (+y = robot left, +z = up), relative to the EE home pose
 geometry:
   lateral_offset: 0.24   # [m] ±y of pick / place
-  down_offset:    0.20   # [m] pick / place height below home
-  drop_offset:    0.06   # [m] small descent at pick / place
+  down_offset:    0.08   # [m] pick / place height below home
+  drop_offset:    0.04   # [m] small descent at pick / place
 
 # Phase durations [s]
 timing:
