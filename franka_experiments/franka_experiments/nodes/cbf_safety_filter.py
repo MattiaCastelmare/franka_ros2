@@ -773,6 +773,7 @@ class CBFSafetyFilter(Node):
                                    dtype=np.float64).reshape(3, 3),
                 track_id=int(ld.track_id),
                 cp_label=cp_label if src == 0 else f'{src}:{cp_label}',
+                src=src,
                 **self._latency_fields(ld),
                 **self._range_field(ld),
             ))

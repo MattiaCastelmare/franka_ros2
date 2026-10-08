@@ -255,6 +255,60 @@ def test_floor_is_inert_in_residual_mode():
     _assert_identical(a, b)
 
 
+# ── Rows of an extra source (human_distance) ───────────────────────────────
+#
+# The prediction acts only on rows of extra_distance_topics; with it off such
+# a row is built exactly as a source-0 row.
+
+def _extra(k, **kw):
+    return [ob._replace(src=1) for ob in _moving(k, **kw)]
+
+
+def test_an_extra_source_with_everything_off_is_a_source_0_row():
+    kw = dict(v=(0.0, 0.05, 0.0), frames_seen=20)
+    floor = dict(obstacle_velocity_source='tracker', obstacle_velocity_residual_floor=True)
+    a = run(make_builder(**floor), lambda k: _extra(k, **kw), n_frames=10, qdot=0.05)
+    b = run(make_builder(**floor), lambda k: _moving(k, **kw), n_frames=10, qdot=0.05)
+    _assert_identical(a, b)
+
+
+def _pred(horizon, obstacles, **over):
+    return run(make_builder(obstacle_velocity_source='tracker', extra_prediction_horizon_s=horizon,
+                            **over), obstacles, n_frames=10, qdot=0.05)
+
+
+def test_prediction_tightens_an_extra_row_by_horizon_times_the_closing_speed():
+    kw = dict(v=(0.0, 1.15, 0.0), frames_seen=20)    # 1.0 m/s beyond the 0.15 deadband
+    on, off = (_pred(t, lambda k: _extra(k, **kw)) for t in (0.25, 0.0))
+    assert np.isclose(off.h_bar[0] - on.h_bar[0], 0.25)
+    np.testing.assert_array_equal(on.v_obs, off.v_obs)   # the velocity path is untouched
+
+
+def test_prediction_leaves_source_0_young_tracks_and_slow_arms_alone():
+    for obstacles in (lambda k: _moving(k, v=(0.0, 1.15, 0.0), frames_seen=20),   # source 0
+                      lambda k: _extra(k, v=(0.0, 1.15, 0.0), frames_seen=1),     # young track
+                      lambda k: _extra(k, v=(0.0, 0.10, 0.0), frames_seen=20)):   # in the deadband
+        np.testing.assert_array_equal(_pred(0.25, obstacles).h_bar, _pred(0.0, obstacles).h_bar)
+
+
+def test_prediction_rises_at_once_and_decays_smoothly():
+    b = make_builder(obstacle_velocity_source='tracker', extra_prediction_horizon_s=0.25)
+    run(b, lambda k: _extra(k, v=(0.0, 1.15, 0.0), frames_seen=20), n_frames=5, qdot=0.05)
+    assert np.isclose(b.diag_hprd, 0.25)
+    # The arm stops: one rebuild later the tightening is 0.8 of it, not zero
+    run(b, lambda k: _extra(5, v=(0.0, 0.0, 0.0), frames_seen=20), n_frames=1, qdot=0.05)
+    assert np.isclose(b.diag_hprd, 0.8 * 0.25)
+
+
+def test_prediction_rise_rate_ramps_the_tightening():
+    for n in (2, 4, 9):
+        b = make_builder(obstacle_velocity_source='tracker', extra_prediction_horizon_s=0.25,
+                         extra_prediction_rise_rate=1.0)
+        run(b, lambda k: _extra(k, v=(0.0, 1.15, 0.0), frames_seen=20), n_frames=n, qdot=0.05)
+        # 1 m/s over the n - 1 rebuild intervals of 1/30 s, up to the 0.25 m prediction
+        assert np.isclose(b.diag_hprd, min((n - 1) / 30.0, 0.25))
+
+
 # ── Conditioning of the tracked velocity (deadband + median) ────────────────
 #
 # Measured on the real centroid sequences of rosbag/arm_complex: a scene whose

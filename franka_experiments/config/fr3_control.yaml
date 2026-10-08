@@ -1699,6 +1699,20 @@ params:
   # receding obstacle from releasing the barrier as a k0*h_std step. 0 = raw.
   velocity_standoff_alpha: 0.8
 
+  # ── Prediction of the extra-source rows (cbf_safety_filter) ────────────────
+  #   h_eff = h - min(horizon_s * max(n_hat^T v_track - deadband, 0), max)
+  # Only rows of extra_distance_topics (human_distance): their track is the limb's
+  # Kalman filter, continuous where the standoff's v_o steps. Constant velocity
+  # beats "arm still" up to ~0.3 s (lab data 2026-10-08); latency_t_blind adds
+  # 0.085 s. 0 = off. Watch hprd= in CBFDIAG.
+  extra_prediction_horizon_s: 0.0
+  extra_prediction_deadband: 0.15   # [m/s] the velocity noise of a still arm
+  extra_prediction_max: 0.30        # [m] clamp, as velocity_standoff_max
+  extra_prediction_alpha: 0.8       # decay EMA per control point, as the standoff
+  # [m/s] fastest the tightening may grow, 0 = at once. At once it stepped by up
+  # to 10 cm near the person (k0*dh = 2.5 m/s^2 of demand at once)
+  extra_prediction_rise_rate: 1.0
+
   # ── Uncertainty-derived tightening (cbf_safety_filter, Phase 3) ────────────
   #   h_eff = h - k_sigma * sqrt(n_hat^T P_vv n_hat) * t_latency
   #

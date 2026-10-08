@@ -1370,6 +1370,8 @@ class Obstacle(NamedTuple):
     # CAPTURE time of the message this entry came from; None = ObstacleSnap.t_cap.
     # Set per entry when several distance sources share one snapshot.
     t_cap: Optional[float] = None
+    # Distance source: 0 = per_link_distances, k = extra_distance_topics[k - 1]
+    src: int = 0
 
 
 class ObstacleSnap(NamedTuple):
@@ -1669,6 +1671,8 @@ class ConstraintBuilder:
         self._unc_ema: dict = {}
         # Per-label speed-proportional standoff, for its decay smoothing.
         self._stand_ema: dict = {}
+        # Per-label prediction tightening of extra-source rows, same decay smoothing.
+        self._prd_ema: dict = {}
         # Per-label n̂ of the PREVIOUS perception frame, for the residual's
         # rotation guard (see _obstacle_speed). Same bounded key set as every
         # other per-label dict here: one entry per control point.
@@ -1707,6 +1711,7 @@ class ConstraintBuilder:
         self.diag_vobs_hdot = 0.0
         self.diag_vobs_hdot_n = 0
         self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
+        self.diag_hprd = 0.0        # largest prediction tightening of an extra-source row [m]
         self.diag_fast = 0          # rows whose track passed the fast-track test
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
@@ -1844,6 +1849,7 @@ class ConstraintBuilder:
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
         self.diag_hstand = 0.0
+        self.diag_hprd = 0.0
         self.diag_fast = 0
         # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
         # inf/0.0 with the flag off, which is how the CBFDIAG line says
@@ -1854,6 +1860,11 @@ class ConstraintBuilder:
         stand_t = float(getattr(self._P, 'velocity_standoff_time_s', 0.20))
         stand_max = float(getattr(self._P, 'velocity_standoff_max', 0.20))
         stand_alpha = float(getattr(self._P, 'velocity_standoff_alpha', 0.8))
+        prd_t = float(getattr(self._P, 'extra_prediction_horizon_s', 0.0))
+        prd_db = float(getattr(self._P, 'extra_prediction_deadband', 0.15))
+        prd_max = float(getattr(self._P, 'extra_prediction_max', 0.30))
+        prd_alpha = float(getattr(self._P, 'extra_prediction_alpha', 0.8))
+        prd_rise = float(getattr(self._P, 'extra_prediction_rise_rate', 0.0))
 
         for ob in obs.items:
             # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
@@ -2274,6 +2285,30 @@ class ConstraintBuilder:
                 h -= h_std
                 if h_std > self.diag_hstand:
                     self.diag_hstand = h_std
+
+            # ── Prediction of the extra-source rows (extra_prediction_horizon_s) ──
+            # human_distance rows carry a per-limb Kalman velocity, continuous unlike
+            # v_o: the obstacle is moved horizon_s ahead along it (closing part beyond
+            # the deadband). After the residual, which keeps differencing the measured
+            # distance. Rise limited to extra_prediction_rise_rate, decay EMA'd.
+            if prd_t > 0.0 and ob.src != 0:
+                raw = 0.0
+                if ob.v_vec is not None and ob.frames_seen >= self._min_frames_eff:
+                    vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
+                    if np.isfinite(vn):
+                        vn = min(vn, self._P.obstacle_velocity_max)
+                        raw = min(prd_t * max(vn - prd_db, 0.0), prd_max)
+                prev, t_prev = self._prd_ema.get(lbl, (0.0, now))
+                if raw < prev:
+                    h_prd = prd_alpha * prev + (1.0 - prd_alpha) * raw
+                elif prd_rise > 0.0:
+                    h_prd = min(raw, prev + prd_rise * max(now - t_prev, 0.0))
+                else:
+                    h_prd = raw
+                self._prd_ema[lbl] = (h_prd, now)
+                h -= h_prd
+                if h_prd > self.diag_hprd:
+                    self.diag_hprd = h_prd
 
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).

@@ -112,6 +112,12 @@ class P:
     velocity_standoff_time_s = 0.20
     velocity_standoff_max = 0.20
     velocity_standoff_alpha = 0.8
+    # prediction of the extra-source rows
+    extra_prediction_horizon_s = 0.0
+    extra_prediction_deadband = 0.15
+    extra_prediction_max = 0.30
+    extra_prediction_alpha = 0.8
+    extra_prediction_rise_rate = 0.0
     # uncertainty
     enable_uncertainty_margin = False
     uncertainty_k_sigma = 2.0
