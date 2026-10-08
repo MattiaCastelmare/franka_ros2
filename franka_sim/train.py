@@ -402,6 +402,12 @@ def main():
 
     policy_kwargs = dict(net_arch=list(rl.get('net_arch', [256, 256])))
     ent_coef = rl.get('ent_coef', 'auto')
+    # 'auto' = SB3's −dim(A) = −7. The average over the batch meets it with
+    # the saturated transit actions, which leaves the policy at std ≈ 0.5 on
+    # the target itself (c1 probe) — a lower target forces it to settle.
+    target_entropy = rl.get('target_entropy', 'auto')
+    if target_entropy != 'auto':
+        target_entropy = float(target_entropy)
 
     def fresh_model():
         return SAC(
@@ -415,6 +421,7 @@ def main():
             gradient_steps=int(rl.get('gradient_steps', 1)),
             learning_starts=int(rl.get('learning_starts', 10_000)),
             ent_coef=ent_coef,
+            target_entropy=target_entropy,
             policy_kwargs=policy_kwargs,
             device=device, seed=seed, verbose=1, tensorboard_log=tb_dir,
         )
@@ -437,10 +444,13 @@ def main():
                              custom_objects=dict(
                                  learning_rate=lr, lr_schedule=lambda _: lr,
                                  gradient_steps=int(rl.get('gradient_steps', 1)),
-                                 batch_size=int(rl.get('batch_size', 512))))
+                                 batch_size=int(rl.get('batch_size', 512)),
+                                 **({} if target_entropy == 'auto'
+                                    else dict(target_entropy=target_entropy))))
         model.set_random_seed(seed)
         print(f'resume hparams: lr={lr} gradient_steps={model.gradient_steps} '
-              f'batch_size={model.batch_size} seed={seed}')
+              f'batch_size={model.batch_size} seed={seed} '
+              f'target_entropy={model.target_entropy}')
         if args.resume_buffer:
             if args.widen_obs:
                 from stable_baselines3.common.save_util import load_from_pkl

@@ -22,3 +22,5 @@ franka_experiments/docs/paper_draft/
 # MuJoCo runtime log (rigenerato a ogni run)
 MUJOCO_LOG.TXT
 
+# Claude Code local settings
+.claude/
