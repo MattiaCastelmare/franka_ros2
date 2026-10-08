@@ -294,7 +294,9 @@ class HumanHandTracker(ActiveHandSelectorMixin, HandRgbdMixin, PalmGeometryMixin
             try:
                 from franka_experiments.utils.rtmw_frontend import RtmwHolistic
                 self.rtmw = RtmwHolistic(mode=mode, tensorrt=bool(self._tracking_param('rtmw_tensorrt').value),
-                                         body_cues=bool(self._tracking_param('rtmw_body_cues').value))
+                                         body_cues=bool(self._tracking_param('rtmw_body_cues').value),
+                                         to_base=lambda u, v, z: self.apply_transform(np.array(
+                                             [(u - self.cx) * z / self.fx, (v - self.cy) * z / self.fy, z])))
                 self.get_logger().info(f'RTMW {mode}: {self.rtmw.engine}, body cues {self.rtmw.body or "off"}')
             except Exception as error:  # no GPU / rtmlib: keep the tracker running
                 self.get_logger().warn(f'RTMW unavailable ({error}): hand_backend=mediapipe')

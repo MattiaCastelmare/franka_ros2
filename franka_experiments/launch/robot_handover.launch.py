@@ -108,6 +108,8 @@ def _launch_setup(context):
     timeout_s = p('timeout_s')
 
     start_rviz = _as_bool(p('start_rviz'))
+    # grasp cycle (take / release / home) instead of palm following; needs the gripper
+    grasp_executor = _as_bool(p('grasp_executor'))
     start_logger = _as_bool(p('start_logger'))
 
 
@@ -173,7 +175,8 @@ def _launch_setup(context):
             'use_fake_hardware': p('use_fake_hardware'),
             'fake_sensor_commands': p('fake_sensor_commands'),
 
-            'load_gripper': p('load_gripper'),
+            # the grasp cycle needs franka_gripper (gripper_controller actions)
+            'load_gripper': 'true' if grasp_executor else p('load_gripper'),
 
             # YAML generated above with:
             # accel_topic=/NS_1/qddot_nom
@@ -470,6 +473,15 @@ def _launch_setup(context):
                 condition=IfCondition(LaunchConfiguration('start_grasp')),
                 parameters=[{'use_sim_time': False}],
             ),
+            # grasp pose -> /handover/grasp_pose (GSNet, or AnyGrasp with backend:=anygrasp)
+            Node(
+                package='franka_experiments',
+                executable='grasp_pose',
+                output='screen',
+                additional_env=PERCEPTION_ENV,
+                condition=IfCondition(LaunchConfiguration('start_grasp_pose')),
+                parameters=[{'use_sim_time': False}],
+            ),
 
             compare_visualizer,
             logger,
@@ -579,7 +591,7 @@ def _launch_setup(context):
             'python3',
 
             '/ros2_ws/src/franka_experiments/scripts/'
-            'handover_qddot_commander.py',
+            + ('grasp_executor.py' if grasp_executor else 'handover_qddot_commander.py'),
 
             '--ros-args',
 
@@ -587,6 +599,8 @@ def _launch_setup(context):
             # therefore we explicitly rename the ROS node here.
             '-r',
             '__node:=handover_qddot_commander',
+            '-p',
+            f'gripper_service:={"/" + ns if ns else ""}/gripper_controller/set_gripper',
         ],
 
         output='screen',
@@ -667,6 +681,16 @@ def _launch_setup(context):
         qddot_to_torque,
         controller_spawner,
     ]
+    if grasp_executor:  # open / close through gripper_controller/set_gripper
+        after_cm.append(Node(
+            package='controller_manager', executable='spawner',
+            arguments=['gripper_controller', '--controller-manager', cm,
+                       '--controller-type', 'franka_rt_controllers/GripperController',
+                       '--param-file', PathJoinSubstitution([
+                           FindPackageShare('franka_rt_controllers'),
+                           'config', 'gripper_controller.yaml']).perform(context),
+                       '--controller-manager-timeout', timeout_s],
+            output='screen'))
 
     if pin_rt_thread is not None:
         after_cm.append(pin_rt_thread)
@@ -840,6 +864,8 @@ def generate_launch_description():
         # D405 on the gripper as second view of the hand
         DeclareLaunchArgument('gripper_camera', default_value='true'),
         DeclareLaunchArgument('start_grasp', default_value='false'),
+        DeclareLaunchArgument('start_grasp_pose', default_value='false'),
+        DeclareLaunchArgument('grasp_executor', default_value='false'),
 
         OpaqueFunction(
             function=_launch_setup

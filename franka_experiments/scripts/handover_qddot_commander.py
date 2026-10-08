@@ -68,9 +68,9 @@ class HandoverQddotCommander(PentagonQddotCommander):
         self.declare_parameter('min_confidence', 0.70)
 
         # Target virtuale massimo rispetto all'EE corrente.
-        self.declare_parameter('max_target_step_m', 0.05)
-        self.declare_parameter('max_target_velocity_m_s', 0.25)
-        self.declare_parameter('max_target_acceleration_m_s2', 0.75)
+        self.declare_parameter('max_target_step_m', 0.10)
+        self.declare_parameter('max_target_velocity_m_s', 0.40)
+        self.declare_parameter('max_target_acceleration_m_s2', 1.5)
         self.declare_parameter('target_response_s', 0.10)
 
         self._hold_position = None

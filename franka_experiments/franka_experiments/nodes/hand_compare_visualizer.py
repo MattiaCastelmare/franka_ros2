@@ -9,7 +9,7 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PoseStamped
 from franka_msgs.msg import (
     HandObjectState,
     HandState,
@@ -77,6 +77,10 @@ class HandCompareVisualizer(Node):
         self._object_states = deque(maxlen=60)
         self.create_subscription(
             HandObjectState, '/handover/hand_object', self._object_states.append, 10)
+        # Grasp pose (base frame, Franka TCP axes: z approach, y finger closing), if published.
+        self.declare_parameter('grasp_width_m', 0.06)
+        self._grasp_poses = deque(maxlen=30)
+        self.create_subscription(PoseStamped, '/handover/grasp_pose', self._grasp_poses.append, 10)
         self.create_subscription(
             CameraInfo,
             (
@@ -270,6 +274,55 @@ class HandCompareVisualizer(Node):
         width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)[0][0]
         cv2.rectangle(image, (8, 62), (min(image.shape[1]-8, width+20), 84), (0, 0, 0), -1)
         cv2.putText(image, text, (14, 78), cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
+
+    # Franka hand in the TCP frame [m]: fingers 5.8 cm, hand body behind them.
+    _FINGER_M, _BODY_M, _APPROACH_M = 0.058, 0.035, 0.12
+
+    def _draw_grasp_overlay(self, image, image_msg):
+        """Grasp pose as a translucent Franka gripper with its approach path."""
+        t_image = self._prediction_stamp_s(image_msg.header.stamp)
+        msg = min(self._grasp_poses, default=None,
+                  key=lambda m: abs(t_image - self._prediction_stamp_s(m.header.stamp)))
+        if msg is None or abs(t_image - self._prediction_stamp_s(msg.header.stamp)) > 0.3:
+            return
+        q, o = msg.pose.orientation, msg.pose.position
+        R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        origin = np.array([o.x, o.y, o.z])
+        if not np.isfinite(origin).all():
+            return
+        h, w = image.shape[:2]
+        half = 0.5 * float(self.get_parameter('grasp_width_m').value)
+        f, b = self._FINGER_M, self._BODY_M
+
+        def px(y, z):
+            p = origin + R @ np.array([0.0, y, z])
+            return self.project(self._prediction_ros_point(p), w, h)
+        fingers = [[px(s * half, 0.0), px(s * (half + 0.012), 0.0), px(s * (half + 0.012), -f),
+                    px(s * half, -f)] for s in (-1, 1)]
+        body = [px(-half - 0.03, -f), px(half + 0.03, -f), px(half + 0.03, -f - b), px(-half - 0.03, -f - b)]
+        approach = [px(0.0, -f - b), px(0.0, -f - b - self._APPROACH_M)]
+        if any(p is None for p in sum(fingers, []) + body + approach):
+            return
+        color, dark = (255, 190, 40), (60, 30, 0)
+        shapes = [np.array(s, np.int32) for s in fingers + [body]]
+        layer = image.copy()
+        for poly in shapes:
+            cv2.fillPoly(layer, [poly], color, cv2.LINE_AA)
+        cv2.addWeighted(layer, 0.45, image, 0.55, 0, image)
+        for poly in shapes:  # dark halo, then the outline: readable on any background
+            cv2.polylines(image, [poly], True, dark, 4, cv2.LINE_AA)
+            cv2.polylines(image, [poly], True, color, 2, cv2.LINE_AA)
+        a, e = np.array(approach[1], float), np.array(approach[0], float)
+        for k in range(0, 10, 2):  # dashed approach path into the hand body
+            p0, p1 = a + (e - a) * k / 10, a + (e - a) * (k + 1) / 10
+            cv2.line(image, tuple(map(int, p0)), tuple(map(int, p1)), color, 2, cv2.LINE_AA)
+        for tip in (fingers[0][0], fingers[1][0]):
+            cv2.circle(image, tip, 4, dark, -1, cv2.LINE_AA)
+            cv2.circle(image, tip, 3, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.putText(image, 'PRESA', (approach[1][0] + 8, approach[1][1] + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, dark, 3, cv2.LINE_AA)
+        cv2.putText(image, 'PRESA', (approach[1][0] + 8, approach[1][1] + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
     # W75 VISUAL PREDICTION
 
@@ -908,6 +961,8 @@ class HandCompareVisualizer(Node):
         # Visual-only W75 prediction overlay.
         self._draw_prediction_overlay(image, filtered_msg, state_msg, distance_msg,)
         self._draw_object_overlay(image, image_msg, state_msg, pixels=main)
+        if main:  # grasp drawn with the main-camera intrinsics
+            self._draw_grasp_overlay(image, image_msg)
 
 
 

@@ -201,6 +201,17 @@ def generate_launch_description():
         }],
     )
 
+    # grasp pose -> /handover/grasp_pose (GSNet, or AnyGrasp with backend:=anygrasp)
+    grasp_pose = Node(
+        package='franka_experiments',
+        executable='grasp_pose',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('start_grasp_pose')),
+        parameters=[{
+            'use_sim_time': True,
+        }],
+    )
+
     compare_visualizer = Node(
         package='franka_experiments',
         executable='hand_compare_visualizer',
@@ -336,6 +347,7 @@ def generate_launch_description():
         DeclareLaunchArgument('rtmw_body_cues', default_value='false'),
         # D405 on the gripper as second view (used only if its images + TF arrive)
         DeclareLaunchArgument('gripper_camera', default_value='true'),
+        DeclareLaunchArgument('start_grasp_pose', default_value='false'),
 
 
         DeclareLaunchArgument(
@@ -380,6 +392,7 @@ def generate_launch_description():
         handover_observer,
         proximity_estimator,
         grasp,
+        grasp_pose,
         compare_visualizer,
         logger,
         rviz,

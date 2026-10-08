@@ -276,6 +276,30 @@ assert numpy.__version__ == '1.26.4' and torch.__version__.startswith('2.13.0');
 print('hands23 OK: detectron2', detectron2.__version__, 'torchvision', torchvision.__version__)"
 
 # ============================================================================
+# RTMW + TensorRT FP16 dependencies.
+#
+# Keep CUDA 12 libraries alongside torch's CUDA 13 runtime. Explicit packages
+# and --no-deps preserve the validated numpy/OpenCV/protobuf/MediaPipe stack.
+# GPU inference is checked after the build; Docker build has no GPU access.
+# ============================================================================
+RUN python3 -m pip uninstall -y onnxruntime \
+ && python3 -m pip install --user --no-cache-dir --no-deps \
+        onnxruntime-gpu==1.23.2 \
+        rtmlib==0.0.16 \
+        nvidia-cublas-cu12==12.9.2.10 \
+        nvidia-cuda-runtime-cu12==12.9.79 \
+        nvidia-cufft-cu12==11.4.1.4 \
+        nvidia-curand-cu12==10.3.10.19 \
+        tensorrt-cu12==10.16.1.11 \
+        tensorrt-cu12-libs==10.16.1.11 \
+        tensorrt-cu12-bindings==10.16.1.11 \
+ && python3 -c "\
+import rtmlib, tensorrt, onnxruntime as ort; \
+p = ort.get_available_providers(); \
+assert 'TensorrtExecutionProvider' in p and 'CUDAExecutionProvider' in p, p; \
+print('onnxruntime', ort.__version__, '| tensorrt', tensorrt.__version__, '| RTMW deps OK')"
+
+# ============================================================================
 # Entrypoint script (root-owned, executable)
 # ============================================================================
 USER root

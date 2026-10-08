@@ -70,6 +70,7 @@ setup(
             'handover_observer = franka_experiments.nodes.handover_observer:main',
             'proximity_estimator = franka_experiments.nodes.proximity_estimator:main',
             'grasp = franka_experiments.nodes.grasp:main',
+            'grasp_pose = franka_experiments.nodes.grasp_pose_node:main',
 
         ],
     },

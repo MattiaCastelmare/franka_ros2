@@ -65,8 +65,10 @@ class RtmwHolistic:
     #   reacquire: a new hand sitting on a confident body wrist starts at this score (not enter)
     BODY_CUES = {'lightweight': {'wrist_min': 0.55, 'ratio_max': 3.0, 'reacquire': 0.65},
                  'balanced': {'wrist_min': 0.6, 'ratio_max': None, 'reacquire': None}}
+    SWITCH_M = 0.3  # another person takes over when this much nearer the robot
 
-    def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5, tensorrt=True, body_cues=True):
+    def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5, tensorrt=True, body_cues=True,
+                 to_base=None):
         cuda, t0 = ctypes.CDLL('libcuda.so.1'), time.time()
         while cuda.cuInit(0) != 0 and time.time() - t0 < 10.0:  # flaky first cuInit
             time.sleep(0.2)
@@ -89,6 +91,7 @@ class RtmwHolistic:
         self.enter, self.keep = enter, keep
         self.body = self.BODY_CUES.get(mode, {}) if body_cues else {}
         self.kept, self.centre = set(), None
+        self.to_base = to_base  # (u, v, z) -> robot base frame point; None = largest person
         self.filters = {key: OneEuro() for key, *_ in self.HANDS}
 
     @staticmethod
@@ -152,7 +155,7 @@ class RtmwHolistic:
         out = SimpleNamespace(pose_landmarks=None, left_hand_landmarks=None, right_hand_landmarks=None)
         keypoints, scores = self._people(bgr)
         h, w = bgr.shape[:2]
-        person = self._person(keypoints, scores, w)
+        person = self._person(keypoints, scores, w, depth, depth_scale)
         if person is None:
             self.kept = set()
             for f in self.filters.values():
@@ -202,20 +205,41 @@ class RtmwHolistic:
             setattr(out, key, lms)
         return out
 
-    def _person(self, keypoints, scores, w):
-        """One person, as Holistic: the one tracked so far, else the largest."""
+    def _person(self, keypoints, scores, w, depth=None, depth_scale=1.0):
+        """One person, as Holistic: the one tracked so far, else the largest.
+
+        With the robot geometry (to_base) the person interacting with the robot: the one
+        whose torso is nearest the robot base. Someone else takes over only when nearer
+        by SWITCH_M, so a person sitting at a desk behind does not keep the hands."""
         people = []
         for i, (k, s) in enumerate(zip(keypoints, scores)):
             pts = k[:17][s[:17] > 0.3]
             if len(pts) >= 4:
-                people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1])))
+                people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]),
+                               self._robot_distance(k, s, depth, depth_scale)))
         if not people:
             self.centre = None
             return None
         near = [] if self.centre is None else [p for p in people if np.linalg.norm(p[1] - self.centre) < 0.15 * w]
-        i, self.centre, _ = (min(near, key=lambda p: np.linalg.norm(p[1] - self.centre)) if near
-                             else max(people, key=lambda p: p[2]))
+        current = min(near, key=lambda p: np.linalg.norm(p[1] - self.centre)) if near else None
+        located = [p for p in people if p[3] is not None]
+        if located:
+            nearest = min(located, key=lambda p: p[3])
+            if current is None or current[3] is None or nearest[3] < current[3] - self.SWITCH_M:
+                current = nearest
+        i, self.centre = (current or max(people, key=lambda p: p[2]))[:2]
         return i
+
+    def _robot_distance(self, k, s, depth, depth_scale):
+        """Horizontal distance of the torso (nearest shoulder or hip) from the robot base."""
+        if self.to_base is None or depth is None:
+            return None
+        d = []
+        for j in (5, 6, 11, 12):
+            z = self._depth(depth, depth_scale, k[j]) if s[j] > 0.3 else None
+            if z is not None and 0.1 < z < 6.0:
+                d.append(float(np.linalg.norm(self.to_base(k[j, 0], k[j, 1], z)[:2])))
+        return min(d) if d else None
 
     @staticmethod
     def _depth(depth, scale, uv):
