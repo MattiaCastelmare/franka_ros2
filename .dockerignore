@@ -1,0 +1,13 @@
+# The image only needs the package manifests (for rosdep) and the files the
+# Dockerfile COPYs explicitly; the sources are bind-mounted at runtime.
+# Allowlist, so bags/datasets/build outputs never end up in a layer.
+**
+!franka_entrypoint.sh
+!franka.repos
+!**/package.xml
+!**/COLCON_IGNORE
+!**/AMENT_IGNORE
+!**/CATKIN_IGNORE
+build/
+install/
+log/
