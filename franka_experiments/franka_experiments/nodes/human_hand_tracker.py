@@ -67,6 +67,7 @@ class HumanHandTracker(Node):
             raise RuntimeError('camera_intrinsics.yaml not valid')
         k = intrinsics['k']
         self.fx, self.fy, self.cx, self.cy = float(k[0]), float(k[4]), float(k[2]), float(k[5])
+
         with open(config_dir + 'camera_extrinsics.yaml', 'r', encoding='utf-8') as file:
             extrinsics = yaml.safe_load(file)
         self.target_frame, self.camera_frame = extrinsics['parent_frame'], extrinsics['child_frame']
@@ -101,11 +102,13 @@ class HumanHandTracker(Node):
             self.detector = MediapipeHandDetector(
                 bool(self.param('static_image_mode')), complexity,
                 float(self.param('min_detection_confidence')), float(self.param('min_tracking_confidence')))
+
         self.palm_normal_method = str(self.param('palm_normal_method'))
         if self.detector_name == 'rtmw' and self.palm_normal_method == 'mediapipe':
             self.palm_normal_method = 'depth'  # RTMW hands have no z
         self.arm_bridge_s = float(self.param('arm_bridge_s'))
-        self.get_logger().info(f'hand_detector={self.detector_name}, palm_normal_method={self.palm_normal_method}')
+        self.get_logger().info(
+            f'hand_detector={self.detector_name}, palm_normal_method={self.palm_normal_method}')
 
         # ---- ACTIVE hand selector and gripper camera (both need the robot TF)
         self.selector = HandSelector(self, config_dir + 'fr3_complete.yaml', self.target_frame, self.param)
@@ -116,8 +119,10 @@ class HumanHandTracker(Node):
             self.gripper = GripperCamera(
                 self, config_dir + 'd405_extrinsics.yaml',
                 lambda link, stamp: self.selector.tf.lookup_best_effort([link], stamp).get(link),
-                str(self.param('gripper_camera_namespace')), debug=self.publish_debug,
-                target=lambda: None if self._last_active is None else (self._last_active[0], self._last_active[2]))
+                str(self.param('gripper_camera_namespace')),
+                debug=self.publish_debug,
+                target=lambda: (None if self._last_active is None
+                                else (self._last_active[0], self._last_active[2])))
 
         # ---- ROS I/O: newest frame only (no backlog latency), two overlapped stages
         self.bridge = CvBridge()
@@ -130,17 +135,20 @@ class HumanHandTracker(Node):
             queue_size=2, slop=0.05)
         self.create_subscription(CameraInfo, '/camera/camera/aligned_depth_to_color/camera_info',
                                  self.color_info_callback, qos_profile_sensor_data)
+
         self._frames = queue.Queue(maxsize=1)  # stage 2 one frame behind at most
         self._timing = {'stage1': [], 'stage2': [], 'stamps': []}
         self._stopping = threading.Event()
         self._worker = threading.Thread(target=self._frame_worker, daemon=True)
         self._worker.start()
         self.synchronizer.registerCallback(self.image_callback)
+
         self.get_logger().info(f'Human hand tracker: {self.camera_frame} -> {self.target_frame}')
 
     def color_info_callback(self, msg):
         if msg.k[0] > 0.0 and msg.k[4] > 0.0:
-            self.fx, self.fy, self.cx, self.cy = float(msg.k[0]), float(msg.k[4]), float(msg.k[2]), float(msg.k[5])
+            self.fx, self.fy = float(msg.k[0]), float(msg.k[4])
+            self.cx, self.cy = float(msg.k[2]), float(msg.k[5])
 
     # ------------------------------------------------------------ RGB-D geometry
     def landmark_to_3d(self, landmark, rgb_shape, depth_image, depth_encoding, fallback_depth=None):
@@ -152,15 +160,18 @@ class HumanHandTracker(Node):
         depth = fallback_depth if depth is None else depth
         if depth is None:
             return None
+
         return np.array([(u - self.cx) * depth / self.fx, (v - self.cy) * depth / self.fy, depth], dtype=float)
 
     @staticmethod
     def median_depth(depth_image, encoding, u, v, radius=2):
         h, w = depth_image.shape[:2]
-        patch = depth_image[max(0, v - radius):min(h, v + radius + 1), max(0, u - radius):min(w, u + radius + 1)]
+        patch = depth_image[max(0, v - radius):min(h, v + radius + 1),
+                            max(0, u - radius):min(w, u + radius + 1)]
         valid = patch[np.isfinite(patch) & (patch > 0)]
         if valid.size == 0:
             return None
+
         depth = float(np.median(valid))
         if encoding in ('16UC1', 'mono16') or depth_image.dtype == np.uint16:
             depth *= 0.001
@@ -176,6 +187,7 @@ class HumanHandTracker(Node):
         direct = {i: points[i] is not None for i in ids}
         depths = [p[2] for p in points.values() if p is not None]
         filled = False
+
         if len(depths) >= 2:
             reference = float(np.median(depths))
             consistent = [d for d in depths if abs(d - reference) <= 0.15]
@@ -183,8 +195,10 @@ class HumanHandTracker(Node):
                 reference = float(np.median(consistent))
                 for i in ids:
                     if points[i] is None:
-                        points[i] = self.landmark_to_3d(hand[i], shape, depth, encoding, fallback_depth=reference)
+                        points[i] = self.landmark_to_3d(hand[i], shape, depth, encoding,
+                                                        fallback_depth=reference)
                         filled = True
+
         return points, direct, filled
 
     def candidate_palm(self, hand_landmarks, shape, depth, encoding):
@@ -192,6 +206,7 @@ class HumanHandTracker(Node):
         points, _, _ = self.landmarks_3d(hand_landmarks.landmark, (5, 9, 17), shape, depth, encoding)
         if any(p is None for p in points.values()):
             return None
+
         palm = np.array([self.apply_transform(p) for p in points.values()], dtype=float)
         return palm.mean(axis=0) if np.isfinite(palm).all() else None
 
@@ -206,6 +221,7 @@ class HumanHandTracker(Node):
             V = np.array([[p.x * w, p.y * h, p.z * w] for p in hand])  # weak perspective
             n = unit(self.camera_rotation @ signed_palm_normal(V, right))
             return (None, None) if n is None else (n, n if right else -n)
+
         points = {}
         for i in self.GEOMETRY_LANDMARK_IDS:
             p = self.landmark_to_3d(hand[i], shape, depth, encoding)
@@ -213,12 +229,14 @@ class HumanHandTracker(Node):
                 points[i] = np.asarray(p, dtype=float)
         if len(points) < 4 or not all(i in points for i in (0, 5, 17)):
             return None, None
+
         P = np.stack(list(points.values()))
         centred = P - np.mean(P, axis=0)
         try:
             values, vectors = np.linalg.eigh(centred.T @ centred / len(P))
         except np.linalg.LinAlgError:
             return None, None
+
         normal = unit(vectors[:, np.argmin(values)])
         anchor = unit(np.cross(points[5] - points[0], points[17] - points[0]))
         return (None, None) if normal is None or anchor is None else (normal, anchor)
@@ -233,6 +251,7 @@ class HumanHandTracker(Node):
         """Palm landmarks relative to the pose wrist, while the hand is observed."""
         if side not in self.POSE_ARM or any(points_camera.get(i) is None for i in self.LANDMARK_IDS):
             return
+
         wrist = self._pose_point(pose, self.POSE_ARM[side][0], shape, depth, encoding)
         points = np.array([points_camera[i] for i in self.LANDMARK_IDS])
         if wrist is None or np.linalg.norm(points.mean(0) - wrist) > 0.25:  # wrist depth on background
@@ -247,18 +266,22 @@ class HumanHandTracker(Node):
         anchor = self._arm_anchor
         if anchor is None or not 0.0 < t - anchor[0] <= self.arm_bridge_s:
             return None
+
         t0, side, offsets, wrist0, elbow0 = anchor
         if side != self.selector.active:
             return None
         wrist = self._pose_point(pose, self.POSE_ARM[side][0], shape, depth, encoding)
         if wrist is None or np.linalg.norm(wrist - wrist0) > 0.1 + 2.0 * (t - t0):  # <= 2 m/s
             return None
+
+        # rotate the offsets with the forearm (elbow -> wrist), when both elbows are seen
         elbow = self._pose_point(pose, self.POSE_ARM[side][1], shape, depth, encoding)
         R = np.eye(3)
         if elbow is not None and elbow0 is not None:
             a, b = wrist0 - elbow0, wrist - elbow
             if min(np.linalg.norm(a), np.linalg.norm(b)) > 0.05:
                 R = Rotation.align_vectors([b], [a])[0].as_matrix()
+
         return side, list(wrist + offsets @ R.T)
 
     def _publish_gripper_hand(self, stamp, t, start_time):
@@ -273,14 +296,17 @@ class HumanHandTracker(Node):
         hand = self.gripper.hand_near(last[2], t, 0.15 + 1.0 * (t - last[0]))
         if hand is None:
             return False
+
         right = side == RAW.HAND_RIGHT
         n = self.gripper.palm_normal(hand, right)
         points = hand['pts']
         valid = [p for p in points if p is not None]
         self.publish_tracking(
             stamp, RAW.TRACKING_FULL if len(valid) == 4 else RAW.TRACKING_PARTIAL, points,
-            [RAW.DIRECT if p is not None else RAW.INVALID for p in points], start_time, handedness=side,
-            palm_plane_normal=n, palm_anchor_cross=None if n is None else (n if right else -n))
+            [RAW.DIRECT if p is not None else RAW.INVALID for p in points], start_time,
+            handedness=side,
+            palm_plane_normal=n,
+            palm_anchor_cross=None if n is None else (n if right else -n))
         self._last_active = (t, side, np.mean(valid, axis=0))
         return True
 
@@ -293,10 +319,12 @@ class HumanHandTracker(Node):
         except Exception as error:
             self.get_logger().warn(f'Error in cv_bridge: {error}', throttle_duration_sec=2.0)
             return
+
         front = self.detector.process(
             image, depth_image, 1e-3 if depth_msg.encoding in ('16UC1', 'mono16') else 1.0, self.fx,
             rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec)
         self._timing['stage1'].append(1e3 * (time.perf_counter() - start_time))
+
         try:
             self._frames.put_nowait((rgb_msg, depth_msg, image, depth_image, front, start_time))
         except queue.Full:
@@ -308,6 +336,7 @@ class HumanHandTracker(Node):
                 job = self._frames.get(timeout=0.2)
             except queue.Empty:
                 continue
+
             t0 = time.perf_counter()
             try:
                 self._finish_frame(*job)
@@ -322,6 +351,7 @@ class HumanHandTracker(Node):
         tm['stamps'].append(stamp.sec + 1e-9 * stamp.nanosec)
         if len(tm['stamps']) < 150:
             return
+
         st = np.array(tm['stamps'])
         gaps = np.diff(st)
         period = max(float(gaps.min()), 1e-3)
@@ -329,7 +359,8 @@ class HumanHandTracker(Node):
         self.get_logger().info(
             f'Tracker {len(gaps) / (st[-1] - st[0]):.1f} Hz | stage1 {np.median(tm["stage1"]):.0f}/'
             f'{np.percentile(tm["stage1"], 95):.0f} ms | stage2 {np.median(tm["stage2"]):.0f}/'
-            f'{np.percentile(tm["stage2"], 95):.0f} ms (median/p95) | camera frames skipped {skipped}/{len(gaps) + skipped}')
+            f'{np.percentile(tm["stage2"], 95):.0f} ms (median/p95) | '
+            f'camera frames skipped {skipped}/{len(gaps) + skipped}')
         for v in tm.values():
             v.clear()
 
@@ -340,6 +371,7 @@ class HumanHandTracker(Node):
         result = self.detector.complete(
             front, image, depth_image, 1e-3 if encoding in ('16UC1', 'mono16') else 1.0, stamp_s)
         debug_image = image.copy() if self.publish_debug else None
+
         active_side, hand_landmarks, _, standby_landmarks = self.selector.select(
             result, lambda lms: self.candidate_palm(lms, shape, depth_image, encoding), stamp)
         if debug_image is not None and standby_landmarks is not None:  # standby: drawn only, never tracked
@@ -354,9 +386,11 @@ class HumanHandTracker(Node):
             if self._publish_gripper_hand(stamp, stamp_s, start_time):
                 self.get_logger().info('ACTIVE hand from the gripper camera', throttle_duration_sec=2.0)
                 draw_status(debug_image, 'HAND FROM GRIPPER CAMERA')
-            elif (predicted := self._arm_prediction(result.pose_landmarks, shape, depth_image, encoding, stamp_s)):
+            elif (predicted := self._arm_prediction(
+                    result.pose_landmarks, shape, depth_image, encoding, stamp_s)):
                 side, points_camera = predicted
-                self.publish_tracking(stamp, RAW.TRACKING_ESTIMATED, [self.apply_transform(p) for p in points_camera],
+                self.publish_tracking(stamp, RAW.TRACKING_ESTIMATED,
+                                      [self.apply_transform(p) for p in points_camera],
                                       [RAW.ESTIMATED] * 4, start_time, handedness=side)
                 draw_status(debug_image, 'HAND FROM ARM (pose)')
             else:
@@ -372,14 +406,19 @@ class HumanHandTracker(Node):
             for i in self.GEOMETRY_LANDMARK_IDS:
                 cv2.circle(debug_image, (int(np.clip(round(hand[i].x * (w - 1)), 0, w - 1)),
                                          int(np.clip(round(hand[i].y * (h - 1)), 0, h - 1))), 4, (0, 0, 255), 1)
-        points_camera, direct, estimated = self.landmarks_3d(hand, self.LANDMARK_IDS, shape, depth_image, encoding)
+
+        points_camera, direct, estimated = self.landmarks_3d(
+            hand, self.LANDMARK_IDS, shape, depth_image, encoding)
         points_base = [None if points_camera[i] is None else self.apply_transform(points_camera[i])
                        for i in self.LANDMARK_IDS]
         types = [RAW.DIRECT if direct[i] else (RAW.ESTIMATED if points_camera[i] is not None else RAW.INVALID)
                  for i in self.LANDMARK_IDS]
         valid_count = sum(p is not None for p in points_base)
-        state = (RAW.INVALID_DEPTH if valid_count == 0 else RAW.TRACKING_PARTIAL if valid_count < 4
-                 else RAW.TRACKING_ESTIMATED if RAW.ESTIMATED in types else RAW.TRACKING_FULL)
+        state = (RAW.INVALID_DEPTH if valid_count == 0
+                 else RAW.TRACKING_PARTIAL if valid_count < 4
+                 else RAW.TRACKING_ESTIMATED if RAW.ESTIMATED in types
+                 else RAW.TRACKING_FULL)
+
         if valid_count:
             palm = np.mean([p for p in points_base if p is not None], axis=0)
             self._last_active = (stamp_s, int(active_side), palm)
@@ -388,10 +427,12 @@ class HumanHandTracker(Node):
             n = None if seen is None else self.gripper.palm_normal(seen, right)
             if n is not None:
                 plane, anchor = n, (n if right else -n)
+
         self.publish_tracking(stamp, state, points_base, types, start_time, handedness=int(active_side),
                               palm_plane_normal=plane, palm_anchor_cross=anchor)
-        self._store_arm_anchor(result.pose_landmarks, int(active_side), points_camera, shape, depth_image, encoding,
-                               stamp_s)
+        self._store_arm_anchor(result.pose_landmarks, int(active_side), points_camera, shape, depth_image,
+                               encoding, stamp_s)
+
         if points_base[0] is None:
             draw_status(debug_image, 'INVALID WRIST DEPTH')
             self.get_logger().warn('Hand detected, but wrist depth is invalid', throttle_duration_sec=2.0)
@@ -419,7 +460,8 @@ class HumanHandTracker(Node):
                                             z=float(palm_plane_normal[2]))
             msg.palm_anchor_cross = Vector3(x=float(palm_anchor_cross[0]), y=float(palm_anchor_cross[1]),
                                             z=float(palm_anchor_cross[2]))
-        msg.positions = [Point() if p is None else Point(x=float(p[0]), y=float(p[1]), z=float(p[2])) for p in points]
+        msg.positions = [Point() if p is None else Point(x=float(p[0]), y=float(p[1]), z=float(p[2]))
+                         for p in points]
         self.tracking_publisher.publish(msg)
 
     def publish_debug_image(self, image, original_msg):

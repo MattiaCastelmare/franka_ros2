@@ -5,8 +5,18 @@
   python3 handover_grasp.py executor ...  grasp cycle on the handover commander (robot_handover grasp_executor:=true)
 
 GRASP POSE
+  cloud      aligned depth around the object of HandObjectState (+-crop_m), at most max_rate_hz
+  backend    GSNet (default) or AnyGrasp (backend:=anygrasp)
+  filter     on the object, approach from the robot TCP within approach_thresh_deg, opening
+             <= max_gripper_width_m, collision-free, fingertips >= hand_clearance_m from the hand
+  choice     best score; the previous grasp is kept while close and >= keep_ratio of the best
+  output     PoseStamped in the base frame, Franka TCP convention (z approach, y closing)
 
 GRASP EXECUTOR
+  HOME -> PREGRASP (pregrasp_m back along the approach) -> APPROACH (approach_step_m) -> CLOSE
+  -> HOLD (hold_s) -> OPEN -> RETREAT -> RETURN -> HOME
+  A cycle starts with an empty hand first (rearm_s), an object in the hand, a fresh reachable grasp
+  and a trusted hand. Hand / grasp lost (lost_s, approach_lost_s) or phase_timeout_s -> RETURN.
 """
 
 import os
@@ -50,11 +60,15 @@ def collisions(points, t, R, widths, depths, heights, finger_w=0.01, finger_l=0.
     x, y, z = q[..., 0], q[..., 1], q[..., 2]
     in_h = (z > -h) & (z < h)
     span = (y > -(w + finger_w)) & (y < w + finger_w)
-    fingers = (x > d - finger_l) & (x < d) & (((y > -(w + finger_w)) & (y < -w)) | ((y < w + finger_w) & (y > w)))
+    fingers = ((x > d - finger_l) & (x < d)
+               & (((y > -(w + finger_w)) & (y < -w)) | ((y < w + finger_w) & (y > w))))
     bottom = (x <= d - finger_l) & (x > d - finger_l - finger_w) & span
     shift = (x <= d - finger_l - finger_w) & (x > d - finger_l - finger_w - approach_dist) & span
     hits = (in_h & (fingers | bottom | shift)).sum(1)
-    volume = (2 * finger_l * finger_w + (2 * w[:, 0] + 2 * finger_w) * (finger_w + approach_dist)) * 2 * h[:, 0]
+
+    # collision when the cloud fills more than thresh of the gripper volume (in voxels)
+    volume = ((2 * finger_l * finger_w + (2 * w[:, 0] + 2 * finger_w) * (finger_w + approach_dist))
+              * 2 * h[:, 0])
     return hits / (volume / voxel ** 3 + 1e-6) > thresh
 
 
@@ -69,9 +83,11 @@ class Gsnet:
         for name in ('knn', 'knn.knn_modules', 'open3d'):
             sys.modules.setdefault(name, types.ModuleType(name))
         sys.modules['knn.knn_modules'].knn = None
+
         import torch
         from models.graspnet import GraspNet, pred_decode
         from graspnet_dataset import minkowski_collate_fn
+
         self.torch, self.decode, self.collate = torch, pred_decode, minkowski_collate_fn
         self.net = GraspNet(seed_feat_dim=512, is_training=False).cuda().eval()
         self.net.load_state_dict(torch.load(checkpoint, map_location='cuda')['model_state_dict'])
@@ -79,9 +95,10 @@ class Gsnet:
 
     def __call__(self, points):
         n = len(points)
-        idx = (np.random.choice(n, self.num_point, replace=False) if n >= self.num_point else
-               np.r_[np.arange(n), np.random.choice(n, self.num_point - n, replace=True)])
+        idx = (np.random.choice(n, self.num_point, replace=False) if n >= self.num_point
+               else np.r_[np.arange(n), np.random.choice(n, self.num_point - n, replace=True)])
         cloud = points[idx].astype(np.float32)
+
         batch = self.collate([{'point_clouds': cloud, 'coors': cloud / self.voxel,
                                'feats': np.ones_like(cloud)}])
         for key, value in batch.items():
@@ -89,8 +106,10 @@ class Gsnet:
                 batch[key] = [[v.cuda() for v in level] for level in value]
             else:
                 batch[key] = value.cuda()
+
         with self.torch.no_grad():
             p = self.decode(self.net(batch))[0].float().cpu().numpy()
+
         # score, width, height, depth, rotation (9), translation (3), object id
         return dict(score=p[:, 0], width=p[:, 1], height=p[:, 2], depth=p[:, 3],
                     R=p[:, 4:13].reshape(-1, 3, 3), t=p[:, 13:16])
@@ -104,7 +123,8 @@ class AnyGrasp:
         os.chdir(sdk_dir)  # the SDK looks for license/ here
         from gsnet import create_detector
         self.detector = create_detector(Namespace(checkpoint_path=checkpoint,
-                                                  max_gripper_width=min(0.1, max_width), gripper_height=height))
+                                                  max_gripper_width=min(0.1, max_width),
+                                                  gripper_height=height))
         if self.detector is None:
             raise RuntimeError('license check failed')
 
@@ -114,6 +134,7 @@ class AnyGrasp:
                                              'approach_thresh': thresh})
         if g is None or len(g) == 0:
             return None
+
         g = g.nms()
         return dict(score=np.asarray(g.scores, float), width=g.widths, height=g.heights, depth=g.depths,
                     R=g.rotation_matrices, t=g.translations)
@@ -131,6 +152,7 @@ class GraspPoseNode(Node):
         self.clearance = float(par('hand_clearance_m', 0.05))
         self.keep_ratio = float(par('keep_ratio', 0.8))            # hysteresis on the choice
         self.period = 1.0 / float(par('max_rate_hz', 10.0))
+
         g = '/ros2_ws/graspness'
         backend_args = {
             'gsnet': (par('gsnet_root', f'{g}/graspness_unofficial'), par('gsnet_venv', f'{g}/venv'),
@@ -138,8 +160,9 @@ class GraspPoseNode(Node):
             'anygrasp': (par('anygrasp_sdk_dir', '/ros2_ws/anygrasp/grasp_detection'),
                          par('anygrasp_checkpoint', 'log/checkpoint_detection.tar'), self.max_width, 0.03)}
 
-        ext = yaml.safe_load(open(os.path.join(
-            get_package_share_directory('franka_experiments'), 'config', 'camera_extrinsics.yaml')))
+        with open(os.path.join(get_package_share_directory('franka_experiments'), 'config',
+                               'camera_extrinsics.yaml'), 'r', encoding='utf-8') as file:
+            ext = yaml.safe_load(file)
         t, q = ext['translation'], ext['rotation']
         self.t = np.array([t['x'], t['y'], t['z']])
         self.R = Rotation.from_quat([q['x'], q['y'], q['z'], q['w']]).as_matrix()  # camera -> base
@@ -149,6 +172,7 @@ class GraspPoseNode(Node):
         self.depth = self.obj = self.hand = self.ee = None
         self.last = None  # (tip, approach) of the published grasp, base frame
         self.lock = threading.Lock()
+
         self.pub = self.create_publisher(PoseStamped, '/handover/grasp_pose', 10)
         cam = '/camera/camera/aligned_depth_to_color/'
         self.create_subscription(CameraInfo, cam + 'camera_info', self.on_info, qos_profile_sensor_data)
@@ -159,7 +183,8 @@ class GraspPoseNode(Node):
                                  lambda m: self._set('hand', m), 10)
         self.create_subscription(HandoverDistance, '/handover/distance', lambda m: self._set('ee', m), 10)
 
-        self.stats = dict.fromkeys(('frames', 'no object', 'no grasp', 'filtered', 'near hand', 'published'), 0)
+        self.stats = dict.fromkeys(
+            ('frames', 'no object', 'no grasp', 'filtered', 'near hand', 'published'), 0)
         self.create_timer(5.0, self.log_stats)
         self.stop = threading.Event()
         try:
@@ -191,6 +216,7 @@ class GraspPoseNode(Node):
             with self.lock:
                 depth_msg, obj, hand, ee = self.depth, self.obj, self.hand, self.ee
                 self.depth = None
+
             if depth_msg is not None and self.K is not None:
                 self.stats['frames'] += 1
             if depth_msg is not None and self.K is not None and not (obj is not None and obj.object_present):
@@ -200,6 +226,7 @@ class GraspPoseNode(Node):
                     self.step(depth_msg, obj, hand, ee)
                 except Exception as error:
                     self.get_logger().warn(f'grasp step failed: {error}', throttle_duration_sec=5.0)
+
             time.sleep(max(0.005, self.period - (time.monotonic() - t0)))
 
     def step(self, depth_msg, obj, hand, ee):
@@ -208,9 +235,12 @@ class GraspPoseNode(Node):
         stamp = lambda m: m.header.stamp.sec + 1e-9 * m.header.stamp.nanosec
         if not np.isfinite(centre).all() or len(contour) < 3 or abs(stamp(obj) - stamp(depth_msg)) > 0.3:
             return
+
         depth = self.bridge.imgmsg_to_cv2(depth_msg).astype(np.float32)
         if depth_msg.encoding == '16UC1':
             depth *= 1e-3
+
+        # crop around the object (+-crop_m) and back-project it; region = pixels inside the contour
         fx, fy, cx, cy = self.K
         c_cam = self.R.T @ (centre - self.t)
         r = int(self.crop_m * fx / max(c_cam[2], 0.1))
@@ -219,6 +249,7 @@ class GraspPoseNode(Node):
         u0, u1, v0, v1 = max(0, u_c - r), min(w, u_c + r), max(0, v_c - r), min(h, v_c + r)
         if u1 - u0 < 8 or v1 - v0 < 8:
             return
+
         mask = np.zeros((h, w), np.uint8)
         cv2.fillPoly(mask, [contour], 1)
         v, u = np.mgrid[v0:v1, u0:u1]
@@ -229,6 +260,7 @@ class GraspPoseNode(Node):
         region = mask[v, u].astype(bool)
         if region.sum() < 30:
             return
+
         # approach from the robot TCP towards the object, in the camera frame
         source = (np.array([ee.ee_control_point.x, ee.ee_control_point.y, ee.ee_control_point.z])
                   if ee is not None and ee.valid else np.array([0.0, 0.0, 0.5]))
@@ -250,6 +282,7 @@ class GraspPoseNode(Node):
             if len(g['score']):
                 free = ~collisions(points, g['t'], g['R'], g['width'], g['depth'], g['height'])
                 g = {k: val[free] for k, val in g.items()}
+
         if not len(g['score']):
             self.stats['filtered'] += 1
             return
@@ -257,12 +290,14 @@ class GraspPoseNode(Node):
 
     def publish(self, depth_msg, g, hand):
         rot = g['R']  # graspnet: x approach, y closing
-        tips = (g['t'] + g['depth'][:, None] * rot[:, :, 0]) @ self.R.T + self.t
+        tips = (g['t'] + g['depth'][:, None] * rot[:, :, 0]) @ self.R.T + self.t  # camera -> base
         axes = np.einsum('ij,njk->nik', self.R, rot)
         scores = g['score']
+
         ok = np.ones(len(scores), bool)
         if hand is not None:  # fingertips away from the tracked hand landmarks
-            lm = np.array([[p.x, p.y, p.z] for p, s in zip(hand.positions, hand.landmark_state) if s in TRACKED])
+            lm = np.array([[p.x, p.y, p.z] for p, s in zip(hand.positions, hand.landmark_state)
+                           if s in TRACKED])
             if len(lm):
                 for side in (-1.0, 1.0):
                     fingers = tips + side * 0.5 * g['width'][:, None] * axes[:, :, 1]
@@ -270,6 +305,8 @@ class GraspPoseNode(Node):
         if not ok.any():
             self.stats['near hand'] += 1
             return
+
+        # best score, but keep the previous grasp while it is still close and good enough
         idx = np.where(ok)[0]
         best = idx[np.argmax(scores[idx])]
         if self.last is not None:
@@ -279,8 +316,10 @@ class GraspPoseNode(Node):
             if near:
                 best = max(near, key=lambda i: scores[i])
         self.last = (tips[best], axes[best, :, 0])
+
         x_ap, y_cl = axes[best, :, 0], axes[best, :, 1]
         R_tcp = np.column_stack([np.cross(y_cl, x_ap), y_cl, x_ap])  # Franka TCP: z approach
+
         out = PoseStamped()
         out.header.stamp, out.header.frame_id = depth_msg.header.stamp, self.base_frame
         out.pose.position.x, out.pose.position.y, out.pose.position.z = map(float, tips[best])
@@ -298,17 +337,17 @@ class GraspExecutor(HandoverQddotCommander):
         super().__init__()
         par = lambda n, v: self.declare_parameter(n, v).value
         self.pregrasp_m = float(par('pregrasp_m', 0.10))
-        self.approach_step_m = float(par('approach_step_m', 0.02))   # slow: ~0.1 m/s
+        self.approach_step_m = float(par('approach_step_m', 0.02))  # slow: ~0.1 m/s
         self.reach_tol_m = float(par('reach_tol_m', 0.015))
         self.rot_tol = np.radians(float(par('rot_tol_deg', 10.0)))
         self.rot_rate = np.radians(float(par('rot_rate_deg_s', 45.0)))
         self.hold_s = float(par('hold_s', 2.0))
-        self.gripper_s = float(par('gripper_s', 1.5))   # time given to each gripper motion
-        self.rearm_s = float(par('rearm_s', 1.0))       # empty hand before the next cycle
+        self.gripper_s = float(par('gripper_s', 1.5))               # time given to each gripper motion
+        self.rearm_s = float(par('rearm_s', 1.0))                   # empty hand before the next cycle
         self.grasp_timeout_s = float(par('grasp_timeout_s', 0.3))  # fresh grasp to start
-        self.lost_s = float(par('lost_s', 1.0))              # gap tolerated before PREGRASP aborts
+        self.lost_s = float(par('lost_s', 1.0))                     # gap tolerated before PREGRASP aborts
         self.approach_lost_s = float(par('approach_lost_s', 0.4))  # same, slow final approach
-        self.retry_s = float(par('retry_s', 1.0))            # wait at home after an abort
+        self.retry_s = float(par('retry_s', 1.0))                   # wait at home after an abort
         self.max_reach_m = float(par('max_reach_m', 0.80))
         self.min_z_m = float(par('min_z_m', 0.10))
         self.phase_timeout_s = float(par('phase_timeout_s', 8.0))
@@ -322,6 +361,7 @@ class GraspExecutor(HandoverQddotCommander):
         self._retry_at = 0.0
         self._phase, self._phase_t = 'HOME', time.monotonic()
         self._R_home = None
+
         self.create_subscription(PoseStamped, '/handover/grasp_pose', self._grasp_cb, 10)
         self.create_subscription(HandObjectState, '/handover/hand_object', self._object_cb, 10)
         self.get_logger().info('Grasp executor ready: HOME')
@@ -345,6 +385,7 @@ class GraspExecutor(HandoverQddotCommander):
     def _fresh_grasp(self, max_age=None):
         if self._grasp is None:
             return None
+
         age = (self.get_clock().now().nanoseconds - self._grasp[2]) * 1e-9
         p, R, _ = self._grasp
         reachable = np.linalg.norm(p[:2]) <= self.max_reach_m and p[2] >= self.min_z_m
@@ -380,6 +421,7 @@ class GraspExecutor(HandoverQddotCommander):
             return self._p_ee.copy()
         if self._R_home is None and self._orient_ok:
             self._R_home = self._R_des.copy()
+
         now = time.monotonic()
         dt = min(0.05, now - self._last_t) if self._last_t is not None else 0.0
         self._last_t = now
@@ -420,8 +462,10 @@ class GraspExecutor(HandoverQddotCommander):
             R = self._closest_flip(R)
             angle = self._turn_towards(R, dt)
             target = p - self.pregrasp_m * R[:, 2]
-            if (np.linalg.norm(target - self._p_ee) < self.reach_tol_m * 2 and angle < self.rot_tol
-                    and now - self._good_t <= self.grasp_timeout_s):  # final approach only on a fresh grasp
+            # final approach only on a fresh grasp
+            if (np.linalg.norm(target - self._p_ee) < self.reach_tol_m * 2
+                    and angle < self.rot_tol
+                    and now - self._good_t <= self.grasp_timeout_s):
                 self._frozen = (p.copy(), R.copy())
                 self._set_phase('APPROACH')
             elif elapsed > self.phase_timeout_s:
@@ -471,6 +515,7 @@ def main(args=None):
     if role == 'executor':
         run_node_main(GraspExecutor, args=args)
         return
+
     rclpy.init(args=args)
     node = GraspPoseNode()
     try:

@@ -52,6 +52,7 @@ class OneEuro:
         if self.x is None or not 0.0 < t - self.t <= 0.2:
             self.x, self.dx, self.t = x, np.zeros_like(x), t
             return x
+
         dt = t - self.t
         alpha = lambda fc: 1.0 / (1.0 + 1.0 / (2.0 * np.pi * fc * dt))
         self.dx = self.dx + alpha(self.d_cutoff) * ((x - self.x) / dt / scale - self.dx)
@@ -84,7 +85,8 @@ class RtmwHandDetector:
     size 5-30 cm at the wrist depth; offline against Hands23: recall 0.905 (Holistic 0.800)."""
 
     POSE_FROM_BODY = {0: 0, 5: 11, 6: 12, 7: 13, 8: 14, 9: 15, 10: 16, 11: 23, 12: 24}
-    HANDS = (('left_hand_landmarks', 91, 9), ('right_hand_landmarks', 112, 10))  # key, first kp, body wrist
+    # key, first keypoint, body wrist keypoint
+    HANDS = (('left_hand_landmarks', 91, 9), ('right_hand_landmarks', 112, 10))
     SWITCH_M = 0.3     # another person takes over when this much nearer the robot
     HUMAN_MIN = 0.7    # mean face + best hand keypoint score; the robot arm seen as a person stays below
     SWITCH_FRAMES = 5  # frames in a row a nearer person must be seen before taking over
@@ -96,9 +98,11 @@ class RtmwHandDetector:
         import torch  # noqa: F401  loads the CUDA / cuDNN libraries onnxruntime needs
         from rtmlib import Wholebody
         from rtmlib.tools.solution.pose_tracker import pose_to_bbox
+
         model = Wholebody(mode=mode, backend='onnxruntime', device='cuda')
         self.engine = self._tensorrt(model) if tensorrt else 'CUDA FP32'
         self.detector, self.pose, self.pose_to_bbox = model.det_model, model.pose_model, pose_to_bbox
+
         # as rtmlib's PoseTracker (person boxes from the last keypoints, refreshed by the person
         # detector every det_frequency frames), but the detector runs in its own thread
         self.det_frequency, self.n, self.boxes = det_frequency, 0, []
@@ -106,6 +110,7 @@ class RtmwHandDetector:
         self.det_wake, self.det_stop = threading.Event(), threading.Event()
         self.det_thread = threading.Thread(target=self._detect_loop, daemon=True)
         self.det_thread.start()
+
         self.enter, self.keep = enter, keep
         self.kept, self.centre = set(), None
         self.pending, self.pending_n = None, 0  # nearer person waiting to take over
@@ -122,11 +127,13 @@ class RtmwHandDetector:
             import onnxruntime as ort
         except ImportError:
             return 'CUDA FP32 (TensorRT not installed)'
+
         cache = os.path.expanduser('~/.cache/rtmlib/trt')
         os.makedirs(cache, exist_ok=True)
         providers = [('TensorrtExecutionProvider', {
             'trt_fp16_enable': True, 'trt_engine_cache_enable': True,
             'trt_engine_cache_path': cache, 'trt_timing_cache_enable': True}), 'CUDAExecutionProvider']
+
         done = []
         for name, tool in (('pose', model.pose_model), ('detector', model.det_model)):
             if 'yolox_m' in tool.onnx_model:
@@ -138,6 +145,7 @@ class RtmwHandDetector:
                     done.append(name)
             except Exception:  # keep the CUDA session
                 pass
+
         return f'TensorRT FP16 ({", ".join(done)})' if done else 'CUDA FP32'
 
     @staticmethod
@@ -163,10 +171,12 @@ class RtmwHandDetector:
         if self.n % self.det_frequency == 0 or not self.boxes:
             self.det_in = bgr
             self.det_wake.set()
+
         if self.det_out is not None:  # newest detection replaces the keypoint boxes
             self.boxes, self.det_out = self.det_out, None
         if not self.boxes:
             return [], []
+
         keypoints, scores = self.pose(bgr, bboxes=self.boxes)
         self.boxes = [self.pose_to_bbox(k) for k in keypoints]
         return keypoints, scores
@@ -182,6 +192,8 @@ class RtmwHandDetector:
             for f in self.filters.values():
                 f.x = None
             return out
+
+        # body: COCO keypoints -> MediaPipe pose ids
         k, s = keypoints[person], np.clip(scores[person], 0.0, 1.0)
         pose = landmark_pb2.NormalizedLandmarkList()
         for _ in range(33):
@@ -190,6 +202,8 @@ class RtmwHandDetector:
             q = pose.landmark[mp_id]
             q.x, q.y, q.visibility = k[body, 0] / w, k[body, 1] / h, s[body]
         out.pose_landmarks = pose
+
+        # hands: score hysteresis, metric size at the wrist depth, one box per hand
         hands = {}
         for key, first, wrist in self.HANDS:
             p, c = k[first:first + 21], s[first:first + 21]
@@ -200,12 +214,14 @@ class RtmwHandDetector:
             if z is not None and not 0.05 <= max(box[2] - box[0], box[3] - box[1]) * z / fx <= 0.30:
                 continue
             hands[key] = (score, p, c, box)
+
         if len(hands) == 2 and iou(*(v[3] for v in hands.values())) > 0.3:  # both boxes on one hand
             del hands[min(hands, key=lambda key: hands[key][0])]
         self.kept = set(hands)
         for key, f in self.filters.items():
             if key not in hands:
                 f.x = None  # hand lost: restart the filter
+
         for key, (_, p, c, box) in hands.items():
             p = self.filters[key](t, p, max(box[2] - box[0], box[3] - box[1], 10.0))
             lms = landmark_pb2.NormalizedLandmarkList()
@@ -230,20 +246,27 @@ class RtmwHandDetector:
         if not people:
             self.centre = None
             return None
-        near = [] if self.centre is None else [p for p in people if np.linalg.norm(p[1] - self.centre) < 0.15 * w]
+
+        # people: (index, centre px, area px, robot distance, human score)
+        near = ([] if self.centre is None
+                else [p for p in people if np.linalg.norm(p[1] - self.centre) < 0.15 * w])
         current = min(near, key=lambda p: np.linalg.norm(p[1] - self.centre)) if near else None
         located = [p for p in people if p[3] is not None and p[4] >= self.HUMAN_MIN]
         nearest = min(located, key=lambda p: p[3]) if located else None
+
         if nearest is not None and current is None:
             current = nearest
-        elif nearest is not None and nearest[0] != current[0] and (
-                current[3] is None or current[4] < self.HUMAN_MIN or nearest[3] < current[3] - self.SWITCH_M):
+        elif (nearest is not None and nearest[0] != current[0]
+              and (current[3] is None
+                   or current[4] < self.HUMAN_MIN
+                   or nearest[3] < current[3] - self.SWITCH_M)):
             same = self.pending is not None and np.linalg.norm(nearest[1] - self.pending) < 0.15 * w
             self.pending, self.pending_n = nearest[1], (self.pending_n + 1 if same else 1)
             if self.pending_n >= self.SWITCH_FRAMES:
                 current, self.pending, self.pending_n = nearest, None, 0
         else:
             self.pending, self.pending_n = None, 0
+
         i, self.centre = (current or max(people, key=lambda p: p[2]))[:2]
         return i
 
@@ -251,6 +274,7 @@ class RtmwHandDetector:
         """Horizontal distance of the torso (nearest shoulder or hip) from the robot base."""
         if self.to_base is None or depth is None:
             return None
+
         d = []
         for j in (5, 6, 11, 12):
             z = patch_depth(depth, depth_scale, k[j]) if s[j] > 0.3 else None
@@ -289,12 +313,16 @@ class MediapipeHandDetector:
 
     def complete(self, result, bgr, depth, depth_scale, t):
         h, w = bgr.shape[:2]
-        out = SimpleNamespace(pose_landmarks=result.pose_landmarks, left_hand_landmarks=result.left_hand_landmarks,
+        out = SimpleNamespace(pose_landmarks=result.pose_landmarks,
+                              left_hand_landmarks=result.left_hand_landmarks,
                               right_hand_landmarks=result.right_hand_landmarks)
+
         for key, wrist_id in (('left_hand_landmarks', 15), ('right_hand_landmarks', 16)):
             lms, last = getattr(out, key), self._last_hands.get(key)
             if lms is None and last is not None and t - last[0] <= self.REDETECT_S:
                 lms = self._redetect(bgr, depth, depth_scale, *last[1:])
+
+            # keep the hand only if the pose wrist of its side is near it
             p = None if lms is None else np.array([[q.x * w, q.y * h] for q in lms.landmark])
             if p is not None and out.pose_landmarks is not None:
                 q = out.pose_landmarks.landmark[wrist_id]
@@ -302,6 +330,7 @@ class MediapipeHandDetector:
                     p = None
             elif out.pose_landmarks is None:
                 p = None
+
             setattr(out, key, None if p is None else lms)
             if p is not None:
                 self._last_hands[key] = (t, p, self._palm_depth(p, depth, depth_scale))
@@ -310,7 +339,8 @@ class MediapipeHandDetector:
     @staticmethod
     def _palm_depth(p, depth, scale):
         h, w = depth.shape[:2]
-        z = [float(depth[int(np.clip(v, 0, h - 1)), int(np.clip(u, 0, w - 1))]) * scale for u, v in p[[0, 5, 9, 17]]]
+        z = [float(depth[int(np.clip(v, 0, h - 1)), int(np.clip(u, 0, w - 1))]) * scale
+             for u, v in p[[0, 5, 9, 17]]]
         z = [x for x in z if x > 0.1]
         return float(np.median(z)) if z else np.nan
 
@@ -322,11 +352,14 @@ class MediapipeHandDetector:
         x1, y1 = int(min(w, c[0] + r)), int(min(h, c[1] + r))
         if x1 - x0 < 8 or y1 - y0 < 8:  # last box left the image
             return None
+
         crop = cv2.cvtColor(bgr[y0:y1, x0:x1], cv2.COLOR_BGR2RGB)
         k = 192 / max(1, min(crop.shape[:2]))
         found = self.redetector.process(cv2.resize(crop, None, fx=k, fy=k) if k > 1 else crop)
         if not found.multi_hand_landmarks:
             return None
+
+        # crop coordinates -> full image; accepted only near the last box and at its depth
         lms = landmark_pb2.NormalizedLandmarkList()
         for q in found.multi_hand_landmarks[0].landmark:
             lms.landmark.add(x=(x0 + q.x * (x1 - x0)) / w, y=(y0 + q.y * (y1 - y0)) / h, z=q.z)
@@ -358,6 +391,7 @@ class GripperCamera:
         self.link = e['parent_frame']
         self.R_link_cam = Rotation.from_quat([q['x'], q['y'], q['z'], q['w']]).as_matrix()
         self.t_link_cam = np.array([t['x'], t['y'], t['z']], dtype=float)
+
         self.tf_lookup = tf_lookup
         self.target = target  # () -> (t, palm in base) of the last ACTIVE hand, or None
         self.logger, self.state = node.get_logger(), None
@@ -367,6 +401,7 @@ class GripperCamera:
             static_image_mode=False, max_num_hands=2, model_complexity=1,
             min_detection_confidence=0.5, min_tracking_confidence=0.5)
         self.ms = []
+
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self.sync = ApproximateTimeSynchronizer(
             [Subscriber(node, Image, f'{namespace}/color/image_raw', qos_profile=qos),
@@ -375,8 +410,10 @@ class GripperCamera:
         self.sync.registerCallback(self._images)
         node.create_subscription(CameraInfo, f'{namespace}/aligned_depth_to_color/camera_info',
                                  self._info, qos_profile_sensor_data)
+
         # landmarks drawn on the D405 image; hand_visualizer adds the HandState overlay
         self.debug = node.create_publisher(Image, '/handover/gripper_debug_image_raw', 2) if debug else None
+
         self.stopping, self.wake = threading.Event(), threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -402,19 +439,24 @@ class GripperCamera:
             frame, self.frame = self.frame, None
             if frame is None or self.K is None:
                 continue
+
             rgb_msg, depth_msg = frame
             pose = self.tf_lookup(self.link, rgb_msg.header.stamp)
             self._log_state(pose is not None)
             if pose is None:            # no robot TF: the camera cannot be placed
                 self.result = None
                 continue
+
+            # camera pose in the base frame
             R_base_link, t_base_link = pose
             R = R_base_link @ self.R_link_cam
             t = R_base_link @ self.t_link_cam + t_base_link
+
             rgb = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='rgb8')
             h, w = rgb.shape[:2]
             t_img = rgb_msg.header.stamp.sec + 1e-9 * rgb_msg.header.stamp.nanosec
             hands, found = [], []
+
             if self._in_view(t_img, R, t, w, h):
                 t0 = time.perf_counter()
                 depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
@@ -424,11 +466,13 @@ class GripperCamera:
                     hands.append({'pts': [None if p is None else R @ p + t for p in pts], 'V': V, 'R': R})
                 self._log_time(1e3 * (time.perf_counter() - t0))
             self.result = (t_img, hands)
+
             if self.debug is not None:
                 image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
                 for V in found:
                     for a, b in mp.solutions.hands.HAND_CONNECTIONS:
-                        cv2.line(image, tuple(map(int, V[a, :2])), tuple(map(int, V[b, :2])), (255, 255, 255), 2)
+                        cv2.line(image, tuple(map(int, V[a, :2])), tuple(map(int, V[b, :2])),
+                                 (255, 255, 255), 2)
                     for u, v in V[:, :2].astype(int):
                         cv2.circle(image, (u, v), 3, (0, 0, 255), -1)
                 msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
@@ -453,9 +497,11 @@ class GripperCamera:
         last = None if self.target is None else self.target()
         if last is None or abs(t_img - last[0]) > 1.0:
             return False
+
         q = R.T @ (np.asarray(last[1]) - t)
         if not 0.05 < q[2] < 1.5:
             return False
+
         fx, fy, cx, cy = self.K
         u, v = fx * q[0] / q[2] + cx, fy * q[1] / q[2] + cy
         return -0.25 * w < u < 1.25 * w and -0.25 * h < v < 1.25 * h
@@ -464,6 +510,7 @@ class GripperCamera:
         # no TF for ~1 s of images (not just the start-up race): say it once
         self.missing = 0 if placed else getattr(self, 'missing', 0) + 1
         state = True if placed else (False if self.missing >= 30 else self.state)
+
         if state != self.state:
             self.state = state
             if state:
@@ -478,9 +525,11 @@ class GripperCamera:
         patch = patch[patch > 0]
         if patch.size == 0:
             return None
+
         z = float(np.median(patch)) * (1e-3 if depth.dtype == np.uint16 else 1.0)
         if not 0.07 <= z <= 1.5:
             return None
+
         fx, fy, cx, cy = self.K
         return np.array([(u - cx) * z / fx, (v - cy) * z / fy, z])
 
@@ -489,6 +538,7 @@ class GripperCamera:
         result = self.result
         if result is None or abs(t - result[0]) > max_age:
             return None
+
         best = None
         for hand in result[1]:
             valid = [p for p in hand['pts'] if p is not None]

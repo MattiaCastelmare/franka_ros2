@@ -73,15 +73,20 @@ class HandoverPath:
             self.v.fill(0.0)
             self.a.fill(0.0)
             return self.p
+
         # one continuous reference, through hand switches and reacquisition: bounded deceleration
         # instead of an abrupt v = 0 when the hand is lost
         param = lambda name: float(self.node.get_parameter(name).value)
         target = self.node.desired_position()
         omega = 1.0 / max(0.01, param('target_response_s'))
+        # critically damped second order, then acceleration and velocity clipped by norm
         accel = omega**2 * (target - self.p) - 2.0 * omega * self.v
-        accel *= min(1.0, max(0.0, param('max_target_acceleration_m_s2')) / max(float(np.linalg.norm(accel)), 1e-12))
+        accel *= min(1.0, max(0.0, param('max_target_acceleration_m_s2'))
+                     / max(float(np.linalg.norm(accel)), 1e-12))
         velocity = self.v + accel * dt
-        velocity *= min(1.0, max(0.0, param('max_target_velocity_m_s')) / max(float(np.linalg.norm(velocity)), 1e-12))
+        velocity *= min(1.0, max(0.0, param('max_target_velocity_m_s'))
+                        / max(float(np.linalg.norm(velocity)), 1e-12))
+
         self.a[:] = (velocity - self.v) / dt
         self.p += 0.5 * (self.v + velocity) * dt
         self.v[:] = velocity
@@ -98,24 +103,30 @@ class HandoverQddotCommander(PentagonQddotCommander):
 
     def __init__(self):
         super().__init__()
-        for name, value in (('follow_hand', False), ('test_offset_xyz', [0.0, 0.0, 0.0]), ('standoff_m', 0.20),
-                            ('hand_timeout_s', 0.20), ('min_confidence', 0.70), ('max_target_step_m', 0.10),
-                            ('max_target_velocity_m_s', 0.40), ('max_target_acceleration_m_s2', 1.5),
-                            ('target_response_s', 0.10), ('gripper_service', 'gripper_controller/set_gripper')):
+        for name, value in (('follow_hand', False), ('test_offset_xyz', [0.0, 0.0, 0.0]),
+                            ('standoff_m', 0.20), ('hand_timeout_s', 0.20), ('min_confidence', 0.70),
+                            ('max_target_step_m', 0.10), ('max_target_velocity_m_s', 0.40),
+                            ('max_target_acceleration_m_s2', 1.5), ('target_response_s', 0.10),
+                            ('gripper_service', 'gripper_controller/set_gripper')):
             self.declare_parameter(name, value)
+
         self.gripper = Gripper(self, self.get_parameter('gripper_service').value)
         self._hold_position = None
         self._hand_position, self._hand_ok, self._hand_stamp_ns = np.zeros(3), False, 0
         self._handover_path = HandoverPath(self)
+
         self.create_subscription(HandState, '/handover/hand_state', self._hand_cb, 1)
-        self.get_logger().info('Handover qddot commander ready - follow_hand=False')
+        self.get_logger().info(
+            f'Handover qddot commander ready - follow_hand={bool(self.get_parameter("follow_hand").value)}')
 
     def _hand_cb(self, msg):
         p = np.array([msg.palm_position.x, msg.palm_position.y, msg.palm_position.z], dtype=float)
-        self._hand_ok = bool(msg.position_valid and int(msg.position_source) == int(HandState.POSITION_SOURCE_MEASURED)
-                             and int(msg.physical_hand) != int(HandState.HAND_UNKNOWN)
-                             and float(msg.tracking_confidence) >= float(self.get_parameter('min_confidence').value)
-                             and np.isfinite(p).all())
+        self._hand_ok = bool(
+            msg.position_valid
+            and int(msg.position_source) == int(HandState.POSITION_SOURCE_MEASURED)
+            and int(msg.physical_hand) != int(HandState.HAND_UNKNOWN)
+            and float(msg.tracking_confidence) >= float(self.get_parameter('min_confidence').value)
+            and np.isfinite(p).all())
         if self._hand_ok:
             self._hand_position[:] = p
             self._hand_stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
@@ -123,6 +134,7 @@ class HandoverQddotCommander(PentagonQddotCommander):
     def hand_trusted(self):
         if not self._hand_ok:
             return False
+
         age = (self.get_clock().now().nanoseconds - self._hand_stamp_ns) * 1e-9
         return 0.0 <= age <= float(self.get_parameter('hand_timeout_s').value)
 
@@ -133,6 +145,7 @@ class HandoverQddotCommander(PentagonQddotCommander):
             return self._hold_position + np.asarray(self.get_parameter('test_offset_xyz').value, dtype=float)
         if not self.hand_trusted():
             return self._p_ee.copy()
+
         target = self._hand_position.copy()
         target[2] += float(self.get_parameter('standoff_m').value)
         return self._step_to(target, self.max_step())

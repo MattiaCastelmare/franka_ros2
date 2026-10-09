@@ -30,8 +30,9 @@ OTHER = {LEFT: RIGHT, RIGHT: LEFT}
 NAME = {LEFT: 'LEFT', RIGHT: 'RIGHT'}
 POSE = {LEFT: (11, 15), RIGHT: (12, 16)}  # shoulder, wrist (COCO / MediaPipe pose ids)
 
-PARAMS = ('interaction_switch_confirm_frames', 'interaction_switch_margin_m', 'interaction_selector_horizon_s',
-          'interaction_min_closing_m_s', 'interaction_min_arm_extension_rate_s', 'interaction_strong_closing_m_s',
+PARAMS = ('interaction_switch_confirm_frames', 'interaction_switch_margin_m',
+          'interaction_selector_horizon_s', 'interaction_min_closing_m_s',
+          'interaction_min_arm_extension_rate_s', 'interaction_strong_closing_m_s',
           'interaction_closing_advantage_m_s', 'interaction_engaged_memory_s',
           'interaction_engaged_onset_advantage', 'interaction_engaged_recovery_advantage',
           'interaction_engaged_retract_m_s')
@@ -41,11 +42,13 @@ def linear_rate(history):
     """Least-squares slope of (t, value) samples; None with < 3 samples."""
     if len(history) < 3:
         return None
+
     t, v = np.array(history, dtype=float).T
     tc = t - t.mean()
     denom = float(tc @ tc)
     if denom <= 1e-12:
         return None
+
     rate = float(tc @ (v - v.mean()) / denom)
     return rate if np.isfinite(rate) else None
 
@@ -63,12 +66,20 @@ def static_advantage(active_metric, other_metric, active_reach, other_reach):
     Missing cues are dropped and the weights renormalised."""
     weighted = total = 0.0
     cues = 0
+
     if active_metric is not None and other_metric is not None:
         da, dc = active_metric.get('distance'), other_metric.get('distance')
         if da is not None and dc is not None and np.isfinite(da) and np.isfinite(dc):
-            weighted += 0.65 * float(np.clip((da - dc) / 0.30, -1.0, 1.0)); total += 0.65; cues += 1
-    if active_reach is not None and other_reach is not None and np.isfinite(active_reach) and np.isfinite(other_reach):
-        weighted += 0.35 * float(np.clip((other_reach - active_reach) / 0.75, -1.0, 1.0)); total += 0.35; cues += 1
+            weighted += 0.65 * float(np.clip((da - dc) / 0.30, -1.0, 1.0))
+            total += 0.65
+            cues += 1
+
+    if (active_reach is not None and other_reach is not None
+            and np.isfinite(active_reach) and np.isfinite(other_reach)):
+        weighted += 0.35 * float(np.clip((other_reach - active_reach) / 0.75, -1.0, 1.0))
+        total += 0.35
+        cues += 1
+
     return (None, 0) if total <= 1e-12 else (weighted / total, cues)
 
 
@@ -81,6 +92,7 @@ class HandSelector:
             setattr(self, name.replace('interaction_', ''), cast(params(name)))
         if self.switch_confirm_frames < 1:
             raise ValueError('interaction_switch_confirm_frames must be >= 1')
+
         # gripper tip from the robot TF, same control points as distance_handover_estimator
         config = load_robot_config(robot_config_path)
         self.robot_cfg, self.distance_cfg = config['robot'], config['distance']
@@ -90,15 +102,18 @@ class HandSelector:
         if not segments:
             raise RuntimeError('Hand selector: no EE segment found')
         self.ee_segment_links = [segments[-1]['start_link'], segments[-1]['end_link']]
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, node)
         self.tf = TFManager(tf_buffer=self.tf_buffer, base_frame=self.base_frame, critical_links=[self.ee_link],
                             cache_max_age_s=float(self.distance_cfg.get('tf_cache_max_age_s', 0.5)),
                             logger=node.get_logger())
+
         # role state
         self.active = UNKNOWN
         self.pending, self.pending_count = UNKNOWN, 0
-        self.engaged, self.engaged_seen_s, self.engaged_metric, self.engaged_reach = UNKNOWN, None, None, None
+        self.engaged, self.engaged_seen_s = UNKNOWN, None
+        self.engaged_metric, self.engaged_reach = None, None
         self.distance_history = {LEFT: deque(maxlen=4), RIGHT: deque(maxlen=4)}
         self.arm_history = {LEFT: deque(maxlen=5), RIGHT: deque(maxlen=5)}
 
@@ -109,10 +124,12 @@ class HandSelector:
             return None
         if self.target_frame == self.base_frame:
             return point
+
         try:
             tf = self.tf_buffer.lookup_transform(self.base_frame, self.target_frame, Time.from_msg(stamp))
         except Exception:
             return None
+
         t, q = tf.transform.translation, tf.transform.rotation
         return Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix() @ point + np.array([t.x, t.y, t.z])
 
@@ -120,6 +137,7 @@ class HandSelector:
         transforms = self.tf.lookup_all(self.ee_segment_links, stamp)
         if not transforms:
             return None
+
         points = [cp for cp in define_control_points(transforms, self.robot_cfg, self.distance_cfg)
                   if cp['end_link'] == self.ee_link]
         if not points:
@@ -133,9 +151,11 @@ class HandSelector:
         palm = self._to_base(palm, stamp)
         if palm is None:
             return None
+
         distance = float(np.linalg.norm(palm - ee))
         if not np.isfinite(distance) or distance <= 0.0:
             return None
+
         rate = push(self.distance_history[side], now, distance)
         closing = -rate if rate is not None else 0.0
         return {'distance': distance, 'closing': closing, 'rate_valid': rate is not None,
@@ -155,6 +175,7 @@ class HandSelector:
         shoulder, wrist = (self._pose_xy(pose, i, 0.5) for i in POSE[side])
         if ls is None or rs is None or shoulder is None or wrist is None:
             return None
+
         width = float(np.hypot(*(ls - rs)))
         if not np.isfinite(width) or width <= 1e-4:
             return None
@@ -174,12 +195,16 @@ class HandSelector:
     def _reach_unsafe(self, pose, side):
         if pose is None or side not in POSE:
             return None
-        ls, rs, wrist = self._pose_xy(pose, 11, 0.5), self._pose_xy(pose, 12, 0.5), self._pose_xy(pose, POSE[side][1], 0.5)
+        ls, rs = self._pose_xy(pose, 11, 0.5), self._pose_xy(pose, 12, 0.5)
+        wrist = self._pose_xy(pose, POSE[side][1], 0.5)
         if ls is None or rs is None or wrist is None:
             return None
+
         width = float(np.hypot(*(ls - rs)))
         if not np.isfinite(width) or width <= 1e-4:
             return None
+
+        # torso centre between shoulders and hips, scale = max(shoulder width, torso height)
         shoulders, scale = 0.5 * (ls + rs), width
         lh, rh = self._pose_xy(pose, 23, 0.4), self._pose_xy(pose, 24, 0.4)
         centre = shoulders
@@ -189,6 +214,7 @@ class HandSelector:
             height = float(np.linalg.norm(shoulders - hips))
             if np.isfinite(height) and height > 1e-4:
                 scale = max(scale, height)
+
         reach = float(np.linalg.norm(wrist - centre)) / scale
         return reach if np.isfinite(reach) else None
 
@@ -196,7 +222,8 @@ class HandSelector:
     def _set_active(self, side, reason):
         if self.active == side:
             return
-        self.node.get_logger().info(f'Active hand: {NAME.get(self.active, "UNKNOWN")} -> {NAME[side]} [{reason}]')
+        self.node.get_logger().info(
+            f'Active hand: {NAME.get(self.active, "UNKNOWN")} -> {NAME[side]} [{reason}]')
         self.active, self.pending, self.pending_count = side, UNKNOWN, 0
 
     def _switch_towards(self, side, reason, now, metric, reach):
@@ -222,10 +249,13 @@ class HandSelector:
     def select(self, result, palm_of, stamp):
         """result: front-end output; palm_of(hand landmarks) -> palm (MCP 5/9/17 mean) or None.
         Returns (active side, its landmarks, standby side, its landmarks)."""
-        hands = {LEFT: getattr(result, 'left_hand_landmarks', None), RIGHT: getattr(result, 'right_hand_landmarks', None)}
+        hands = {LEFT: getattr(result, 'left_hand_landmarks', None),
+                 RIGHT: getattr(result, 'right_hand_landmarks', None)}
         pose = getattr(result, 'pose_landmarks', None)
         present = {side for side, lms in hands.items() if lms is not None}
         now = float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+        # per-hand cues: robot metric and arm extension
         ee = self._ee_point(stamp)
         metrics = {}
         for side in (LEFT, RIGHT):
@@ -248,9 +278,11 @@ class HandSelector:
         am, om = metrics.get(active), metrics.get(other)
         ab, ob = body.get(active), body.get(other)
         a_reach, o_reach = self._reach(pose, active), self._reach(pose, other)
+
         valid = lambda m: m is not None and m['rate_valid']
         closing_at_least = lambda m, v: valid(m) and m['closing'] >= v
-        extending = lambda b: b is not None and b['rate_valid'] and b['extension_rate'] >= self.min_arm_extension_rate_s
+        extending = lambda b: (b is not None and b['rate_valid']
+                               and b['extension_rate'] >= self.min_arm_extension_rate_s)
 
         # onset = approaching the robot AND (arm extending OR strong approach)
         active_onset = closing_at_least(am, self.min_closing_m_s) and (
@@ -265,6 +297,7 @@ class HandSelector:
         if self.engaged not in (LEFT, RIGHT) and active in present and active_onset:
             self.engaged, self.engaged_seen_s = active, now
             self.engaged_metric, self.engaged_reach = (dict(am) if am is not None else None), a_reach
+
         engaged = self.engaged == active
         if engaged and active in present:
             self.engaged_seen_s = now
@@ -279,19 +312,25 @@ class HandSelector:
                 retracting = valid(am) and am['closing'] <= -self.engaged_retract_m_s
                 by_onset, by_recovery = self._transfer(
                     score, cues, o_onset, 0.10 if retracting else self.engaged_onset_advantage)
-                far_ahead = (am is not None and om is not None and np.isfinite(am['distance'])
-                             and np.isfinite(om['distance'])
+                far_ahead = (am is not None and om is not None
+                             and np.isfinite(am['distance']) and np.isfinite(om['distance'])
                              and am['distance'] - om['distance'] >= 2.0 * self.switch_margin_m)
                 by_recovery = by_recovery and (o_onset or far_ahead)
                 if by_onset or by_recovery:
-                    self._switch_towards(other, f'ENGAGED transfer onset={int(by_onset)} recovery={int(by_recovery)} '
-                                         f'static={score:.3f}', now, om, o_reach)
+                    self._switch_towards(
+                        other,
+                        f'ENGAGED transfer onset={int(by_onset)} recovery={int(by_recovery)} static={score:.3f}',
+                        now, om, o_reach)
                 else:
                     self._no_switch()
-            elif om is not None and o_onset and (am is None or om['metric'] + self.switch_margin_m < am['metric']):
+            elif (om is not None and o_onset
+                  and (am is None or om['metric'] + self.switch_margin_m < am['metric'])):
                 arm_rate = ob['extension_rate'] if ob is not None else 0.0
-                self._switch_towards(other, f'consensus onset d={om["distance"]:.3f}m closing={om["closing"]:.3f}m/s '
-                                     f'arm_rate={arm_rate:.3f}/s', now, om, o_reach)
+                self._switch_towards(
+                    other,
+                    f'consensus onset d={om["distance"]:.3f}m closing={om["closing"]:.3f}m/s '
+                    f'arm_rate={arm_rate:.3f}/s',
+                    now, om, o_reach)
             else:
                 self._no_switch()
         else:
@@ -311,8 +350,11 @@ class HandSelector:
                 by_onset, by_recovery = self._transfer(score, cues, o_onset, self.engaged_onset_advantage)
                 strong = o_strong and o_extending
                 if other in present and (by_onset or by_recovery or strong):
-                    self._switch_towards(other, f'ENGAGED long-dropout transfer onset={int(by_onset)} '
-                                         f'recovery={int(by_recovery)} strong={int(strong)}', now, om, o_reach)
+                    self._switch_towards(
+                        other,
+                        f'ENGAGED long-dropout transfer onset={int(by_onset)} '
+                        f'recovery={int(by_recovery)} strong={int(strong)}',
+                        now, om, o_reach)
                 else:
                     self._no_switch()
 

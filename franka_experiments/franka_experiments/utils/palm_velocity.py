@@ -23,18 +23,22 @@ def weighted_linear_velocity(times, positions, tau_s):
     times, positions = np.asarray(times, dtype=float), np.asarray(positions, dtype=float)
     if len(times) < 3:
         return None
+
     x = times - times[-1]
     weights = np.exp(x / float(tau_s))
     sw = float(np.sum(weights))
     if sw <= 0.0:
         return None
+
     x_mean = float(np.sum(weights * x) / sw)
     p_mean = np.sum(weights[:, None] * positions, axis=0) / sw
     xc = x - x_mean
     denominator = float(np.sum(weights * xc * xc))
     if denominator <= 1e-12:
         return None
-    return np.asarray(np.sum(weights[:, None] * xc[:, None] * (positions - p_mean), axis=0) / denominator, dtype=float)
+
+    return np.asarray(np.sum(weights[:, None] * xc[:, None] * (positions - p_mean), axis=0) / denominator,
+                      dtype=float)
 
 
 # ------------------------------------------------------------ SURDE
@@ -43,6 +47,7 @@ def slope_filter(times):
     times = np.asarray(times, dtype=float)
     if len(times) < 2:
         return None
+
     x = times - times[-1]
     xc = x - np.mean(x)
     denominator = float(np.dot(xc, xc))
@@ -57,6 +62,7 @@ def direct_derivative_sum_filter(times, n0):
     N = len(times)
     if n0 < 1 or N < n0 + 1:
         return None
+
     s = np.zeros(N, dtype=float)
     for i in range(N - n0, N):
         dt = float(times[i] - times[i - 1])
@@ -73,6 +79,7 @@ def surde_candidates(times, positions, sigma_mm):
     times, positions = np.asarray(times, dtype=float), np.asarray(positions, dtype=float)
     if len(times) < BANK[0]:
         return None
+
     sigma2 = (float(sigma_mm) / 1000.0) ** 2
     n0 = BANK[0] - 1
     rows = []
@@ -80,11 +87,16 @@ def surde_candidates(times, positions, sigma_mm):
         v, s = slope_filter(times[-N:]), direct_derivative_sum_filter(times[-N:], n0)
         if v is None or s is None:
             continue
+
         velocity, direct_sum = v @ positions[-N:], s @ positions[-N:]
-        Cvs, Vw, Sw = sigma2 * float(np.dot(v, s)), sigma2 * float(np.dot(v, v)), sigma2 * float(np.dot(s, s))
+        # noise terms of the two filters (Q = sigma^2 I), used by the temperature
+        Cvs = sigma2 * float(np.dot(v, s))
+        Vw = sigma2 * float(np.dot(v, v))
+        Sw = sigma2 * float(np.dot(s, s))
         costs_xyz = n0 * velocity ** 2 + 2.0 * Cvs - 2.0 * velocity * direct_sum
-        rows.append({'N': int(N), 'velocity': np.asarray(velocity, dtype=float), 'cost': float(np.sum(costs_xyz)),
-                     'Vw': Vw, 'Sw': Sw, 'Cvs': Cvs})
+        rows.append({'N': int(N), 'velocity': np.asarray(velocity, dtype=float),
+                     'cost': float(np.sum(costs_xyz)), 'Vw': Vw, 'Sw': Sw, 'Cvs': Cvs})
+
     return {'rows': rows, 'n0': n0} if rows else None
 
 
@@ -93,12 +105,14 @@ def surde_temperature(candidates):
     K = len(rows)
     if K <= 1:
         return np.inf
+
     Vw, Sw, Cvs = float(rows[0]['Vw']), float(rows[0]['Sw']), float(rows[0]['Cvs'])
     n0 = int(candidates['n0'])
     nu_axis = 2.0 * n0 ** 2 * Vw ** 2 - 8.0 * n0 * Vw * Cvs + 4.0 * Vw * Sw + 4.0 * Cvs ** 2
     nu_xyz = 3.0 * max(nu_axis, 0.0)
     if nu_xyz <= 1e-30:
         return 1e-15
+
     return max(math.sqrt(nu_xyz / (2.0 * math.log(K))), 1e-15)
 
 
@@ -107,10 +121,12 @@ def surde_soft(times, positions, sigma_mm):
     candidates = surde_candidates(times, positions, sigma_mm)
     if candidates is None:
         return None
+
     rows = candidates['rows']
     costs = np.asarray([row['cost'] for row in rows], dtype=float)
     Ns = np.asarray([row['N'] for row in rows], dtype=float)
     velocities = np.stack([row['velocity'] for row in rows], axis=0)
+
     if len(rows) == 1:
         weights = np.ones(1, dtype=float)
     else:
@@ -123,6 +139,7 @@ def surde_soft(times, positions, sigma_mm):
             weights[int(np.argmin(costs))] = 1.0
         else:
             weights /= total
+
     return np.asarray(np.sum(weights[:, None] * velocities, axis=0), dtype=float)
 
 
@@ -145,6 +162,7 @@ class _Channel:
         """-> (available, velocity, source, age_s, updated)"""
         while self.history and now - self.history[0][0] > self.max_age_s:
             self.history.popleft()
+
         updated = False
         if fresh:
             self.history.append((now, palm.copy()))
@@ -154,10 +172,13 @@ class _Channel:
                 velocity = self.estimate(tt, pp)
                 if velocity is not None:
                     self.velocity, self.updated_at, updated = velocity.copy(), now, True
+
         if position_available and self.velocity is not None and self.updated_at is not None:
             age = now - self.updated_at
             if -1e-9 <= age <= self.HOLD_S + 1e-9:
-                return True, self.velocity.copy(), (SOURCE_UPDATED if updated else SOURCE_HOLD), float(age), updated
+                return (True, self.velocity.copy(), (SOURCE_UPDATED if updated else SOURCE_HOLD),
+                        float(age), updated)
+
         return False, None, SOURCE_NONE, np.nan, updated
 
 
@@ -172,17 +193,23 @@ class W75VelocityEstimator:
         self.surde.reset()
 
     def update(self, now, palm, fresh, position_available):
-        ewl_ok, ewl_v, ewl_source, ewl_age, ewl_updated = self.ewl.update(now, palm, fresh, position_available)
-        surde_ok, surde_v, surde_source, surde_age, surde_updated = self.surde.update(now, palm, fresh, position_available)
+        ewl_ok, ewl_v, ewl_source, ewl_age, ewl_updated = self.ewl.update(
+            now, palm, fresh, position_available)
+        surde_ok, surde_v, surde_source, surde_age, surde_updated = self.surde.update(
+            now, palm, fresh, position_available)
+
         if ewl_ok and surde_ok:
             return {'available': True, 'velocity': 0.25 * ewl_v + 0.75 * surde_v,
                     'source': SOURCE_UPDATED if (ewl_updated or surde_updated) else SOURCE_HOLD,
                     'age_s': max(float(ewl_age), float(surde_age))}
         if surde_ok:
-            return {'available': True, 'velocity': surde_v.copy(), 'source': int(surde_source), 'age_s': float(surde_age)}
+            return {'available': True, 'velocity': surde_v.copy(), 'source': int(surde_source),
+                    'age_s': float(surde_age)}
         if ewl_ok:
-            return {'available': True, 'velocity': ewl_v.copy(), 'source': int(ewl_source), 'age_s': float(ewl_age)}
-        return {'available': False, 'velocity': np.zeros(3, dtype=float), 'source': SOURCE_NONE, 'age_s': np.nan}
+            return {'available': True, 'velocity': ewl_v.copy(), 'source': int(ewl_source),
+                    'age_s': float(ewl_age)}
+        return {'available': False, 'velocity': np.zeros(3, dtype=float), 'source': SOURCE_NONE,
+                'age_s': np.nan}
 
 
 # ------------------------------------------------------------ prediction uncertainty
@@ -207,6 +234,8 @@ def prediction_q975_error_m(age_s, speed):
     age_ms = float(age_s) * 1000.0
     if not np.isfinite(age_ms) or not np.isfinite(speed) or age_ms < 0.0 or age_ms > 300.0 + 1e-9:
         return np.nan
+
+    # monotone in the horizon, starting from 0 mm at 0 ms
     values = np.maximum.accumulate(PREDICTION_Q975_MM[prediction_speed_class(float(speed))])
     horizons = np.concatenate((np.asarray([0.0]), PREDICTION_HORIZONS_MS))
     errors = np.concatenate((np.asarray([0.0]), values))

@@ -27,11 +27,13 @@ BAG_TOPICS = [
 
 def generate_launch_description():
     arg = LaunchConfiguration
-    hand_tracking_yaml = PathJoinSubstitution([FindPackageShare('franka_experiments'), 'config', 'hand_tracking.yaml'])
+    hand_tracking_yaml = PathJoinSubstitution(
+        [FindPackageShare('franka_experiments'), 'config', 'hand_tracking.yaml'])
 
     def pipeline_node(executable, overrides=None, yaml=True, **kwargs):
         return Node(package='franka_experiments', executable=executable, output='screen',
-                    parameters=([hand_tracking_yaml] if yaml else []) + [{'use_sim_time': True, **(overrides or {})}],
+                    parameters=(([hand_tracking_yaml] if yaml else [])
+                                + [{'use_sim_time': True, **(overrides or {})}]),
                     **kwargs)
 
     return LaunchDescription([
@@ -63,6 +65,7 @@ def generate_launch_description():
         DeclareLaunchArgument('record_video', default_value='false'),
         DeclareLaunchArgument('publish_base_alias_tf', default_value='true'),
 
+        # perception pipeline
         Node(package='tf2_ros', executable='static_transform_publisher', name='fr3_link0_to_hand_base_tf',
              output='log', condition=IfCondition(arg('publish_base_alias_tf')),
              arguments=['--x', '0', '--y', '0', '--z', '0', '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
@@ -76,17 +79,25 @@ def generate_launch_description():
         pipeline_node('hand_state_estimator'),
         pipeline_node('distance_handover_estimator', name='distance_handover_estimator'),
         pipeline_node('grasp', yaml=False),
+
         # grasp pose -> /handover/grasp_pose (GSNet, or AnyGrasp with backend:=anygrasp)
-        ExecuteProcess(cmd=['python3', SCRIPTS + 'handover_grasp.py', 'pose', '--ros-args', '-p', 'use_sim_time:=true'],
+        ExecuteProcess(cmd=['python3', SCRIPTS + 'handover_grasp.py', 'pose',
+                            '--ros-args', '-p', 'use_sim_time:=true'],
                        output='screen', condition=IfCondition(arg('start_grasp_pose'))),
+
+        # visualisation and logging
         pipeline_node('hand_visualizer', yaml=False),
         pipeline_node('hand_logger'),
         Node(package='rviz2', executable='rviz2', output='screen', condition=IfCondition(arg('start_rviz')),
-             arguments=['-d', PathJoinSubstitution([FindPackageShare('franka_experiments'), 'config', 'hand_tracker.rviz'])],
+             arguments=['-d', PathJoinSubstitution(
+                 [FindPackageShare('franka_experiments'), 'config', 'hand_tracker.rviz'])],
              parameters=[{'use_sim_time': True}]),
         ExecuteProcess(cmd=['python3', SCRIPTS + 'bag_to_mp4.py', '--live'], output='screen',
                        condition=IfCondition(arg('record_video'))),
+
+        # bag replay, after the nodes are up
         TimerAction(period=2.0, actions=[ExecuteProcess(
-            cmd=['ros2', 'bag', 'play', arg('bag_path'), '--clock', '--rate', arg('rate'), '--topics', *BAG_TOPICS],
+            cmd=['ros2', 'bag', 'play', arg('bag_path'), '--clock', '--rate', arg('rate'),
+                 '--topics', *BAG_TOPICS],
             output='screen')]),
     ])

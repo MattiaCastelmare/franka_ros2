@@ -68,6 +68,7 @@ class HandStateEstimator(Node):
         super().__init__('hand_state_estimator')
         param = lambda name: self.declare_parameter(  # config/hand_tracking.yaml, passed by the launch
             name, descriptor=ParameterDescriptor(dynamic_typing=True)).value
+
         self.reacquire_frames = int(param('reacquire_frames'))
         self.confidence_sigma = float(param('confidence_sigma'))
         self.stability_speed = float(param('stability_speed'))
@@ -77,14 +78,17 @@ class HandStateEstimator(Node):
         self.max_prediction_age_s = float(param('max_prediction_age_s'))
         if self.max_prediction_age_s <= 0.0:
             raise ValueError('max_prediction_age_s must be > 0')
+
         self.w75 = W75VelocityEstimator()
         self.last_timestamp_s = None
         self.reset_temporal_state()
+
         self.publisher = self.create_publisher(HandState, '/handover/hand_state', 10)
         self.create_subscription(HandTrackingFiltered, '/handover/hand_tracking_filtered', self.callback, 10)
         self.get_logger().info(
             f'Hand state estimator: W75, max_position_age_s={self.max_position_age_s:.3f}, '
-            f'prediction_bridge={self.enable_prediction_bridge}, max_prediction_age_s={self.max_prediction_age_s:.3f}')
+            f'prediction_bridge={self.enable_prediction_bridge}, '
+            f'max_prediction_age_s={self.max_prediction_age_s:.3f}')
 
     def reset_temporal_state(self):
         self.w75.reset()
@@ -102,9 +106,12 @@ class HandStateEstimator(Node):
         tracking = sum(s == F.TRACKING for s in states)
         ages_finite = all(np.isfinite(a) for a in ages)
         age = max(ages) if ages_finite else np.nan
-        valid = (all(s in (F.TRACKING, F.PREDICT_ONLY) for s in states) and tracking >= 1 and ages_finite
+        valid = (all(s in (F.TRACKING, F.PREDICT_ONLY) for s in states)
+                 and tracking >= 1
+                 and ages_finite
                  and age <= self.max_position_age_s)
         fresh = valid and tracking == 3
+
         palm, variance = np.zeros(3, dtype=float), np.zeros(3, dtype=float)
         if valid:
             points = np.asarray([xyz(msg.positions[i]) for i in self.PALM_INDICES], dtype=float)
@@ -114,14 +121,18 @@ class HandStateEstimator(Node):
                 palm = np.mean(points, axis=0)
                 variances = np.asarray([xyz(msg.position_variance[i]) for i in self.PALM_INDICES], dtype=float)
                 variance = np.sum(variances, axis=0) / 9.0  # variance of the mean of 3 independent points
-        return {'valid': bool(valid), 'fresh': bool(fresh), 'age_s': float(age), 'position': palm, 'variance': variance}
+
+        return {'valid': bool(valid), 'fresh': bool(fresh), 'age_s': float(age),
+                'position': palm, 'variance': variance}
 
     # ------------------------------------------------------------ prediction bridge
     def update_prediction_anchor(self, now, position, velocity):
         """Only a fresh measured palm can become the anchor (never a predicted one)."""
         if not self.enable_prediction_bridge or not position['fresh'] or not velocity['available']:
             return
-        p, v = np.asarray(position['position'], dtype=float), np.asarray(velocity['velocity'], dtype=float)
+
+        p = np.asarray(position['position'], dtype=float)
+        v = np.asarray(velocity['velocity'], dtype=float)
         if np.isfinite(p).all() and np.isfinite(v).all():
             self.anchor = (float(now), p.copy(), v.copy())
 
@@ -134,11 +145,13 @@ class HandStateEstimator(Node):
         ages = [float(msg.age_s[i]) for i in self.PALM_INDICES]
         if not all(np.isfinite(a) for a in ages):
             return None
+
         t0, p0, v0 = self.anchor
         age = float(now - t0)
         limit = self.max_prediction_age_s + 1e-9
         if age < -1e-9 or age > limit or max(ages) > limit:
             return None
+
         q975 = prediction_q975_error_m(age, float(np.linalg.norm(v0)))
         if not np.isfinite(q975):
             return None
@@ -147,7 +160,8 @@ class HandStateEstimator(Node):
             return None
         # the Kalman covariance already grows during PREDICT_ONLY: add the calibrated W75 error
         variances = np.asarray([xyz(msg.position_variance[i]) for i in self.PALM_INDICES], dtype=float)
-        kalman = np.zeros(3, dtype=float) if not np.isfinite(variances).all() else np.sum(np.maximum(variances, 0.0), axis=0) / 9.0
+        kalman = (np.zeros(3, dtype=float) if not np.isfinite(variances).all()
+                  else np.sum(np.maximum(variances, 0.0), axis=0) / 9.0)
         return {'valid': True, 'fresh': False, 'predicted': True, 'age_s': age, 'position': predicted,
                 'variance': kalman + (q975 / PREDICTION_CHI3_Q975_RADIUS) ** 2, 'velocity': v0.copy()}
 
@@ -172,6 +186,8 @@ class HandStateEstimator(Node):
         dt = float(now) - float(state['timestamp'])
         if not np.isfinite(dt) or dt <= 0.0 or dt > self.NORMAL_RESET_GAP_S:
             return normal.copy()
+
+        # derivative low-passed at d_cutoff, then a per-axis cutoff that grows with the speed
         alpha_d = filter_alpha(self.NORMAL_D_CUTOFF, dt)
         derivative = alpha_d * ((normal - state['raw']) / dt) + (1.0 - alpha_d) * state['derivative']
         output = np.zeros(3, dtype=float)
@@ -181,6 +197,7 @@ class HandStateEstimator(Node):
         output = unit(output)
         if output is None:
             output = normal.copy()
+
         self.normal_state = {'timestamp': float(now), 'raw': normal.copy(), 'filtered': output.copy(),
                              'derivative': derivative.copy(), 'handedness': int(state['handedness'])}
         return output.copy()
@@ -191,10 +208,16 @@ class HandStateEstimator(Node):
             self.stable_handedness = F.HAND_UNKNOWN
             self.normal_state = self.normal_pending = None
             return self.stable_handedness
+
         side, score = int(msg.handedness), float(msg.handedness_score)
-        if (side not in SIDES or side == self.stable_handedness or int(msg.filter_state) != int(F.TRACKING)
-                or not fresh or not np.isfinite(score) or score < 0.99):
+        if (side not in SIDES
+                or side == self.stable_handedness
+                or int(msg.filter_state) != int(F.TRACKING)
+                or not fresh
+                or not np.isfinite(score)
+                or score < 0.99):
             return self.stable_handedness
+
         if self.stable_handedness in SIDES:
             self.reset_temporal_state()
         self.stable_handedness = side
@@ -210,6 +233,7 @@ class HandStateEstimator(Node):
         plane, anchor = unit(xyz(msg.palm_plane_normal)), unit(xyz(msg.palm_anchor_cross))
         if plane is None or anchor is None:
             return None
+
         state = None if abs(float(np.dot(plane, anchor))) > 0.9999 else self.normal_state
         reference = None
         if state is not None:
@@ -239,6 +263,7 @@ class HandStateEstimator(Node):
         hand = self._update_stable_handedness(msg, fresh)
         raw = self._raw_normal(msg, hand, now)
         action, filtered = 'NONE', None
+
         if position_valid and raw is not None:
             state = self.normal_state
             reset = state is None
@@ -246,9 +271,11 @@ class HandStateEstimator(Node):
                 dt = float(now) - float(state['timestamp'])
                 reset = (not np.isfinite(dt) or dt <= 0.0 or dt > self.NORMAL_RESET_GAP_S
                          or int(state['handedness']) != int(hand))
+
             if reset:
                 filtered, action = self._reset_normal_filter(now, raw, hand), 'RESET'
-            elif (innovation := angle_deg(raw, state['filtered'])) > self.NORMAL_INNOVATION_GATE_DEG and np.isfinite(innovation):
+            elif ((innovation := angle_deg(raw, state['filtered'])) > self.NORMAL_INNOVATION_GATE_DEG
+                  and np.isfinite(innovation)):
                 pending = self.normal_pending
                 confirmed = False
                 if pending is not None:
@@ -260,18 +287,24 @@ class HandStateEstimator(Node):
                     filtered, action = self._one_euro(now, raw), 'CONFIRM'
                     self.normal_pending = None
                 else:
-                    self.normal_pending = {'timestamp': float(now), 'normal': raw.copy(), 'handedness': int(hand)}
+                    self.normal_pending = {'timestamp': float(now), 'normal': raw.copy(),
+                                           'handedness': int(hand)}
                     filtered, action = state['filtered'].copy(), 'HOLD'
             else:
                 self.normal_pending = None
                 filtered, action = self._one_euro(now, raw), 'UPDATE'
+
         if filtered is None:  # no new geometry: previous orientation, for continuity only
             filtered = (self.normal_state['filtered'].copy() if self.normal_state is not None
-                        else self.prev_normal.copy() if self.prev_normal is not None else np.zeros(3, dtype=float))
+                        else self.prev_normal.copy() if self.prev_normal is not None
+                        else np.zeros(3, dtype=float))
         longitudinal = self._longitudinal(msg, filtered) if np.linalg.norm(filtered) > 1e-12 else None
         if longitudinal is None:
-            longitudinal = self.prev_longitudinal.copy() if self.prev_longitudinal is not None else np.zeros(3, dtype=float)
-        geometry_ok = (action in ('RESET', 'UPDATE', 'CONFIRM') and np.linalg.norm(filtered) > 1e-12
+            longitudinal = (self.prev_longitudinal.copy() if self.prev_longitudinal is not None
+                            else np.zeros(3, dtype=float))
+
+        geometry_ok = (action in ('RESET', 'UPDATE', 'CONFIRM')
+                       and np.linalg.norm(filtered) > 1e-12
                        and np.linalg.norm(longitudinal) > 1e-12)
         if geometry_ok:
             self.prev_normal, self.prev_longitudinal = filtered.copy(), longitudinal.copy()
@@ -291,11 +324,13 @@ class HandStateEstimator(Node):
         times exp(-mean sigma / confidence_sigma)."""
         scores = []
         for i, state in enumerate(msg.landmark_state):
-            score = (1.0 if state == F.TRACKING else
-                     0.6 * max(0.0, 1.0 - float(msg.age_s[i]) / self.lost_timeout) if state == F.PREDICT_ONLY else 0.0)
+            score = (1.0 if state == F.TRACKING
+                     else 0.6 * max(0.0, 1.0 - float(msg.age_s[i]) / self.lost_timeout)
+                     if state == F.PREDICT_ONLY else 0.0)
             if msg.measurement_type[i] == F.ESTIMATED:
                 score *= 0.7
             scores.append(score)
+
         variances = [c for v in msg.position_variance for c in (v.x, v.y, v.z)]
         mean_sigma = np.sqrt(max(0.0, float(np.mean(variances))))
         return float(np.clip(np.mean(scores) * np.exp(-mean_sigma / self.confidence_sigma), 0.0, 1.0))
@@ -312,12 +347,14 @@ class HandStateEstimator(Node):
         out.velocity_estimator = HandState.VELOCITY_ESTIMATOR_W75
         out.velocity_source = HandState.VELOCITY_SOURCE_NONE
         out.position_age_s = out.velocity_age_s = float('nan')
+
         if min(len(msg.positions), len(msg.landmark_state), len(msg.age_s), len(msg.position_variance),
                len(msg.measurement_type)) < 4:
             self.reset_temporal_state()
             out.processing_latency_ms = (time.perf_counter() - start) * 1000.0
             self.publisher.publish(out)
             return
+
         now = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
         if self.last_timestamp_s is not None and now <= self.last_timestamp_s:
             self.reset_temporal_state()
@@ -326,12 +363,16 @@ class HandStateEstimator(Node):
         # measured palm; a confirmed change of physical hand resets W75 before its first sample
         measured = self.position_state(msg)
         score = float(msg.handedness_score)
-        if (side in SIDES and self.stable_handedness in SIDES and side != self.stable_handedness
-                and int(msg.filter_state) == int(F.TRACKING) and measured['fresh'] and np.isfinite(score) and score >= 0.99):
+        if (side in SIDES and self.stable_handedness in SIDES
+                and side != self.stable_handedness
+                and int(msg.filter_state) == int(F.TRACKING)
+                and measured['fresh']
+                and np.isfinite(score) and score >= 0.99):
             previous = int(self.stable_handedness)
             self.reset_temporal_state()
             self.stable_handedness = side
             self.get_logger().info(f'HandState physical-hand reset: {previous} -> {side}')
+
         velocity = self.w75.update(now, measured['position'], measured['fresh'], measured['valid'])
         self.update_prediction_anchor(now, measured, velocity)
         position = dict(measured, predicted=False)
@@ -352,6 +393,7 @@ class HandStateEstimator(Node):
             p = position['position']
             out.palm_position = Point(x=float(p[0]), y=float(p[1]), z=float(p[2]))
             out.palm_position_variance = vector3(position['variance'])
+
         out.velocity_valid = bool(velocity['available'])
         out.velocity_source = int(velocity['source'])
         out.velocity_age_s = float(velocity['age_s'])
@@ -363,10 +405,13 @@ class HandStateEstimator(Node):
 
         if position['predicted']:  # orientation is not predicted: previous axes, geometry not ok
             geometry_ok = False
-            longitudinal = self.prev_longitudinal.copy() if self.prev_longitudinal is not None else np.zeros(3, dtype=float)
+            longitudinal = (self.prev_longitudinal.copy() if self.prev_longitudinal is not None
+                            else np.zeros(3, dtype=float))
             normal = self.prev_normal.copy() if self.prev_normal is not None else np.zeros(3, dtype=float)
         else:
-            geometry_ok, longitudinal, normal = self.update_geometry(msg, position['valid'], now, measured['fresh'])
+            geometry_ok, longitudinal, normal = self.update_geometry(
+                msg, position['valid'], now, measured['fresh'])
+
         out.geometry_ok = bool(geometry_ok)
         out.palm_longitudinal, out.palm_normal = vector3(longitudinal), vector3(normal)
         out.tracking_confidence = self.tracking_confidence(msg) if position['valid'] else 0.0
