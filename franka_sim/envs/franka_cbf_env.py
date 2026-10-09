@@ -29,7 +29,8 @@ from gymnasium import spaces
 
 import mujoco
 
-from .cbf_filter import AccelCBFFilter, Obstacle, fr3_velocity_envelope
+from .cbf_filter import AccelCBFFilter, CBFInfo, Obstacle, fr3_velocity_envelope
+from .constraints import ConstraintMonitor
 from .obs_layout import (
     CP_WIDTH, DEFAULT_CONTROL_POINTS, assemble as assemble_obs,
     bounds as obs_bounds, spec_from_config,
@@ -88,8 +89,9 @@ class FrankaCBFEnv(gym.Env):
         self.dt          = 1.0 / self.control_hz
         self.sim_dt      = float(env_c.get('sim_timestep', 0.002))
         self.max_steps   = int(env_c.get('max_episode_steps', 500))
-        # Obstacle-avoidance rows on/off (hard state-limit + workspace box always
-        # stay on). False = ablation baseline: shield without obstacle CBF.
+        # Obstacle-avoidance rows on/off (hard state-limit + workspace box stay
+        # on while env.shield is true). False = ablation baseline: shield
+        # without obstacle CBF. env.shield false removes the whole QP.
         self.cbf_obstacle_enabled = bool(env_c.get('cbf_obstacle_enabled', True))
         # Shield mixing (b4): when set, each episode draws the obstacle rows ON
         # with this probability and overrides cbf_obstacle_enabled. A shield-off
@@ -219,6 +221,19 @@ class FrankaCBFEnv(gym.Env):
         # ── CBF filter (shared math with the real node) ───────────────────────
         self.cbf = AccelCBFFilter(cbf_c, self.qddot_max, self.qdot_max,
                                   self.q_min, self.q_max, self.dt)
+
+        # ── Policy alone (env.shield: false) ─────────────────────────────────
+        # True (default) = every number measured so far: q̈_nom goes through the
+        # QP above, which with cbf_obstacle_enabled false STILL enforces the
+        # joint position/velocity/acceleration box, slew, workspace, floor and
+        # base keep-out. False = nothing in between: q̈_nom drives the torque
+        # chain directly and those limits become measurements (constraints:).
+        self.shield = bool(env_c.get('shield', True))
+        con_c = cfg.get('constraints') or {}
+        self.constraints = (ConstraintMonitor(self, con_c)
+                            if bool(con_c.get('enabled', False)) else None)
+        #: Largest |τ| − limit seen by _inverse_dynamics this tick (0 = none).
+        self._tau_excess = 0.0
 
         # ── Task / obstacle / reward params ───────────────────────────────────
         self.target_box_min = np.array(task_c.get('target_box_min', [0.30, -0.35, 0.25]))
@@ -508,6 +523,8 @@ class FrankaCBFEnv(gym.Env):
         mujoco.mj_inverse(self.model, self.data)
         tau = self.data.qfrc_inverse[self._dadr].copy()
         self.data.qacc[:] = qacc_saved
+        self._tau_excess = max(self._tau_excess, float(np.max(np.maximum(
+            tau - self._tau_hi, self._tau_lo - tau))))
         return np.clip(tau, self._tau_lo, self._tau_hi)
 
     def _gravity(self):
@@ -891,11 +908,17 @@ class FrankaCBFEnv(gym.Env):
         q = self._q
         qdot = self._qdot
         obstacles, ee_pos, ee_Jp, ee_jd, d_min, _ = self._build_obstacles(qdot)
-        rows = obstacles if self.cbf_obstacle_enabled else []
-        qddot_safe, info = self.cbf.filter(q, qdot, qddot_nom, rows,
-                                           ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd,
-                                           floor_pts=self._floor_pts,
-                                           base_pts=self._base_pts)
+        if self.shield:
+            rows = obstacles if self.cbf_obstacle_enabled else []
+            qddot_safe, info = self.cbf.filter(q, qdot, qddot_nom, rows,
+                                               ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd,
+                                               floor_pts=self._floor_pts,
+                                               base_pts=self._base_pts)
+        else:
+            # Policy alone: the command IS the nominal, clipped only by the
+            # action scale. Nothing here knows about limits or obstacles.
+            qddot_safe, info = np.asarray(qddot_nom, float), CBFInfo()
+        self._tau_excess = 0.0
 
         # q̈_safe → torque, exactly like qddot_to_torque + the FR3 firmware.
         # τ is recomputed at every SUBSTEP from the current state while q̈_safe
@@ -918,6 +941,13 @@ class FrankaCBFEnv(gym.Env):
         dist = float(np.linalg.norm(ee - self._target))
         # d_min AFTER stepping (what the state actually reached).
         *_, d_min, cp_geom = self._build_obstacles(self._qdot)
+
+        # Constraint measurements (read-only; see envs/constraints.py).
+        con_ex = con_diag = None
+        if self.constraints is not None:
+            con_ex, con_diag = self.constraints.measure(
+                self._q, self._qdot, qddot_safe, self._qddot_prev,
+                max(0.0, self._tau_excess), ee)
 
         # ── Reward ────────────────────────────────────────────────────────────
         rw = self.rw
@@ -969,7 +999,8 @@ class FrankaCBFEnv(gym.Env):
         # terminate_on_collision: false keeps the episode running and charges
         # collision_penalty on EVERY tick spent inside the obstacle.
         terminated = ((collision and bool(rw.get('terminate_on_collision', True)))
-                      or (success and bool(rw.get('terminate_on_success', True))))
+                      or (success and bool(rw.get('terminate_on_success', True)))
+                      or (con_ex is not None and self.constraints.should_terminate(con_ex)))
 
         w_obs = float(rw.get('w_obs_margin', 0.0))
         if str(rw.get('obs_shaping', 'penalty')) == 'potential':
@@ -1002,6 +1033,9 @@ class FrankaCBFEnv(gym.Env):
             'cbf_braking': info.braking, 'obs_pen': obs_pen,
             'floor_contact': self._floor_contact(),
         }
+        if con_ex is not None:
+            info_out['constraint_excess'] = con_ex
+            info_out.update(con_diag)
 
         obs = self._get_obs(d_min, cp_geom)
         if self.render_mode == 'human':

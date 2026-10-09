@@ -24,6 +24,27 @@ env:
   # Viewer playback rate (--render only; ignored while training and headless).
   # 1.0 = wall-clock real time. Lower it to inspect a motion in slow motion.
   render_speed: 1.0
+  # true  = q̈_nom goes through the CBF QP (cbf: block). With
+  #         cbf_obstacle_enabled false the QP STILL enforces the joint
+  #         position/velocity/acceleration box, slew, workspace, floor and base
+  #         keep-out — that is the old "shield OFF".
+  # false = policy alone: q̈_nom drives the torque chain directly and those
+  #         limits are only measured (constraints: block). 2026-10-09.
+  shield: true
+
+# ── Constraint monitor (envs/constraints.py) ────────────────────────────────
+# Measures every tick what the robot would refuse: joint position (effective
+# limits), velocity (firmware envelope), acceleration (QP box), slew, torque
+# saturation, self-collision (franka_description capsules, the robot's pairs),
+# singularity (σ_min of the 6×7 EE Jacobian), floor, workspace. Read-only: a
+# rollout is bit-identical with it on or off. Results go to info.
+constraints:
+  enabled: false
+  self_collision_margin: 0.0   # [m] capsule gap below which a pair counts as colliding
+  sigma_floor: 0.05            # [m] = fr3_control.yaml singularity_sigma_floor
+  sigma_rot_scale: 0.3         # [m/rad] = singularity_rot_scale
+  terminate: false             # end the episode at the first violation
+  # terminate_on: [pos, vel, acc, self_coll, sing]   # default: every family
 
 # ── Reaching task ─────────────────────────────────────────────────────────────
 task:
