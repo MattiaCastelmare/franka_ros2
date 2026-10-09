@@ -10,6 +10,9 @@ in sim, *safe execution* on the robot.
 Architecture, what is built, how it was validated, gotchas and backlog:
 `../franka_sim_to_real_implementation_status.md`.
 
+**Continuing RL training on another machine?** Start from `HANDOFF.md`: current best
+models, where to get the trained checkpoints (not in git), resume recipes and rejected experiments.
+
 ---
 
 ## 0. Start here (the three commands you actually use)
