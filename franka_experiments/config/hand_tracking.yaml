@@ -5,26 +5,23 @@ human_hand_tracker:
   ros__parameters:
 
     # Tracker / MediaPipe
-    show_selected_landmarks: false
+    show_selected_landmarks: true
     publish_debug_image: true
     model_complexity: 1
     static_image_mode: false
     min_tracking_confidence: 0.5
     min_detection_confidence: 0.4
-    max_num_hands: 2
     # Lost ACTIVE hand: palm rebuilt from the pose wrist/elbow for up to this
     # long (published as ESTIMATED). 0 disables.
     arm_bridge_s: 1.0
-    # Hand front-end: mediapipe (Holistic, CPU) | rtmw (RTMW whole-body via
-    # rtmlib, GPU, Apache-2.0). Same HandTrackingRaw and pipeline after it.
-    hand_backend: rtmw
+    # Hand detector (utils/hand_detectors.py): rtmw (RTMW whole-body via rtmlib,
+    # GPU, Apache-2.0) | mediapipe (Holistic, CPU; also the automatic fallback
+    # when RTMW cannot start). Same HandTrackingRaw and pipeline after it.
+    hand_detector: rtmw
     # lightweight (RTMW-m) | balanced (RTMW-l)
     rtmw_mode: lightweight
     # RTMW models compiled by TensorRT in FP16 (needs tensorrt-cu12; first start builds the engines)
     rtmw_tensorrt: true
-    # RTMW: drop hands on an unsure body wrist / too small for their forearm (per-mode
-    # thresholds in rtmw_frontend.BODY_CUES)
-    rtmw_body_cues: false
     # Palm normal: depth (RGB-D plane) | mediapipe (3D landmarks; with rtmw
     # the tracker uses depth, RTMW hands have no z).
     palm_normal_method: mediapipe
@@ -37,9 +34,6 @@ human_hand_tracker:
     interaction_switch_confirm_frames: 3
     interaction_switch_margin_m: 0.08
     interaction_selector_horizon_s: 0.25
-    # Kept for ROS API compatibility;
-    # currently not consumed by selector logic.
-    interaction_missing_grace_frames: 4
     interaction_min_closing_m_s: 0.03
     interaction_min_arm_extension_rate_s: 0.12
     interaction_strong_closing_m_s: 0.12
@@ -55,7 +49,6 @@ hand_state_estimator:
     confidence_sigma: 0.05
     stability_speed: 0.2
     lost_timeout: 0.5
-    velocity_mode: "w75"
     max_position_age_s: 0.101
     enable_prediction_bridge: true
     max_prediction_age_s: 0.3
@@ -78,12 +71,10 @@ kalman_hand:
 distance_handover_estimator:
   ros__parameters:
     ttc_min_closing_speed: 0.02
-
-handover_observer:
-  ros__parameters:
-    enter_threshold: 0.02
-    exit_threshold: 0.005
-    confirm_frames: 2
+    # observer (APPROACHING / HOLD / RETREATING), closing speed thresholds [m/s]
+    observer_enter_threshold: 0.02
+    observer_exit_threshold: 0.005
+    observer_confirm_frames: 2
 
 hand_tracking_csv_logger:
   ros__parameters:

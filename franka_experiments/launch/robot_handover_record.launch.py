@@ -40,7 +40,6 @@ ROSBAG_TOPICS += [
     '/handover/end_effector_state',
     '/handover/distance',
     '/handover/observer',
-    '/handover/proximity',
     '/handover/hand_object',
 
     # Control

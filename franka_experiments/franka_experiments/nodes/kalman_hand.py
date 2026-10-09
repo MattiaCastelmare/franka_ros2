@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
+"""Landmark Kalman: HandTrackingRaw -> HandTrackingFiltered.
+
+One constant-velocity Kalman filter per landmark (0, 5, 9, 17) with a Mahalanobis gate; a landmark
+without accepted measurements for lost_timeout becomes LOST and restarts on the next one. A change of
+physical hand restarts all filters. Palm shape recovery: see _palm_shape_recovery.
+"""
 
 import time
-import numpy as np
 
+import numpy as np
 import rclpy
+from franka_msgs.msg import HandTrackingFiltered, HandTrackingRaw
+from geometry_msgs.msg import Point, Vector3
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
-from geometry_msgs.msg import Point, Vector3
-from franka_msgs.msg import HandTrackingRaw, HandTrackingFiltered
 
 class KalmanFilter6D:
     """Constant-velocity Kalman filter: [px, py, pz, vx, vy, vz]."""
@@ -72,12 +80,6 @@ def rigid_fit(A, B):
     R = Vt.T @ D @ U.T
     return R, cb - R @ ca
 
-from franka_experiments.utils.params import (
-    load_hand_tracking_defaults,
-    parameter_value,
-)
-
-_KALMAN_DEFAULTS = load_hand_tracking_defaults("kalman_hand")
 
 class KalmanHand(Node):
 
@@ -85,49 +87,43 @@ class KalmanHand(Node):
 
     def __init__(self):
         super().__init__('kalman_hand')
-        self.direct_sigma = float(parameter_value(self, _KALMAN_DEFAULTS, "direct_sigma"))
-        self.estimated_sigma = float(parameter_value(self, _KALMAN_DEFAULTS, "estimated_sigma"))
-        self.lost_timeout = float(parameter_value(self, _KALMAN_DEFAULTS, "lost_timeout"))
+        param = lambda name: self.declare_parameter(  # config/hand_tracking.yaml, passed by the launch
+            name, descriptor=ParameterDescriptor(dynamic_typing=True)).value
+        self.direct_sigma = float(param('direct_sigma'))
+        self.estimated_sigma = float(param('estimated_sigma'))
+        self.lost_timeout = float(param('lost_timeout'))
         self.mahalanobis_threshold = float(
-            parameter_value(self, _KALMAN_DEFAULTS, "mahalanobis_threshold")
+            param('mahalanobis_threshold')
         )
-        sigma_accel = float(parameter_value(self, _KALMAN_DEFAULTS, "sigma_accel"))
-        self.filters = [
-            KalmanFilter6D(sigma_accel=sigma_accel)
-            for _ in range(4)
-        ]
+        sigma_accel = float(param('sigma_accel'))
+        self.filters = [KalmanFilter6D(sigma_accel=sigma_accel) for _ in range(4)]
+        self.shape_recovery = bool(param('shape_recovery'))
+        self.shape_tolerance = float(param('shape_tolerance_m'))
+        self.reacquire_max_speed = float(param('reacquire_max_speed_m_s'))
+        self.rigid_fill_sigma = float(param('rigid_fill_sigma'))
+        self.current_hand_side = HandTrackingRaw.HAND_UNKNOWN
+        self._reset()
+        self.publisher = self.create_publisher(HandTrackingFiltered, '/handover/hand_tracking_filtered', 10)
+        self.subscription = self.create_subscription(HandTrackingRaw, '/handover/hand_tracking_raw', self.callback, 10)
+        self.get_logger().info('Kalman hand node started')
+
+    def _reset(self):
+        for kf in self.filters:
+            kf.initialized = False
         self.last_msg_time = None
         self.last_update_time = [None] * 4
         self.last_source = [HandTrackingFiltered.INVALID] * 4
         self.missed_updates = [0] * 4
         self.is_lost = [False] * 4
-        # Palm shape recovery (see _palm_shape_recovery).
-        self.shape_recovery = bool(parameter_value(self, _KALMAN_DEFAULTS, "shape_recovery"))
-        self.shape_tolerance = float(parameter_value(self, _KALMAN_DEFAULTS, "shape_tolerance_m"))
-        self.reacquire_max_speed = float(parameter_value(self, _KALMAN_DEFAULTS, "reacquire_max_speed_m_s"))
-        self.rigid_fill_sigma = float(parameter_value(self, _KALMAN_DEFAULTS, "rigid_fill_sigma"))
-        self.palm_template = None
+        self.palm_template = None        # palm shape: last frame with all four measurements accepted
         self.last_accepted_z = [None] * 4
-        # PHYSICAL_HAND_SWITCH_RESET_V1
-        #
-        # A confirmed LEFT<->RIGHT interaction-role change is
-        # a different physical trajectory. Never Mahalanobis-
-        # gate the new hand against the old hand state.
-        self.current_hand_side = (
-            HandTrackingRaw.HAND_UNKNOWN
-        )
-        self.publisher = self.create_publisher(
-            HandTrackingFiltered,
-            '/handover/hand_tracking_filtered',
-            10,
-        )
-        self.subscription = self.create_subscription(
-            HandTrackingRaw,
-            '/handover/hand_tracking_raw',
-            self.callback,
-            10,
-        )
-        self.get_logger().info('Kalman hand node started')
+
+    def _not_updated(self, i, now, states):
+        """No accepted measurement: PREDICT_ONLY, LOST after lost_timeout."""
+        self.missed_updates[i] += 1
+        age = now - self.last_update_time[i]
+        states[i] = HandTrackingFiltered.LOST if age > self.lost_timeout else HandTrackingFiltered.PREDICT_ONLY
+        self.is_lost[i] = age > self.lost_timeout
 
     @staticmethod
     def stamp_to_seconds(stamp):
@@ -136,44 +132,14 @@ class KalmanHand(Node):
     def callback(self, raw):
         t0 = time.perf_counter()
         now = self.stamp_to_seconds(raw.header.stamp)
-        raw_side = int(
-            raw.handedness
-        )
-        valid_sides = (
-            HandTrackingRaw.HAND_LEFT,
-            HandTrackingRaw.HAND_RIGHT,
-        )
-        if raw_side in valid_sides:
-            if (
-                self.current_hand_side
-                in valid_sides
-                and
-                raw_side
-                !=
-                self.current_hand_side
-            ):
-                old_side = int(
-                    self.current_hand_side
-                )
-                # New physical hand: hard reinitialization.
-                for kf in self.filters:
-                    kf.initialized = False
-                self.last_msg_time = None
-                self.last_update_time = [None] * 4
-                self.last_source = [
-                    HandTrackingFiltered.INVALID
-                ] * 4
-                self.missed_updates = [0] * 4
-                self.is_lost = [False] * 4
-                self.palm_template = None
-                self.last_accepted_z = [None] * 4
-                self.get_logger().info(
-                    'Kalman physical-hand reset: '
-                    f'{old_side} -> {raw_side}'
-                )
-            self.current_hand_side = (
-                raw_side
-            )
+        # a different physical hand is a new trajectory: never gate it against the old one
+        raw_side = int(raw.handedness)
+        sides = (HandTrackingRaw.HAND_LEFT, HandTrackingRaw.HAND_RIGHT)
+        if raw_side in sides:
+            if self.current_hand_side in sides and raw_side != self.current_hand_side:
+                self.get_logger().info(f'Kalman physical-hand reset: {int(self.current_hand_side)} -> {raw_side}')
+                self._reset()
+            self.current_hand_side = raw_side
         dt = 0.0 if self.last_msg_time is None else max(
             0.0, now - self.last_msg_time
         )
@@ -208,25 +174,14 @@ class KalmanHand(Node):
                     measurement_used[i] = True
                     states[i] = HandTrackingFiltered.TRACKING
                 else:
-                    self.missed_updates[i] += 1
-                    age = now - self.last_update_time[i]
-                    states[i] = (HandTrackingFiltered.LOST
-                        if age > self.lost_timeout else HandTrackingFiltered.PREDICT_ONLY)
-                    self.is_lost[i] = age > self.lost_timeout
+                    self._not_updated(i, now, states)
             elif kf.initialized:
-                self.missed_updates[i] += 1
-                age = now - self.last_update_time[i]
-                states[i] = (HandTrackingFiltered.LOST
-                    if age > self.lost_timeout else HandTrackingFiltered.PREDICT_ONLY)
-                self.is_lost[i] = age > self.lost_timeout
+                self._not_updated(i, now, states)
         if self.shape_recovery:
             self._palm_shape_recovery(now, measured, raw.measurement_type, states, measurement_used)
         msg = HandTrackingFiltered()
         msg.header = raw.header
-        # Geometry side-channel:
-        # pass current RGB-D geometry through unchanged.
-        #
-        # The four landmark Kalman filters are untouched.
+        # palm plane: passed through unchanged
         msg.handedness = int(raw.handedness)
         msg.handedness_score = float(raw.handedness_score)
         msg.palm_plane_valid = bool(raw.palm_plane_valid)
@@ -335,11 +290,15 @@ def main(args=None):
     node = KalmanHand()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):  # Ctrl+C / launch shutdown
         pass
+    except Exception:
+        if rclpy.ok():  # otherwise a shutdown race (context already gone)
+            raise
     node.destroy_node()
     if rclpy.ok():  # Ctrl+C from launch already shut the context down
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the RTMW hand back-end (hand_backend:=rtmw) deps in the robot
+# Installs the RTMW hand back-end (hand_detector:=rtmw) deps in the robot
 # container. Run it from the host: ./install_rtmw_deps.sh [container]
 #
 # - --no-deps everywhere: numpy, opencv, protobuf (mediapipe) are not touched.
@@ -32,7 +32,7 @@ $PIP install --user --no-cache-dir --no-deps \
     tensorrt-cu12-libs==10.16.1.11 \
     tensorrt-cu12-bindings==10.16.1.11
 
-# Check (same import order as RtmwHolistic) + download the models once.
+# Check (same import order as RtmwHandDetector) + download the models once.
 python3 - <<'PY'
 import ctypes
 ctypes.CDLL('libcuda.so.1').cuInit(0)
