@@ -113,6 +113,27 @@ def segment_distance(p1, q1, p2, q2, eps=1e-12):
     return float(np.linalg.norm((p1 + s * d1) - (p2 + t * d2)))
 
 
+def segment_distances(p1, q1, p2, q2, eps=1e-12):
+    """Vectorised :func:`segment_distance` over rows of (N, 3) arrays."""
+    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
+    a = np.einsum('ij,ij->i', d1, d1); e = np.einsum('ij,ij->i', d2, d2)
+    f = np.einsum('ij,ij->i', d2, r); c = np.einsum('ij,ij->i', d1, r)
+    b = np.einsum('ij,ij->i', d1, d2)
+    den = a * e - b * b
+    a_s = np.where(a > eps, a, 1.0); e_s = np.where(e > eps, e, 1.0)
+    s = np.where(den > eps, np.clip((b * f - c * e) / np.where(den > eps, den, 1.0), 0, 1), 0.0)
+    t = (b * s + f) / e_s
+    lo, hi = t < 0.0, t > 1.0
+    s = np.where(lo, np.clip(-c / a_s, 0, 1), np.where(hi, np.clip((b - c) / a_s, 0, 1), s))
+    t = np.clip(t, 0.0, 1.0)
+    # Degenerate segments (points): same branches as the scalar version.
+    pa, pb = a <= eps, e <= eps
+    t = np.where(pa & ~pb, np.clip(f / e_s, 0, 1), t)
+    s = np.where(pa, 0.0, np.where(pb, np.clip(-c / a_s, 0, 1), s))
+    t = np.where(pb, 0.0, t)
+    return np.linalg.norm((p1 + s[:, None] * d1) - (p2 + t[:, None] * d2), axis=1)
+
+
 class ConstraintMonitor:
     def __init__(self, env, cfg: dict):
         cfg = cfg or {}
@@ -124,6 +145,10 @@ class ConstraintMonitor:
         self.terminate = bool(cfg.get('terminate', False))
         # Which families end the episode when terminate is on (default: all).
         self.terminate_on = tuple(cfg.get('terminate_on', FAMILIES))
+        # Reward charged when a violation ends the episode (None = the
+        # collision penalty); collision_step_cost is charged on top.
+        vp = cfg.get('violation_penalty')
+        self.violation_penalty = None if vp is None else float(vp)
         cbf = env.cbf
         self.q_lo, self.q_hi = cbf.q_min.copy(), cbf.q_max.copy()
         self.acc_box = cbf.qddot_box.copy()
@@ -138,6 +163,7 @@ class ConstraintMonitor:
         self.cap_p2 = np.array([c['p2'] for c in caps], float)
         self.cap_r = np.array([c['radius'] for c in caps], float)
         self.pairs = capsule_pairs(self.cap_body, cfg.get('exclude_pairs', ROBOT_EXCLUDE_PAIRS))
+        self._pi = np.array([i for i, _ in self.pairs]); self._pj = np.array([j for _, j in self.pairs])
 
         # Physical contact between robot meshes (MuJoCo's own contact list),
         # for the same body pairs.
@@ -163,12 +189,10 @@ class ConstraintMonitor:
         x = d.xpos[self.cap_bid]
         p1 = x + np.einsum('kij,kj->ki', R, self.cap_p1)
         p2 = x + np.einsum('kij,kj->ki', R, self.cap_p2)
-        best, label = 1.0, ''
-        for i, j in self.pairs:
-            g = segment_distance(p1[i], p2[i], p1[j], p2[j]) - self.cap_r[i] - self.cap_r[j]
-            if g < best:
-                best, label = g, f'{self.cap_body[i]}|{self.cap_body[j]}'
-        return float(best), label
+        I, J = self._pi, self._pj
+        g = segment_distances(p1[I], p2[I], p1[J], p2[J]) - self.cap_r[I] - self.cap_r[J]
+        k = int(np.argmin(g))
+        return float(g[k]), f'{self.cap_body[I[k]]}|{self.cap_body[J[k]]}'
 
     def robot_contacts(self):
         """'bodyA|bodyB' for checked body pairs whose meshes MuJoCo has in contact."""

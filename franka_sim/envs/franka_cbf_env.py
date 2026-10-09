@@ -229,6 +229,14 @@ class FrankaCBFEnv(gym.Env):
         # base keep-out. False = nothing in between: q̈_nom drives the torque
         # chain directly and those limits become measurements (constraints:).
         self.shield = bool(env_c.get('shield', True))
+        # How the policy-alone command meets the acceleration limit:
+        #   raw   — q̈ = a·q̈_max as is (q̈_max = joint_limits, up to 17 rad/s²)
+        #   clip  — q̈ = clip(a·q̈_max, ±box): an existing policy, same action
+        #           meaning, saturated at the robot's QP box (cbf.qddot_max_abs)
+        #   scale — q̈ = a·box: a = ±1 IS the limit (for new policies)
+        self.alone_action = str(env_c.get('alone_action', 'raw'))
+        if self.alone_action not in ('raw', 'clip', 'scale'):
+            raise ValueError(f'env.alone_action must be raw|clip|scale, got {self.alone_action}')
         con_c = cfg.get('constraints') or {}
         self.constraints = (ConstraintMonitor(self, con_c)
                             if bool(con_c.get('enabled', False)) else None)
@@ -917,6 +925,10 @@ class FrankaCBFEnv(gym.Env):
         else:
             # Policy alone: the command IS the nominal, clipped only by the
             # action scale. Nothing here knows about limits or obstacles.
+            if self.alone_action == 'scale':
+                qddot_nom = action * self.cbf.qddot_box
+            elif self.alone_action == 'clip':
+                qddot_nom = np.clip(qddot_nom, -self.cbf.qddot_box, self.cbf.qddot_box)
             qddot_safe, info = np.asarray(qddot_nom, float), CBFInfo()
         self._tau_excess = 0.0
 
@@ -998,9 +1010,10 @@ class FrankaCBFEnv(gym.Env):
         )
         # terminate_on_collision: false keeps the episode running and charges
         # collision_penalty on EVERY tick spent inside the obstacle.
+        violated = con_ex is not None and self.constraints.should_terminate(con_ex)
         terminated = ((collision and bool(rw.get('terminate_on_collision', True)))
                       or (success and bool(rw.get('terminate_on_success', True)))
-                      or (con_ex is not None and self.constraints.should_terminate(con_ex)))
+                      or violated)
 
         w_obs = float(rw.get('w_obs_margin', 0.0))
         if str(rw.get('obs_shaping', 'penalty')) == 'potential':
@@ -1022,6 +1035,14 @@ class FrankaCBFEnv(gym.Env):
             if terminated:
                 reward -= (float(rw.get('collision_step_cost', 0.0))
                            * (self.max_steps - self._step))
+        if violated and not collision:
+            # Same price as a collision: a violation that ends the episode must
+            # never be a cheaper way out than living the episode to the end.
+            reward -= float(self.constraints.violation_penalty
+                            if self.constraints.violation_penalty is not None
+                            else rw.get('collision_penalty', 10.0))
+            reward -= (float(rw.get('collision_step_cost', 0.0))
+                       * (self.max_steps - self._step))
         self._qddot_prev = qddot_safe
         truncated = self._step >= self.max_steps
 
@@ -1035,6 +1056,7 @@ class FrankaCBFEnv(gym.Env):
         }
         if con_ex is not None:
             info_out['constraint_excess'] = con_ex
+            info_out['constraint_terminated'] = bool(violated)
             info_out.update(con_diag)
 
         obs = self._get_obs(d_min, cp_geom)

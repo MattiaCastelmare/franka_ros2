@@ -14,7 +14,7 @@ import yaml
 
 from franka_sim.baselines import CartesianPDBaseline
 from franka_sim.envs.cbf_filter import NV
-from franka_sim.envs.constraints import capsule_pairs, segment_distance
+from franka_sim.envs.constraints import capsule_pairs, segment_distance, segment_distances
 from franka_sim.envs.franka_cbf_env import FrankaCBFEnv
 
 _CFG = __file__.rsplit('/', 2)[0] + '/config.yaml'
@@ -135,3 +135,14 @@ def test_baseline_reaches_with_the_full_shield(base):
         if te or tr:
             break
     assert info['dist'] < env.target_tol
+
+
+def test_vectorised_segment_distance_matches_scalar():
+    rng = np.random.default_rng(4)
+    P = rng.normal(size=(500, 4, 3))
+    P[:20, 1] = P[:20, 0]            # some point-like segments
+    P[20:40, 3] = P[20:40, 2]
+    P[40:60, 3] = P[40:60, 2] + (P[40:60, 1] - P[40:60, 0])   # parallel
+    v = segment_distances(P[:, 0], P[:, 1], P[:, 2], P[:, 3])
+    for k in range(500):
+        assert abs(v[k] - segment_distance(*P[k])) < 1e-9

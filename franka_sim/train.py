@@ -66,6 +66,7 @@ class SafetyMetricsCallback(BaseCallback):
     def _reset_buffers(self):
         self._d_min, self._interv, self._slack = [], [], []
         self._active, self._collisions, self._n = 0, 0, 0
+        self._viol, self._con_term = {}, 0
 
     def _on_step(self) -> bool:
         for info in self.locals.get('infos', []):
@@ -77,6 +78,9 @@ class SafetyMetricsCallback(BaseCallback):
             self._slack.append(info['cbf_slack'])
             self._active += int(info['cbf_n_c'] > 0)
             self._collisions += int(info.get('collision', False))
+            for k, v in (info.get('constraint_excess') or {}).items():
+                self._viol[k] = self._viol.get(k, 0) + int(v > 0)
+            self._con_term += int(info.get('constraint_terminated', False))
         if self._n >= self.log_freq:
             self.logger.record('safety/collision_rate', self._collisions / self._n)
             self.logger.record('safety/min_surface_dist', float(np.min(self._d_min)))
@@ -84,6 +88,9 @@ class SafetyMetricsCallback(BaseCallback):
             self.logger.record('safety/cbf_active_frac', self._active / self._n)
             self.logger.record('safety/mean_intervention', float(np.mean(self._interv)))
             self.logger.record('safety/mean_slack', float(np.mean(self._slack)))
+            for k, c in self._viol.items():
+                self.logger.record(f'constraints/{k}_step_rate', c / self._n)
+            self.logger.record('constraints/terminations_per_step', self._con_term / self._n)
             self._reset_buffers()
         return True
 
