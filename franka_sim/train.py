@@ -66,6 +66,7 @@ class SafetyMetricsCallback(BaseCallback):
     def _reset_buffers(self):
         self._d_min, self._interv, self._slack = [], [], []
         self._active, self._collisions, self._n = 0, 0, 0
+        self._viol, self._con_term = {}, 0
 
     def _on_step(self) -> bool:
         for info in self.locals.get('infos', []):
@@ -77,6 +78,9 @@ class SafetyMetricsCallback(BaseCallback):
             self._slack.append(info['cbf_slack'])
             self._active += int(info['cbf_n_c'] > 0)
             self._collisions += int(info.get('collision', False))
+            for k, v in (info.get('constraint_excess') or {}).items():
+                self._viol[k] = self._viol.get(k, 0) + int(v > 0)
+            self._con_term += int(info.get('constraint_terminated', False))
         if self._n >= self.log_freq:
             self.logger.record('safety/collision_rate', self._collisions / self._n)
             self.logger.record('safety/min_surface_dist', float(np.min(self._d_min)))
@@ -84,6 +88,9 @@ class SafetyMetricsCallback(BaseCallback):
             self.logger.record('safety/cbf_active_frac', self._active / self._n)
             self.logger.record('safety/mean_intervention', float(np.mean(self._interv)))
             self.logger.record('safety/mean_slack', float(np.mean(self._slack)))
+            for k, c in self._viol.items():
+                self.logger.record(f'constraints/{k}_step_rate', c / self._n)
+            self.logger.record('constraints/terminations_per_step', self._con_term / self._n)
             self._reset_buffers()
         return True
 
@@ -402,6 +409,12 @@ def main():
 
     policy_kwargs = dict(net_arch=list(rl.get('net_arch', [256, 256])))
     ent_coef = rl.get('ent_coef', 'auto')
+    # 'auto' = SB3's −dim(A) = −7. The average over the batch meets it with
+    # the saturated transit actions, which leaves the policy at std ≈ 0.5 on
+    # the target itself (c1 probe) — a lower target forces it to settle.
+    target_entropy = rl.get('target_entropy', 'auto')
+    if target_entropy != 'auto':
+        target_entropy = float(target_entropy)
 
     def fresh_model():
         return SAC(
@@ -415,6 +428,7 @@ def main():
             gradient_steps=int(rl.get('gradient_steps', 1)),
             learning_starts=int(rl.get('learning_starts', 10_000)),
             ent_coef=ent_coef,
+            target_entropy=target_entropy,
             policy_kwargs=policy_kwargs,
             device=device, seed=seed, verbose=1, tensorboard_log=tb_dir,
         )
@@ -437,10 +451,13 @@ def main():
                              custom_objects=dict(
                                  learning_rate=lr, lr_schedule=lambda _: lr,
                                  gradient_steps=int(rl.get('gradient_steps', 1)),
-                                 batch_size=int(rl.get('batch_size', 512))))
+                                 batch_size=int(rl.get('batch_size', 512)),
+                                 **({} if target_entropy == 'auto'
+                                    else dict(target_entropy=target_entropy))))
         model.set_random_seed(seed)
         print(f'resume hparams: lr={lr} gradient_steps={model.gradient_steps} '
-              f'batch_size={model.batch_size} seed={seed}')
+              f'batch_size={model.batch_size} seed={seed} '
+              f'target_entropy={model.target_entropy}')
         if args.resume_buffer:
             if args.widen_obs:
                 from stable_baselines3.common.save_util import load_from_pkl

@@ -59,12 +59,15 @@ def _load_policy(path: str, deterministic: bool = True):
         return predict, 'onnx'
 
     import torch
-    from stable_baselines3 import SAC
+    from stable_baselines3 import PPO, SAC
     # One thread, like the ONNX session above. Torch's default (one per core,
     # 20 here) spins on a batch-1 MLP: measured 14.6 → 0.7 ms per call, and
     # parallel evaluations/recordings slowed each other ~10x.
     torch.set_num_threads(1)
-    model = SAC.load(path, device='cpu')
+    try:
+        model = SAC.load(path, device='cpu')
+    except Exception:                       # noqa: BLE001 — a PPO checkpoint (train_ppo.py)
+        model = PPO.load(path, device='cpu')
 
     def predict(obs):
         return model.predict(obs, deterministic=deterministic)[0]

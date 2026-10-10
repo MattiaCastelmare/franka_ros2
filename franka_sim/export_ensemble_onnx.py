@@ -30,6 +30,18 @@ from stable_baselines3 import SAC
 
 # Sections that change what the policy sees or what the shield does on the robot.
 _DEPLOY_SECTIONS = ('obs', 'cbf', 'joint_limits', 'env', 'actuation')
+# env keys that only select the TRAINING shield (obstacle rows on/off, per-episode
+# mixing); the robot always runs its full filter and never reads them. Members
+# fine-tuned with the obstacle rows off may differ here, and the keys are dropped
+# from the frozen config so a sim replay of the graph uses the default (rows ON).
+_TRAIN_ONLY_ENV = ('cbf_obstacle_enabled', 'cbf_obstacle_on_prob')
+
+
+def _deploy_view(cfg: dict, sec: str):
+    v = cfg.get(sec)
+    if sec == 'env' and isinstance(v, dict):
+        v = {k: x for k, x in v.items() if k not in _TRAIN_ONLY_ENV}
+    return v
 
 
 class OnnxableEnsemble(th.nn.Module):
@@ -56,7 +68,7 @@ def export_ensemble(model_paths, out: str, opset: int = 17, verbose: bool = True
     cfgs = [yaml.safe_load(open(p)) for p in cfg_paths]
     for p, c in zip(cfg_paths[1:], cfgs[1:]):
         for sec in _DEPLOY_SECTIONS:
-            if c.get(sec) != cfgs[0].get(sec):
+            if _deploy_view(c, sec) != _deploy_view(cfgs[0], sec):
                 raise ValueError(f'config section "{sec}" of {p} differs from {cfg_paths[0]}')
         if c.get('obstacle', {}).get('radius') != cfgs[0].get('obstacle', {}).get('radius'):
             raise ValueError(f'obstacle.radius of {p} differs from {cfg_paths[0]}')
@@ -87,8 +99,10 @@ def export_ensemble(model_paths, out: str, opset: int = 17, verbose: bool = True
                 f'# graph: {os.path.basename(out)} = mean of the deterministic actions of:\n')
         for m in model_paths:
             f.write(f'#   {m}\n')
-        f.write(f'# Config below = first member ({cfg_paths[0]}); deploy sections identical across members.\n')
-        yaml.safe_dump(cfgs[0], f, sort_keys=False)
+        f.write(f'# Config below = first member ({cfg_paths[0]}); deploy sections identical across members;\n'
+                f'# training-only env keys {list(_TRAIN_ONLY_ENV)} removed.\n')
+        frozen = dict(cfgs[0], env=_deploy_view(cfgs[0], 'env'))
+        yaml.safe_dump(frozen, f, sort_keys=False)
 
     # Validate: onnxruntime vs the mean of the SB3 deterministic predictions.
     import onnxruntime as ort

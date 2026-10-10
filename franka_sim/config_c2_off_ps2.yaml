@@ -1,0 +1,254 @@
+# sac_c2_off_ps2 — b3_ft_v10c recipe (obstacle CBF OFF) (2026-10-08).
+# Variant: shield-off ensemble member, from v12_prec_s2 3.75M + its buffer (--relabel-from)
+env:
+  scene_xml: assets/franka_fr3/scene_cbf.xml
+  ee_site: hand_tcp_site
+  control_rate_hz: 100.0
+  sim_timestep: 0.002
+  max_episode_steps: 500
+  render_speed: 1.0
+  cbf_obstacle_enabled: false
+task:
+  target_box_min:
+  - 0.3
+  - -0.35
+  - 0.25
+  target_box_max:
+  - 0.6
+  - 0.35
+  - 0.65
+  target_tol: 0.05
+  q_init_noise: 0.05
+  reset_min_clearance: null
+  reset_max_tries: 3000
+  blocking_fraction: 0.6
+  blocking_margin: null
+  target_clearance: 0.26
+  target_free_always: true
+obstacle:
+  radius: 0.08
+  mode: sinusoidal
+  box_min:
+  - 0.3
+  - -0.4
+  - 0.3
+  box_max:
+  - 0.65
+  - 0.4
+  - 0.7
+  amplitude: 0.2
+  speed: 0.2
+  random_walk_std: 0.01
+  static_fraction: 0.5
+obs:
+  obstacle_velocity: false
+  control_point_geometry: false
+  clip_distance: null
+actuation:
+  enabled: false
+  d_gains:
+  - 30.0
+  - 30.0
+  - 30.0
+  - 25.0
+  - 10.0
+  - 10.0
+  - 5.0
+  p_gains:
+  - 120.0
+  - 120.0
+  - 120.0
+  - 100.0
+  - 40.0
+  - 40.0
+  - 20.0
+  e_max: 1.0
+  p_max: 0.15
+  qdot_margin: 0.95
+  ff_fade_band: 0.25
+randomization:
+  enabled: false
+  latency:
+    enabled: false
+    mean_s: 0.04
+    jitter_s: 0.01
+  obs_noise:
+    enabled: false
+    obstacle_pos_std: 0.01
+    d_min_std: 0.005
+    lpf_alpha: 0.5
+    clamp_d_min_at_zero: true
+    dropout_prob: 0.0
+  joint_noise:
+    enabled: false
+    q_std: 0.0005
+    qdot_std: 0.005
+  dynamics:
+    enabled: false
+    mass_scale:
+    - 0.95
+    - 1.05
+    damping_scale:
+    - 0.8
+    - 1.2
+    friction_scale:
+    - 0.8
+    - 1.2
+reward:
+  w_dist: 1.0
+  w_success: 5.0
+  w_action: 0.001
+  w_intervention: 0.02
+  w_slack: 0.5
+  w_smooth: 0.001
+  w_qdot: 0.001
+  w_ws_margin: 0.0
+  ws_soft_margin: 0.15
+  collision_dist: 0.0
+  collision_penalty: 50.0
+  terminate_on_success: false
+  collision_step_cost: 2.0
+  terminate_on_collision: true
+  obs_shaping: potential
+  w_obs_margin: 2.0
+  obs_soft_margin: 0.1
+cbf:
+  d_safe: 0.15
+  k0_cbf: 25.0
+  k1_cbf: 10.5
+  rho_slack: 1000.0
+  cbf_obstacle_horizon: 1.2
+  cbf_min_leverage: 0.05
+  k_brake: 3.0
+  osqp_max_iter: 20000
+  include_jdot: true
+  velocity_box_margin: 0.9
+  position_margin_rad: 0.05
+  position_brake_eta: 0.6
+  max_qddot_delta: 5.0
+  qddot_max_abs: 10.0
+  state_box_relax_s: 0.1
+  accel_box_clip_to_limits: true
+  firmware_envelope: true
+  ws_enable: true
+  ws_min:
+  - 0.05
+  - -0.6
+  - 0.05
+  ws_max:
+  - 0.75
+  - 0.6
+  - 0.95
+  ws_margin: 0.02
+  ws_horizon: 0.25
+  control_points:
+  - body: fr3_link3
+    radius: 0.09
+  - body: fr3_link4
+    radius: 0.09
+  - body: fr3_link5
+    radius: 0.09
+  - body: fr3_link6
+    radius: 0.08
+  - body: fr3_link7
+    radius: 0.07
+  - body: fr3_hand
+    radius: 0.13
+    robot_link: fr3_link8
+  floor_enable: true
+  base_keepout_enable: true
+  soft_fallback: true
+shield_parity:
+  mirrored:
+  - slew_box_enabled
+  robot_only_active:
+  - joint_limit_rows_enabled
+  - self_collision_rows_enabled
+  - singularity_rows_enabled
+  - retreat_cap_enabled
+  - link_speed_rows_enabled
+  - state_governor_enabled
+  - obstacle_velocity_enabled
+  - enable_zone_ladder
+  - enable_velocity_standoff
+  - enable_uncertainty_margin
+  - enable_lateral_evasion
+  - enable_outrun_evasion
+  - enable_livelock_escape
+  - enable_vobs_in_hdot
+  - enable_latency_compensation
+  robot_only_inactive:
+  - enable_velocity_feedforward
+  - enable_weighted_slack
+  - enable_sensor_range_uncertainty
+  - iso_enabled
+  - iso_monitor_enabled
+  sim_only:
+  - ws_enable
+joint_limits:
+  joint1:
+  - -2.9007
+  - 2.9007
+  - 2.62
+  - 6.0
+  - 500.0
+  joint2:
+  - -1.8361
+  - 1.8361
+  - 2.62
+  - 2.585
+  - 500.0
+  joint3:
+  - -2.9007
+  - 2.9007
+  - 2.62
+  - 3.5
+  - 500.0
+  joint4:
+  - -3.077
+  - -0.1169
+  - 2.62
+  - 4.0
+  - 500.0
+  joint5:
+  - -2.8763
+  - 2.8763
+  - 5.26
+  - 17.0
+  - 500.0
+  joint6:
+  - 0.4398
+  - 4.6216
+  - 4.18
+  - 5.5
+  - 500.0
+  joint7:
+  - -3.0508
+  - 3.0508
+  - 5.26
+  - 17.0
+  - 500.0
+rl:
+  algo: SAC
+  total_timesteps: 2000000
+  n_envs: 1
+  seed: 47
+  policy: MlpPolicy
+  learning_rate: 0.0001
+  buffer_size: 1000000
+  batch_size: 512
+  gamma: 0.99
+  tau: 0.005
+  train_freq: 1
+  gradient_steps: 1
+  learning_starts: 10000
+  ent_coef: auto
+  net_arch:
+  - 256
+  - 256
+  device: cuda
+  tensorboard_log: runs/
+  checkpoint_freq: 50000
+  checkpoint_freq_episodes: 200
+  eval_freq: 25000
+  save_path: models/
