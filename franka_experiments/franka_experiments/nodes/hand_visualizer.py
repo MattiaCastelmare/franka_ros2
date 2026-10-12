@@ -5,9 +5,10 @@
               palm (yellow cross), Hands23 crop around the palm (orange box)
   robot       gripper tip - palm line (cyan) and the commander target, palm + standoff_m in z (orange)
   status      speed, distance, palm UP / SIDE / DOWN (hysteresis on normal.z), timestamp, '*' = estimated;
-              palm coordinates in the base frame
+              palm coordinates in the base frame, observer state, grasp executor phase
   prediction  hand + velocity x 0.2 s (red), when the velocity is fresh
-  object      Hands23 object (HandObjectState) and the grasp pose (handover_grasp.py pose), if published
+  object      Hands23 object (HandObjectState) and the grasp pose (handover_grasp.py pose) with its width, if
+              published: light blue = new from the backend, grey = moved with the palm
 The D405 view reuses the same drawing with the D405 pose (TF base -> fr3_link8 + d405_extrinsics.yaml).
 """
 
@@ -19,9 +20,8 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from franka_msgs.msg import (
-    HandObjectState, HandoverDistance, HandState, HandTrackingFiltered, HandTrackingRaw)
-from geometry_msgs.msg import PoseStamped
+from franka_msgs.msg import (GraspPose, HandObjectState, HandoverDistance, HandoverObserver, HandState,
+                             HandTrackingFiltered, HandTrackingRaw)
 from message_filters import Subscriber, TimeSynchronizer
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -29,14 +29,14 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from franka_experiments.nodes.grasp import CROP_M
 from franka_experiments.utils.camera_yaml import load_camera_info_yaml
 
-F = HandTrackingFiltered
-# |normal.z| = sin 15 deg / sin 25 deg (UP/SIDE/DOWN hysteresis)
-SIDE_ENTER, SIDE_EXIT = 0.2588190451, 0.4226182617
+F, O = HandTrackingFiltered, HandoverObserver
+SIDE_ENTER, SIDE_EXIT = 0.45, 0.55  # around the pipeline's SIDE, |normal z| < 0.5
 PREDICTION_S = 0.20
 
 
@@ -67,7 +67,6 @@ class HandVisualizer(Node):
     def __init__(self):
         super().__init__('hand_visualizer')
         self.declare_parameter('standoff_m', 0.20)
-        self.declare_parameter('grasp_width_m', 0.06)
 
         # main camera: intrinsics and extrinsics from config
         config_dir = get_package_share_directory('franka_experiments') + '/config/'
@@ -94,6 +93,7 @@ class HandVisualizer(Node):
         self.palm_ud, self.display_side = None, None  # UP/SIDE/DOWN display state, reset with the physical hand
         self._raw_state_by_stamp = {}                 # raw tracking state of recent frames (the '*' marker)
         self._object_states, self._grasp_poses = deque(maxlen=60), deque(maxlen=30)
+        self._observer, self._phase = None, None  # last HandoverObserver, grasp executor phase
         self.bridge = CvBridge()
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -102,7 +102,10 @@ class HandVisualizer(Node):
         self.publisher = self.create_publisher(Image, '/handover/hand_debug_image', 2)
         self.gripper_publisher = self.create_publisher(Image, '/handover/gripper_debug_image', 2)
         self.create_subscription(HandObjectState, '/handover/hand_object', self._object_states.append, 10)
-        self.create_subscription(PoseStamped, '/handover/grasp_pose', self._grasp_poses.append, 10)
+        self.create_subscription(GraspPose, '/handover/grasp_pose', self._grasp_poses.append, 10)
+        self.create_subscription(HandoverObserver, '/handover/observer', lambda m: setattr(self, '_observer', m), 10)
+        self.create_subscription(String, '/handover/grasp_phase',
+                                 lambda m: setattr(self, '_phase', m.data.partition('|')[0]), 10)
         self.create_subscription(CameraInfo, '/camera/camera/aligned_depth_to_color/camera_info',
                                  self.camera_info_callback, qos_profile_sensor_data)
         self.create_subscription(HandTrackingRaw, '/handover/hand_tracking_raw', self._raw_state_callback, qos)
@@ -209,6 +212,13 @@ class HandVisualizer(Node):
         self.palm_ud = ud
         return f'palm={ud}'
 
+    def _observer_text(self, state):
+        o = self._observer
+        if o is None or abs(stamp_s(o.header.stamp) - stamp_s(state.header.stamp)) > 0.1:
+            return 'obs=--'
+        return 'obs=' + {O.APPROACHING: 'APPROACHING', O.RETREATING: 'RETREATING', O.HOLD: 'HOLD',
+                         O.WARMUP: 'WARMUP'}.get(int(o.state), 'LOST')
+
     def _draw_prediction(self, image, filtered, state):
         """Hand + velocity x PREDICTION_S when the robot would use it: position and fresh velocity valid,
         every landmark initialised, all finite."""
@@ -291,7 +301,7 @@ class HandVisualizer(Node):
             return
 
         h, w = image.shape[:2]
-        half = 0.5 * float(self.get_parameter('grasp_width_m').value)
+        half = 0.5 * float(msg.width)
         f, b = self._FINGER_M, self._BODY_M
 
         def px(y, z):
@@ -306,7 +316,8 @@ class HandVisualizer(Node):
         if any(p is None for p in sum(fingers, []) + body + approach):
             return
 
-        color, dark = (255, 190, 40), (60, 30, 0)
+        new = stamp_s(msg.source_stamp) in (0.0, stamp_s(msg.header.stamp))  # 0: publisher without it
+        color, dark = ((255, 190, 40), (60, 30, 0)) if new else ((190, 190, 190), (40, 40, 40))
         shapes = [np.array(s, np.int32) for s in fingers + [body]]
         layer = image.copy()
         for poly in shapes:
@@ -324,10 +335,10 @@ class HandVisualizer(Node):
         for tip in (fingers[0][0], fingers[1][0]):
             cv2.circle(image, tip, 4, dark, -1, cv2.LINE_AA)
             cv2.circle(image, tip, 3, (255, 255, 255), -1, cv2.LINE_AA)
-        cv2.putText(image, 'PRESA', (approach[1][0] + 8, approach[1][1] + 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, dark, 3, cv2.LINE_AA)
-        cv2.putText(image, 'PRESA', (approach[1][0] + 8, approach[1][1] + 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        label = f'PRESA {100 * msg.width:.0f} cm' + ('' if new else ' (spostata)')
+        for ink, thickness in ((dark, 3), (color, 1)):
+            cv2.putText(image, label, (approach[1][0] + 8, approach[1][1] + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, ink, thickness, cv2.LINE_AA)
 
     def _draw(self, image, image_msg, filtered, state, distance, main=True):
         h, w = image.shape[:2]
@@ -409,6 +420,7 @@ class HandVisualizer(Node):
         coordinates = ('Palmo [base] m: X=--  Y=--  Z=--'
                        if palm_base is None or not np.isfinite(xyz(palm_base)).all()
                        else f'Palmo [base] m: X={palm_base.x:+.3f}  Y={palm_base.y:+.3f}  Z={palm_base.z:+.3f}')
+        coordinates += f'   {self._observer_text(state)}   fase={self._phase or "--"}'
         text_box(image, coordinates, (14, 54), (8, 39, 60), 0.38, (0, 255, 255))
 
         self._draw_prediction(image, filtered, state)

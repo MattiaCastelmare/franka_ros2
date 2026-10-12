@@ -7,9 +7,17 @@
 GRASP POSE
   cloud      aligned depth around the object of HandObjectState (+-crop_m), at most max_rate_hz
   backend    GSNet (default) or AnyGrasp (backend:=anygrasp)
+  threads    GPU thread (cloud + backend) and CPU thread (filters, collisions, choice) on consecutive
+             frames: GSNet 49 ms, collisions on all its 1024 grasps 109 ms on the laptop (RTX 3050)
   filter     on the object, approach from the robot TCP within approach_thresh_deg, opening
-             <= max_gripper_width_m, collision-free, fingertips >= hand_clearance_m from the hand
+             <= max_gripper_width_m, fingertips >= hand_clearance_m from the hand, then collision-free
+             (GSNet), checked in score order 64 at a time
+  palm       approach within palm_approach_deg of -palm normal (HandState, palm UP from above, SIDE from the
+             palm side, DOWN from below): never through the back of the hand. 180 = off
   choice     best score; the previous grasp is kept while close and >= keep_ratio of the best
+  rate       between two backend grasps the last one is republished at every HandState (camera rate),
+             moved with the palm translation, up to propagate_s old: GSNet under the full pipeline
+             load is ~160 ms (~6 Hz) on the laptop GPU. source_stamp = the backend frame
   output     PoseStamped in the base frame, Franka TCP convention (z approach, y closing)
 
 GRASP EXECUTOR
@@ -27,21 +35,25 @@ import time
 import types
 from argparse import Namespace
 
+from collections import deque
+
 import cv2
 import numpy as np
+import pinocchio as pin
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from franka_msgs.msg import HandObjectState, HandoverDistance, HandTrackingFiltered
-from geometry_msgs.msg import PoseStamped
+from franka_msgs.msg import GraspPose, HandObjectState, HandoverDistance, HandState, HandTrackingFiltered
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 
+from franka_experiments.utils.kinematics import compute_arm_jacobian, so3_log
 from franka_experiments.utils.node_runtime import run_node_main
 from handover_qddot_commander import HandoverQddotCommander
 
@@ -149,9 +161,17 @@ class GraspPoseNode(Node):
         self.max_width = float(par('max_gripper_width_m', 0.08))   # Franka hand
         self.crop_m = float(par('crop_m', 0.25))                   # cloud around the object
         self.approach_thresh = np.radians(float(par('approach_thresh_deg', 60.0)))
-        self.clearance = float(par('hand_clearance_m', 0.05))
+        self.clearance = float(par('hand_clearance_m', 0.05))         # finger pads - hand landmarks
+        self.finger_clearance = float(par('finger_clearance_m', 0.03))  # finger pads - hand surface (depth)
+        self.hand_radius = float(par('hand_radius_m', 0.12))          # hand surface: cloud around the palm
+        self.validity_s = float(par('grasp_validity_s', 0.3))         # GraspPose.valid_until - stamp
         self.keep_ratio = float(par('keep_ratio', 0.8))            # hysteresis on the choice
-        self.period = 1.0 / float(par('max_rate_hz', 10.0))
+        self.palm_approach = np.radians(float(par('palm_approach_deg', 70.0)))
+        self.palm_max_age_s = float(par('palm_max_age_s', 0.3))
+        self.propagate_s = float(par('propagate_s', 0.5))
+        self.palms = deque(maxlen=60)  # (stamp, palm position) of HandState, for the moved grasp
+        self.source = None             # (GraspPose, palm position at its stamp) of the last backend grasp
+        self.period = 1.0 / float(par('max_rate_hz', 30.0))
 
         g = '/ros2_ws/graspness'
         backend_args = {
@@ -169,11 +189,12 @@ class GraspPoseNode(Node):
         self.base_frame = ext['parent_frame']
 
         self.bridge, self.K = CvBridge(), None
-        self.depth = self.obj = self.hand = self.ee = None
+        self.depth = self.obj = self.hand = self.ee = self.palm = None
         self.last = None  # (tip, approach) of the published grasp, base frame
+        self.recent = deque(maxlen=10)  # (tip, approach) of the last frames that gave a grasp
         self.lock = threading.Lock()
 
-        self.pub = self.create_publisher(PoseStamped, '/handover/grasp_pose', 10)
+        self.pub = self.create_publisher(GraspPose, '/handover/grasp_pose', 10)
         cam = '/camera/camera/aligned_depth_to_color/'
         self.create_subscription(CameraInfo, cam + 'camera_info', self.on_info, qos_profile_sensor_data)
         self.create_subscription(Image, cam + 'image_raw', lambda m: self._set('depth', m),
@@ -182,16 +203,20 @@ class GraspPoseNode(Node):
         self.create_subscription(HandTrackingFiltered, '/handover/hand_tracking_filtered',
                                  lambda m: self._set('hand', m), 10)
         self.create_subscription(HandoverDistance, '/handover/distance', lambda m: self._set('ee', m), 10)
+        self.create_subscription(HandState, '/handover/hand_state', self.on_palm, 10)
 
         self.stats = dict.fromkeys(
-            ('frames', 'no object', 'no grasp', 'filtered', 'near hand', 'published'), 0)
+            ('frames', 'no object', 'no grasp', 'filtered', 'near hand', 'palm side', 'collision', 'published',
+             'moved'), 0)
         self.create_timer(5.0, self.log_stats)
         self.stop = threading.Event()
         try:
             self.backend = {'gsnet': Gsnet, 'anygrasp': AnyGrasp}[self.backend_name](
                 *backend_args[self.backend_name])
             self.get_logger().info(f'grasp backend: {self.backend_name}')
+            self.job, self.job_ready = None, threading.Event()  # GPU thread -> CPU thread, latest frame only
             threading.Thread(target=self.worker, daemon=True).start()
+            threading.Thread(target=self.selector, daemon=True).start()
         except Exception as error:
             self.backend = None
             self.get_logger().error(f'grasp backend {self.backend_name} not available ({error}): idle')
@@ -204,6 +229,30 @@ class GraspPoseNode(Node):
     def _set(self, key, msg):
         with self.lock:
             setattr(self, key, msg)
+
+    def on_palm(self, msg):
+        t = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
+        n = np.array([msg.palm_normal.x, msg.palm_normal.y, msg.palm_normal.z])
+        if msg.geometry_ok and np.linalg.norm(n) > 0.5:
+            self._set('palm', (t, n / np.linalg.norm(n)))
+        if not msg.position_valid:
+            return
+        palm = np.array([msg.palm_position.x, msg.palm_position.y, msg.palm_position.z])
+        self.palms.append((t, palm))
+        source = self.source
+        if source is None or source[1] is None:
+            return
+        src, palm0 = source
+        if not 0.0 < t - (src.header.stamp.sec + 1e-9 * src.header.stamp.nanosec) <= self.propagate_s:
+            return
+        out = GraspPose(source_stamp=src.source_stamp, width=src.width, score=src.score, confidence=src.confidence)
+        out.header.frame_id, out.header.stamp = src.header.frame_id, msg.header.stamp
+        out.pose.orientation = src.pose.orientation
+        p = np.array([src.pose.position.x, src.pose.position.y, src.pose.position.z]) + palm - palm0
+        out.pose.position.x, out.pose.position.y, out.pose.position.z = map(float, p)
+        out.valid_until.sec, out.valid_until.nanosec = divmod(int((t + self.validity_s) * 1e9), 1_000_000_000)
+        self.pub.publish(out)
+        self.stats['moved'] += 1
 
     def on_info(self, msg):
         if msg.k[0] > 0.0:
@@ -228,6 +277,18 @@ class GraspPoseNode(Node):
                     self.get_logger().warn(f'grasp step failed: {error}', throttle_duration_sec=5.0)
 
             time.sleep(max(0.005, self.period - (time.monotonic() - t0)))
+
+    def selector(self):
+        while rclpy.ok() and not self.stop.is_set():
+            if not self.job_ready.wait(0.5):
+                continue
+            self.job_ready.clear()
+            job, self.job = self.job, None
+            if job is not None:
+                try:
+                    self.publish(*job)
+                except Exception as error:
+                    self.get_logger().warn(f'grasp choice failed: {error}', throttle_duration_sec=5.0)
 
     def step(self, depth_msg, obj, hand, ee):
         centre = np.array([obj.object_centroid_3d.x, obj.object_centroid_3d.y, obj.object_centroid_3d.z])
@@ -274,36 +335,78 @@ class GraspPoseNode(Node):
                 return
         else:
             g = self.backend(points)
-            # on the object, from the robot side, within the gripper opening, then collision-free
+            # on the object, from the robot side, within the gripper opening (collisions: CPU thread)
             near = cKDTree(points[region]).query(g['t'], distance_upper_bound=0.02)[0] < 0.02
             ok = (near & (g['R'][:, :, 0] @ approach > np.cos(self.approach_thresh))
                   & (g['width'] <= self.max_width))
             g = {k: val[ok] for k, val in g.items()}
-            if len(g['score']):
-                free = ~collisions(points, g['t'], g['R'], g['width'], g['depth'], g['height'])
-                g = {k: val[free] for k, val in g.items()}
 
         if not len(g['score']):
             self.stats['filtered'] += 1
             return
-        self.publish(depth_msg, g, hand)
+        # hand surface: cloud around the palm outside the object mask (fingers in any pose)
+        hand_surface = np.zeros((0, 3))
+        if hand is not None:
+            mcp = [[p.x, p.y, p.z] for i, (p, s) in enumerate(zip(hand.positions, hand.landmark_state))
+                   if i and s in TRACKED]
+            if mcp:
+                palm = self.R.T @ (np.mean(mcp, 0) - self.t)
+                near = ~region & (np.linalg.norm(points - palm, axis=1) < self.hand_radius)
+                hand_surface = points[near][::max(1, int(near.sum()) // 400)] @ self.R.T + self.t
+        self.job = (depth_msg, g, hand, hand_surface, points)
+        self.job_ready.set()
 
-    def publish(self, depth_msg, g, hand):
+    def _collision_free(self, points, g, ok, tips, axes):
+        """Free grasps among ok, checked in score order 64 at a time down to the first free one, plus the
+        candidates that may keep the previous grasp: the same choice as checking them all."""
+        if self.backend_name == 'anygrasp':  # checked inside the SDK
+            return ok
+        scores, free, checked = g['score'], np.zeros(len(ok), bool), np.zeros(len(ok), bool)
+
+        def check(c):
+            free[c] = ~collisions(points, g['t'][c], g['R'][c], g['width'][c], g['depth'][c], g['height'][c])
+            checked[c] = True
+
+        order = np.where(ok)[0][np.argsort(-scores[ok])]
+        for i in range(0, len(order), 64):
+            check(order[i:i + 64])
+            if free.any():
+                break
+        if free.any() and self.last is not None:
+            keep = (ok & ~checked & (scores >= self.keep_ratio * scores[free].max())
+                    & (np.linalg.norm(tips - self.last[0], axis=1) < 0.03)
+                    & (axes[:, :, 0] @ self.last[1] > np.cos(np.radians(30.0))))
+            if keep.any():
+                check(np.where(keep)[0])
+        return free
+
+    def publish(self, depth_msg, g, hand, hand_surface, points):
         rot = g['R']  # graspnet: x approach, y closing
         tips = (g['t'] + g['depth'][:, None] * rot[:, :, 0]) @ self.R.T + self.t  # camera -> base
         axes = np.einsum('ij,njk->nik', self.R, rot)
         scores = g['score']
 
         ok = np.ones(len(scores), bool)
-        if hand is not None:  # fingertips away from the tracked hand landmarks
-            lm = np.array([[p.x, p.y, p.z] for p, s in zip(hand.positions, hand.landmark_state)
-                           if s in TRACKED])
-            if len(lm):
-                for side in (-1.0, 1.0):
-                    fingers = tips + side * 0.5 * g['width'][:, None] * axes[:, :, 1]
-                    ok &= np.linalg.norm(fingers[:, None] - lm[None], axis=2).min(1) >= self.clearance
+        lm = np.array([[p.x, p.y, p.z] for p, s in zip(hand.positions, hand.landmark_state) if s in TRACKED]
+                      if hand is not None else np.zeros((0, 3))).reshape(-1, 3)
+        for side in (-1.0, 1.0):  # finger pads away from the landmarks and from the whole hand surface
+            fingers = tips + side * 0.5 * g['width'][:, None] * axes[:, :, 1]
+            for pts, clearance in ((lm, self.clearance), (hand_surface, self.finger_clearance)):
+                if len(pts):
+                    ok &= np.linalg.norm(fingers[:, None] - pts[None], axis=2).min(1) >= clearance
         if not ok.any():
             self.stats['near hand'] += 1
+            return
+        palm = self.palm
+        t = depth_msg.header.stamp.sec + 1e-9 * depth_msg.header.stamp.nanosec
+        if palm is not None and abs(t - palm[0]) <= self.palm_max_age_s and self.palm_approach < np.pi:
+            ok &= axes[:, :, 0] @ -palm[1] > np.cos(self.palm_approach)
+            if not ok.any():
+                self.stats['palm side'] += 1
+                return
+        ok = self._collision_free(points, g, ok, tips, axes)
+        if not ok.any():
+            self.stats['collision'] += 1
             return
 
         # best score, but keep the previous grasp while it is still close and good enough
@@ -316,18 +419,26 @@ class GraspPoseNode(Node):
             if near:
                 best = max(near, key=lambda i: scores[i])
         self.last = (tips[best], axes[best, :, 0])
+        same = [np.linalg.norm(tip - tips[best]) < 0.03 and a @ axes[best, :, 0] > np.cos(np.radians(30.0))
+                for tip, a in self.recent]
+        self.recent.append(self.last)
 
         x_ap, y_cl = axes[best, :, 0], axes[best, :, 1]
         R_tcp = np.column_stack([np.cross(y_cl, x_ap), y_cl, x_ap])  # Franka TCP: z approach
 
-        out = PoseStamped()
+        out = GraspPose(width=float(g['width'][best]), score=float(scores[best]))
         out.header.stamp, out.header.frame_id = depth_msg.header.stamp, self.base_frame
+        out.source_stamp = depth_msg.header.stamp
+        out.confidence = float(np.clip(scores[best], 0.0, 1.0) * (1 + sum(same)) / (1 + len(same)))
+        out.valid_until.sec, out.valid_until.nanosec = divmod(int((t + self.validity_s) * 1e9), 1_000_000_000)
         out.pose.position.x, out.pose.position.y, out.pose.position.z = map(float, tips[best])
         qx, qy, qz, qw = Rotation.from_matrix(R_tcp).as_quat()
         out.pose.orientation.x, out.pose.orientation.y = float(qx), float(qy)
         out.pose.orientation.z, out.pose.orientation.w = float(qz), float(qw)
         self.pub.publish(out)
         self.stats['published'] += 1
+        near = [(abs(tp - t), p) for tp, p in list(self.palms) if abs(tp - t) <= 0.1]
+        self.source = (out, min(near, key=lambda x: x[0])[1] if near else None)
 
 
 # ============================================================ grasp executor
@@ -351,6 +462,14 @@ class GraspExecutor(HandoverQddotCommander):
         self.max_reach_m = float(par('max_reach_m', 0.80))
         self.min_z_m = float(par('min_z_m', 0.10))
         self.phase_timeout_s = float(par('phase_timeout_s', 8.0))
+        self.min_manipulability = float(par('min_manipulability', 0.01))   # sqrt(det J J^T) at the grasp
+        self.joint_margin = float(par('ik_joint_margin_rad', 0.05))
+        # observer RETREATING during PREGRASP / APPROACH: hold the arm; back home after retreat_abort_s
+        par('pause_on_retreat', True)
+        par('retreat_abort_s', 0.5)
+        self._retreat_t = None
+        self._ik_data, self._ik_cache = self.pin_model.createData(), {}
+        self._ik_q_ids = [self.pin_model.joints[j].idx_q for j in self._pin_joint_ids]
 
         self._grasp = None          # (position, R_tcp, stamp_ns)
         self._frozen = None         # grasp used by APPROACH / CLOSE / HOLD
@@ -359,10 +478,11 @@ class GraspExecutor(HandoverQddotCommander):
         self._last_t = None
         self._good_t = None         # last time grasp and hand were both fine
         self._retry_at = 0.0
-        self._phase, self._phase_t = 'HOME', time.monotonic()
+        self._phase, self._phase_t = 'HOME', self._now()
         self._R_home = None
 
-        self.create_subscription(PoseStamped, '/handover/grasp_pose', self._grasp_cb, 10)
+        self.create_subscription(GraspPose, '/handover/grasp_pose', self._grasp_cb, 10)
+        self.phase_pub = self.create_publisher(String, '/handover/grasp_phase', 10)  # 'PHASE|abort reason'
         self.create_subscription(HandObjectState, '/handover/hand_object', self._object_cb, 10)
         self.get_logger().info('Grasp executor ready: HOME')
 
@@ -372,14 +492,17 @@ class GraspExecutor(HandoverQddotCommander):
         R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
         self._grasp = (np.array([p.x, p.y, p.z]), R,
                        msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec)
+        self._grasp_valid_until = msg.valid_until.sec * 1_000_000_000 + msg.valid_until.nanosec
+        # IK once per backend grasp, not at every republished (moved) one
+        self._grasp_source = msg.source_stamp.sec * 1_000_000_000 + msg.source_stamp.nanosec or self._grasp[2]
 
     def _object_cb(self, msg):
         self._object = bool(msg.valid and msg.object_present)
         if self._object or not msg.valid:
             self._empty_since = None
         elif self._empty_since is None:
-            self._empty_since = time.monotonic()
-        elif time.monotonic() - self._empty_since >= self.rearm_s:
+            self._empty_since = self._now()
+        elif self._now() - self._empty_since >= self.rearm_s:
             self._armed = True
 
     def _fresh_grasp(self, max_age=None):
@@ -387,14 +510,55 @@ class GraspExecutor(HandoverQddotCommander):
             return None
 
         age = (self.get_clock().now().nanoseconds - self._grasp[2]) * 1e-9
-        p, R, _ = self._grasp
+        p, R, stamp = self._grasp
         reachable = np.linalg.norm(p[:2]) <= self.max_reach_m and p[2] >= self.min_z_m
         limit = self.grasp_timeout_s if max_age is None else max_age
-        return self._grasp if 0.0 <= age <= limit and reachable else None
+        if not (0.0 <= age <= limit and reachable):
+            return None
+        if max_age is None:  # a new grasp: still valid and reachable by the arm
+            if self.get_clock().now().nanoseconds > self._grasp_valid_until:
+                return None
+            key = self._grasp_source
+            if key not in self._ik_cache:
+                R = self._closest_flip(R)
+                self._ik_cache = {key: self.ik_check(p - self.pregrasp_m * R[:, 2], R) or self.ik_check(p, R)}
+            if self._ik_cache[key]:
+                self.get_logger().info(f'grasp rejected: {self._ik_cache[key]}', throttle_duration_sec=2.0)
+                return None
+        return self._grasp
 
-    def _set_phase(self, phase):
+    def ik_check(self, p, R):
+        """Damped least squares IK from the current joints to the TCP pose (p, R): None if it converges
+        within 5 mm / 3 deg, ik_joint_margin_rad inside the joint limits, with sqrt(det J J^T) >=
+        min_manipulability; otherwise the reason."""
+        m, d, qi = self.pin_model, self._ik_data, self._ik_q_ids
+        lo, hi = m.lowerPositionLimit[qi], m.upperPositionLimit[qi]
+        q = self._q_full.copy()
+        for _ in range(100):
+            J = compute_arm_jacobian(m, d, q, self.ee_frame_id, self._pin_joint_ids)
+            pin.updateFramePlacement(m, d, self.ee_frame_id)
+            T = d.oMf[self.ee_frame_id]
+            err = np.r_[p - T.translation, so3_log(R @ T.rotation.T)]
+            if np.linalg.norm(err[:3]) < 0.005 and np.linalg.norm(err[3:]) < np.radians(3.0):
+                break
+            q[qi] = np.clip(q[qi] + J.T @ np.linalg.solve(J @ J.T + 1e-4 * np.eye(6), err), lo, hi)
+        else:
+            return 'IK does not converge (out of reach)'
+        if np.any(q[qi] - lo < self.joint_margin) or np.any(hi - q[qi] < self.joint_margin):
+            return 'at a joint limit'
+        manipulability = float(np.sqrt(max(np.linalg.det(J @ J.T), 0.0)))
+        return None if manipulability >= self.min_manipulability else f'manipulability {manipulability:.4f}'
+
+    def _now(self):
+        """ROS time [s]: the bag clock in replays, like the stamps of the data."""
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _set_phase(self, phase, reason=''):
         self.get_logger().info(f'{self._phase} -> {phase}')
-        self._phase, self._phase_t = phase, time.monotonic()
+        if reason:
+            self.get_logger().warn(reason)
+        self._phase, self._phase_t = phase, self._now()
+        self.phase_pub.publish(String(data=f'{phase}|{reason}'))
 
     # ------------------------------------------------------------ orientation
     def _turn_towards(self, R_goal, dt):
@@ -422,8 +586,8 @@ class GraspExecutor(HandoverQddotCommander):
         if self._R_home is None and self._orient_ok:
             self._R_home = self._R_des.copy()
 
-        now = time.monotonic()
-        dt = min(0.05, now - self._last_t) if self._last_t is not None else 0.0
+        now = self._now()
+        dt = min(0.05, max(0.0, now - self._last_t)) if self._last_t is not None else 0.0
         self._last_t = now
         elapsed = now - self._phase_t
         home = self._hold_position
@@ -449,13 +613,20 @@ class GraspExecutor(HandoverQddotCommander):
             # short gaps (grasp at ~10 Hz, tracking dropouts) ride on the last grasp
             tolerance = self.lost_s if self._phase == 'PREGRASP' else self.approach_lost_s
             if self._good_t is None or now - self._good_t > tolerance:
-                self.get_logger().warn('hand / grasp lost: back home, gripper stays open, retry')
                 self._armed, self._retry_at = True, now + self.retry_s  # nothing was grasped
-                self._set_phase('RETURN')
+                self._set_phase('RETURN', 'hand / grasp lost: back home, gripper stays open, retry')
                 return self._p_ee.copy()
             grasp = grasp or self._fresh_grasp(max_age=tolerance)
             if grasp is None and self._phase == 'PREGRASP':
                 return self._p_ee.copy()  # hold while waiting for the next grasp
+            if self.get_parameter('pause_on_retreat').value and self.retreating():  # the hand is taken back
+                self._retreat_t = self._retreat_t or now
+                if now - self._retreat_t > self.get_parameter('retreat_abort_s').value:
+                    self._armed, self._retry_at, self._retreat_t = True, now + self.retry_s, None
+                    self._set_phase('RETURN', 'hand withdrawn: back home, retry')
+                self._phase_t += dt  # the pause does not count towards phase_timeout_s
+                return self._p_ee.copy()
+            self._retreat_t = None
 
         if self._phase == 'PREGRASP':
             p, R, _ = grasp
@@ -469,7 +640,7 @@ class GraspExecutor(HandoverQddotCommander):
                 self._frozen = (p.copy(), R.copy())
                 self._set_phase('APPROACH')
             elif elapsed > self.phase_timeout_s:
-                self._set_phase('RETURN')
+                self._set_phase('RETURN', f'PREGRASP not reached in {self.phase_timeout_s:.0f} s')
             return self._step_to(target, self.max_step())
 
         if self._phase == 'APPROACH':
@@ -479,7 +650,7 @@ class GraspExecutor(HandoverQddotCommander):
                 self.gripper.command(True)
                 self._set_phase('CLOSE')
             elif elapsed > self.phase_timeout_s:
-                self._set_phase('RETURN')
+                self._set_phase('RETURN', f'grasp not reached in {self.phase_timeout_s:.0f} s')
             return self._step_to(p, self.approach_step_m)
 
         if self._phase in ('CLOSE', 'HOLD', 'OPEN'):

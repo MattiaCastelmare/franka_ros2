@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
-"""CSV logger: one folder per run, results/<date_time>/ (output_root), five files.
+"""CSV logger: one folder per run, results/<date_time>/ (output_root), six files and abort.md.
 
   hand_tracking_raw.csv       HandTrackingRaw        hand_tracking_filtered.csv  HandTrackingFiltered
   hand_state.csv              HandState (+ W75 constant-velocity palm at 0.1 / 0.2 / 0.3 s)
-  handover_distance.csv       HandoverDistance       hand_object.csv             HandObjectState
+  handover_distance.csv       HandoverDistance (+ HandoverObserver of the same stamp, written when it arrives)
+  hand_object.csv             HandObjectState (+ last GraspPose: new from the backend or moved with the palm)
+  end_effector_state.csv      EndEffectorState: robot joints and gripper tip (base frame), 100 Hz, from
+                              the joint states of the real robot, of the bag or of the simulated robot
+                              (+ grasp executor phase, /handover/grasp_phase)
+  abort.md                    grasp executor aborts: time, phase left, reason
 Every file starts with timestamp_s, elapsed_s (from its first row), frame_id; the other columns are
 listed below as (name, value of the message). The column names are read by the evaluation scripts.
 """
 
 import csv
+import math
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import rclpy
-from franka_msgs.msg import (
-    HandObjectState, HandoverDistance, HandState, HandTrackingFiltered, HandTrackingRaw)
+from franka_msgs.msg import (EndEffectorState, GraspPose, HandObjectState, HandoverDistance, HandoverObserver,
+                             HandState, HandTrackingFiltered, HandTrackingRaw)
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from std_msgs.msg import String
 
 RAW_STATES = {
     HandTrackingRaw.NO_HAND: 'NO_HAND',
@@ -56,6 +64,14 @@ VELOCITY_SOURCES = {
 VELOCITY_ESTIMATORS = {
     HandState.VELOCITY_ESTIMATOR_C5: 'C5',
     HandState.VELOCITY_ESTIMATOR_W75: 'W75',
+}
+
+OBSERVER_STATES = {
+    HandoverObserver.LOST: 'LOST',
+    HandoverObserver.WARMUP: 'WARMUP',
+    HandoverObserver.HOLD: 'HOLD',
+    HandoverObserver.APPROACHING: 'APPROACHING',
+    HandoverObserver.RETREATING: 'RETREATING',
 }
 
 POSITION_SOURCES = {
@@ -164,6 +180,23 @@ STATE_COLUMNS = (
     + [('palm_speed', f('palm_speed')), ('tracking_confidence', f('tracking_confidence')),
        ('motion_stability', f('motion_stability')), ('processing_latency_ms', f('processing_latency_ms'))])
 
+ROBOT_COLUMNS = (
+    [('valid', b('valid'))]
+    + [(f'q{i + 1}', lambda m, i=i: float(m.q[i])) for i in range(7)]
+    + [(f'qdot{i + 1}', lambda m, i=i: float(m.qdot[i])) for i in range(7)]
+    + xyz('tip_', lambda m: m.position)
+    + xyz('tip_v', lambda m: m.velocity)
+    + [('tip_speed', lambda m: math.hypot(m.velocity.x, m.velocity.y, m.velocity.z))])
+
+OBSERVER_COLUMNS = ['observer_state', 'observer_state_name', 'observer_candidate', 'observer_closing_m_s']
+GRASP_COLUMNS = (['grasp_valid', 'grasp_new', 'grasp_age_s', 'grasp_x', 'grasp_y', 'grasp_z',
+                  'grasp_qx', 'grasp_qy', 'grasp_qz', 'grasp_qw', 'grasp_width_m', 'grasp_score', 'grasp_confidence'])
+
+
+def seconds(stamp):
+    return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
+
 HORIZONS_S = (0.10, 0.20, 0.30)
 PREDICTION_COLUMNS = ['prediction_valid', 'prediction_source_name'] + [
     name for k in (1, 2, 3)
@@ -187,15 +220,19 @@ def prediction_row(msg):
 
 class HandTrackingCsvLogger(Node):
 
-    # (log key, file name, message type, topic, columns, extra (columns, row function))
+    # (log key, file name, message type, topic, columns, extra (columns, row function or method name))
     FILES = (
         ('raw', 'hand_tracking_raw', HandTrackingRaw, '/handover/hand_tracking_raw', RAW_COLUMNS, None),
         ('filtered', 'hand_tracking_filtered', HandTrackingFiltered, '/handover/hand_tracking_filtered',
          FILTERED_COLUMNS, None),
         ('state', 'hand_state', HandState, '/handover/hand_state', STATE_COLUMNS,
          (PREDICTION_COLUMNS, prediction_row)),
-        ('distance', 'handover_distance', HandoverDistance, '/handover/distance', DISTANCE_COLUMNS, None),
-        ('object', 'hand_object', HandObjectState, '/handover/hand_object', OBJECT_COLUMNS, None))
+        ('distance', 'handover_distance', HandoverDistance, '/handover/distance', DISTANCE_COLUMNS,
+         (OBSERVER_COLUMNS, 'observer_row')),
+        ('object', 'hand_object', HandObjectState, '/handover/hand_object', OBJECT_COLUMNS,
+         (GRASP_COLUMNS, 'grasp_row')),
+        ('robot', 'end_effector_state', EndEffectorState, '/handover/end_effector_state', ROBOT_COLUMNS,
+         (['grasp_phase'], 'phase_row')))
 
     def __init__(self):
         super().__init__('hand_tracking_csv_logger')
@@ -204,7 +241,10 @@ class HandTrackingCsvLogger(Node):
         run_dir = Path(output_root) / datetime.now(ZoneInfo('Europe/Rome')).strftime('%Y%m%d_%H%M%S')
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        self.files = []
+        self.files, self.logs = [], {}
+        self.observer = self.grasp = None
+        self.phase = 'NONE'
+        self.distances = deque(maxlen=60)  # waiting for the observer of the same stamp
         for key, name, msg_type, topic, columns, extra in self.FILES:
             path = run_dir / f'{name}.csv'
             stream = path.open('w', newline='', encoding='utf-8')
@@ -213,11 +253,65 @@ class HandTrackingCsvLogger(Node):
                             + (extra[0] if extra else []))
             stream.flush()
 
-            log = {'stream': stream, 'writer': writer, 'columns': columns,
-                   'extra': extra and extra[1], 'first': None}
+            row = extra and (getattr(self, extra[1]) if isinstance(extra[1], str) else extra[1])
+            log = {'stream': stream, 'writer': writer, 'columns': columns, 'extra': row, 'first': None}
             self.files.append(stream)
-            self.create_subscription(msg_type, topic, lambda msg, log=log: self.write(log, msg), 10)
+            self.logs[key] = log
+            callback = self.on_distance if key == 'distance' else lambda msg, log=log: self.write(log, msg)
+            self.create_subscription(msg_type, topic, callback, 10)
             self.get_logger().info(f'CSV {key}: {path}')
+
+        self.create_subscription(HandoverObserver, '/handover/observer', self.on_observer, 10)
+        self.create_subscription(GraspPose, '/handover/grasp_pose', lambda msg: setattr(self, 'grasp', msg), 10)
+        self.create_subscription(String, '/handover/grasp_phase', self.on_phase, 10)
+        self.aborts = (run_dir / 'abort.md').open('w', encoding='utf-8')
+        self.aborts.write('# Abort della presa\n\n| t [s] | fase | motivo |\n|---|---|---|\n')
+        self.aborts.flush()
+        self.files.append(self.aborts)
+
+    # ------------------------------------------------------------ joined columns
+    def on_distance(self, msg):
+        if len(self.distances) == self.distances.maxlen:  # no observer for 2 s: do not lose the row
+            self.observer = None
+            self.write(self.logs['distance'], self.distances.popleft())
+        self.distances.append(msg)
+
+    def on_observer(self, msg):
+        """Distance rows up to this stamp: the one with the same stamp gets the observer, older ones none."""
+        t = seconds(msg.header.stamp)
+        while self.distances and seconds(self.distances[0].header.stamp) <= t:
+            distance = self.distances.popleft()
+            self.observer = msg if seconds(distance.header.stamp) == t else None
+            self.write(self.logs['distance'], distance)
+
+    def observer_row(self, msg):
+        o = self.observer
+        if o is None:
+            return [-1, 'NONE', -1, float('nan')]
+        return [int(o.state), OBSERVER_STATES.get(int(o.state), 'UNKNOWN'), int(o.candidate_state),
+                float(o.closing_velocity)]
+
+    def grasp_row(self, msg):
+        g, t = self.grasp, seconds(msg.header.stamp)
+        if g is None:
+            return [0, 0] + [float('nan')] * (len(GRASP_COLUMNS) - 2)
+        p, q = g.pose.position, g.pose.orientation
+        new = seconds(g.source_stamp) in (0.0, seconds(g.header.stamp))  # 0: publisher without source_stamp
+        return [int(t <= seconds(g.valid_until)), int(new), t - seconds(g.header.stamp),
+                p.x, p.y, p.z, q.x, q.y, q.z, q.w, g.width, g.score, g.confidence]
+
+    def phase_row(self, msg):
+        return [self.phase]
+
+    def on_phase(self, msg):
+        """'PHASE|reason' from the grasp executor; a reason marks an abort."""
+        phase, _, reason = msg.data.partition('|')
+        if reason:
+            t = self.get_clock().now().nanoseconds * 1e-9
+            first = self.logs['robot']['first']
+            self.aborts.write(f'| {t - first if first else t:.2f} | {self.phase} | {reason} |\n')
+            self.aborts.flush()
+        self.phase = phase
 
     @staticmethod
     def write(log, msg):
@@ -232,6 +326,9 @@ class HandTrackingCsvLogger(Node):
         log['stream'].flush()
 
     def destroy_node(self):
+        while self.distances:  # observer never came
+            self.observer = None
+            self.write(self.logs['distance'], self.distances.popleft())
         for stream in self.files:
             if not stream.closed:
                 stream.close()

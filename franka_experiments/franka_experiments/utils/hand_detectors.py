@@ -77,6 +77,13 @@ def iou(a, b):
     return inter / union if union > 0 else 0.0
 
 
+def palm_chirality(keypoints, right):
+    """Palm towards the camera (< 0) or away from it (> 0): (index MCP - wrist) x (pinky MCP - wrist) in the
+    image, normalised to [-1, 1], mirrored for the left hand."""
+    a, b = keypoints[5] - keypoints[0], keypoints[17] - keypoints[0]
+    return float((a[0] * b[1] - a[1] * b[0]) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)) * (1 if right else -1)
+
+
 class RtmwHandDetector:
     """RTMW (Jiang et al. 2024) on the person boxes; COCO-WholeBody hands 91-111 (left) and
     112-132 (right) already follow the MediaPipe hand order. RTMW gives no hand z.
@@ -91,16 +98,27 @@ class RtmwHandDetector:
     HUMAN_MIN = 0.7    # mean face + best hand keypoint score; the robot arm seen as a person stays below
     SWITCH_FRAMES = 5  # frames in a row a nearer person must be seen before taking over
 
-    def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5, tensorrt=True, to_base=None):
+    # RTMPose-m hand (rtmlib, Apache-2.0), palm orientation only: hand_keypoints()
+    HAND_POSE = ('https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/'
+                 'rtmpose-m_simcc-hand5_pt-aic-coco_210e-256x256-74fb594_20230320.zip')
+
+    def __init__(self, mode='lightweight', det_frequency=10, enter=0.8, keep=0.5, tensorrt=True, to_base=None,
+                 hand_model=False):
         cuda, t0 = ctypes.CDLL('libcuda.so.1'), time.time()
         while cuda.cuInit(0) != 0 and time.time() - t0 < 10.0:  # flaky first cuInit
             time.sleep(0.2)
         import torch  # noqa: F401  loads the CUDA / cuDNN libraries onnxruntime needs
-        from rtmlib import Wholebody
+        from rtmlib import RTMPose, Wholebody
         from rtmlib.tools.solution.pose_tracker import pose_to_bbox
 
         model = Wholebody(mode=mode, backend='onnxruntime', device='cuda')
-        self.engine = self._tensorrt(model) if tensorrt else 'CUDA FP32'
+        self.hand_pose = (RTMPose(self.HAND_POSE, model_input_size=(256, 256), backend='onnxruntime', device='cuda')
+                          if hand_model else None)
+        tools = [('pose', model.pose_model), ('detector', model.det_model)] + (
+            [('hand', self.hand_pose)] if hand_model else [])
+        self.engine = self._tensorrt(tools) if tensorrt else 'CUDA FP32'
+        if hand_model:  # TensorRT builds the hand engine at the first run: here, not in the tracker's stage 2
+            self.hand_pose(np.zeros((256, 256, 3), np.uint8), bboxes=[[0, 0, 255, 255]])
         self.detector, self.pose, self.pose_to_bbox = model.det_model, model.pose_model, pose_to_bbox
 
         # as rtmlib's PoseTracker (person boxes from the last keypoints, refreshed by the person
@@ -118,7 +136,7 @@ class RtmwHandDetector:
         self.filters = {key: OneEuro() for key, *_ in self.HANDS}
 
     @staticmethod
-    def _tensorrt(model):
+    def _tensorrt(tools):
         """Same ONNX models compiled by TensorRT in FP16 (RTX 3050: pose 16.5 -> 2.0 ms, YOLOX-tiny
         8.1 -> 1.6 ms, outputs within ~1 %); engines cached on disk, built at the first start (~2 min).
         YOLOX-m (balanced detector) does not build with TensorRT (TopK) and stays on CUDA."""
@@ -135,7 +153,7 @@ class RtmwHandDetector:
             'trt_engine_cache_path': cache, 'trt_timing_cache_enable': True}), 'CUDAExecutionProvider']
 
         done = []
-        for name, tool in (('pose', model.pose_model), ('detector', model.det_model)):
+        for name, tool in tools:
             if 'yolox_m' in tool.onnx_model:
                 continue
             try:
@@ -151,6 +169,16 @@ class RtmwHandDetector:
     @staticmethod
     def complete(result, bgr, depth, depth_scale, t):
         return result
+
+    def hand_keypoints(self, bgr, hand):
+        """21 image keypoints (px) of RTMPose-m hand on a square crop around the hand: in RTMW's whole-body
+        input a hand is ~10 px and the thumb often lands among the fingers. None without the hand model."""
+        if self.hand_pose is None:
+            return None
+        h, w = bgr.shape[:2]
+        uv = np.array([[p.x * w, p.y * h] for p in hand])
+        c, r = (uv.min(0) + uv.max(0)) / 2, max(1.3 * float(np.ptp(uv, axis=0).max()), 48.0) / 2
+        return self.hand_pose(bgr, bboxes=[[c[0] - r, c[1] - r, c[0] + r, c[1] + r]])[0][0]
 
     def stop(self):
         self.det_stop.set()
@@ -338,10 +366,9 @@ class MediapipeHandDetector:
 
     @staticmethod
     def _palm_depth(p, depth, scale):
-        h, w = depth.shape[:2]
-        z = [float(depth[int(np.clip(v, 0, h - 1)), int(np.clip(u, 0, w - 1))]) * scale
-             for u, v in p[[0, 5, 9, 17]]]
-        z = [x for x in z if x > 0.1]
+        """Median depth of wrist + MCP 5/9/17, each the median of a 5x5 patch (as the 3D landmarks)."""
+        z = [patch_depth(depth, scale, (int(round(u)), int(round(v))), radius=2) for u, v in p[[0, 5, 9, 17]]]
+        z = [x for x in z if x is not None and x > 0.1]
         return float(np.median(z)) if z else np.nan
 
     def _redetect(self, bgr, depth, scale, last_px, last_z):

@@ -20,6 +20,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
+from franka_experiments.utils.active_hand_selector import x_display_env
 from franka_experiments.utils.ros import (load_franka_config_defaults, load_launch_defaults,
                                           pick_controllers_yaml, resolve_controller_manager_name)
 
@@ -139,7 +140,8 @@ def _launch_setup(context):
              arguments=['-d', PathJoinSubstitution(
                  [FindPackageShare('franka_experiments'), 'config', 'hand_tracker.rviz'])],
              parameters=[{'use_sim_time': False}],
-             additional_env={'__NV_PRIME_RENDER_OFFLOAD': '1', '__GLX_VENDOR_LIBRARY_NAME': 'nvidia'}),
+             additional_env={'__NV_PRIME_RENDER_OFFLOAD': '1', '__GLX_VENDOR_LIBRARY_NAME': 'nvidia',
+                             **x_display_env()}),
     ])
 
     # ------------------------------------------------------------ control

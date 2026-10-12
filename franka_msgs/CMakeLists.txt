@@ -31,6 +31,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MultiDistance.msg"
   "msg/MultiLinkDistance.msg"
   "msg/HandoverDistance.msg"
+  "msg/GraspPose.msg"
   "msg/HandoverObserver.msg"
   "msg/ProximityState.msg"
   "msg/HandObjectState.msg"

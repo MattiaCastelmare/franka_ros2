@@ -2,19 +2,23 @@
 """Handover distance: hand state + robot joints -> EndEffectorState, HandoverDistance, HandoverObserver.
 
   gripper    every 10 ms: newest joint state (fast stream, the standard one only while the fast one is
-             silent for 0.2 s) -> Pinocchio: tip = FK + ee_tip_offset along ee_tip_axis, v = J(q) qdot
+             silent for 0.2 s) -> Pinocchio: tip = FK of fr3_hand_tcp (centre between the finger pads: the
+             point the commander controls), v = J(q) qdot
   distance   palm (base frame) - gripper tip (the state nearest in time, <= max_ee_state_age_s),
-             sigma along the palm-gripper direction from the palm covariance
+             sigma along the palm-gripper direction: palm covariance + camera-robot calibration
+             (robot_position_sigma_m) + gripper motion over the hand / joint-state time offset
   rate       relative: (W75 hand velocity - gripper velocity) . direction  (UPDATED / HOLD as the hand
              velocity); fallback: linear regression of the distance over the last 5 frames (DISTANCE_C5)
   TTC        distance / closing speed, when closing faster than ttc_min_closing_speed
-  observer   APPROACHING / HOLD / RETREATING from the closing speed with hysteresis (observer_enter /
-             observer_exit thresholds) confirmed over observer_confirm_frames fresh-rate frames;
-             LOST without a distance, WARMUP without a rate
+  observer   APPROACHING / RETREATING (checked first) when the hand came closer / went away more than
+             observer_*_displacement_m over the last observer_*_window_s, or closes / opens faster than
+             observer_*_speed; kept down to observer_exit_fraction of the thresholds, confirmed over
+             observer_confirm_frames fresh-rate frames; else HOLD, LOST without a distance, WARMUP without a
+             rate. Past data only. observer_hand_only: hand motion alone (W75 . tip -> palm, displacement
+             from the gripper's current position), the gripper's own motion left out (numbers in the YAML)
 """
 
 import os
-import time
 from collections import deque
 
 import numpy as np
@@ -98,18 +102,23 @@ class HandoverDistanceEstimator(Node):
         self.base_frame = config['robot']['base_frame']
         self.max_ee_state_age_s = float(self.get_parameter('max_ee_state_age_s').value)
         self.ttc_min_closing_speed = float(param('ttc_min_closing_speed'))
-        self.enter_threshold = float(param('observer_enter_threshold'))
-        self.exit_threshold = float(param('observer_exit_threshold'))
+        # observer: (window [s], displacement [m], speed [m/s]) to enter APPROACHING / RETREATING
+        self.approach = tuple(float(param(f'observer_approach_{k}')) for k in ('window_s', 'displacement_m', 'speed'))
+        self.retreat = tuple(float(param(f'observer_retreat_{k}')) for k in ('window_s', 'displacement_m', 'speed'))
+        self.exit_fraction = float(param('observer_exit_fraction'))
         self.confirm_frames = int(param('observer_confirm_frames'))
-        if (self.enter_threshold <= 0.0
-                or not 0.0 <= self.exit_threshold < self.enter_threshold
+        self.observer_hand_only = bool(param('observer_hand_only'))
+        self.robot_sigma = float(param('robot_position_sigma_m'))
+        if (min(self.approach + self.retreat) <= 0.0 or not 0.0 <= self.exit_fraction < 1.0
                 or self.confirm_frames < 1):
-            raise ValueError('observer: need enter > 0, 0 <= exit < enter, confirm_frames >= 1')
+            raise ValueError('observer: need windows / displacements / speeds > 0, 0 <= exit_fraction < 1, '
+                             'confirm_frames >= 1')
 
         self.tf_buffer = Buffer()  # hand frame -> base (the gripper comes already in base)
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.ee_states = deque(maxlen=100)       # (t, EndEffectorState), for time alignment only
         self.distance_history = deque(maxlen=5)  # (t, distance) of one physical hand, for the fallback rate
+        self.palm_history = deque(maxlen=60)     # (t, palm, distance) of one physical hand, for the observer
         self.physical_hand = HandState.HAND_UNKNOWN
         self.state, self.pending_state, self.pending_count = O.WARMUP, None, 0
         self.setup_gripper(config)
@@ -120,21 +129,18 @@ class HandoverDistanceEstimator(Node):
         self.get_logger().info(
             f'Handover distance: frame={self.base_frame}, '
             f'TTC min closing={self.ttc_min_closing_speed:.3f} m/s, '
-            f'observer enter={self.enter_threshold:.3f} exit={self.exit_threshold:.3f} m/s '
-            f'confirm={self.confirm_frames}')
+            f'observer approach={self.approach} retreat={self.retreat} (window s, m, m/s) '
+            f'exit x{self.exit_fraction:.2f} confirm={self.confirm_frames}')
 
     # ------------------------------------------------------------ gripper tip (FK + J(q) qdot)
     def setup_gripper(self, config):
-        self.ee_link = config['robot'].get('ee_link', 'fr3_link8')
-        self.tip_local = np.zeros(3)
-        self.tip_local[int(config['distance']['ee_tip_axis'])] = float(config['distance']['ee_tip_offset'])
 
         # same model as qddot_to_torque
         self.model, self.data = load_pinocchio_model(generate_urdf_from_xacro())
         joints = resolve_arm_joint_ids(self.model)
         self.arm_q_ids = [self.model.joints[j].idx_q for j in joints]
         self.arm_v_ids = [self.model.joints[j].idx_v for j in joints]
-        self.ee_frame = self.model.getFrameId(self.ee_link)
+        self.ee_frame = self.model.getFrameId('fr3_hand_tcp')
         self.q_neutral, self.q_full = pin.neutral(self.model), pin.neutral(self.model)
         self.qdot_full = np.zeros(self.model.nv)
         self.joints = None            # newest valid (q, qdot, stamp)
@@ -170,7 +176,7 @@ class HandoverDistanceEstimator(Node):
                 msg = taken[0]
 
     def _latest_joints(self):
-        now = time.monotonic()
+        now = self.get_clock().now().nanoseconds * 1e-9  # ROS time: the bag clock in replays
         msg = self._take('primary')
         if msg is not None and (state := parse_joints(msg)) is not None:
             self.primary_alive_at, self.joints = now, state
@@ -195,12 +201,10 @@ class HandoverDistanceEstimator(Node):
 
         pin.forwardKinematics(self.model, self.data, self.q_full, self.qdot_full)
         pin.updateFramePlacements(self.model, self.data)
-        placement = self.data.oMf[self.ee_frame]
-        r_world = placement.rotation @ self.tip_local
-        position = np.asarray(placement.translation) + r_world
+        position = np.asarray(self.data.oMf[self.ee_frame].translation)
         J = pin.computeFrameJacobian(self.model, self.data, self.q_full, self.ee_frame,
                                      pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
-        velocity = (J[:3, :] - pin.skew(r_world) @ J[3:, :]) @ self.qdot_full  # v_tip = v_frame + omega x r
+        velocity = J[:3, :] @ self.qdot_full
 
         out = EndEffectorState()
         out.header.stamp, out.header.frame_id = stamp, self.base_frame
@@ -270,6 +274,7 @@ class HandoverDistanceEstimator(Node):
 
     def publish_invalid(self, out):
         self.distance_history.clear()
+        self.palm_history.clear()
         self.publish(out)
 
     def callback(self, msg):
@@ -277,6 +282,7 @@ class HandoverDistanceEstimator(Node):
         if hand in (HandState.HAND_LEFT, HandState.HAND_RIGHT):
             if hand != self.physical_hand:
                 self.distance_history.clear()
+                self.palm_history.clear()
             self.physical_hand = hand
 
         out = HandoverDistance()
@@ -305,7 +311,8 @@ class HandoverDistanceEstimator(Node):
         if not np.isfinite(distance) or distance <= 1e-9:
             return self.publish_invalid(out)
         direction = delta / distance
-        distance_variance = float(direction.T @ covariance @ direction)
+        distance_variance = (float(direction.T @ covariance @ direction) + self.robot_sigma ** 2
+                             + (float(ee_velocity @ direction) * ee_age if ee_velocity_valid else 0.0) ** 2)
         predicted = int(msg.position_source) == int(HandState.POSITION_SOURCE_PREDICTED_W75)
 
         # fallback rate: regression of the measured distance (not on predicted palms)
@@ -393,17 +400,35 @@ class HandoverDistanceEstimator(Node):
         out.ttc_valid, out.ttc = ttc_valid, float(distance / closing if ttc_valid else 0.0)
         out.legacy_ttc_valid = legacy_ttc_valid
         out.legacy_ttc = float(distance / legacy_closing if legacy_ttc_valid else 0.0)
+        t = stamp_s(msg.header.stamp)
+        if self.palm_history and t <= self.palm_history[-1][0]:
+            self.palm_history.clear()
+        self.palm_history.append((t, p_hand, distance))
         self.publish(out)
 
     # ------------------------------------------------------------ observer
-    def _target_state(self, closing):
-        """Hysteresis: leaving APPROACHING / RETREATING needs |closing| below exit, entering needs above enter."""
-        enter, exit_ = self.enter_threshold, self.exit_threshold
-        if self.state == O.APPROACHING:
-            return O.RETREATING if closing < -enter else O.HOLD if closing < exit_ else O.APPROACHING
-        if self.state == O.RETREATING:
-            return O.APPROACHING if closing > enter else O.HOLD if closing > -exit_ else O.RETREATING
-        return O.APPROACHING if closing > enter else O.RETREATING if closing < -enter else O.HOLD
+    def _displacement(self, t, window, msg):
+        """How much closer the hand came over the last `window` s (gripper at its current position with
+        observer_hand_only), 0 without a sample within 50 ms of t - window."""
+        then = min(self.palm_history, key=lambda item: abs(item[0] - (t - window)), default=None)
+        if then is None or abs(then[0] - (t - window)) > 0.05:
+            return 0.0
+        before = (np.linalg.norm(then[1] - xyz(msg.ee_control_point)) if self.observer_hand_only else then[2])
+        return float(before) - float(msg.distance)
+
+    def _target_state(self, msg, closing):
+        """RETREATING / APPROACHING above their displacement or speed thresholds (RETREATING first); a state
+        is kept down to exit_fraction of them."""
+        t = stamp_s(msg.header.stamp)
+        level = {}
+        for state, (window, displacement, speed), sign in ((O.APPROACHING, self.approach, 1.0),
+                                                           (O.RETREATING, self.retreat, -1.0)):
+            level[state] = max(sign * self._displacement(t, window, msg) / displacement, sign * closing / speed)
+        if level[O.RETREATING] > 1.0:
+            return O.RETREATING
+        if level[O.APPROACHING] > 1.0:
+            return O.APPROACHING
+        return self.state if level.get(self.state, 0.0) > self.exit_fraction else O.HOLD
 
     def _confirm(self, target):
         if target == self.state:
@@ -414,6 +439,13 @@ class HandoverDistanceEstimator(Node):
         self.pending_state = target
         if self.pending_count >= self.confirm_frames:
             self.state, self.pending_state, self.pending_count = target, None, 0
+
+    def _observed_closing(self, msg):
+        direction = xyz(msg.ee_to_palm)
+        norm = float(np.linalg.norm(direction))
+        if not (self.observer_hand_only and msg.hand_velocity_valid and norm > 1e-6):
+            return float(msg.closing_velocity)
+        return -float(np.dot(xyz(msg.hand_velocity), direction / norm))
 
     def observe(self, msg):
         previous = self.state
@@ -427,14 +459,14 @@ class HandoverDistanceEstimator(Node):
         elif int(msg.rate_source) != D.RATE_SOURCE_RELATIVE_HOLD:  # a held rate is not new evidence
             if self.state in (O.LOST, O.WARMUP):
                 self.state = O.HOLD
-            self._confirm(self._target_state(float(msg.closing_velocity)))
+            self._confirm(self._target_state(msg, self._observed_closing(msg)))
 
         out = HandoverObserver()
         out.header = msg.header
         out.state, out.state_changed = int(self.state), bool(self.state != previous)
         out.candidate_state = int(self.pending_state if self.pending_state is not None else self.state)
         out.candidate_count = int(self.pending_count)
-        out.distance, out.closing_velocity = float(msg.distance), float(msg.closing_velocity)
+        out.distance, out.closing_velocity = float(msg.distance), self._observed_closing(msg)
         out.rate_valid, out.rate_source = bool(msg.rate_valid), int(msg.rate_source)
         out.rate_degraded, out.rate_age_s = bool(msg.rate_degraded), float(msg.rate_age_s)
         out.tracking_confidence = float(msg.tracking_confidence)

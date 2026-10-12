@@ -4,16 +4,18 @@
   target   palm + standoff_m along +z of the base (same x / y), never farther than max_target_step_m
            from the TCP; hand not trusted (measured, known physical hand, confidence >= min_confidence,
            <= hand_timeout_s old) -> target on the TCP, the path brakes
-  path     second-order reference (target_response_s) bounded in velocity and acceleration
+  path     second-order reference (target_response_s) bounded in velocity and acceleration; the velocity
+           bound drops when the palm comes closer than the standoff (near_velocity_m_s below
+           near_distance_m, full above slow_distance_m)
+  observer used by the grasp executor only (handover_grasp.py: pause / abort of the approach); following
+           the palm, stopping or slowing on RETREATING lagged behind a hand that moves around (12/10 sim.)
   test     follow_hand false: hold the start pose + test_offset_xyz
   gripper  open / close through gripper_controller/set_gripper (std_srvs/SetBool), the code of the
            former workspace_gripper_cycle test
 """
 
-import time
-
 import numpy as np
-from franka_msgs.msg import HandState
+from franka_msgs.msg import HandoverDistance, HandoverObserver, HandState
 from std_srvs.srv import SetBool
 
 from franka_experiments.nodes.pentagon_qddot_commander import PentagonQddotCommander
@@ -34,7 +36,7 @@ class Gripper:
             self.node.get_logger().warn(f'{self.client.srv_name} not ready — gripper command skipped')
             return
         self.future = self.client.call_async(SetBool.Request(data=bool(close)))
-        self.deadline = time.monotonic() + self.TIMEOUT_S
+        self.deadline = self.node.get_clock().now().nanoseconds * 1e-9 + self.TIMEOUT_S
         self.node.get_logger().info(f'Gripper {"CLOSE" if close else "OPEN"}')
 
     def settled(self):
@@ -48,7 +50,7 @@ class Gripper:
                     self.node.get_logger().warn(f'Gripper refused: {response.message}')
             except Exception as exc:
                 self.node.get_logger().warn(f'Gripper call failed: {exc}')
-        elif time.monotonic() < self.deadline:
+        elif self.node.get_clock().now().nanoseconds * 1e-9 < self.deadline:
             return False
         else:
             self.node.get_logger().warn('Gripper did not answer — continuing')
@@ -84,7 +86,7 @@ class HandoverPath:
         accel *= min(1.0, max(0.0, param('max_target_acceleration_m_s2'))
                      / max(float(np.linalg.norm(accel)), 1e-12))
         velocity = self.v + accel * dt
-        velocity *= min(1.0, max(0.0, param('max_target_velocity_m_s'))
+        velocity *= min(1.0, max(0.0, self.node.velocity_limit())
                         / max(float(np.linalg.norm(velocity)), 1e-12))
 
         self.a[:] = (velocity - self.v) / dt
@@ -107,15 +109,19 @@ class HandoverQddotCommander(PentagonQddotCommander):
                             ('standoff_m', 0.20), ('hand_timeout_s', 0.20), ('min_confidence', 0.70),
                             ('max_target_step_m', 0.10), ('max_target_velocity_m_s', 0.40),
                             ('max_target_acceleration_m_s2', 1.5), ('target_response_s', 0.10),
+                            ('near_distance_m', 0.12), ('slow_distance_m', 0.20), ('near_velocity_m_s', 0.15),
                             ('gripper_service', 'gripper_controller/set_gripper')):
             self.declare_parameter(name, value)
 
         self.gripper = Gripper(self, self.get_parameter('gripper_service').value)
         self._hold_position = None
         self._hand_position, self._hand_ok, self._hand_stamp_ns = np.zeros(3), False, 0
+        self.observer = self.distance = None  # last HandoverObserver / HandoverDistance
         self._handover_path = HandoverPath(self)
 
         self.create_subscription(HandState, '/handover/hand_state', self._hand_cb, 1)
+        self.create_subscription(HandoverObserver, '/handover/observer', lambda m: setattr(self, 'observer', m), 1)
+        self.create_subscription(HandoverDistance, '/handover/distance', lambda m: setattr(self, 'distance', m), 1)
         self.get_logger().info(
             f'Handover qddot commander ready - follow_hand={bool(self.get_parameter("follow_hand").value)}')
 
@@ -137,6 +143,26 @@ class HandoverQddotCommander(PentagonQddotCommander):
 
         age = (self.get_clock().now().nanoseconds - self._hand_stamp_ns) * 1e-9
         return 0.0 <= age <= float(self.get_parameter('hand_timeout_s').value)
+
+    def fresh(self, msg):
+        if msg is None:
+            return False
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        age = (self.get_clock().now().nanoseconds - stamp_ns) * 1e-9
+        return 0.0 <= age <= float(self.get_parameter('hand_timeout_s').value)
+
+    def velocity_limit(self):
+        """max_target_velocity_m_s, down to near_velocity_m_s as the palm gets closer than slow_distance_m."""
+        p = lambda name: float(self.get_parameter(name).value)
+        vmax = p('max_target_velocity_m_s')
+        if not (self.fresh(self.distance) and self.distance.valid and np.isfinite(self.distance.distance)):
+            return vmax
+        near, slow = p('near_distance_m'), max(p('slow_distance_m'), p('near_distance_m') + 1e-6)
+        return min(vmax, p('near_velocity_m_s') + (vmax - p('near_velocity_m_s'))
+                   * float(np.clip((self.distance.distance - near) / (slow - near), 0.0, 1.0)))
+
+    def retreating(self):
+        return self.fresh(self.observer) and int(self.observer.state) == int(HandoverObserver.RETREATING)
 
     def desired_position(self):
         if self._hold_position is None:  # first acquisition: hold the start pose

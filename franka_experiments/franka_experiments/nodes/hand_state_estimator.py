@@ -76,6 +76,7 @@ class HandStateEstimator(Node):
         self.max_position_age_s = float(param('max_position_age_s'))
         self.enable_prediction_bridge = bool(param('enable_prediction_bridge'))
         self.max_prediction_age_s = float(param('max_prediction_age_s'))
+        self.w75_gap_reset_s = float(param('w75_gap_reset_s'))
         if self.max_prediction_age_s <= 0.0:
             raise ValueError('max_prediction_age_s must be > 0')
 
@@ -94,6 +95,7 @@ class HandStateEstimator(Node):
         self.w75.reset()
         self.good_frames, self.ready = 0, False
         self.anchor = None  # (t, palm, velocity) of the last fresh measured palm
+        self.last_fresh_s = None
         self.prev_normal = self.prev_longitudinal = None
         self.stable_handedness = F.HAND_UNKNOWN
         self.normal_state = None    # One-Euro state of the palm normal
@@ -373,6 +375,12 @@ class HandStateEstimator(Node):
             self.stable_handedness = side
             self.get_logger().info(f'HandState physical-hand reset: {previous} -> {side}')
 
+        if measured['fresh']:
+            # after a dropout W75 restarts: SURDE would fit across it with palms up to 0.8 s old (12/10, 30 fps
+            # replays: velocity error in the 0.2 s after a 0.1-0.5 s gap 164 -> 129 mm/s median)
+            if self.last_fresh_s is not None and now - self.last_fresh_s > self.w75_gap_reset_s:
+                self.w75.reset()
+            self.last_fresh_s = now
         velocity = self.w75.update(now, measured['position'], measured['fresh'], measured['valid'])
         self.update_prediction_anchor(now, measured, velocity)
         position = dict(measured, predicted=False)

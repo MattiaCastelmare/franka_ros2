@@ -11,6 +11,7 @@ wrist + elbow, up to arm_bridge_s), then NO_HAND.
 import queue
 import threading
 import time
+from types import SimpleNamespace
 
 import cv2
 import mediapipe as mp
@@ -19,7 +20,7 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from franka_msgs.msg import HandTrackingRaw
+from franka_msgs.msg import HandObjectState, HandTrackingRaw
 from geometry_msgs.msg import Point, Vector3
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rcl_interfaces.msg import ParameterDescriptor
@@ -31,7 +32,8 @@ from sensor_msgs.msg import CameraInfo, Image
 
 from franka_experiments.utils.active_hand_selector import HandSelector
 from franka_experiments.utils.camera_yaml import load_camera_info_yaml
-from franka_experiments.utils.hand_detectors import GripperCamera, MediapipeHandDetector, signed_palm_normal
+from franka_experiments.utils.hand_detectors import (GripperCamera, MediapipeHandDetector, palm_chirality,
+                                                     signed_palm_normal)
 
 RAW = HandTrackingRaw
 
@@ -89,6 +91,7 @@ class HumanHandTracker(Node):
                 from franka_experiments.utils.hand_detectors import RtmwHandDetector
                 self.detector = RtmwHandDetector(
                     mode=mode, tensorrt=bool(self.param('rtmw_tensorrt')),
+                    hand_model=bool(self.param('palm_hand_model')),
                     to_base=lambda u, v, z: self.apply_transform(
                         np.array([(u - self.cx) * z / self.fx, (v - self.cy) * z / self.fy, z])))
                 self.get_logger().info(f'RTMW {mode}: {self.detector.engine}')
@@ -106,6 +109,9 @@ class HumanHandTracker(Node):
         self.palm_normal_method = str(self.param('palm_normal_method'))
         if self.detector_name == 'rtmw' and self.palm_normal_method == 'mediapipe':
             self.palm_normal_method = 'depth'  # RTMW hands have no z
+        self.palm_chirality_min = float(self.param('palm_chirality_min'))
+        self.palm_down_chirality = float(self.param('palm_down_chirality'))
+        self._chirality = {}  # side -> (average, stamp)
         self.arm_bridge_s = float(self.param('arm_bridge_s'))
         self.get_logger().info(
             f'hand_detector={self.detector_name}, palm_normal_method={self.palm_normal_method}')
@@ -127,6 +133,7 @@ class HumanHandTracker(Node):
         # ---- ROS I/O: newest frame only (no backlog latency), two overlapped stages
         self.bridge = CvBridge()
         self.tracking_publisher = self.create_publisher(HandTrackingRaw, '/handover/hand_tracking_raw', 10)
+        self.create_subscription(HandObjectState, '/handover/hand_object', self.selector.object_callback, 10)
         self.debug_image_publisher = self.create_publisher(Image, '/handover/hand_debug_image_raw', 10)
         image_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         self.synchronizer = ApproximateTimeSynchronizer(
@@ -240,6 +247,59 @@ class HumanHandTracker(Node):
         normal = unit(vectors[:, np.argmin(values)])
         anchor = unit(np.cross(points[5] - points[0], points[17] - points[0]))
         return (None, None) if normal is None or anchor is None else (normal, anchor)
+
+    def smooth_chirality(self, side, t, chirality):
+        """Chirality of the same hand averaged over the last frames (0.5 / 0.5, restarted after 0.5 s): one frame
+        with a misplaced keypoint does not flip the palm."""
+        average, stamp = self._chirality.get(side, (None, -1e9))
+        average = chirality if t - stamp > 0.5 else 0.5 * chirality + 0.5 * average
+        self._chirality[side] = (average, t)
+        return average
+
+    def palm_up_side_down(self, keypoints, side, right, t, shape, depth, encoding):
+        """Palm normal from the hand model keypoints (RtmwHandDetector.hand_keypoints) -> (normal, +-normal).
+        Back of the hand seen: averaged chirality >= palm_chirality_min. Normal = plane of the keypoints
+        0/5/9/13/17 with depth, towards the camera when the palm is seen (SIDE = |z| < 0.5, palm tilted > 60 deg);
+        with an object and the palm seen the depth is on the object, so vertical (camera above: palm seen = UP).
+        With an object and a weak back view (< palm_down_chirality: side grip, pen thumb up) it stays SIDE, not
+        DOWN. 12/10, user labels, 7 bags: palm / back right on 109 of 112 side hands (report 12/10)."""
+        holding = self.selector.held_object(side, t)
+        chirality = self.smooth_chirality(side, t, palm_chirality(keypoints, right))
+        back = chirality >= self.palm_chirality_min
+        h, w = shape[:2]
+        points = {i: self.landmark_to_3d(SimpleNamespace(x=keypoints[i][0] / w, y=keypoints[i][1] / h),
+                                         shape, depth, encoding) for i in self.GEOMETRY_LANDMARK_IDS}
+        points = {i: self.apply_transform(p) for i, p in points.items() if p is not None}
+        above = not points or self.camera_translation[2] > np.mean([p[2] for p in points.values()])
+        up = back != above
+        n = np.array([0.0, 0.0, 1.0 if up else -1.0])
+        if (back or not holding) and len(points) >= 4 and all(i in points for i in (0, 5, 17)):
+            P = np.stack(list(points.values()))
+            plane = unit(np.linalg.eigh((P - P.mean(0)).T @ (P - P.mean(0)))[1][:, 0])
+            if plane is not None:  # palm seen: the normal points to the camera (a SIDE palm too, whatever its z)
+                n = plane if (plane @ (self.camera_translation - P.mean(0)) > 0.0) != back else -plane
+                if holding and chirality < self.palm_down_chirality and n[2] < -0.45 and np.linalg.norm(n[:2]) > 1e-3:
+                    n = np.r_[n[:2] / np.linalg.norm(n[:2]) * np.sqrt(1.0 - 0.45 ** 2), -0.45]
+        return n, (n if right else -n)
+
+    def vote_up_down(self, hand, shape, depth, encoding, right, plane, anchor):
+        """Palm UP / DOWN without the hand model (MediaPipe): majority of three cues, the normal deciding a tie:
+          normal  z of the normal with the sign the state estimator would give it
+          fingers MCP 9 -> middle tip 12 above the horizontal = UP (needs both depths, 2 cm apart)
+          thumb   camera facing the person: LEFT hand with the thumb (1-4) right of the MCPs in the image
+                  = UP, RIGHT hand the mirror
+        The normal is flipped to the majority and passed pre-signed (anchor = +-normal)."""
+        if plane is None or anchor is None or right is None:
+            return plane, anchor
+        n = plane if np.dot(plane, anchor if right else -anchor) >= 0.0 else -plane
+        mcp, tip = (self.landmark_to_3d(hand[i], shape, depth, encoding) for i in (9, 12))
+        thumb_x, mcp_x = np.mean([hand[i].x for i in (1, 2, 3, 4)]), np.mean([hand[i].x for i in (5, 9, 13, 17)])
+        votes = [n[2] > 0.0, (thumb_x > mcp_x) != right]
+        if mcp is not None and tip is not None and np.linalg.norm(tip - mcp) > 0.02:
+            votes.append(float((self.camera_rotation @ (tip - mcp))[2]) > 0.0)
+        up = sum(votes) * 2 > len(votes) if len(votes) == 3 else votes[0]
+        n = n if (n[2] > 0.0) == up else -n
+        return n, (n if right else -n)
 
     # ------------------------------------------------------------ lost ACTIVE hand
     def _pose_point(self, pose, index, shape, depth, encoding):
@@ -401,6 +461,12 @@ class HumanHandTracker(Node):
 
         hand, right = hand_landmarks.landmark, active_side == RAW.HAND_RIGHT
         plane, anchor = self.palm_plane(hand, shape, depth_image, encoding, right)
+        keypoints = self.detector.hand_keypoints(image, hand) if hasattr(self.detector, 'hand_keypoints') else None
+        if keypoints is not None:
+            plane, anchor = self.palm_up_side_down(keypoints, active_side, right, stamp_s, shape, depth_image,
+                                                   encoding)
+        else:
+            plane, anchor = self.vote_up_down(hand, shape, depth_image, encoding, right, plane, anchor)
         if self.show_selected_landmarks and debug_image is not None:
             h, w = shape[:2]
             for i in self.GEOMETRY_LANDMARK_IDS:

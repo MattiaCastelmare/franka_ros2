@@ -25,6 +25,14 @@ human_hand_tracker:
     # Palm normal: depth (RGB-D plane) | mediapipe (3D landmarks; with rtmw
     # the tracker uses depth, RTMW hands have no z).
     palm_normal_method: mediapipe
+    # palm UP / SIDE / DOWN (human_hand_tracker.palm_up_side_down): RTMPose-m hand on the hand crop
+    # (palm_hand_model, rtmw only, ~5 ms TensorRT). Back of the hand seen from chirality
+    # palm_chirality_min; with an object DOWN needs palm_down_chirality (weaker: side grip).
+    # SIDE = published normal |z| < 0.5 (palm tilted > 60 deg). Without the model (false, or MediaPipe):
+    # vote of normal, fingers slope and thumb side (vote_up_down)
+    palm_hand_model: true
+    palm_chirality_min: 0.2
+    palm_down_chirality: 0.35
     # Gripper camera (D405): second view of the hand, used only while its
     # images and the robot TF arrive. Extrinsics: config/d405_extrinsics.yaml.
     gripper_camera: true
@@ -42,6 +50,32 @@ human_hand_tracker:
     interaction_engaged_onset_advantage: 0.2
     interaction_engaged_recovery_advantage: 0.45
     interaction_engaged_retract_m_s: 0.05
+    # history of distance / arm extension restarts after this gap [s]
+    interaction_history_gap_s: 0.35
+    # static advantage of the other hand: weights of robot proximity and body reach, and the
+    # differences that saturate them (distance [m], reach [body scale])
+    interaction_proximity_weight: 0.65
+    interaction_reach_weight: 0.35
+    interaction_distance_scale_m: 0.30
+    interaction_reach_scale: 0.75
+    # onset advantage needed while the ENGAGED hand retracts (instead of engaged_onset_advantage)
+    interaction_retract_onset_advantage: 0.10
+    # recovery transfer also when the other hand is this many switch margins closer
+    interaction_far_ahead_margins: 2.0
+    # pose keypoints used for the body cues: shoulders / wrists, hips
+    interaction_pose_min_visibility: 0.5
+    interaction_hip_min_visibility: 0.4
+    # object in the ACTIVE hand (Hands23 seen within object_memory_s [s]): an onset transfer to the
+    # other hand needs this much more static advantage, only if the ACTIVE hand is not retracting
+    # and at least as extended as the other one; 0 = object not used
+    interaction_object_memory_s: 0.5
+    interaction_object_onset_advantage: 0.2
+    # standby posture: a hand with reach below standby_reach (close to the torso) loses up to
+    # standby_weight of static advantage, in proportion; 0 = off
+    interaction_standby_reach: 0.2
+    interaction_standby_weight: 0.3
+    # fr3_link8 -> fr3_hand_tcp of the URDF (centre between the finger pads) [m]
+    interaction_tcp_offset_m: 0.1034
 
 hand_state_estimator:
   ros__parameters:
@@ -52,6 +86,8 @@ hand_state_estimator:
     max_position_age_s: 0.101
     enable_prediction_bridge: true
     max_prediction_age_s: 0.3
+    # W75 histories restart when no fresh palm came for this long [s] (shorter than lost_timeout)
+    w75_gap_reset_s: 0.2
 
 kalman_hand:
   ros__parameters:
@@ -71,10 +107,20 @@ kalman_hand:
 distance_handover_estimator:
   ros__parameters:
     ttc_min_closing_speed: 0.02
-    # observer (APPROACHING / HOLD / RETREATING), closing speed thresholds [m/s]
-    observer_enter_threshold: 0.02
-    observer_exit_threshold: 0.005
+    # observer (APPROACHING / HOLD / RETREATING), distance_handover_estimator docstring. 12/10, 68 clips labelled
+    # by the user, leave-one-bag-out on 15 replays: balanced 0.88 against 0.78 of the old speed thresholds
+    observer_approach_window_s: 0.5
+    observer_approach_displacement_m: 0.08
+    observer_approach_speed: 0.20
+    observer_retreat_window_s: 0.2
+    observer_retreat_displacement_m: 0.06
+    observer_retreat_speed: 0.20
+    observer_exit_fraction: 0.5
     observer_confirm_frames: 2
+    # closing speed of the hand alone, not hand - gripper (distance_handover_estimator docstring)
+    observer_hand_only: true
+    # 1-sigma camera-robot calibration error [m], added to the palm covariance in distance_sigma
+    robot_position_sigma_m: 0.01
 
 hand_tracking_csv_logger:
   ros__parameters:

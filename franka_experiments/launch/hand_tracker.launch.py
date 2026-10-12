@@ -15,6 +15,8 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+from franka_experiments.utils.active_hand_selector import x_display_env
+
 SCRIPTS = '/ros2_ws/src/franka_experiments/scripts/'
 BAG_TOPICS = [
     # main camera (current and legacy naming), wrist D405
@@ -89,6 +91,7 @@ def generate_launch_description():
         pipeline_node('hand_visualizer', yaml=False),
         pipeline_node('hand_logger'),
         Node(package='rviz2', executable='rviz2', output='screen', condition=IfCondition(arg('start_rviz')),
+             additional_env=x_display_env(),
              arguments=['-d', PathJoinSubstitution(
                  [FindPackageShare('franka_experiments'), 'config', 'hand_tracker.rviz'])],
              parameters=[{'use_sim_time': True}]),
