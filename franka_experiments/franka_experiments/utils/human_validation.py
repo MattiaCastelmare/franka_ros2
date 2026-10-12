@@ -322,7 +322,9 @@ class HumanValidator:
         """
         if not self.check_occlusion:
             return []
-        measured = [i for i in range(len(depths)) if direct[i] and depths[i] > 0.0]
+        # A depth with no point (no camera TF yet) cannot be placed on the robot or the scene
+        measured = [i for i in range(len(depths))
+                    if direct[i] and depths[i] > 0.0 and np.all(np.isfinite(positions[i]))]
         occluded = []
         for a, b in combinations(measured, 2):
             span = sum(self.bands[k][1] for k in range(a, b)) + self.occlusion_margin

@@ -329,6 +329,14 @@ def test_occluded_keypoint_is_the_nearer_one_on_the_robot(cfg):
     assert v.occluded(arm, depths, np.array([True, False, True, True]), robot_nodes=ROBOT) == []
 
 
+def test_occlusion_check_skips_depths_without_a_point(cfg):
+    """Before the camera TF arrives the depths exist but no keypoint has a point: the
+    impossible jump is not looked for on the robot (it used to raise, losing the frame)."""
+    v = HumanValidator(*cfg)
+    no_points = np.full((4, 3), np.nan)
+    assert v.occluded(no_points, np.array([2.1, 1.5, 2.1, 2.1]), DIRECT, robot_nodes=ROBOT) == []
+
+
 def test_occlusion_switch(cfg):
     c, vis = cfg
     v = HumanValidator(dict(c, check_occlusion=False), vis)
