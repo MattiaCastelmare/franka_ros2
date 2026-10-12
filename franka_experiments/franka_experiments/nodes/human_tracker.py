@@ -95,6 +95,10 @@ class HumanTracker(Node):
             max_depth_m=float(config["max_depth_m"]),
             measurement_std=self.measurement_std,
             fallback_depth_std_m=float(config["fallback_depth_std_m"]),
+            measurement_model=str(config["kf_measurement_model"]),
+            pixel_std_px=float(config["kf_pixel_std_px"]),
+            depth_std_m=float(config["kf_depth_std_m"]),
+            depth_std_quad=float(config["kf_depth_std_quad"]),
         )
 
         self.publish_prediction_enabled = bool(
@@ -127,18 +131,21 @@ class HumanTracker(Node):
         # MediaPipe pose estimation, made to detect again when it tracks something not a person
         model_complexity = int(np.clip(config["model_complexity"], 0, 2))
         self.pose = create_pose(model_complexity, config["min_detection_confidence"],
-                                config["min_tracking_confidence"])
+                                config["min_tracking_confidence"],
+                                smooth_landmarks=bool(config["smooth_landmarks"]))
         self.redetector = PoseRedetector(self.pose, config["validation"]["redetect_after_s"],
                                          config["validation"]["redetect_cooldown_s"])
 
-        # Kalman filter for 3D keypoints
+        # Kalman filter for 3D keypoints; a gated measurement still updates its bearing
+        # when the filter knows where the camera rays start
+        self.bearing_fallback = bool(config["kf_bearing_fallback"])
         self.kfs = {}
         self.last_valid_time = {}
         
         for side in self.active_sides:
             self.kfs[side] = ArmKalmanFilter(
                 dt=float(config["kf_nominal_dt"]),
-                process_accel_std=float(config["kf_process_accel_std"]),
+                process_accel_std=np.asarray(config["kf_process_accel_std"], dtype=float),
                 measurement_std=self.measurement_std,
                 initial_position_std=float(config["kf_initial_position_std"]),
                 initial_velocity_std=float(config["kf_initial_velocity_std"]),
@@ -400,10 +407,10 @@ class HumanTracker(Node):
         for side in self.active_sides:
             pixels, own_depths = self.measurer.keypoint_depths(
                 extracted_landmarks[side], current_visibilities[side], self.last_depth)
-            positions, depths, measurement_covs = self.measurer.deproject_arm(
+            positions, depths, measurement_covs, borrowed = self.measurer.deproject_arm(
                 pixels, own_depths, camera_tf)
-            # Own depth: NaN covariance = default isotropic R (a borrowed depth has a ray one)
-            direct = np.isnan(measurement_covs[:, 0, 0])
+            # Own depth (a borrowed one is the rest of the arm's, no evidence of this keypoint)
+            direct = ~borrowed
             foreground = [
                 self.background.foreground(*pixels[i], depths[i])
                 if direct[i] and i in pixels and depths[i] > 0.0 else None
@@ -414,9 +421,9 @@ class HumanTracker(Node):
             occluded = self.validator.occluded(positions, depths, direct, foreground, robot_nodes)
             if occluded:
                 own_depths[occluded] = 0.0
-                positions, depths, measurement_covs = self.measurer.deproject_arm(
+                positions, depths, measurement_covs, borrowed = self.measurer.deproject_arm(
                     pixels, own_depths, camera_tf)
-                direct = np.isnan(measurement_covs[:, 0, 0])
+                direct = ~borrowed
                 for i in occluded:
                     foreground[i] = None
             # Rejected keypoints become NaN: the filter only predicts them this frame
@@ -490,6 +497,7 @@ class HumanTracker(Node):
             filtered_pos, filtered_vel, measured = self.kfs[side].step(
                 positions=accepted, visibilities=visibilities, depths=depths, dt=dt,
                 measurement_covariances=measurement_covs,
+                ray_origin=camera_tf[1] if self.bearing_fallback and camera_tf is not None else None,
             )
             if self.segment_max_m is not None:
                 filtered_pos, filtered_vel = self.kfs[side].limit_segments(

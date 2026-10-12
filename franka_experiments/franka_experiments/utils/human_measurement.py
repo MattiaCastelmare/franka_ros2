@@ -115,6 +115,29 @@ def ray_covariance(ray_direction, sigma_perp, sigma_ray):
     return sigma_perp**2 * np.eye(3) + (sigma_ray**2 - sigma_perp**2) * np.outer(r, r)
 
 
+def pinhole_covariance(u, v, depth_m, intrinsics, sigma_px, sigma_depth_m):
+    """3x3 covariance, in the camera frame, of the point deproject() gives for (u, v, depth).
+
+    Independent errors of std sigma_px on u and v and sigma_depth_m on the depth, carried
+    through the deprojection by its Jacobian J = d(x, y, z) / d(u, v, depth): R = J S J^T.
+    The deprojection is bilinear, so this is exact but for the sigma_px * sigma_depth_m
+    term of the x and y variances. A pixel error moves the point across the image at the
+    same depth, a depth error along its viewing ray.
+    """
+    fx, fy, cx, cy = intrinsics
+    J = np.array([
+        [depth_m / fx, 0.0, (u - cx) / fx],
+        [0.0, depth_m / fy, (v - cy) / fy],
+        [0.0, 0.0, 1.0],
+    ])
+    return J @ np.diag([sigma_px**2, sigma_px**2, sigma_depth_m**2]) @ J.T
+
+
+def depth_std(depth_m, floor_m, quad_per_m):
+    """Std of a keypoint depth: a floor plus the stereo error, which grows as depth^2."""
+    return float(np.hypot(floor_m, quad_per_m * depth_m**2))
+
+
 def robot_polyline(tf_buffer, base_frame, links, tip_offset_m, logger):
     """FR3 link origins in base_frame (latest TF) plus the hand tip, (K+1, 3); None if unknown."""
     nodes = []
@@ -132,16 +155,18 @@ def robot_polyline(tf_buffer, base_frame, links, tip_offset_m, logger):
     return np.asarray(nodes)
 
 
-def create_pose(model_complexity, min_detection_confidence, min_tracking_confidence):
+def create_pose(model_complexity, min_detection_confidence, min_tracking_confidence,
+                smooth_landmarks=True):
     """MediaPipe Pose in tracking mode, its graph already started.
 
     The graph starts on an empty frame, with the warnings TFLite prints meanwhile silenced
-    (see PoseRedetector).
+    (see PoseRedetector). smooth_landmarks: MediaPipe's own temporal filter of the
+    landmarks, ahead of the Kalman filter (it makes their noise coloured and late).
     """
     pose = mp.solutions.pose.Pose(
         static_image_mode=False,
         model_complexity=int(np.clip(model_complexity, 0, 2)),
-        smooth_landmarks=True,
+        smooth_landmarks=bool(smooth_landmarks),
         enable_segmentation=False,
         min_detection_confidence=float(min_detection_confidence),
         min_tracking_confidence=float(min_tracking_confidence),
@@ -196,13 +221,24 @@ class PoseRedetector:
 class ArmMeasurer:
     """3D keypoints from MediaPipe landmarks and the depth frame aligned to the colour one.
 
-    A visible keypoint without its own depth borrows the arm's, and reaches the filter
-    with a ray-shaped covariance (std fallback_depth_std_m along the ray, <= 0: no
-    borrowing). Intrinsics come from set_intrinsics; until then nothing is measured.
+    A visible keypoint without its own depth borrows the arm's (fallback_depth_std_m <= 0:
+    no borrowing). The covariance a point reaches the filter with depends on
+    measurement_model:
+    - "isotropic": none with its own depth (the filter's default R = sigma_m^2 I); with a
+      borrowed one, measurement_std across the camera ray and fallback_depth_std_m along it.
+    - "pinhole": pinhole_covariance of every point, from pixel_std_px on u and v and the
+      depth std: depth_std() of its own depth, fallback_depth_std_m of a borrowed one.
+    Intrinsics come from set_intrinsics; until then nothing is measured.
     """
 
+    MODELS = ("isotropic", "pinhole")
+
     def __init__(self, keypoint_names, visibility_threshold, patch_radius, min_depth_m,
-                 max_depth_m, measurement_std, fallback_depth_std_m):
+                 max_depth_m, measurement_std, fallback_depth_std_m,
+                 measurement_model="isotropic", pixel_std_px=0.0, depth_std_m=0.0,
+                 depth_std_quad=0.0):
+        if measurement_model not in self.MODELS:
+            raise ValueError(f"measurement_model must be one of {self.MODELS}.")
         self.keypoint_names = tuple(keypoint_names)
         self.visibility_threshold = float(visibility_threshold)
         self.patch_radius = int(patch_radius)
@@ -210,6 +246,10 @@ class ArmMeasurer:
         self.max_depth_m = float(max_depth_m)
         self.measurement_std = float(measurement_std)
         self.fallback_depth_std_m = float(fallback_depth_std_m)
+        self.measurement_model = measurement_model
+        self.pixel_std_px = float(pixel_std_px)
+        self.depth_std_m = float(depth_std_m)
+        self.depth_std_quad = float(depth_std_quad)
         self.intrinsics = None   # (fx, fy, cx, cy)
 
     def set_intrinsics(self, fx, fy, cx, cy):
@@ -242,15 +282,17 @@ class ArmMeasurer:
     def deproject_arm(self, pixels, own_depths, camera_tf):
         """3D keypoints of one arm in the base frame.
 
-        Returns positions (4, 3) (NaN = not measured), the depths used (4,) and the
-        measurement covariances (4, 3, 3) (NaN = default isotropic R, i.e. own depth).
+        Returns positions (4, 3) (NaN = not measured), the depths used (4,), the
+        measurement covariances (4, 3, 3) in the base frame (NaN = the filter's default R)
+        and borrowed (4,), True where a measured point has the arm's depth, not its own.
         own_depths is not modified.
         """
         positions = np.full((len(own_depths), 3), np.nan, dtype=float)
         depths = own_depths.copy()
         measurement_covs = np.full((len(own_depths), 3, 3), np.nan, dtype=float)
+        borrowed_depth = np.zeros(len(own_depths), dtype=bool)
         if camera_tf is None or self.intrinsics is None:
-            return positions, depths, measurement_covs
+            return positions, depths, measurement_covs, borrowed_depth
 
         rotation, translation = camera_tf
         valid_depths = own_depths[own_depths > 0.0]
@@ -273,12 +315,19 @@ class ArmMeasurer:
             if not np.all(np.isfinite(point_base)):
                 continue
             positions[i] = point_base
+            borrowed_depth[i] = borrowed
             if borrowed:
                 depths[i] = d
+            if self.measurement_model == "pinhole":
+                sigma_d = (self.fallback_depth_std_m if borrowed
+                           else depth_std(d, self.depth_std_m, self.depth_std_quad))
+                cov_camera = pinhole_covariance(u, v, d, self.intrinsics, self.pixel_std_px, sigma_d)
+                measurement_covs[i] = rotation @ cov_camera @ rotation.T
+            elif borrowed:
                 measurement_covs[i] = ray_covariance(
                     rotation @ point_camera, self.measurement_std, self.fallback_depth_std_m
                 )
-        return positions, depths, measurement_covs
+        return positions, depths, measurement_covs, borrowed_depth
 
     def torso_points(self, pose_landmarks, depth, image_shape, camera_tf):
         """Shoulders (2, 3) and hips (2, 3) in the base frame, NaN where not measured."""
