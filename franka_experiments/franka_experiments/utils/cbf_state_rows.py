@@ -709,6 +709,57 @@ def latency_compensation_terms(
     return h_pred, h_unc
 
 
+# ── Soft prediction of the human rows ────────────────────────────────────────
+#
+# A human row is a hard barrier on where the limb IS (latency-compensated) with
+# its closing speed in ḣ: the time-varying HOCBF, "the arm is here and coming,
+# react k1/k0 seconds ahead". Where the limb WILL BE is a different kind of
+# statement — a forecast, with an error that grows with the horizon — so it gets
+# a row of its own, SOFT: same a, ċ, v_obs and gains as the hard row, a barrier
+# moved to the predicted limb, and its own slack family (G_PRED) priced at
+# rho_slack_prediction. The QP keeps clear of the forecast when it can and gives
+# it up for the task or for feasibility; the hard row never gives way. This is
+# the reactive + predictive split of UA-PCBF (Busellato et al., 2025), with the
+# Kalman filter's own covariance as the forecast's uncertainty.
+
+
+def human_prediction_tightening(
+    n_hat: np.ndarray,
+    v_vec: Optional[np.ndarray],
+    pos_cov: Optional[np.ndarray],
+    pv_cov: Optional[np.ndarray],
+    vel_cov: Optional[np.ndarray],
+    *,
+    horizon_s: float,
+    k_sigma: float,
+    margin_max: float,
+    v_max: float,
+) -> Tuple[float, float]:
+    """``(shift, margin)`` [m]: the soft row's barrier is ``h − shift − margin``.
+
+        shift  = horizon_s · n̂ᵀv          (n̂ᵀv clamped to ±v_max)
+        margin = min( k_sigma · sqrt( n̂ᵀ P_pp(horizon_s) n̂ ), margin_max )
+        P_pp(t) = P_pp + t·(P_pv + P_pvᵀ) + t²·P_vv
+
+    The margin is :func:`latency_compensation_terms`' propagated uncertainty at
+    the prediction horizon instead of the blind time. The shift is SIGNED, unlike
+    every hard tightening: a receding limb's forecast is farther away, the soft
+    row comes out looser than the hard one and is simply never the binding one.
+    A term that cannot be evaluated is 0.0.
+    """
+    n = np.asarray(n_hat, dtype=np.float64).ravel()
+    shift = 0.0
+    if v_vec is not None:
+        v = np.asarray(v_vec, dtype=np.float64).ravel()
+        if v.size == 3 and np.all(np.isfinite(v)):
+            vn = float(np.clip(n @ v, -v_max, v_max))
+            shift = float(horizon_s) * vn
+    _, margin = latency_compensation_terms(
+        n, None, None, pos_cov, pv_cov, vel_cov,
+        t_blind=horizon_s, k_sigma=k_sigma, margin_max=margin_max)
+    return shift, margin
+
+
 # ── Sensor range uncertainty ─────────────────────────────────────────────────
 #
 # uncertainty_margin and latency_compensation_terms above both price what the
@@ -1286,7 +1337,7 @@ _VMED_MAX_TAPS = 64
 #: estimator rather than a gain.
 _IDENT_DT_MAX = 0.2
 
-G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD = 0, 1, 2, 3, 4, 5
+G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD, G_PRED = 0, 1, 2, 3, 4, 5, 6
 
 #: Rate-independent tuning: see the module that documents why every
 #: window on this path is a duration and not a frame count.
@@ -1297,9 +1348,12 @@ from franka_experiments.utils.rate_scaling import ema_alpha_for, frames_for
 #: ``iso_tcp_link`` parameter defaults to this). Last entry of
 #: ``robot.segment_links`` in fr3_complete.yaml.
 FR3_TCP_LINK = 'fr3_link8'
-N_SLACK = 6
-GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
-NX = NV + N_SLACK   # [qddot(7), s_obs, s_sc, s_qlim, s_sing, s_cap, s_spd]
+N_SLACK = 7
+GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd', 'pred')
+NX = NV + N_SLACK   # [qddot(7), s_obs, s_sc, s_qlim, s_sing, s_cap, s_spd, s_pred]
+#: Families whose slack is a VIOLATION: everything but the soft prediction rows, whose
+#: slack is the price of a preference (enable_human_prediction), never a breach.
+HARD_GROUPS = tuple(g for g in range(N_SLACK) if g != G_PRED)
 
 # Livelock escape (Phase 3c): obstacle rows closer than this [m] are all
 # removed from the escape direction, up to this many of them.
@@ -1671,8 +1725,6 @@ class ConstraintBuilder:
         self._unc_ema: dict = {}
         # Per-label speed-proportional standoff, for its decay smoothing.
         self._stand_ema: dict = {}
-        # Per-label prediction tightening of extra-source rows, same decay smoothing.
-        self._prd_ema: dict = {}
         # Per-label n̂ of the PREVIOUS perception frame, for the residual's
         # rotation guard (see _obstacle_speed). Same bounded key set as every
         # other per-label dict here: one entry per control point.
@@ -1711,7 +1763,7 @@ class ConstraintBuilder:
         self.diag_vobs_hdot = 0.0
         self.diag_vobs_hdot_n = 0
         self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
-        self.diag_hprd = 0.0        # largest prediction tightening of an extra-source row [m]
+        self.diag_hpred = 0.0       # largest shift + margin of a soft prediction row [m]
         self.diag_fast = 0          # rows whose track passed the fast-track test
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
@@ -1851,7 +1903,7 @@ class ConstraintBuilder:
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
         self.diag_hstand = 0.0
-        self.diag_hprd = 0.0
+        self.diag_hpred = 0.0
         self.diag_fast = 0
         # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
         # inf/0.0 with the flag off, which is how the CBFDIAG line says
@@ -1862,11 +1914,13 @@ class ConstraintBuilder:
         stand_t = float(getattr(self._P, 'velocity_standoff_time_s', 0.20))
         stand_max = float(getattr(self._P, 'velocity_standoff_max', 0.20))
         stand_alpha = float(getattr(self._P, 'velocity_standoff_alpha', 0.8))
-        prd_t = float(getattr(self._P, 'extra_prediction_horizon_s', 0.0))
-        prd_db = float(getattr(self._P, 'extra_prediction_deadband', 0.15))
-        prd_max = float(getattr(self._P, 'extra_prediction_max', 0.30))
-        prd_alpha = float(getattr(self._P, 'extra_prediction_alpha', 0.8))
-        prd_rise = float(getattr(self._P, 'extra_prediction_rise_rate', 0.0))
+        # Soft prediction rows of the human rows, appended after the obstacle loop:
+        # (a, h_pred, ċ, v_obs, label, index of the hard row they predict)
+        pred_on = bool(getattr(self._P, 'enable_human_prediction', False))
+        pred_t = float(getattr(self._P, 'human_prediction_horizon_s', 0.3))
+        pred_k = float(getattr(self._P, 'human_prediction_k_sigma', 0.5))
+        pred_max = float(getattr(self._P, 'human_prediction_margin_max', 0.15))
+        pred_rows: list = []
 
         for ob in obs.items:
             # obstacle_horizon is a COMPUTATIONAL cutoff, NOT a safety gate: the
@@ -2288,30 +2342,6 @@ class ConstraintBuilder:
                 if h_std > self.diag_hstand:
                     self.diag_hstand = h_std
 
-            # ── Prediction of the extra-source rows (extra_prediction_horizon_s) ──
-            # human_distance rows carry a per-limb Kalman velocity, continuous unlike
-            # v_o: the obstacle is moved horizon_s ahead along it (closing part beyond
-            # the deadband). After the residual, which keeps differencing the measured
-            # distance. Rise limited to extra_prediction_rise_rate, decay EMA'd.
-            if prd_t > 0.0 and ob.src != 0:
-                raw = 0.0
-                if ob.v_vec is not None and ob.frames_seen >= self._min_frames_eff:
-                    vn = float(n_w @ np.asarray(ob.v_vec, dtype=np.float64))
-                    if np.isfinite(vn):
-                        vn = min(vn, self._P.obstacle_velocity_max)
-                        raw = min(prd_t * max(vn - prd_db, 0.0), prd_max)
-                prev, t_prev = self._prd_ema.get(lbl, (0.0, now))
-                if raw < prev:
-                    h_prd = prd_alpha * prev + (1.0 - prd_alpha) * raw
-                elif prd_rise > 0.0:
-                    h_prd = min(raw, prev + prd_rise * max(now - t_prev, 0.0))
-                else:
-                    h_prd = raw
-                self._prd_ema[lbl] = (h_prd, now)
-                h -= h_prd
-                if h_prd > self.diag_hprd:
-                    self.diag_hprd = h_prd
-
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
@@ -2345,6 +2375,21 @@ class ConstraintBuilder:
                 # state produced it — and names it the way the publisher and
                 # skip_keys do.
                 rows_link.append(lbl)
+
+                # ── Soft prediction row of a human row (enable_human_prediction) ──
+                # From the FINAL barrier of the hard row (latency compensation and
+                # every margin included), moved to the predicted limb. Only with a
+                # confirmed Kalman track, like every other track-derived term.
+                if (pred_on and ob.src != 0 and ob.v_vec is not None
+                        and ob.frames_seen >= self._min_frames_eff):
+                    shift, margin = human_prediction_tightening(
+                        n_w, ob.v_vec, ob.pos_cov, ob.pv_cov, ob.vel_cov,
+                        horizon_s=pred_t, k_sigma=pred_k, margin_max=pred_max,
+                        v_max=self._P.obstacle_velocity_max)
+                    pred_rows.append((a, h - shift - margin, jdq, v_hdot,
+                                      f'pred:{lbl}', len(rows_a) - 1))
+                    if shift + margin > self.diag_hpred:
+                        self.diag_hpred = shift + margin
 
                 # Retreat cap for THIS control point, on the same normal. One
                 # per kept obstacle row, so the cap set follows the barrier set
@@ -2395,6 +2440,18 @@ class ConstraintBuilder:
                         lock_best = (h, a, Jp, n_w, ob.v_vec, ob.pr - ob.ph)
                     if h < _LOCK_ROW_H:
                         lock_rows.append((h, a))
+
+        # Soft prediction rows: after the obstacle rows, before every other family,
+        # and never among the trailing rate-cap rows.
+        pred_parent = []
+        for a_p, h_p, jdq_p, v_p, lbl_p, parent in pred_rows:
+            rows_a.append(a_p)
+            rows_h.append(h_p)
+            rows_jdq.append(jdq_p)
+            rows_group.append(G_PRED)
+            rows_vobs.append(v_p)
+            rows_link.append(lbl_p)
+            pred_parent.append(parent)
 
         # ── Joint-limit rows ────────────────────────────────────────────────
         # Same HOCBF convention: aᵀq̈ + s ≥ −k1(aᵀq̇) − k0·h − ċ, with ċ ≡ 0
@@ -2708,6 +2765,14 @@ class ConstraintBuilder:
             kk1 = k1_row if k1_row is not None else np.full(n_c, float(self._P.k1_cbf))
             h_pen_row = np.full(n_c, -np.inf)
             h_pen_row[idx_obs] = -dv_pen * kk1[idx_obs] / np.maximum(kk0[idx_obs], 1e-9)
+        # A soft prediction row is its hard row moved to the forecast: same gains
+        # (zone ladder, extra_k*_cbf) and the same bounded depth push.
+        idx_pred = np.flatnonzero(grp == G_PRED)
+        if idx_pred.size:
+            parent = np.asarray(pred_parent, dtype=np.intp)
+            for arr in (k0_row, k1_row, zone_row, h_pen_row):
+                if arr is not None:
+                    arr[idx_pred] = arr[parent]
         m_row = None
         self.diag_w = self.diag_wq = None
         if self._P.enable_weighted_slack:

@@ -502,6 +502,11 @@ shield_parity:
     # envs/cbf_filter.py (same pending obligation as the class-K rework this
     # file already lags behind).
     - enable_latency_compensation
+    # MOVED here from robot_only_inactive (2026-10-12): on by default. It only
+    # adds rows for the human_distance source (extra_distance_topics, i.e.
+    # easy_torque human:=true); torque_control_stack and this sim shield carry
+    # no such rows, so it changes nothing a policy trained here would see.
+    - enable_human_prediction     # soft forecast rows of the human_distance rows (own slack family)
 
   # Shipped OFF on the robot as well, so they are not part of today's gap.
   # Turning one on WIDENS the gap and fails the test until it is moved up.

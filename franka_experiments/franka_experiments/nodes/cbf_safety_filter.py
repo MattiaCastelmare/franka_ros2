@@ -84,8 +84,10 @@ from franka_experiments.utils.cbf_state_rows import (
     G_OBS,
     G_QLIM,
     G_SC,
+    G_PRED,
     G_SING,
     G_SPD,
+    HARD_GROUPS,
     NV,
     NX,
     N_SLACK,
@@ -250,7 +252,8 @@ class CBFSafetyFilter(Node):
                        (G_QLIM, P.rho_slack_joint_limit),
                        (G_SING, P.rho_slack_singularity),
                        (G_CAP,  P.rho_slack_retreat),
-                       (G_SPD,  rho_spd)):
+                       (G_SPD,  rho_spd),
+                       (G_PRED, P.rho_slack_prediction)):
             P_mat[NV + g, NV + g] = rho
         self._P_csc = sparse.csc_matrix(P_mat)
         self._qvec = np.zeros(NX)
@@ -1008,7 +1011,8 @@ class CBFSafetyFilter(Node):
             fault = 1.0
         elif con is not None and now - con.t_dist < P.distance_timeout:
             n_c, G = con.A.shape[0], con.G
-            n_active = int(np.count_nonzero(con.h_bar < 0.0))
+            # A soft prediction row below zero is a forecast, not a violation
+            n_active = int(np.count_nonzero((con.h_bar < 0.0) & (con.group != G_PRED)))
             self._smooth_qdot(qdot)
             # k0/k1 stay the scalars here; the snapshot's per-row gains take
             # over inside build_row_rhs when the zone ladder put them there.
@@ -1426,7 +1430,8 @@ class CBFSafetyFilter(Node):
         self._last_level = level
         if n_c > 0 and level == OSQP_LEVEL_FULL:
             np.copyto(self._diag_slack, x[NV:])
-        return x[:NV], float(self._diag_slack.max()), solve_ms, res, level
+        # The status slack reports violations: the prediction family's is a price
+        return x[:NV], float(self._diag_slack[list(HARD_GROUPS)].max()), solve_ms, res, level
 
     def _report(self, now, con, h_qp, n_c, n_active, qdot, qddot_safe,
                 qddot_nom, slack, solve_ms, res) -> None:

@@ -52,7 +52,7 @@ class OSQPProb:
     def update(self, **k): pass
     def solve(self):
         return types.SimpleNamespace(
-            x=np.zeros(13),
+            x=np.zeros(14),   # NX = NV + N_SLACK
             info=types.SimpleNamespace(status_val=1, status='solved', iter=1))
 mod('osqp', OSQP=OSQPProb, constant=lambda s: 1)
 

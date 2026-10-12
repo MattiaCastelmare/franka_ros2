@@ -1699,19 +1699,38 @@ params:
   # receding obstacle from releasing the barrier as a k0*h_std step. 0 = raw.
   velocity_standoff_alpha: 0.8
 
-  # ── Prediction of the extra-source rows (cbf_safety_filter) ────────────────
-  #   h_eff = h - min(horizon_s * max(n_hat^T v_track - deadband, 0), max)
-  # Only rows of extra_distance_topics (human_distance): their track is the limb's
-  # Kalman filter, continuous where the standoff's v_o steps. Constant velocity
-  # beats "arm still" up to ~0.3 s (lab data 2026-10-08); latency_t_blind adds
-  # 0.085 s. 0 = off. Watch hprd= in CBFDIAG.
-  extra_prediction_horizon_s: 0.0
-  extra_prediction_deadband: 0.15   # [m/s] the velocity noise of a still arm
-  extra_prediction_max: 0.30        # [m] clamp, as velocity_standoff_max
-  extra_prediction_alpha: 0.8       # decay EMA per control point, as the standoff
-  # [m/s] fastest the tightening may grow, 0 = at once. At once it stepped by up
-  # to 10 cm near the person (k0*dh = 2.5 m/s^2 of demand at once)
-  extra_prediction_rise_rate: 1.0
+  # ── Soft prediction of the human rows (cbf_safety_filter) ──────────────────
+  # The hard row of a human limb is a barrier on where it IS (latency-compensated)
+  # with its closing speed in hdot: "here and coming, react k1/k0 s ahead". Where
+  # it WILL BE gets a second, SOFT row: same a, cdot, v_obs and gains, barrier
+  #   h_pred = h - horizon_s * n_hat^T v - min(k_sigma * sigma_pred, margin_max)
+  #   sigma_pred^2 = n_hat^T (P_pp + t (P_pv + P_pv^T) + t^2 P_vv) n_hat,  t = horizon_s
+  # from the limb's Kalman filter, in its own slack family priced at
+  # rho_slack_prediction: the QP keeps clear of the forecast when it can and gives
+  # it up for the task or feasibility; the hard row never gives way. A receding
+  # limb's forecast is farther than the hard row and never binds. Only rows of
+  # extra_distance_topics with a confirmed track. Reactive + predictive rows as
+  # UA-PCBF (Busellato et al., 2025). Watch hpred= and s_pred= in CBFDIAG.
+  # ON since 2026-10-12. Tuned closed loop, easy_torque config, against "off" (the
+  # previous default) and the rigid 0.3 s tightening it replaced:
+  # - lab people (scripts/cbf_human_replay.py on cbf_human/cbf_new/cbf_final, 61
+  #   approaches, paired): +1.4 cm of true gap per approach, larger in 44, smaller
+  #   in none; the flange strays 0.6 cm on average (0.2 off), jerk unchanged.
+  # - the same people moved 15 cm closer (83 approaches): time inside d_safe
+  #   1.56 -> 0.58 s, depth x time 1.15 -> 0.41 cm s (rigid: 1.08 s, 0.72 cm s).
+  # - scripted hand (cbf_human_scenarios.py): a 1.5 m/s reach dips to -3.0 cm for
+  #   0.15 s (off -4.6/0.18), a reach into the flange keeps +5.7 cm (+2.6), a hand
+  #   standing still 25 cm away moves the flange 4.4 cm (1.8).
+  # rho 10 gave about half of that; k_sigma 1 a little more, but 9 cm off a hand
+  # standing still. false = the reactive rows only.
+  enable_human_prediction: true
+  human_prediction_horizon_s: 0.3   # [s] constant velocity beats "arm still" up to ~0.3 s
+  human_prediction_k_sigma: 0.5     # [-] sigmas of forecast uncertainty kept clear
+  human_prediction_margin_max: 0.15 # [m] clamp on that margin (d_safe, as UA-PCBF's d_min)
+  # Price of the forecast's slack. The QP trades it against the task at
+  # rho/(1 + rho) on a unit-leverage row: 1 = half the push, 1000 = a hard row.
+  # The cheapest slack family: below rho_slack_retreat (100) and every hard row.
+  rho_slack_prediction: 50.0
 
   # HOCBF gains of the human_distance rows only (0 = k0_cbf / k1_cbf). A row binds
   # at h < (k1/k0)*v_obs and then asks k1 m/s^2 per m/s of closing speed: 25/10.5

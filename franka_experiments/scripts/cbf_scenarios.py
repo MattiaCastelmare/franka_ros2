@@ -51,7 +51,7 @@ from franka_experiments.utils.cbf_qp_assembly import (
     accept_iterate, box_only_solve, braking_command, build_osqp_A,
     build_osqp_bounds, build_row_rhs, pad_rows_to_block, tangential_bias)
 from franka_experiments.utils.cbf_state_rows import (
-    FR3_JOINT_KEYS, G_CAP, G_OBS, G_QLIM, G_SC, G_SING, G_SPD, GROUP_NAMES, NV, NX,
+    FR3_JOINT_KEYS, G_CAP, G_OBS, G_PRED, G_QLIM, G_SC, G_SING, G_SPD, GROUP_NAMES, NV, NX,
     N_SLACK, ConstraintBuilder, JointSnap, Obstacle, ObstacleSnap,
     build_optional_row_builders, retreat_speed_available)
 from franka_experiments.utils.config import load_franka_joint_limits
@@ -158,7 +158,8 @@ class Filter:
         P_mat = np.eye(NX)
         for g, rho in ((G_OBS, P.rho_slack), (G_SC, P.rho_slack_self_collision),
                        (G_QLIM, P.rho_slack_joint_limit), (G_SING, P.rho_slack_singularity),
-                       (G_CAP, P.rho_slack_retreat), (G_SPD, P.rho_slack_link_speed)):
+                       (G_CAP, P.rho_slack_retreat), (G_SPD, P.rho_slack_link_speed),
+                       (G_PRED, P.rho_slack_prediction)):
             P_mat[NV + g, NV + g] = rho
         self.P_csc = sparse.csc_matrix(P_mat)
         self.qvec = np.zeros(NX)

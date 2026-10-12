@@ -326,7 +326,7 @@ def _filter_and_dynamics_nodes(p, use_sim_time):
         # obstacle velocity human_distance computes from the Kalman filter (the
         # filter takes max(tracker, residual), so it is never less cautious than
         # 'residual'); vobs_in_hdot puts its signed component along the normal into ḣ.
-        # cbf_prediction_s / human_k*_cbf act on the human rows only ('' = the yaml).
+        # human_prediction(_s) / human_k*_cbf act on the human rows only ('' = the yaml).
         nodes.append(Node(
             package='franka_experiments',
             executable='cbf_safety_filter',
@@ -337,8 +337,10 @@ def _filter_and_dynamics_nodes(p, use_sim_time):
                 'use_sim_time': use_sim_time,
                 'obstacle_velocity_source': p['obstacle_velocity_source'],
                 'enable_vobs_in_hdot': _as_bool(p['vobs_in_hdot']),
+                **({'enable_human_prediction': _as_bool(p['human_prediction'])}
+                   if p['human_prediction'] else {}),
                 **{name: float(p[arg]) for arg, name in (
-                    ('cbf_prediction_s', 'extra_prediction_horizon_s'),
+                    ('human_prediction_s', 'human_prediction_horizon_s'),
                     ('human_k0_cbf', 'extra_k0_cbf'), ('human_k1_cbf', 'extra_k1_cbf')) if p[arg]},
                 'extra_distance_topics': [_HUMAN_PER_LINK_TOPIC if _as_bool(p['human']) else ''],
             }],
@@ -471,7 +473,8 @@ def _launch_all(context):
         'human_bag': LaunchConfiguration('human_bag').perform(context).strip(),
         'obstacle_velocity_source': LaunchConfiguration('obstacle_velocity_source').perform(context),
         'vobs_in_hdot': LaunchConfiguration('vobs_in_hdot').perform(context),
-        'cbf_prediction_s': LaunchConfiguration('cbf_prediction_s').perform(context).strip(),
+        'human_prediction': LaunchConfiguration('human_prediction').perform(context).strip(),
+        'human_prediction_s': LaunchConfiguration('human_prediction_s').perform(context).strip(),
         'human_k0_cbf': LaunchConfiguration('human_k0_cbf').perform(context).strip(),
         'human_k1_cbf': LaunchConfiguration('human_k1_cbf').perform(context).strip(),
         'run_name': LaunchConfiguration('run_name').perform(context),
@@ -562,10 +565,17 @@ def generate_launch_description():
                             '(~0.16 m/s median at sigma_a = 3) and a "receding" sample relaxes the row'
             ),
             DeclareLaunchArgument(
-                'cbf_prediction_s',
+                'human_prediction',
                 default_value='',
-                description='cbf_safety_filter: horizon [s] the human rows are tightened over along '
-                            "their Kalman velocity (extra_prediction_horizon_s); '' = fr3_control.yaml, 0 = off"
+                description='cbf_safety_filter: soft prediction rows of the human rows (where the limb '
+                            'will be along its Kalman velocity, own cheap slack; enable_human_prediction). '
+                            "true | false, '' = fr3_control.yaml (on)"
+            ),
+            DeclareLaunchArgument(
+                'human_prediction_s',
+                default_value='',
+                description="cbf_safety_filter: horizon [s] of the soft prediction rows "
+                            "(human_prediction_horizon_s); '' = fr3_control.yaml"
             ),
             DeclareLaunchArgument(
                 'human_k0_cbf',

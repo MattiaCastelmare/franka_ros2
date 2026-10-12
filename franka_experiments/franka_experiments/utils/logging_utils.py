@@ -356,10 +356,12 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
     behind the caller's throttle, so its cost is amortised to nothing.
     """
     from franka_experiments.utils.cbf_state_rows import (
-        G_CAP, G_OBS, G_QLIM, G_SC, G_SING, G_SPD)
+        G_CAP, G_OBS, G_PRED, G_QLIM, G_SC, G_SING, G_SPD)
 
     dq = qddot_safe - qddot_nom
-    i = int(np.argmin(con.h_bar))
+    # The row the line is about: the tightest HARD row (a soft prediction row is
+    # tighter than its own hard row by construction, and is not a barrier)
+    i = int(np.argmin(np.where(con.group == G_PRED, np.inf, con.h_bar)))
     a_i = con.A[i]
     a_n = float(np.linalg.norm(a_i))
     a_hat = a_i / a_n if a_n > 1e-12 else a_i
@@ -429,8 +431,10 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'hrng={getattr(rows, "diag_hrng", 0.0):.4f} '
         # enable_velocity_standoff: largest speed-proportional standoff [m].
         f'hstd={getattr(rows, "diag_hstand", 0.0):.4f} '
-        # extra_prediction_horizon_s: largest prediction tightening of a human row [m].
-        f'hprd={getattr(rows, "diag_hprd", 0.0):.4f} '
+        # enable_human_prediction: largest shift + margin of a soft prediction row
+        # [m], and the slack the QP paid on that family (a price, not a violation).
+        f'hpred={getattr(rows, "diag_hpred", 0.0):.4f} '
+        f's_pred={slack[G_PRED]:.3f} '
         # obstacle_velocity_fast_trust: rows whose young track passed the
         # fast-track test this rebuild. 0 with the flag off.
         f'fast={getattr(rows, "diag_fast", 0)} '
