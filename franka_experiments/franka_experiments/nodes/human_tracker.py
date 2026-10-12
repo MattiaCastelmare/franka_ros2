@@ -32,8 +32,8 @@ from franka_experiments.utils.human_measurement import (
     ArmMeasurer, PoseRedetector, create_pose, extract_arm_landmarks, robot_polyline,
 )
 from franka_experiments.utils.human_utils import (
-    measurement_age, quaternion_to_rotation, build_arm_state_msg, build_disengaged_state_msg,
-    build_prediction_msg, build_2d_landmarks_msg, format_topic,
+    measurement_age, filter_step_dt, quaternion_to_rotation, build_arm_state_msg,
+    build_disengaged_state_msg, build_prediction_msg, build_2d_landmarks_msg, format_topic,
     check_engagement_start, check_engagement_loss, stamp_to_ns,
 )
 from franka_experiments.utils.human_validation import (
@@ -341,16 +341,13 @@ class HumanTracker(Node):
         return self.R_camera_to_base, self.t_camera_to_base
 
     def compute_dt(self, current_time):
-        if self.last_update_time is None:
-            return list(self.kfs.values())[0].dt
-
-        dt = current_time - self.last_update_time
-        if dt <= 0.0:
+        dt, restart = filter_step_dt(self.last_update_time, current_time,
+                                     list(self.kfs.values())[0].dt, self.reset_after_s)
+        if restart:
             for side in self.active_sides:
                 self.kfs[side].reset()
                 self.last_valid_time[side][:] = np.nan
-            return list(self.kfs.values())[0].dt
-        return float(np.clip(dt, 1e-3, 0.2))
+        return dt
 
 
     # ------------------------------------------------------------------

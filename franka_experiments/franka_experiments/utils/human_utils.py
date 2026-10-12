@@ -121,6 +121,23 @@ def measurement_age(last_valid_time, current_time):
     return age
 
 
+def filter_step_dt(last_time, current_time, default_dt, stale_after_s):
+    """dt of the next filter step, and whether every filter must restart before it.
+
+    The filters predict over the real elapsed time, so F and Q cover what passed: a capped dt
+    predicts too little motion and too little uncertainty across a gap. They restart when
+    time went back (a bag loop) or the gap exceeds stale_after_s: every keypoint is then
+    older than reset_after_s and its velocity says nothing about now.
+    Returns (dt, restart); dt is default_dt without a previous step or on a restart.
+    """
+    if last_time is None:
+        return default_dt, False
+    dt = current_time - last_time
+    if dt <= 0.0 or dt > stale_after_s:
+        return default_dt, True
+    return max(dt, 1e-3), False
+
+
 def extract_human_keypoints(state_msg: HumanArmState):
     """
     Extracts 3D positions, 3D velocities, and validity masks from the state message.
