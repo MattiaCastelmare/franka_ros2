@@ -18,9 +18,10 @@ changes in the filter.
 METHOD
 ------
 replay   Runs the real HumanTracker on a bag, frame by frame (MediaPipe included), and
-         saves every measurement and every filter step to an .npz. ROS runs on an
-         isolated domain, localhost only, and every publisher is replaced by a sink:
-         nothing is published.
+         saves every measurement, every filter step, the HumanArmState it published and
+         the robot joints of the recording to an .npz (cbf_human_replay.py reads it).
+         ROS runs on an isolated domain, localhost only, and every publisher is
+         replaced by a sink: nothing is published.
 noise    Filter-independent noise of the measurement: robust std of the second and third
          differences of u, v [px] and d [m] along each keypoint track, per depth bin.
          A difference of order n cancels any motion polynomial of degree < n; for white
@@ -102,7 +103,26 @@ def _empty_side():
         measured=np.zeros(4, dtype=bool),
         nis=np.full(4, np.nan),
         gated=np.zeros(4, dtype=bool),
+        # the HumanArmState the tracker published this frame (what human_distance reads)
+        pub=False,
+        pub_pos=np.full((4, 3), np.nan),
+        pub_vel=np.full((4, 3), np.nan),
+        pub_valid=np.zeros(4, dtype=bool),
+        pub_cov=np.full((3, 4, 3, 3), np.nan),   # P_pp, P_vv, P_pv
+        pub_seen=np.zeros(4, dtype=np.int64),
     )
+
+
+def _record_published(rec, msg):
+    """Copy a published HumanArmState into a frame record (None: nothing published)."""
+    from franka_experiments.utils.human_utils import (
+        extract_human_covariances, extract_human_keypoints)
+    if msg is None:
+        return
+    pos, vel, valid = extract_human_keypoints(msg)
+    P_pp, P_vv, P_pv, seen = extract_human_covariances(msg)
+    rec.update(pub=True, pub_pos=pos, pub_vel=vel, pub_valid=valid,
+               pub_cov=np.stack([P_pp, P_vv, P_pv]), pub_seen=seen)
 
 
 def replay(args):
@@ -198,12 +218,17 @@ def replay(args):
     types = {t.name: t.type for t in reader.get_all_topics_and_types()}
     color_topic, depth_topic = config["color_topic"], config["depth_topic"]
     info_topic = config["camera_info_topic"]
-    wanted = [t for t in (color_topic, depth_topic, info_topic, "/tf", "/tf_static")
-              if t in types]
+    # The robot's joints too (1 kHz feed if recorded): the arm the person moved around
+    joint_topic = next((t for t in ("/NS_1/franka/joint_states", "/NS_1/joint_states")
+                        if t in types), None)
+    wanted = [t for t in (color_topic, depth_topic, info_topic, "/tf", "/tf_static",
+                          joint_topic) if t in types]
     if color_topic not in types or depth_topic not in types:
         raise SystemExit(f"{args.bag}: no {color_topic} / {depth_topic}")
     reader.set_filter(StorageFilter(topics=wanted))
     msg_types = {t: get_message(types[t]) for t in wanted}
+    joint_names = [f"fr3_joint{i}" for i in range(1, 8)]
+    joints = []   # (stamp, q, dq)
 
     def stamp_ns(msg):
         return msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
@@ -222,6 +247,8 @@ def replay(args):
         frame.clear()
         frame.update({s: _empty_side() for s in sides})
         cursor["side"] = -1
+        for side in sides:
+            node.state_pubs[side].last = None
         try:
             node.process_rgbd(color_msg, depth_msg)
         except Exception as exc:
@@ -230,6 +257,8 @@ def replay(args):
                 traceback.print_exc()
             failures.append((stamp_ns(color_msg) * 1e-9, repr(exc)))
             return
+        for side in sides:
+            _record_published(frame[side], node.state_pubs[side].last)
         records.append((stamp_ns(color_msg) * 1e-9, node.is_engaged,
                         {s: dict(frame[s]) for s in sides}))
         if len(records) % 300 == 0:
@@ -237,8 +266,15 @@ def replay(args):
             print(f"  {len(records)} frames, {rate:.1f} frames/s", flush=True)
 
     while reader.has_next():
-        topic, data, _ = reader.read_next()
+        topic, data, bag_ns = reader.read_next()
         msg = deserialize_message(data, msg_types[topic])
+        if topic == joint_topic:
+            index = {n: i for i, n in enumerate(msg.name)}
+            if all(n in index for n in joint_names) and len(msg.velocity) == len(msg.name):
+                stamp = stamp_ns(msg) or bag_ns
+                joints.append((stamp * 1e-9, [msg.position[index[n]] for n in joint_names],
+                               [msg.velocity[index[n]] for n in joint_names]))
+            continue
         if topic == "/tf_static":
             for tr in msg.transforms:
                 node.tf_buffer.set_transform_static(tr, "replay")
@@ -288,6 +324,9 @@ def replay(args):
         raw_landmarks=not bool(config["smooth_landmarks"]),
         bag=os.path.abspath(args.bag),
         failed_t=np.array([f[0] for f in failures]),
+        joints_t=np.array([j[0] for j in joints]),
+        joints_q=np.array([j[1] for j in joints]).reshape(-1, 7),
+        joints_dq=np.array([j[2] for j in joints]).reshape(-1, 7),
     )
     for side in sides:
         for key in records[0][2][side]:
@@ -300,7 +339,8 @@ def replay(args):
         print(f"{len(failures)} frames failed in process_rgbd (lost, as live); first: "
               f"t={failures[0][0]:.3f} {failures[0][1]}")
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():   # the tracker may have shut the context down already
+        rclpy.shutdown()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
