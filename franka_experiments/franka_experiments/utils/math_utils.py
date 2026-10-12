@@ -1,4 +1,5 @@
-"""Pure math helpers: minimum-jerk, cosine ramp, clamp, low-pass filter, skew matrix."""
+"""Pure math helpers: minimum-jerk, cosine ramp, clamp, low-pass filter, skew matrix,
+chi-square gate conversion, basis across a direction."""
 
 from __future__ import annotations
 
@@ -72,6 +73,25 @@ def skew(v: np.ndarray) -> np.ndarray:
          [-v[1],  v[0],  0.0]],
         dtype=float,
     )
+
+
+def chi2_3_to_chi2_2(threshold: float) -> float:
+    """The chi^2_2 quantile at the probability of the chi^2_3 quantile ``threshold``.
+
+    Both in closed form: F_3(x) = erf(sqrt(x/2)) - sqrt(2x/pi) exp(-x/2) and
+    F_2^-1(p) = -2 ln(1 - p). A 2D gate with the rejection rate of a 3D one.
+    """
+    p = (math.erf(math.sqrt(threshold / 2.0))
+         - math.sqrt(2.0 * threshold / math.pi) * math.exp(-threshold / 2.0))
+    return -2.0 * math.log(1.0 - p)
+
+
+def across_basis(direction: np.ndarray) -> np.ndarray:
+    """(3, 2) orthonormal basis of the plane orthogonal to the unit vector ``direction``."""
+    helper = np.array([1.0, 0.0, 0.0]) if abs(direction[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = helper - np.dot(helper, direction) * direction
+    e1 /= np.linalg.norm(e1)
+    return np.stack((e1, np.cross(direction, e1)), axis=1)
 
 
 # MOVED here from nodes/experiment_logger.py (Phase 3): finite-float

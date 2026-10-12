@@ -16,18 +16,25 @@ gate, the corresponding filter performs prediction only.
 
 A measurement may carry its own 3x3 covariance instead of the isotropic
 R = sigma_m^2 I, e.g. a depth that is only known along the camera ray.
+
+Given the origin of the camera rays, a measurement the gate rejects still
+updates the filter with its bearing (see _bearing_update): the pixel of an
+RGB-D point is right far more often than its depth.
 """
 
 from __future__ import annotations
 from typing import Sequence
 import numpy as np
 
+from franka_experiments.utils.math_utils import across_basis, chi2_3_to_chi2_2
+
 
 class ArmKalmanFilter:
     """Four independent 3D constant-velocity Kalman filters.
 
     Parameters are expressed in SI units when input positions are in metres:
-    - ``process_accel_std``: expected unmodelled acceleration in m/s².
+    - ``process_accel_std``: expected unmodelled acceleration in m/s², one value for
+      every keypoint or one per keypoint (the hand accelerates more than the shoulder).
     - ``measurement_std``: standard deviation of the 3D measurement in m.
     """
 
@@ -38,7 +45,7 @@ class ArmKalmanFilter:
     def __init__(
         self,
         dt: float = 1.0 / 30.0,
-        process_accel_std: float = 2.0,
+        process_accel_std: float | Sequence[float] = 2.0,
         measurement_std: float = 0.02,
         initial_position_std: float = 0.05,
         initial_velocity_std: float = 1.0,
@@ -51,13 +58,14 @@ class ArmKalmanFilter:
             raise ValueError("Exactly four keypoint names are required.")
         if dt <= 0.0:
             raise ValueError("dt must be greater than zero.")
-        if process_accel_std < 0.0 or measurement_std <= 0.0:
+        accel_std = np.broadcast_to(np.asarray(process_accel_std, dtype=float), (len(keypoint_names),))
+        if np.any(~np.isfinite(accel_std)) or np.any(accel_std < 0.0) or measurement_std <= 0.0:
             raise ValueError("Noise standard deviations must be positive.")
 
         self.keypoint_names = tuple(keypoint_names)
         self.num_keypoints = len(self.keypoint_names)
         self.visibility_threshold = float(visibility_threshold)
-        self.process_accel_std = float(process_accel_std)
+        self.process_accel_std = accel_std.copy()   # one per keypoint, shape (4,)
         self.measurement_std = float(measurement_std)
         self.initial_position_std = float(initial_position_std)
         self.initial_velocity_std = float(initial_velocity_std)
@@ -79,13 +87,19 @@ class ArmKalmanFilter:
 
         self.dt = 0.0
         self.F = np.eye(self.STATE_SIZE) # shape (6, 6)
-        self.Q = np.zeros((self.STATE_SIZE, self.STATE_SIZE), dtype=float) # shape (6, 6)
+        self.Q = np.zeros((self.num_keypoints, self.STATE_SIZE, self.STATE_SIZE), dtype=float) # shape (4, 6, 6)
 
         self.innovation = np.zeros((self.num_keypoints, self.MEASUREMENT_SIZE), dtype=float)
         self.p_trace = np.zeros(self.num_keypoints, dtype=float)
         # Normalized innovation squared (chi^2_3 for a consistent filter), NaN without a measurement
         self.nis = np.full(self.num_keypoints, np.nan, dtype=float)
         self.gated = np.zeros(self.num_keypoints, dtype=bool)
+        # Gated measurements whose bearing updated the filter (step with a ray_origin)
+        self.bearing_only = np.zeros(self.num_keypoints, dtype=bool)
+        self.bearing_threshold = (
+            chi2_3_to_chi2_2(self.mahalanobis_threshold) if self.mahalanobis_threshold > 0.0
+            else 0.0)
+        self._ray_origin = None
         # Accepted measurements since the last (re)initialization
         self.update_count = np.zeros(self.num_keypoints, dtype=np.int64)
 
@@ -103,9 +117,9 @@ class ArmKalmanFilter:
         self.F = np.eye(self.STATE_SIZE)
         self.F[0:3, 3:6] = self.dt * np.eye(3)
 
-        # White acceleration noise model
+        # White acceleration noise model, one sigma_a per keypoint
         G = np.vstack((0.5 * dt2 * np.eye(3), self.dt * np.eye(3)))
-        self.Q = (self.process_accel_std**2) * (G @ G.T)
+        self.Q = (self.process_accel_std**2)[:, None, None] * (G @ G.T)
 
     def _initial_covariance(self) -> np.ndarray:
         return np.diag(
@@ -122,9 +136,11 @@ class ArmKalmanFilter:
     def _initialize_keypoint(self, index: int, position: np.ndarray, R_custom: np.ndarray | None) -> None:
         self.x[index, 0:3] = position
         self.x[index, 3:6] = 0.0
+        # One-point initialisation: the position is the measurement, the velocity unknown.
+        # The textbook position prior would be R alone; initial_position_std on top of it
+        # keeps the first frames conservative
         self.P[index] = self._initial_covariance()
         if R_custom is not None:
-            # The first estimate is a measurement less certain than usual: widen the prior (stays PSD)
             self.P[index, 0:3, 0:3] += R_custom
         self.initialized[index] = True
         self.update_count[index] = 1
@@ -134,7 +150,7 @@ class ArmKalmanFilter:
             return
 
         self.x[index] = self.F @ self.x[index]
-        self.P[index] = self.F @ self.P[index] @ self.F.T + self.Q
+        self.P[index] = self.F @ self.P[index] @ self.F.T + self.Q[index]
 
     def _update_keypoint(self, index: int, position: np.ndarray, R_custom: np.ndarray | None = None) -> bool:
         """Execute the update and return True if the measurement is accepted, False if rejected by the gate."""
@@ -156,22 +172,55 @@ class ArmKalmanFilter:
         # If the Mahalanobis distance exceeds the threshold, discard the measurement
         if self.mahalanobis_threshold > 0.0 and mahalanobis_dist_sq > self.mahalanobis_threshold:
             self.gated[index] = True
+            if self._ray_origin is not None:
+                self.bearing_only[index] = self._bearing_update(index, position, R)
             return False
 
+        self._correct(index, self.H, innovation, innovation_covariance, R)
+        self.update_count[index] += 1
+
+        return True
+
+    def _correct(self, index: int, H: np.ndarray, innovation: np.ndarray,
+                 innovation_covariance: np.ndarray, R: np.ndarray) -> None:
         # K = P H^T S^-1, computed without explicitly inverting S
-        PHt = self.P[index] @ self.H.T
+        PHt = self.P[index] @ H.T
         kalman_gain = np.linalg.solve(innovation_covariance.T, PHt.T).T
 
         self.x[index] = self.x[index] + kalman_gain @ innovation
 
         # Joseph form: slightly longer than P=(I-KH)P, but numerically safer
-        correction = self.I - kalman_gain @ self.H
+        correction = self.I - kalman_gain @ H
         self.P[index] = (
             correction @ self.P[index] @ correction.T
             + kalman_gain @ R @ kalman_gain.T
         )
-        self.update_count[index] += 1
 
+    def _bearing_update(self, index: int, position: np.ndarray, R: np.ndarray) -> bool:
+        """Update with the bearing of a gated measurement; True if its own gate accepts it.
+
+        A wrong depth moves a deprojected point along its camera ray only, so the
+        direction b = (z - c)/|z - c| from the ray origin c is still a measurement. Placed
+        at the predicted range rho, the point c + rho b differs from the prediction only
+        across the predicted ray: that 2D difference is the innovation, with
+        H = E^T [I 0] for E a basis across the ray. The across block of R is an angle
+        error times the measured range, rescaled to rho. Gated with chi^2_2 at the
+        probability of the 3D gate.
+        """
+        to_predicted = self.x[index, 0:3] - self._ray_origin
+        to_measured = position - self._ray_origin
+        rho, rho_measured = np.linalg.norm(to_predicted), np.linalg.norm(to_measured)
+        if rho <= 0.0 or rho_measured <= 0.0:
+            return False
+        E = across_basis(to_predicted / rho)
+        innovation = rho * (E.T @ to_measured) / rho_measured
+        H = E.T @ self.H
+        R_across = (rho / rho_measured) ** 2 * (E.T @ R @ E)
+        innovation_covariance = H @ self.P[index] @ H.T + R_across
+        nis = float(innovation @ np.linalg.solve(innovation_covariance, innovation))
+        if nis > self.bearing_threshold:
+            return False
+        self._correct(index, H, innovation, innovation_covariance, R_across)
         return True
 
     def step(
@@ -181,6 +230,7 @@ class ArmKalmanFilter:
         depths: Sequence[float],
         dt: float | None = None,
         measurement_covariances: np.ndarray | None = None,
+        ray_origin: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run one filter cycle for all four keypoints.
 
@@ -192,6 +242,9 @@ class ArmKalmanFilter:
             measurement_covariances: Optional ``(4, 3, 3)`` per-keypoint
                 measurement covariance; a keypoint whose block is not finite
                 uses the default isotropic R.
+            ray_origin: Optional origin of the camera rays (3,), in the frame of
+                the positions. With it, a gated measurement still updates the
+                filter with its bearing; the keypoint does not count as measured.
 
         Returns:
             ``filtered_positions`` with shape ``(4, 3)``;
@@ -232,6 +285,8 @@ class ArmKalmanFilter:
         self.innovation.fill(0.0)
         self.nis.fill(np.nan)
         self.gated.fill(False)
+        self.bearing_only.fill(False)
+        self._ray_origin = None if ray_origin is None else np.asarray(ray_origin, dtype=float)
 
         finite_measurement = np.all(np.isfinite(positions_array), axis=1)
         valid_mask = (
@@ -272,6 +327,11 @@ class ArmKalmanFilter:
         sphere of radius ``max_lengths[k]`` (segment k joins keypoints k and k+1) around its
         measured neighbour (the proximal one first), and its velocity stretching the segment is
         removed. Returns the estimates as ``get_estimates``.
+
+        A heuristic constraint, so P is left as it was. For the position P stays an upper
+        bound: as long as the true keypoint lies inside the ball (max_lengths are
+        anthropometric maxima), the projection onto that convex set never moves the estimate
+        away from it. Removing the stretching velocity has no such guarantee.
         """
         for index in np.flatnonzero(self.initialized & ~np.asarray(measured, dtype=bool)):
             for neighbour in (index - 1, index + 1):

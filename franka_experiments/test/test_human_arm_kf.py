@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from franka_experiments.utils.arm_kf import ArmKalmanFilter
+from franka_experiments.utils.math_utils import across_basis, chi2_3_to_chi2_2
 from franka_experiments.utils.human_measurement import ray_covariance
 
 DT = 1.0 / 30.0
@@ -168,3 +169,81 @@ def test_limit_segments_leaves_measured_and_short_segments_alone():
     assert np.allclose(pos, before[0]) and np.allclose(vel, before[1])
     pos, vel = kf.limit_segments(np.array([True, True, False, True]), MAX_LENGTHS)
     assert np.allclose(pos, before[0]) and np.allclose(vel, before[1])
+
+
+def test_chi2_3_to_chi2_2_keeps_the_gate_probability():
+    assert chi2_3_to_chi2_2(11.34) == pytest.approx(9.21, abs=0.01)    # 99 %
+    assert chi2_3_to_chi2_2(7.815) == pytest.approx(5.991, abs=0.01)   # 95 %
+
+
+@pytest.mark.parametrize("direction", [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.6, -0.48, 0.64]])
+def test_across_basis_spans_the_plane_orthogonal_to_the_ray(direction):
+    d = np.asarray(direction) / np.linalg.norm(direction)
+    E = across_basis(d)
+    np.testing.assert_allclose(E.T @ E, np.eye(2), atol=1e-12)
+    np.testing.assert_allclose(E.T @ d, np.zeros(2), atol=1e-12)
+
+
+CAMERA = np.array([0.0, 0.0, 0.0])
+KEYPOINT = np.array([0.0, 0.0, 2.0])   # 2 m in front of the camera
+
+
+def _settled_at_keypoint():
+    kf = ArmKalmanFilter(dt=DT, process_accel_std=3.0, measurement_std=0.03)
+    for _ in range(30):
+        kf.step(np.tile(KEYPOINT, (4, 1)), np.ones(4), np.ones(4), dt=DT)
+    return kf
+
+
+def _behind_the_arm(true_point, depth_m):
+    """The pixel of true_point read with the depth of what lies behind it (depth_m away)."""
+    bearing = (true_point - CAMERA) / np.linalg.norm(true_point - CAMERA)
+    return CAMERA + depth_m * bearing
+
+
+def test_a_depth_outlier_still_updates_the_bearing():
+    """The wrist moved 5 cm sideways, its depth reads the wall 4 m away: the 3D point is
+    gated, its bearing moves the estimate sideways at the predicted range."""
+    moved = KEYPOINT + np.array([0.05, 0.0, 0.0])
+    measurement = np.tile(KEYPOINT, (4, 1))
+    measurement[2] = _behind_the_arm(moved, 4.0)
+
+    plain = _settled_at_keypoint()
+    pos, _, measured = plain.step(measurement, np.ones(4), np.ones(4), dt=DT)
+    assert plain.gated[2] and not measured[2] and not plain.bearing_only[2]
+    assert abs(pos[2, 0]) < 1e-3                          # the old filter: prediction only
+
+    bearing = _settled_at_keypoint()
+    pos, _, measured = bearing.step(measurement, np.ones(4), np.ones(4), dt=DT,
+                                    ray_origin=CAMERA)
+    assert bearing.gated[2] and bearing.bearing_only[2]
+    assert not measured[2] and bearing.update_count[2] == 30   # never counts as measured
+    assert 0.01 < pos[2, 0] < 0.05                        # toward the pixel...
+    assert np.linalg.norm(pos[2] - CAMERA) == pytest.approx(2.0, abs=0.005)   # ...not the wall
+    assert not bearing.bearing_only[[0, 1, 3]].any()
+
+
+def test_a_wrong_pixel_fails_the_bearing_gate_too():
+    measurement = np.tile(KEYPOINT, (4, 1))
+    measurement[2] = _behind_the_arm(KEYPOINT + np.array([0.6, 0.0, 0.0]), 4.0)
+    kf = _settled_at_keypoint()
+    pos, _, measured = kf.step(measurement, np.ones(4), np.ones(4), dt=DT, ray_origin=CAMERA)
+    assert kf.gated[2] and not kf.bearing_only[2] and not measured[2]
+    assert abs(pos[2, 0]) < 1e-3
+
+
+def test_process_noise_can_differ_per_keypoint():
+    """sigma_a per keypoint: Q scales with sigma_a^2, and a larger one follows a jump faster."""
+    kf = ArmKalmanFilter(dt=DT, process_accel_std=[1.0, 2.0, 3.0, 4.0], measurement_std=0.03)
+    np.testing.assert_allclose(kf.Q[3], 16.0 * kf.Q[0])
+    np.testing.assert_allclose(ArmKalmanFilter(dt=DT, process_accel_std=3.0).Q[0], kf.Q[2])
+    for _ in range(30):
+        kf.step(np.zeros((4, 3)), np.ones(4), np.ones(4), dt=DT)
+    pos, _, _ = kf.step(np.full((4, 3), 0.05), np.ones(4), np.ones(4), dt=DT)
+    assert np.all(np.diff(pos[:, 0]) > 0.0)              # shoulder slowest, index fastest
+
+
+@pytest.mark.parametrize("sigma_a", [[1.0, 2.0], [1.0, 2.0, -3.0, 4.0], [1.0, np.nan, 2.0, 3.0]])
+def test_process_noise_must_be_one_valid_value_per_keypoint(sigma_a):
+    with pytest.raises(ValueError):
+        ArmKalmanFilter(dt=DT, process_accel_std=sigma_a)
