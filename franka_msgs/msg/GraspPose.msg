@@ -8,10 +8,12 @@ builtin_interfaces/Time source_stamp
 geometry_msgs/Pose pose
 # Gripper opening of the grasp [m].
 float32 width
-# Backend score of this grasp (GSNet / AnyGrasp), not a calibrated probability.
+# HGGD score of this grasp, not a calibrated probability.
 float32 score
 # 0..1: score clipped to [0, 1] times (1 + recent grasps within 3 cm and 30 deg of this one) /
 # (1 + recent grasps), over the last 10 frames: a grasp that keeps coming back is more trustworthy.
 float32 confidence
+# Computed on the gripper camera (D405) frame, not on the main camera one.
+bool gripper_camera
 # Do not use the grasp after this time (header stamp + validity of the node).
 builtin_interfaces/Time valid_until

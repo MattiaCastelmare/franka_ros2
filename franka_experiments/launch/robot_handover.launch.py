@@ -126,7 +126,7 @@ def _launch_setup(context):
 
         # object tracking -> /handover/hand_object (needs Hands23)
         pipeline_node('grasp', yaml=False, condition=IfCondition(LaunchConfiguration('start_grasp'))),
-        # grasp pose -> /handover/grasp_pose (GSNet, or AnyGrasp with backend:=anygrasp)
+        # grasp pose -> /handover/grasp_pose (HGGD on the main camera and on the D405)
         ExecuteProcess(cmd=['python3', SCRIPTS + 'handover_grasp.py', 'pose',
                             '--ros-args', '-p', 'use_sim_time:=false'],
                        output='screen', additional_env=PERCEPTION_ENV,

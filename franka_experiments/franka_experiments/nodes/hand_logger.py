@@ -190,7 +190,8 @@ ROBOT_COLUMNS = (
 
 OBSERVER_COLUMNS = ['observer_state', 'observer_state_name', 'observer_candidate', 'observer_closing_m_s']
 GRASP_COLUMNS = (['grasp_valid', 'grasp_new', 'grasp_age_s', 'grasp_x', 'grasp_y', 'grasp_z',
-                  'grasp_qx', 'grasp_qy', 'grasp_qz', 'grasp_qw', 'grasp_width_m', 'grasp_score', 'grasp_confidence'])
+                  'grasp_qx', 'grasp_qy', 'grasp_qz', 'grasp_qw', 'grasp_width_m', 'grasp_score', 'grasp_confidence',
+                  'grasp_gripper_camera'])
 
 
 def seconds(stamp):
@@ -298,7 +299,7 @@ class HandTrackingCsvLogger(Node):
         p, q = g.pose.position, g.pose.orientation
         new = seconds(g.source_stamp) in (0.0, seconds(g.header.stamp))  # 0: publisher without source_stamp
         return [int(t <= seconds(g.valid_until)), int(new), t - seconds(g.header.stamp),
-                p.x, p.y, p.z, q.x, q.y, q.z, q.w, g.width, g.score, g.confidence]
+                p.x, p.y, p.z, q.x, q.y, q.z, q.w, g.width, g.score, g.confidence, int(g.gripper_camera)]
 
     def phase_row(self, msg):
         return [self.phase]

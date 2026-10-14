@@ -82,7 +82,7 @@ def generate_launch_description():
         pipeline_node('distance_handover_estimator', name='distance_handover_estimator'),
         pipeline_node('grasp', yaml=False),
 
-        # grasp pose -> /handover/grasp_pose (GSNet, or AnyGrasp with backend:=anygrasp)
+        # grasp pose -> /handover/grasp_pose (HGGD on the main camera and on the D405)
         ExecuteProcess(cmd=['python3', SCRIPTS + 'handover_grasp.py', 'pose',
                             '--ros-args', '-p', 'use_sim_time:=true'],
                        output='screen', condition=IfCondition(arg('start_grasp_pose'))),

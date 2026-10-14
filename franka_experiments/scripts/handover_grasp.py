@@ -5,24 +5,32 @@
   python3 handover_grasp.py executor ...  grasp cycle on the handover commander (robot_handover grasp_executor:=true)
 
 GRASP POSE
-  cloud      aligned depth around the object of HandObjectState (+-crop_m), at most max_rate_hz
-  backend    GSNet (default) or AnyGrasp (backend:=anygrasp)
-  threads    GPU thread (cloud + backend) and CPU thread (filters, collisions, choice) on consecutive
-             frames: GSNet 49 ms, collisions on all its 1024 grasps 109 ms on the laptop (RTX 3050)
+  cameras    main camera (camera_extrinsics.yaml) and gripper D405 (TF base -> fr3_link8 + d405_extrinsics.yaml,
+             gripper_camera:=true). HGGD runs on one frame per cycle, the D405 one first when the object is in its
+             view: GraspNet scale at 0.1-0.5 m, sharper depth, no main camera calibration error. Main camera grasps
+             wait while a D405 grasp is younger than propagate_s: no switching between the two calibrations
+  region     main camera: Hands23 object mask with the hand pixels kept (the Hands23 hand mask often holds the
+             object; the finger filters keep the hand safe). D405 (no Hands23 there): the depth points within half
+             the object extent + 4 cm (calibrations) of the HandObjectState centroid, only with all of it in the
+             image (an object cut by the border, e.g. the D405 at home, gives grasps on its visible edge)
+  backend    HGGD (Chen et al., RA-L 2023, MIT) with TensorRT FP16 nets, hggd_num_point scene points within crop_m
+             of the object: 72 / 88 ms (p50 / p90) under the full pipeline on the laptop (RTX 3050), 20 ms with a
+             free GPU; the tracker stays at 30 Hz
+  threads    GPU thread (cloud + HGGD) and CPU thread (filters, collisions, choice) on consecutive frames
   filter     on the object, approach from the robot TCP within approach_thresh_deg, opening
-             <= max_gripper_width_m, fingertips >= hand_clearance_m from the hand, then collision-free
-             (GSNet), checked in score order 64 at a time
+             <= max_gripper_width_m, fingertips >= hand_clearance_m from the hand, then collision-free,
+             checked in score order 64 at a time
   palm       approach within palm_approach_deg of -palm normal (HandState, palm UP from above, SIDE from the
              palm side, DOWN from below): never through the back of the hand. 180 = off
   choice     best score; the previous grasp is kept while close and >= keep_ratio of the best
-  rate       between two backend grasps the last one is republished at every HandState (camera rate),
-             moved with the palm translation, up to propagate_s old: GSNet under the full pipeline
-             load is ~160 ms (~6 Hz) on the laptop GPU. source_stamp = the backend frame
+  rate       between two HGGD grasps the last one is republished at every HandState (camera rate), moved with
+             the palm translation, up to propagate_s old. source_stamp = the HGGD frame
   output     PoseStamped in the base frame, Franka TCP convention (z approach, y closing)
 
 GRASP EXECUTOR
-  HOME -> PREGRASP (pregrasp_m back along the approach) -> APPROACH (approach_step_m) -> CLOSE
-  -> HOLD (hold_s) -> OPEN -> RETREAT -> RETURN -> HOME
+  HOME -> PREGRASP (pregrasp_m back along the approach: a standoff where the D405 sees the object)
+  -> APPROACH (follows the fresh grasps that stay within 3 cm / 30 deg, frozen in the last freeze_m; slows down
+  to approach_step_m in the last slow_m) -> CLOSE -> HOLD (hold_s) -> OPEN -> RETREAT -> RETURN -> HOME
   A cycle starts with an empty hand first (rearm_s), an object in the hand, a fresh reachable grasp
   and a trusted hand. Hand / grasp lost (lost_s, approach_lost_s) or phase_timeout_s -> RETURN.
 """
@@ -32,8 +40,6 @@ import site
 import sys
 import threading
 import time
-import types
-from argparse import Namespace
 
 from collections import deque
 
@@ -45,13 +51,16 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from franka_msgs.msg import GraspPose, HandObjectState, HandoverDistance, HandState, HandTrackingFiltered
+from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation, Slerp
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from franka_experiments.utils.kinematics import compute_arm_jacobian, so3_log
 from franka_experiments.utils.node_runtime import run_node_main
@@ -84,72 +93,154 @@ def collisions(points, t, R, widths, depths, heights, finger_w=0.01, finger_l=0.
     return hits / (volume / voxel ** 3 + 1e-6) > thresh
 
 
-class Gsnet:
-    """GSNet inference -> grasps (graspnet format) on the whole cloud."""
+class TrtNet:
+    """TensorRT FP16 engine of an HGGD net, built once from its ONNX: torch CUDA tensors in and out."""
 
-    def __init__(self, root, venv, checkpoint, num_point=15000, voxel=0.005):
-        site.addsitedir(f'{venv}/lib/python3.10/site-packages')  # MinkowskiEngine, pointnet2
-        sys.path[:0] = [root, f'{root}/utils', f'{root}/dataset', f'{root}/pointnet2']
-        # knn (THC API, no longer builds) only makes training labels and open3d only draws:
-        # empty stand-ins, inference never calls them
-        for name in ('knn', 'knn.knn_modules', 'open3d'):
-            sys.modules.setdefault(name, types.ModuleType(name))
-        sys.modules['knn.knn_modules'].knn = None
+    def __init__(self, trt_dir, name, profile=None):
+        import tensorrt as trt
+        log, plan = trt.Logger(trt.Logger.WARNING), f'{trt_dir}/{name}.plan'
+        if not os.path.exists(plan):  # engines are per GPU
+            builder = trt.Builder(log)
+            net = builder.create_network(0)
+            parser = trt.OnnxParser(net, log)
+            with open(f'{trt_dir}/{name}.onnx', 'rb') as file:
+                if not parser.parse(file.read()):
+                    raise RuntimeError(parser.get_error(0))
+            config = builder.create_builder_config()
+            config.set_flag(trt.BuilderFlag.FP16)
+            if profile:
+                shapes = builder.create_optimization_profile()
+                for name_in, (low, opt, high) in profile.items():
+                    shapes.set_shape(name_in, low, opt, high)
+                config.add_optimization_profile(shapes)
+            with open(plan, 'wb') as file:
+                file.write(builder.build_serialized_network(net, config))
+        with open(plan, 'rb') as file:
+            engine = trt.Runtime(log).deserialize_cuda_engine(file.read())
+        self.ctx = engine.create_execution_context()
+        names = [engine.get_tensor_name(i) for i in range(engine.num_io_tensors)]
+        is_input = lambda n: engine.get_tensor_mode(n) == trt.TensorIOMode.INPUT
+        self.inputs, self.outputs = [n for n in names if is_input(n)], [n for n in names if not is_input(n)]
 
+    def __call__(self, *args):
         import torch
-        from models.graspnet import GraspNet, pred_decode
-        from graspnet_dataset import minkowski_collate_fn
-
-        self.torch, self.decode, self.collate = torch, pred_decode, minkowski_collate_fn
-        self.net = GraspNet(seed_feat_dim=512, is_training=False).cuda().eval()
-        self.net.load_state_dict(torch.load(checkpoint, map_location='cuda')['model_state_dict'])
-        self.num_point, self.voxel = num_point, voxel
-
-    def __call__(self, points):
-        n = len(points)
-        idx = (np.random.choice(n, self.num_point, replace=False) if n >= self.num_point
-               else np.r_[np.arange(n), np.random.choice(n, self.num_point - n, replace=True)])
-        cloud = points[idx].astype(np.float32)
-
-        batch = self.collate([{'point_clouds': cloud, 'coors': cloud / self.voxel,
-                               'feats': np.ones_like(cloud)}])
-        for key, value in batch.items():
-            if 'list' in key:
-                batch[key] = [[v.cuda() for v in level] for level in value]
-            else:
-                batch[key] = value.cuda()
-
-        with self.torch.no_grad():
-            p = self.decode(self.net(batch))[0].float().cpu().numpy()
-
-        # score, width, height, depth, rotation (9), translation (3), object id
-        return dict(score=p[:, 0], width=p[:, 1], height=p[:, 2], depth=p[:, 3],
-                    R=p[:, 4:13].reshape(-1, 3, 3), t=p[:, 13:16])
+        self.args = [a.contiguous().float() for a in args]  # alive until the stream has run
+        for name, a in zip(self.inputs, self.args):
+            self.ctx.set_input_shape(name, tuple(a.shape))
+            self.ctx.set_tensor_address(name, a.data_ptr())
+        outs = [torch.empty(tuple(self.ctx.get_tensor_shape(n)), device='cuda') for n in self.outputs]
+        for name, out in zip(self.outputs, outs):
+            self.ctx.set_tensor_address(name, out.data_ptr())
+        self.ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream)
+        return outs
 
 
-class AnyGrasp:
-    """AnyGrasp SDK: region / approach steering and collision check inside the SDK."""
+class Hggd:
+    """HGGD inference -> grasps (graspnet format: x approach, y closing) in the camera frame.
 
-    def __init__(self, sdk_dir, checkpoint, max_width, height):
-        sys.path.insert(0, sdk_dir)
-        os.chdir(sdk_dir)  # the SDK looks for license/ here
-        from gsnet import create_detector
-        self.detector = create_detector(Namespace(checkpoint_path=checkpoint,
-                                                  max_gripper_width=min(0.1, max_width),
-                                                  gripper_height=height))
-        if self.detector is None:
-            raise RuntimeError('license check failed')
+    HGGD learns the 2D grasp widths in pixels on GraspNet (RealSense fx 927): a window around the object is zoomed
+    to 1280x720 (K scaled, at most max_zoom) so that the object has the pixel size it would have at ref_m. ref_m 0.3:
+    the widths match the objects (ball ~7 cm -> 8-9 cm, screwdriver handle 6 cm); at 0.6 they came out 1.5-2x wider
+    (14/10, bags at 1.4 m). Heatmap only on the object pixels (region steering), then the 6D stage on the scene
+    points within crop_m of the object."""
 
-    def __call__(self, points, region, approach, thresh):
-        g = self.detector.get_grasp(points, {'region_steering': region, 'collision_detection': True,
-                                             'dense_grasp': False, 'approach_steering': approach,
-                                             'approach_thresh': thresh})
-        if g is None or len(g) == 0:
+    def __init__(self, root, num_point=8000, crop_m=0.25, ref_m=0.3, max_zoom=10.0):
+        site.addsitedir(f'{root}/venv/lib/python3.10/site-packages')  # numba
+        sys.path[:0] = [f'{root}/stubs', f'{root}/HGGD']  # stand-ins of pytorch3d & co.: stubs/README.txt
+        import torch
+        import torch.nn.functional as F
+        import dataset.config as config
+        import dataset.evaluation as evaluation
+        import dataset.pc_dataset_tools as pc_tools
+
+        # intrinsics of the zoomed frame, in every HGGD module that imported get_camera_intrinsic (2D -> 6D too)
+        self.K, fixed = np.eye(3), config.get_camera_intrinsic
+        for module in list(sys.modules.values()):
+            if getattr(module, 'get_camera_intrinsic', None) is fixed:
+                module.get_camera_intrinsic = lambda camera=None: self.K.copy()
+        self.torch, self.F, self.ev, self.pc = torch, F, evaluation, pc_tools
+        self.num_point, self.crop_m, self.ref_m, self.max_zoom = num_point, crop_m, ref_m, max_zoom
+
+        ck = torch.load(f'{root}/ckpt/HGGD_realsense_checkpoint', map_location='cuda', weights_only=False)
+        self.anchors = {'gamma': ck['gamma'], 'beta': ck['beta']}  # the nets run as TensorRT engines
+        anchornet = TrtNet(f'{root}/trt', 'anchornet')
+        self.anchornet = lambda x: (lambda o: (tuple(o[:5]), o[5]))(anchornet(x))  # 2D maps, features
+        groups = {'pc': ((1, 512, 35), (48, 512, 35), (128, 512, 35)), 'info': ((1, 3), (48, 3), (128, 3))}
+        self.localnet = TrtNet(f'{root}/trt', 'localnet', groups)  # 1-128 local point groups
+
+    def __call__(self, rgb, depth, K, region):
+        """rgb HxWx3 uint8, depth [m] HxW, K (fx, fy, cx, cy), region HxW bool: the object pixels (not empty)."""
+        torch, F = self.torch, self.F
+        fx, fy, cx, cy = K
+        h, w = depth.shape
+        vv, uu = np.nonzero(region)
+        z_obj = float(np.median(depth[region]))
+        zoom = float(np.clip(927.0 / fx * z_obj / self.ref_m, 1280 / w, self.max_zoom))
+        ww, hh = round(1280 / zoom), round(720 / zoom)
+        u0 = int(np.clip(int(uu.mean()) - ww // 2, 0, max(0, w - ww)))
+        v0 = int(np.clip(int(vv.mean()) - hh // 2, 0, max(0, h - hh)))
+        win, s = np.s_[v0:v0 + hh, u0:u0 + ww], 1280 / ww
+        self.K[:] = [[s * fx, 0, s * (cx - u0)], [0, s * fy, s * (cy - v0)], [0, 0, 1]]
+        d = torch.from_numpy(np.clip(depth[win] * 1e3, 0, 3000)).float().cuda()        # mm
+        c = torch.from_numpy(rgb[win] / 255.0).float().cuda().permute(2, 1, 0)[None]   # 1x3xWxH
+        depth_v = F.interpolate(d.T[None, None], (1280, 720), mode='nearest')[0]       # 1x1280x720
+        rgb_v = F.interpolate(c, (1280, 720), mode='bilinear', align_corners=False)
+
+        with torch.no_grad():
+            # scene points within crop_m of the object, in pixels and in depth
+            vv, uu = np.nonzero(region[win])
+            r = self.crop_m * fx / max(z_obj, 0.1)
+            crop = torch.zeros((1280, 720), dtype=torch.bool, device='cuda')
+            crop[int(max(0, s * (uu.min() - r))):int(s * (uu.max() + r)) + 1,
+                 int(max(0, s * (vv.min() - r))):int(s * (vv.max() + r)) + 1] = True
+            crop &= (depth_v[0] / 1e3 - z_obj).abs() < self.crop_m
+            points = self._scene_points(rgb_v, depth_v, crop)
+            if points.shape[1] < 32:  # no depth around the object
+                return None
+
+            x_d = F.interpolate(depth_v[None], (640, 360))[0] / 1e3
+            x = torch.cat([torch.clip(x_d - x_d.mean(), -1, 1)[None], F.interpolate(rgb_v, (640, 360))], 1)
+            pred_2d, feats = self.anchornet(x)
+            loc_map, cls_mask, th, dz, dw = self.ev.anchor_output_process(*pred_2d, sigma=10)
+            steer = F.interpolate(torch.from_numpy(region[win].T.astype(np.float32))[None, None], loc_map.shape)
+            rect = self.ev.detect_2d_grasp(loc_map * steer[0, 0].numpy(), cls_mask, th, dz, dw, ratio=8,
+                                           anchor_k=6, anchor_w=50.0, anchor_z=20.0, mask_thre=0.01, center_num=48,
+                                           grid_size=8, grasp_nms=8, reduce='max')
+            if rect.size == 0:
+                return None
+            points = self.pc.feature_fusion(points[..., :3], feats, self._xyz_maps(depth_v))
+            rects = [rect]
+            pc_group, valid = self.pc.data_process(points, depth_v, rects, 48, 512, (640, 360), min_points=32,
+                                                   is_training=False)
+            if not len(pc_group):
+                return None
+            info = torch.from_numpy(np.vstack([rects[0].thetas, rects[0].widths, rects[0].depths]).T).float().cuda()
+            _, pred, offset = self.localnet(pc_group, info)
+            _, rect_6d = self.ev.detect_6d_grasp_multi(rects[0], pred, offset, valid, (640, 360), self.anchors, k=10)
+            gg = rect_6d.to_6d_grasp_group(depth=0.02)
+        if not len(gg):
             return None
+        return dict(score=gg.scores, width=gg.widths, height=gg.heights, depth=gg.depths, R=gg.rotations,
+                    t=gg.translations)
 
-        g = g.nms()
-        return dict(score=np.asarray(g.scores, float), width=g.widths, height=g.heights, depth=g.depths,
-                    R=g.rotation_matrices, t=g.translations)
+    def _scene_points(self, rgb, depth, crop):
+        torch = self.torch
+        u, v = torch.meshgrid(torch.arange(1280, device='cuda'), torch.arange(720, device='cuda'), indexing='ij')
+        z = depth[0] / 1e3
+        mask = (z > 0) & crop
+        pts = torch.stack([(u - self.K[0, 2]) / self.K[0, 0] * z, (v - self.K[1, 2]) / self.K[1, 1] * z, z], -1)[mask]
+        cols = rgb[0][:, mask].T
+        if len(pts) >= self.num_point:
+            idx = torch.randperm(len(pts), device='cuda')[:self.num_point]
+            pts, cols = pts[idx], cols[idx]
+        return torch.cat([pts, cols], 1)[None]
+
+    def _xyz_maps(self, depth):
+        torch, f = self.torch, 1280 / 80
+        d = self.F.interpolate(depth[:, None], size=(80, 45), mode='nearest').squeeze(1) / 1e3
+        u, v = torch.meshgrid(torch.arange(80, device='cuda'), torch.arange(45, device='cuda'), indexing='ij')
+        return torch.stack([(u - self.K[0, 2] / f) / (self.K[0, 0] / f) * d,
+                            (v - self.K[1, 2] / f) / (self.K[1, 1] / f) * d, d], -1).permute(0, 3, 1, 2)
 
 
 class GraspPoseNode(Node):
@@ -157,7 +248,6 @@ class GraspPoseNode(Node):
     def __init__(self):
         super().__init__('grasp_pose')
         par = lambda n, v: self.declare_parameter(n, v).value
-        self.backend_name = par('backend', 'gsnet')
         self.max_width = float(par('max_gripper_width_m', 0.08))   # Franka hand
         self.crop_m = float(par('crop_m', 0.25))                   # cloud around the object
         self.approach_thresh = np.radians(float(par('approach_thresh_deg', 60.0)))
@@ -169,36 +259,41 @@ class GraspPoseNode(Node):
         self.palm_approach = np.radians(float(par('palm_approach_deg', 70.0)))
         self.palm_max_age_s = float(par('palm_max_age_s', 0.3))
         self.propagate_s = float(par('propagate_s', 0.5))
+        self.gripper = bool(par('gripper_camera', True))           # D405 on the flange
         self.palms = deque(maxlen=60)  # (stamp, palm position) of HandState, for the moved grasp
-        self.source = None             # (GraspPose, palm position at its stamp) of the last backend grasp
+        self.source = None             # (GraspPose, palm position at its stamp) of the last HGGD grasp
+        self.gripper_t = -np.inf       # stamp of the last D405 grasp
         self.period = 1.0 / float(par('max_rate_hz', 30.0))
 
-        g = '/ros2_ws/graspness'
-        backend_args = {
-            'gsnet': (par('gsnet_root', f'{g}/graspness_unofficial'), par('gsnet_venv', f'{g}/venv'),
-                      par('gsnet_checkpoint', f'{g}/ckpt/minkuresunet_realsense.tar')),
-            'anygrasp': (par('anygrasp_sdk_dir', '/ros2_ws/anygrasp/grasp_detection'),
-                         par('anygrasp_checkpoint', 'log/checkpoint_detection.tar'), self.max_width, 0.03)}
+        poses = {}
+        for name in ('camera_extrinsics', 'd405_extrinsics'):
+            with open(os.path.join(get_package_share_directory('franka_experiments'), 'config', name + '.yaml'),
+                      'r', encoding='utf-8') as file:
+                e = yaml.safe_load(file)
+            poses[name] = (e['parent_frame'], Rotation.from_quat([e['rotation'][k] for k in 'xyzw']).as_matrix(),
+                           np.array([e['translation'][k] for k in 'xyz']))
+        self.base_frame, *self.camera_pose = poses['camera_extrinsics']  # camera -> base
+        self.link, *self.d405_on_link = poses['d405_extrinsics']          # D405 -> fr3_link8
 
-        with open(os.path.join(get_package_share_directory('franka_experiments'), 'config',
-                               'camera_extrinsics.yaml'), 'r', encoding='utf-8') as file:
-            ext = yaml.safe_load(file)
-        t, q = ext['translation'], ext['rotation']
-        self.t = np.array([t['x'], t['y'], t['z']])
-        self.R = Rotation.from_quat([q['x'], q['y'], q['z'], q['w']]).as_matrix()  # camera -> base
-        self.base_frame = ext['parent_frame']
-
-        self.bridge, self.K = CvBridge(), None
-        self.depth = self.obj = self.hand = self.ee = self.palm = None
+        self.bridge, self.K, self.frames = CvBridge(), {}, {}  # per camera: intrinsics, newest colour + depth
+        self.obj = self.hand = self.ee = self.palm = None
         self.last = None  # (tip, approach) of the published grasp, base frame
         self.recent = deque(maxlen=10)  # (tip, approach) of the last frames that gave a grasp
         self.lock = threading.Lock()
 
         self.pub = self.create_publisher(GraspPose, '/handover/grasp_pose', 10)
-        cam = '/camera/camera/aligned_depth_to_color/'
-        self.create_subscription(CameraInfo, cam + 'camera_info', self.on_info, qos_profile_sensor_data)
-        self.create_subscription(Image, cam + 'image_raw', lambda m: self._set('depth', m),
-                                 qos_profile_sensor_data)
+        self.syncs = []
+        for cam, ns in (('camera', '/camera/camera'), ('d405', '/d405/d405'))[:1 + self.gripper]:
+            sync = ApproximateTimeSynchronizer(
+                [Subscriber(self, Image, ns + topic, qos_profile=qos_profile_sensor_data)
+                 for topic in ('/color/image_raw', '/aligned_depth_to_color/image_raw')], queue_size=2, slop=0.02)
+            sync.registerCallback(lambda rgb, depth, cam=cam: self.on_frame(cam, rgb, depth))
+            self.syncs.append(sync)
+            self.create_subscription(CameraInfo, ns + '/aligned_depth_to_color/camera_info',
+                                     lambda m, cam=cam: self.on_info(cam, m), qos_profile_sensor_data)
+        if self.gripper:
+            self.tf = Buffer()
+            self.tf_listener = TransformListener(self.tf, self)
         self.create_subscription(HandObjectState, '/handover/hand_object', lambda m: self._set('obj', m), 10)
         self.create_subscription(HandTrackingFiltered, '/handover/hand_tracking_filtered',
                                  lambda m: self._set('hand', m), 10)
@@ -206,20 +301,19 @@ class GraspPoseNode(Node):
         self.create_subscription(HandState, '/handover/hand_state', self.on_palm, 10)
 
         self.stats = dict.fromkeys(
-            ('frames', 'no object', 'no grasp', 'filtered', 'near hand', 'palm side', 'collision', 'published',
-             'moved'), 0)
+            ('frames', 'no object', 'd405', 'no grasp', 'filtered', 'near hand', 'palm side', 'collision',
+             'published', 'published d405', 'moved'), 0)
         self.create_timer(5.0, self.log_stats)
         self.stop = threading.Event()
         try:
-            self.backend = {'gsnet': Gsnet, 'anygrasp': AnyGrasp}[self.backend_name](
-                *backend_args[self.backend_name])
-            self.get_logger().info(f'grasp backend: {self.backend_name}')
+            self.backend = Hggd(par('hggd_root', '/ros2_ws/hggd'), int(par('hggd_num_point', 8000)), self.crop_m)
+            self.get_logger().info('grasp backend: HGGD (TensorRT)' + (', D405 first' if self.gripper else ''))
             self.job, self.job_ready = None, threading.Event()  # GPU thread -> CPU thread, latest frame only
             threading.Thread(target=self.worker, daemon=True).start()
             threading.Thread(target=self.selector, daemon=True).start()
         except Exception as error:
             self.backend = None
-            self.get_logger().error(f'grasp backend {self.backend_name} not available ({error}): idle')
+            self.get_logger().error(f'HGGD not available ({error}): idle')
 
     def log_stats(self):
         if self.backend is not None and self.stats['frames']:
@@ -229,6 +323,10 @@ class GraspPoseNode(Node):
     def _set(self, key, msg):
         with self.lock:
             setattr(self, key, msg)
+
+    def on_frame(self, cam, rgb, depth):
+        with self.lock:
+            self.frames[cam] = (rgb, depth)
 
     def on_palm(self, msg):
         t = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
@@ -245,7 +343,8 @@ class GraspPoseNode(Node):
         src, palm0 = source
         if not 0.0 < t - (src.header.stamp.sec + 1e-9 * src.header.stamp.nanosec) <= self.propagate_s:
             return
-        out = GraspPose(source_stamp=src.source_stamp, width=src.width, score=src.score, confidence=src.confidence)
+        out = GraspPose(source_stamp=src.source_stamp, width=src.width, score=src.score, confidence=src.confidence,
+                        gripper_camera=src.gripper_camera)
         out.header.frame_id, out.header.stamp = src.header.frame_id, msg.header.stamp
         out.pose.orientation = src.pose.orientation
         p = np.array([src.pose.position.x, src.pose.position.y, src.pose.position.z]) + palm - palm0
@@ -254,27 +353,39 @@ class GraspPoseNode(Node):
         self.pub.publish(out)
         self.stats['moved'] += 1
 
-    def on_info(self, msg):
+    def on_info(self, cam, msg):
         if msg.k[0] > 0.0:
-            self.K = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])
+            self.K[cam] = (msg.k[0], msg.k[4], msg.k[2], msg.k[5])
+
+    def d405_pose(self, stamp):
+        """D405 -> base at stamp (TF base -> fr3_link8, d405_extrinsics.yaml); None without TF."""
+        try:
+            tf = self.tf.lookup_transform(self.base_frame, self.link, Time.from_msg(stamp)).transform
+        except TransformException:
+            return None
+        q, p = tf.rotation, tf.translation
+        R_link = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        R, t = self.d405_on_link
+        return R_link @ R, R_link @ t + np.array([p.x, p.y, p.z])
 
     # ---------------------------------------------------------------- worker
     def worker(self):
         while rclpy.ok() and not self.stop.is_set():
             t0 = time.monotonic()
             with self.lock:
-                depth_msg, obj, hand, ee = self.depth, self.obj, self.hand, self.ee
-                self.depth = None
+                frames, obj, hand, ee = self.frames, self.obj, self.hand, self.ee
+                self.frames = {}
 
-            if depth_msg is not None and self.K is not None:
+            present = obj is not None and obj.object_present
+            if 'camera' in frames and 'camera' in self.K:
                 self.stats['frames'] += 1
-            if depth_msg is not None and self.K is not None and not (obj is not None and obj.object_present):
-                self.stats['no object'] += 1
-            if depth_msg is not None and self.K is not None and obj is not None and obj.object_present:
+                self.stats['no object'] += not present
+            for cam in ('d405', 'camera') if present else ():  # the D405 first; one HGGD call per cycle
                 try:
-                    self.step(depth_msg, obj, hand, ee)
+                    if cam in frames and cam in self.K and self.step(cam, *frames[cam], obj, hand, ee):
+                        break
                 except Exception as error:
-                    self.get_logger().warn(f'grasp step failed: {error}', throttle_duration_sec=5.0)
+                    self.get_logger().warn(f'grasp step failed ({cam}): {error}', throttle_duration_sec=5.0)
 
             time.sleep(max(0.005, self.period - (time.monotonic() - t0)))
 
@@ -290,77 +401,91 @@ class GraspPoseNode(Node):
                 except Exception as error:
                     self.get_logger().warn(f'grasp choice failed: {error}', throttle_duration_sec=5.0)
 
-    def step(self, depth_msg, obj, hand, ee):
+    def step(self, cam, rgb_msg, depth_msg, obj, hand, ee):
+        """HGGD on a frame of cam; False when nothing ran (object out of view, no TF, D405 grasp still moved)."""
+        stamp = lambda m: m.header.stamp.sec + 1e-9 * m.header.stamp.nanosec
+        t = stamp(depth_msg)
         centre = np.array([obj.object_centroid_3d.x, obj.object_centroid_3d.y, obj.object_centroid_3d.z])
         contour = np.array(obj.contour_px, np.int32).reshape(-1, 2)
-        stamp = lambda m: m.header.stamp.sec + 1e-9 * m.header.stamp.nanosec
-        if not np.isfinite(centre).all() or len(contour) < 3 or abs(stamp(obj) - stamp(depth_msg)) > 0.3:
-            return
+        if not np.isfinite(centre).all() or abs(stamp(obj) - t) > 0.3:
+            return False
+        if cam == 'camera' and (len(contour) < 3 or t - self.gripper_t <= self.propagate_s):
+            return False
+        pose = self.camera_pose if cam == 'camera' else self.d405_pose(depth_msg.header.stamp)
+        if pose is None:
+            return False
+        R, t_cam = pose  # camera -> base
 
         depth = self.bridge.imgmsg_to_cv2(depth_msg).astype(np.float32)
         if depth_msg.encoding == '16UC1':
             depth *= 1e-3
 
-        # crop around the object (+-crop_m) and back-project it; region = pixels inside the contour
-        fx, fy, cx, cy = self.K
-        c_cam = self.R.T @ (centre - self.t)
-        r = int(self.crop_m * fx / max(c_cam[2], 0.1))
+        # crop around the object (+-crop_m) and back-project it
+        fx, fy, cx, cy = self.K[cam]
+        c_cam = R.T @ (centre - t_cam)
+        if c_cam[2] < 0.07:  # behind the camera or under the D405 minimum range
+            return False
+        r = int(self.crop_m * fx / c_cam[2])
         u_c, v_c = int(fx * c_cam[0] / c_cam[2] + cx), int(fy * c_cam[1] / c_cam[2] + cy)
         h, w = depth.shape
+        radius = 0.5 * (obj.dimensions.x if np.isfinite(obj.dimensions.x) else 0.08) + 0.04
+        r_obj = radius * fx / c_cam[2]
+        if cam == 'd405' and not (r_obj <= u_c < w - r_obj and r_obj <= v_c < h - r_obj):
+            return False
         u0, u1, v0, v1 = max(0, u_c - r), min(w, u_c + r), max(0, v_c - r), min(h, v_c + r)
         if u1 - u0 < 8 or v1 - v0 < 8:
-            return
+            return False
 
-        mask = np.zeros((h, w), np.uint8)
-        cv2.fillPoly(mask, [contour], 1)
         v, u = np.mgrid[v0:v1, u0:u1]
         z = depth[v0:v1, u0:u1]
-        keep = (z > 0.1) & (np.abs(z - c_cam[2]) < self.crop_m)
+        keep = (z > 0.07) & (np.abs(z - c_cam[2]) < self.crop_m)
         u, v, z = u[keep], v[keep], z[keep]
         points = np.column_stack([(u - cx) * z / fx, (v - cy) * z / fy, z]).astype(np.float32)
-        region = mask[v, u].astype(bool)
+        if cam == 'camera':
+            mask = np.zeros((h, w), np.uint8)
+            cv2.fillPoly(mask, [contour], 1)
+            region = mask[v, u].astype(bool)
+        else:
+            region = np.linalg.norm(points - c_cam, axis=1) < radius
         if region.sum() < 30:
-            return
+            return False
+        image_region = np.zeros((h, w), bool)
+        image_region[v[region], u[region]] = True
+        self.stats['d405'] += cam == 'd405'
 
-        # approach from the robot TCP towards the object, in the camera frame
+        g = self.backend(self.bridge.imgmsg_to_cv2(rgb_msg, 'rgb8'), depth, self.K[cam], image_region)
+        if g is None:
+            self.stats['no grasp'] += 1
+            return True
+        # on the object, from the robot side, within the gripper opening (collisions: CPU thread)
         source = (np.array([ee.ee_control_point.x, ee.ee_control_point.y, ee.ee_control_point.z])
                   if ee is not None and ee.valid else np.array([0.0, 0.0, 0.5]))
-        approach = self.R.T @ (centre - source)
+        approach = R.T @ (centre - source)
         approach /= max(np.linalg.norm(approach), 1e-9)
-
-        if self.backend_name == 'anygrasp':
-            g = self.backend(points, region, approach, self.approach_thresh)
-            if g is None:
-                self.stats['no grasp'] += 1
-                return
-        else:
-            g = self.backend(points)
-            # on the object, from the robot side, within the gripper opening (collisions: CPU thread)
-            near = cKDTree(points[region]).query(g['t'], distance_upper_bound=0.02)[0] < 0.02
-            ok = (near & (g['R'][:, :, 0] @ approach > np.cos(self.approach_thresh))
-                  & (g['width'] <= self.max_width))
-            g = {k: val[ok] for k, val in g.items()}
-
+        near = cKDTree(points[region]).query(g['t'], distance_upper_bound=0.02)[0] < 0.02
+        ok = (near & (g['R'][:, :, 0] @ approach > np.cos(self.approach_thresh))
+              & (g['width'] <= self.max_width))
+        g = {k: val[ok] for k, val in g.items()}
         if not len(g['score']):
             self.stats['filtered'] += 1
-            return
-        # hand surface: cloud around the palm outside the object mask (fingers in any pose)
+            return True
+
+        # hand surface: cloud around the palm outside the object region (fingers in any pose)
         hand_surface = np.zeros((0, 3))
         if hand is not None:
             mcp = [[p.x, p.y, p.z] for i, (p, s) in enumerate(zip(hand.positions, hand.landmark_state))
                    if i and s in TRACKED]
             if mcp:
-                palm = self.R.T @ (np.mean(mcp, 0) - self.t)
+                palm = R.T @ (np.mean(mcp, 0) - t_cam)
                 near = ~region & (np.linalg.norm(points - palm, axis=1) < self.hand_radius)
-                hand_surface = points[near][::max(1, int(near.sum()) // 400)] @ self.R.T + self.t
-        self.job = (depth_msg, g, hand, hand_surface, points)
+                hand_surface = points[near][::max(1, int(near.sum()) // 400)] @ R.T + t_cam
+        self.job = (cam, depth_msg, pose, g, hand, hand_surface, points)
         self.job_ready.set()
+        return True
 
     def _collision_free(self, points, g, ok, tips, axes):
         """Free grasps among ok, checked in score order 64 at a time down to the first free one, plus the
         candidates that may keep the previous grasp: the same choice as checking them all."""
-        if self.backend_name == 'anygrasp':  # checked inside the SDK
-            return ok
         scores, free, checked = g['score'], np.zeros(len(ok), bool), np.zeros(len(ok), bool)
 
         def check(c):
@@ -380,10 +505,11 @@ class GraspPoseNode(Node):
                 check(np.where(keep)[0])
         return free
 
-    def publish(self, depth_msg, g, hand, hand_surface, points):
+    def publish(self, cam, depth_msg, pose, g, hand, hand_surface, points):
+        R, t_cam = pose
         rot = g['R']  # graspnet: x approach, y closing
-        tips = (g['t'] + g['depth'][:, None] * rot[:, :, 0]) @ self.R.T + self.t  # camera -> base
-        axes = np.einsum('ij,njk->nik', self.R, rot)
+        tips = (g['t'] + g['depth'][:, None] * rot[:, :, 0]) @ R.T + t_cam  # camera -> base
+        axes = np.einsum('ij,njk->nik', R, rot)
         scores = g['score']
 
         ok = np.ones(len(scores), bool)
@@ -426,7 +552,7 @@ class GraspPoseNode(Node):
         x_ap, y_cl = axes[best, :, 0], axes[best, :, 1]
         R_tcp = np.column_stack([np.cross(y_cl, x_ap), y_cl, x_ap])  # Franka TCP: z approach
 
-        out = GraspPose(width=float(g['width'][best]), score=float(scores[best]))
+        out = GraspPose(width=float(g['width'][best]), score=float(scores[best]), gripper_camera=cam == 'd405')
         out.header.stamp, out.header.frame_id = depth_msg.header.stamp, self.base_frame
         out.source_stamp = depth_msg.header.stamp
         out.confidence = float(np.clip(scores[best], 0.0, 1.0) * (1 + sum(same)) / (1 + len(same)))
@@ -437,6 +563,9 @@ class GraspPoseNode(Node):
         out.pose.orientation.z, out.pose.orientation.w = float(qz), float(qw)
         self.pub.publish(out)
         self.stats['published'] += 1
+        if cam == 'd405':
+            self.gripper_t = t
+            self.stats['published d405'] += 1
         near = [(abs(tp - t), p) for tp, p in list(self.palms) if abs(tp - t) <= 0.1]
         self.source = (out, min(near, key=lambda x: x[0])[1] if near else None)
 
@@ -447,8 +576,10 @@ class GraspExecutor(HandoverQddotCommander):
     def __init__(self):
         super().__init__()
         par = lambda n, v: self.declare_parameter(n, v).value
-        self.pregrasp_m = float(par('pregrasp_m', 0.10))
+        self.pregrasp_m = float(par('pregrasp_m', 0.25))            # standoff: the object in the D405 view
         self.approach_step_m = float(par('approach_step_m', 0.02))  # slow: ~0.1 m/s
+        self.slow_m = float(par('slow_m', 0.10))                    # approach_step_m within this of the grasp
+        self.freeze_m = float(par('freeze_m', 0.05))                # grasp no longer followed
         self.reach_tol_m = float(par('reach_tol_m', 0.015))
         self.rot_tol = np.radians(float(par('rot_tol_deg', 10.0)))
         self.rot_rate = np.radians(float(par('rot_rate_deg_s', 45.0)))
@@ -579,6 +710,10 @@ class GraspExecutor(HandoverQddotCommander):
         d = lambda A: (now.inv() * Rotation.from_matrix(A)).magnitude()
         return R if d(R) <= d(flipped) else flipped
 
+    def _approach_step(self, grasp):
+        """Target step around the grasp: approach_step_m within slow_m of it, growing linearly farther out."""
+        return min(self.max_step(), self.approach_step_m * max(1.0, np.linalg.norm(grasp - self._p_ee) / self.slow_m))
+
     # ------------------------------------------------------------ target
     def desired_position(self):
         if self._hold_position is None:
@@ -645,13 +780,17 @@ class GraspExecutor(HandoverQddotCommander):
 
         if self._phase == 'APPROACH':
             p, R = self._frozen
+            if grasp is not None and np.linalg.norm(p - self._p_ee) > self.freeze_m:
+                q, Q = grasp[0], self._closest_flip(grasp[1])
+                if np.linalg.norm(q - p) < 0.03 and Q[:, 2] @ R[:, 2] > np.cos(np.radians(30.0)):
+                    self._frozen = p, R = q.copy(), Q.copy()  # the same grasp, moved with the hand
             self._turn_towards(R, dt)
             if np.linalg.norm(p - self._p_ee) < self.reach_tol_m:
                 self.gripper.command(True)
                 self._set_phase('CLOSE')
             elif elapsed > self.phase_timeout_s:
                 self._set_phase('RETURN', f'grasp not reached in {self.phase_timeout_s:.0f} s')
-            return self._step_to(p, self.approach_step_m)
+            return self._step_to(p, self._approach_step(p))
 
         if self._phase in ('CLOSE', 'HOLD', 'OPEN'):
             if self._phase == 'CLOSE' and elapsed >= self.gripper_s:
@@ -668,7 +807,7 @@ class GraspExecutor(HandoverQddotCommander):
             back = p - self.pregrasp_m * R[:, 2]
             if np.linalg.norm(back - self._p_ee) < self.reach_tol_m * 2 or elapsed > self.phase_timeout_s:
                 self._set_phase('RETURN')
-            return self._step_to(back, self.approach_step_m)
+            return self._step_to(back, self._approach_step(p))
 
         # RETURN: home position and orientation
         if self._R_home is not None:
