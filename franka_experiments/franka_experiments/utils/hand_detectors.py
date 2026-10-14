@@ -97,6 +97,8 @@ class RtmwHandDetector:
     SWITCH_M = 0.3     # another person takes over when this much nearer the robot
     HUMAN_MIN = 0.7    # mean face + best hand keypoint score; the robot arm seen as a person stays below
     SWITCH_FRAMES = 5  # frames in a row a nearer person must be seen before taking over
+    MAX_HAND_M = 1.1   # interacting person: a wrist and the torso this near the robot base (horizontal);
+    MAX_BODY_M = 0.95  # 14/10 lab: giver torso 0.47-0.70 m, person at the desk next to the robot 1.08-1.50 m
 
     # RTMPose-m hand (rtmlib, Apache-2.0), palm orientation only: hand_keypoints()
     HAND_POSE = ('https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/'
@@ -263,14 +265,17 @@ class RtmwHandDetector:
         when its torso is nearer the robot base by SWITCH_M for SWITCH_FRAMES frames (a person at a
         desk behind does not keep the hands). Only people with face and hands count (HUMAN_MIN):
         RTMW also sees the robot arm as a "person" whose torso sits on the robot base.
-        Without depth / robot geometry: the largest person."""
+        Only a person with a wrist within MAX_HAND_M and the torso within MAX_BODY_M of the base counts. Without depth / robot geometry: the largest person."""
         people = []
         for i, (k, s) in enumerate(zip(keypoints, scores)):
             pts = k[:17][s[:17] > 0.3]
             if len(pts) >= 4:
                 human = 0.5 * (s[23:91].mean() + max(s[91:112].mean(), s[112:133].mean()))
-                people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]),
-                               self._robot_distance(k, s, depth, depth_scale), human))
+                hand = self._robot_distance(k, s, depth, depth_scale, (9, 10))
+                body = self._robot_distance(k, s, depth, depth_scale)
+                if self.to_base is None or depth is None or (hand is not None and hand <= self.MAX_HAND_M
+                                                             and body is not None and body <= self.MAX_BODY_M):
+                    people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]), body, human))
         if not people:
             self.centre = None
             return None
@@ -298,13 +303,13 @@ class RtmwHandDetector:
         i, self.centre = (current or max(people, key=lambda p: p[2]))[:2]
         return i
 
-    def _robot_distance(self, k, s, depth, depth_scale):
-        """Horizontal distance of the torso (nearest shoulder or hip) from the robot base."""
+    def _robot_distance(self, k, s, depth, depth_scale, joints=(5, 6, 11, 12)):
+        """Horizontal distance of the nearest joint (default torso: shoulders, hips) from the robot base."""
         if self.to_base is None or depth is None:
             return None
 
         d = []
-        for j in (5, 6, 11, 12):
+        for j in joints:
             z = patch_depth(depth, depth_scale, k[j]) if s[j] > 0.3 else None
             if z is not None and 0.1 < z < 6.0:
                 d.append(float(np.linalg.norm(self.to_base(k[j, 0], k[j, 1], z)[:2])))

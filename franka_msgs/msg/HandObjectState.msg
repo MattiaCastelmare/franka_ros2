@@ -12,9 +12,10 @@ geometry_msgs/Point object_centroid_3d
 # Seconds since the last detection that saw the object; infinity if none.
 float32 object_age
 # Object box and outline in the colour image [px], moved with the palm between
-# detections. bbox = u_min, v_min, u_max, v_max; contour = u0, v0, u1, v1, ...
+# detections; of the gripper camera (D405) when gripper_camera, else of the main camera. bbox = u_min, v_min, u_max, v_max; contour = u0, v0, u1, v1, ...
 float32[4] bbox_px
 int32[] contour_px
+bool gripper_camera
 # Extents of the visible surface along its principal axes [m], descending.
 # The axis along the camera ray is underestimated (only one side is seen).
 geometry_msgs/Vector3 dimensions

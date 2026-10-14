@@ -9,10 +9,11 @@ GRASP POSE
              gripper_camera:=true). HGGD runs on one frame per cycle, the D405 one first when the object is in its
              view: GraspNet scale at 0.1-0.5 m, sharper depth, no main camera calibration error. Main camera grasps
              wait while a D405 grasp is younger than propagate_s: no switching between the two calibrations
-  region     main camera: Hands23 object mask with the hand pixels kept (the Hands23 hand mask often holds the
-             object; the finger filters keep the hand safe). D405 (no Hands23 there): the depth points within half
-             the object extent + 4 cm (calibrations) of the HandObjectState centroid, only with all of it in the
-             image (an object cut by the border, e.g. the D405 at home, gives grasps on its visible edge)
+  region     the Hands23 object mask of the camera Hands23 runs on (HandObjectState.gripper_camera: the D405
+             while the palm is in its image, else the main camera), hand pixels kept (the Hands23 hand mask often
+             holds the object; the finger filters keep the hand safe). D405 without its mask: the depth points
+             within half the object extent + 4 cm of the centroid, only with all of it in the image. 14/10 lab
+             bag, ball: grasp centre on the ball 94 % with the D405 mask, 36 % with the sphere
   backend    HGGD (Chen et al., RA-L 2023, MIT) with TensorRT FP16 nets, hggd_num_point scene points within crop_m
              of the object: 72 / 88 ms (p50 / p90) under the full pipeline on the laptop (RTX 3050), 20 ms with a
              free GPU; the tracker stays at 30 Hz
@@ -407,9 +408,10 @@ class GraspPoseNode(Node):
         t = stamp(depth_msg)
         centre = np.array([obj.object_centroid_3d.x, obj.object_centroid_3d.y, obj.object_centroid_3d.z])
         contour = np.array(obj.contour_px, np.int32).reshape(-1, 2)
+        own = len(contour) >= 3 and obj.gripper_camera == (cam == 'd405')  # Hands23 outline in this image
         if not np.isfinite(centre).all() or abs(stamp(obj) - t) > 0.3:
             return False
-        if cam == 'camera' and (len(contour) < 3 or t - self.gripper_t <= self.propagate_s):
+        if cam == 'camera' and (not own or t - self.gripper_t <= self.propagate_s):
             return False
         pose = self.camera_pose if cam == 'camera' else self.d405_pose(depth_msg.header.stamp)
         if pose is None:
@@ -430,7 +432,7 @@ class GraspPoseNode(Node):
         h, w = depth.shape
         radius = 0.5 * (obj.dimensions.x if np.isfinite(obj.dimensions.x) else 0.08) + 0.04
         r_obj = radius * fx / c_cam[2]
-        if cam == 'd405' and not (r_obj <= u_c < w - r_obj and r_obj <= v_c < h - r_obj):
+        if cam == 'd405' and not own and not (r_obj <= u_c < w - r_obj and r_obj <= v_c < h - r_obj):
             return False
         u0, u1, v0, v1 = max(0, u_c - r), min(w, u_c + r), max(0, v_c - r), min(h, v_c + r)
         if u1 - u0 < 8 or v1 - v0 < 8:
@@ -441,7 +443,7 @@ class GraspPoseNode(Node):
         keep = (z > 0.07) & (np.abs(z - c_cam[2]) < self.crop_m)
         u, v, z = u[keep], v[keep], z[keep]
         points = np.column_stack([(u - cx) * z / fx, (v - cy) * z / fy, z]).astype(np.float32)
-        if cam == 'camera':
+        if own:
             mask = np.zeros((h, w), np.uint8)
             cv2.fillPoly(mask, [contour], 1)
             region = mask[v, u].astype(bool)

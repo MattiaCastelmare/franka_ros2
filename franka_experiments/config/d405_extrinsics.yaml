@@ -1,22 +1,20 @@
 # Gripper camera (D405, eye-in-hand): fr3_link8 -> d405_color_optical_frame.
 #
-# Self-calibrated from the human hand seen at the same time by the main
-# camera (camera_extrinsics.yaml, lab calibration 2026-10-05) and by the D405,
-# brought into fr3_link8 with TF (gripper in two poses):
-# handover_20261005_160359, 750 hand pairs, residual median 2.7 cm
-# (4.2 cm on the second half with the fit of the first half).
-# Re-calibrate if the camera mount or the main camera calibration changes.
+# From an AprilTag (36h11, 12.35 cm) seen by both cameras, 14/10/2026 lab: fr3_link8 by forward kinematics
+# of the Desk joint angles, the tag in the base from the main camera (camera_extrinsics.yaml), the D405 from
+# the tag (median of 30 frames). The previous self-calibration from the hand was 12.4 cm / 6 deg off (camera
+# on the mirrored side of the flange). Depends on camera_extrinsics.yaml: re-calibrate if either changes.
 
 parent_frame: fr3_link8
 child_frame: d405_color_optical_frame
 
 translation:
-  x: 0.0575
-  y: -0.0246
-  z: 0.0948
+  x: -0.0484
+  y: 0.0356
+  z: 0.0734
 
 rotation:
-  x: -0.02838
-  y: -0.01417
-  z: 0.36235
-  w: 0.9315
+  x: 0.00649
+  y: 0.00164
+  z: 0.39503
+  w: 0.91864

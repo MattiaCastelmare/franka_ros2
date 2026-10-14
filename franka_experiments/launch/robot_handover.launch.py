@@ -12,7 +12,7 @@ Startup order
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo,
-                            OpaqueFunction, RegisterEventHandler, TimerAction)
+                            OpaqueFunction, RegisterEventHandler, SetEnvironmentVariable, TimerAction)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -176,7 +176,8 @@ def _launch_setup(context):
         name='handover_qddot_commander_process', output='screen',
         cmd=['python3', SCRIPTS + ('handover_grasp.py' if grasp_executor else 'handover_qddot_commander.py'),
              '--ros-args', '-r', '__node:=handover_qddot_commander',
-             '-p', f'gripper_service:={"/" + ns if ns else ""}/gripper_controller/set_gripper'])
+             '-p', f'gripper_service:={"/" + ns if ns else ""}/gripper_controller/set_gripper'],
+        additional_env=PERCEPTION_ENV)
 
     # ------------------------------------------------------------ startup gates
     wait_cm = _poll('wait_controller_manager',
@@ -211,6 +212,8 @@ def generate_launch_description():
                 ('tau_max_scale', '1.0'), ('rt_pin_cpu', '3')]
 
     return LaunchDescription(
+        # camera images over shared memory: with UDP only (fastdds_no_shm.xml) ~1.3 frames/s are lost
+        [SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', '/ros2_ws/src/fastdds_shm.xml')] +
         [DeclareLaunchArgument(name, default_value=str(_DEFAULTS.get(name, value))) for name, value in defaults] + [
             DeclareLaunchArgument('load_gripper', default_value='false'),
             DeclareLaunchArgument('timeout_s', default_value='60'),

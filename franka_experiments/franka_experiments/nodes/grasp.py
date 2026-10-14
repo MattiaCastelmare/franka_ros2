@@ -3,7 +3,8 @@
 
 Hands23 (Cheng et al., NeurIPS 2023) runs on a metric crop centred on the
 active palm, in a worker thread. It classifies the hand contact state and,
-for "object contact", returns the held object's mask. A gate rejects what a
+for "object contact", returns the held object's mask. One camera at a time: the gripper D405 while
+the active palm is in its image (it sees the object from 10-40 cm), else the main camera. A gate rejects what a
 held object cannot be (much larger than the hand, or away from the palm
 depth: tables, robot, background) or only touched by a non-prehensile hand
 (palm resting on a marker). Two concordant detections confirm or
@@ -28,7 +29,9 @@ from franka_msgs.msg import HandObjectState, HandState
 from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from scipy.spatial.transform import Rotation
+from tf2_ros import Buffer, TransformException, TransformListener
 from sensor_msgs.msg import CameraInfo, Image
 
 VENV = '/ros2_ws/offline_object_tests/venv_hands23'
@@ -45,6 +48,8 @@ OBJECT_CONTACT = 3     # Hands23 contact state "object contact"
 NON_PREHENSILE = (0, 1)     # Hands23 grasp: NP-Palm, NP-Fin
 TOUCHED_ONLY = (0, 3, 5)    # Hands23 touch: tool / container / neither "touched"
 THIN_RATIO = 2.5       # mask principal axes ratio above which an object is thin and elongated
+NEAR_HAND_PX = 200     # D405: hand box nearest the projected palm (calibrations put it ~120 px off)
+SWITCH_FRAMES = 3      # frames in a row the palm must be in / out of the D405 image to switch camera
 
 
 def elongated(mask):
@@ -89,20 +94,20 @@ class Hands23:
         self.torch, self.fp16 = torch, bool(fp16) and device == 'cuda'
         self.thin_objects = bool(thin_objects)
 
-    def __call__(self, bgr, depth, palm_px, palm_z, fx, keep=False):
-        observed, obj, gripping = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M, False)
+    def __call__(self, bgr, depth, palm_px, palm_z, fx, keep=False, nearest=False):
+        observed, obj, gripping = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M, False, nearest)
         if self.thin_objects and keep and observed and obj is None and gripping:
             # the hand grips something but no object passed: a thin one (pen) is a few pixels
             # wide at 384 px and its mask bleeds onto the background. Second pass on a crop of
             # half the side (2x pixels on hand and object), only in these frames. It only keeps
             # an object already confirmed (keep), never confirms one: cables, table edge and
             # robot links next to the hand would otherwise pass as short false objects.
-            observed2, obj2, _ = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M / 2, True)
+            observed2, obj2, _ = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M / 2, True, nearest)
             if obj2 is not None:
                 return observed2, obj2
         return observed, obj
 
-    def _detect(self, bgr, depth, palm_px, palm_z, fx, crop_m, clean):
+    def _detect(self, bgr, depth, palm_px, palm_z, fx, crop_m, clean, nearest=False):
         h, w = depth.shape
         r = int(crop_m * fx / palm_z)
         x0, y0 = max(0, int(palm_px[0]) - r), max(0, int(palm_px[1]) - r)
@@ -113,11 +118,13 @@ class Hands23:
             inst = self.predictor(bgr[y0:y1, x0:x1])['instances'].to('cpu')
         box = inst.pred_boxes.tensor.numpy() + [x0, y0, x0, y0]
         dz, cls, score = inst.pred_dz.numpy(), inst.pred_classes.numpy(), inst.scores.numpy()
-        hands = [i for i in np.flatnonzero(cls == 0)
-                 if box[i, 0] <= palm_px[0] <= box[i, 2] and box[i, 1] <= palm_px[1] <= box[i, 3]]
+        # the hand box with the palm in it (nearest: the box nearest the palm, D405)
+        off = lambda j: np.hypot(np.clip(palm_px[0], box[j, 0], box[j, 2]) - palm_px[0],
+                                 np.clip(palm_px[1], box[j, 1], box[j, 3]) - palm_px[1])
+        hands = [j for j in np.flatnonzero(cls == 0) if off(j) <= (NEAR_HAND_PX if nearest else 0.0)]
         if not hands:
             return False, None, False  # active hand not seen: no evidence either way
-        i = max(hands, key=lambda j: score[j])
+        i = min(hands, key=off) if nearest else max(hands, key=lambda j: score[j])
         o = int(dz[i, 4])
         gripping = int(dz[i, 8]) == OBJECT_CONTACT and int(dz[i, 6]) not in NON_PREHENSILE
         if int(dz[i, 8]) != OBJECT_CONTACT or o < 0:
@@ -239,21 +246,32 @@ class Grasp(Node):
         t, q = ext['translation'], ext['rotation']
         self.t = np.array([t['x'], t['y'], t['z']])
         self.R = Rotation.from_quat([q['x'], q['y'], q['z'], q['w']]).as_matrix()  # camera -> base
+        e = yaml.safe_load(open(os.path.join(
+            get_package_share_directory('franka_experiments'), 'config', 'd405_extrinsics.yaml')))
+        self.link = e['parent_frame']
+        self.d405_on_link = (Rotation.from_quat([e['rotation'][k] for k in 'xyzw']).as_matrix(),
+                             np.array([e['translation'][k] for k in 'xyz']))
+        self.gripper = bool(par('gripper_camera', True))
+        self.tf = Buffer()
+        self.tf_listener = TransformListener(self.tf, self)
+        self.cam, self.switch_n = 'camera', 0  # camera of the detections, frames asking to switch
 
         self.bridge = CvBridge()
-        self.K = None
-        self.rgb, self.depth, self.states = deque(maxlen=4), deque(maxlen=8), deque(maxlen=60)
+        self.K = {}
+        self.rgb = {'camera': deque(maxlen=4), 'd405': deque(maxlen=4)}
+        self.depth = {'camera': deque(maxlen=8), 'd405': deque(maxlen=8)}
+        self.states = deque(maxlen=60)
         self.lock = threading.Lock()
         self.reset()
         self.last_palm = None
         self.pub = self.create_publisher(HandObjectState, '/handover/hand_object', 10)
-        cam = '/camera/camera/'
-        self.create_subscription(CameraInfo, cam + 'aligned_depth_to_color/camera_info',
-                                 self.on_info, qos_profile_sensor_data)
-        self.create_subscription(Image, cam + 'color/image_raw', self.rgb.append,
-                                 qos_profile_sensor_data)
-        self.create_subscription(Image, cam + 'aligned_depth_to_color/image_raw',
-                                 self.depth.append, qos_profile_sensor_data)
+        for name, ns in (('camera', '/camera/camera/'), ('d405', '/d405/d405/'))[:1 + self.gripper]:
+            self.create_subscription(CameraInfo, ns + 'aligned_depth_to_color/camera_info',
+                                     lambda m, c=name: self.on_info(c, m), qos_profile_sensor_data)
+            self.create_subscription(Image, ns + 'color/image_raw', self.rgb[name].append,
+                                     qos_profile_sensor_data)
+            self.create_subscription(Image, ns + 'aligned_depth_to_color/image_raw',
+                                     self.depth[name].append, qos_profile_sensor_data)
         self.create_subscription(HandState, '/handover/hand_state', self.on_state, 10)
         self.ms = deque(maxlen=50)
         self.create_timer(5.0, self.log_rate,
@@ -265,7 +283,8 @@ class Grasp(Node):
     def log_rate(self):
         # only while detections are running (silent once the bag/camera stops)
         if self.ms:
-            self.get_logger().info(f'Hands23 {np.median(self.ms):.0f} ms/detection, present={self.present}')
+            self.get_logger().info(f'Hands23 {np.median(self.ms):.0f} ms/detection on {self.cam}, '
+                                   f'present={self.present}')
             self.ms.clear()
 
     def reset(self):
@@ -273,15 +292,47 @@ class Grasp(Node):
         self.vel_ref, self.t_ref = np.zeros(3), None
         self.obj, self.seen, self.observed = None, None, None
 
-    def on_info(self, msg):
-        self.K = np.array([msg.k[0], msg.k[4], msg.k[2], msg.k[5]])
+    def on_info(self, cam, msg):
+        self.K[cam] = np.array([msg.k[0], msg.k[4], msg.k[2], msg.k[5]])
 
-    def to_camera(self, p_base):
-        return self.R.T @ (p_base - self.t)
+    def pose(self, cam):
+        """camera -> base (R, t); the D405 from the latest TF base -> fr3_link8, None without it."""
+        if cam == 'camera':
+            return self.R, self.t
+        try:
+            tf = self.tf.lookup_transform('base', self.link, Time()).transform
+        except TransformException:
+            return None
+        q, p = tf.rotation, tf.translation
+        R_link = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        R, t = self.d405_on_link
+        return R_link @ R, R_link @ t + np.array([p.x, p.y, p.z])
 
-    def to_pixel(self, p_cam):
-        fx, fy, cx, cy = self.K
+    def to_pixel(self, cam, p_cam):
+        fx, fy, cx, cy = self.K[cam]
         return np.array([fx * p_cam[0] / p_cam[2] + cx, fy * p_cam[1] / p_cam[2] + cy])
+
+    def in_d405(self, palm):
+        """Active palm in the D405 image (10 % margin, 7-60 cm away)."""
+        pose = self.pose('d405') if 'd405' in self.K else None
+        if pose is None:
+            return False
+        p = pose[0].T @ (palm - pose[1])
+        if not 0.07 < p[2] < 0.6:
+            return False
+        u, v = self.to_pixel('d405', p)
+        w, h = 2 * self.K['d405'][2], 2 * self.K['d405'][3]
+        return 0.1 * w <= u <= 0.9 * w and 0.1 * h <= v <= 0.9 * h
+
+    def choose_camera(self, palm):
+        """Hands23 on one camera: the D405 after SWITCH_FRAMES frames with the palm in its image,
+        back to the main camera after SWITCH_FRAMES out."""
+        want = 'd405' if self.gripper and self.in_d405(palm) else 'camera'
+        self.switch_n = self.switch_n + 1 if want != self.cam else 0
+        if self.switch_n >= SWITCH_FRAMES:
+            self.cam, self.switch_n = want, 0
+            self.get_logger().info(f'Hands23 on {want}')
+        return self.cam
 
     @staticmethod
     def palm(state):
@@ -313,15 +364,16 @@ class Grasp(Node):
 
     # ------------------------------------------------------------ detection
     def next_job(self, done):
-        if self.K is None or not self.rgb or self.rgb[-1] is done:
+        cam = self.cam
+        if cam not in self.K or not self.rgb[cam] or self.rgb[cam][-1] is done:
             return None
-        rgb = self.rgb[-1]
+        rgb = self.rgb[cam][-1]
         t = stamp(rgb)
-        depth = next((d for d in reversed(self.depth) if abs(stamp(d) - t) < 1e-3), None)
+        depth = next((d for d in reversed(self.depth[cam]) if abs(stamp(d) - t) < 1e-3), None)
         state = min(self.states, key=lambda s: abs(stamp(s) - t), default=None)
         if depth is None or state is None or abs(stamp(state) - t) > self.max_dt:
             return None
-        return rgb, depth, state
+        return cam, rgb, depth, state
 
     def worker(self):
         done = None
@@ -330,28 +382,33 @@ class Grasp(Node):
             if job is None:
                 time.sleep(0.005)
                 continue
-            rgb, depth_msg, state = job
+            cam, rgb, depth_msg, state = job
             done = rgb
-            if not state.position_valid:
+            if not state.position_valid or self.choose_camera(self.palm(state)) != cam:
                 continue
+            pose = self.pose(cam)
+            if pose is None:
+                continue
+            R, t_cam = pose
             bgr = self.bridge.imgmsg_to_cv2(rgb, 'bgr8')
             depth = self.bridge.imgmsg_to_cv2(depth_msg).astype(np.float32)
             if depth_msg.encoding == '16UC1':
                 depth *= 1e-3
-            palm_cam = self.to_camera(self.palm(state))
-            palm_px = self.to_pixel(palm_cam)
+            palm_cam = R.T @ (self.palm(state) - t_cam)
+            palm_px = self.to_pixel(cam, palm_cam)
             t0 = time.perf_counter()
-            observed, obj = self.detector(bgr, depth, palm_px, palm_cam[2], self.K[0], keep=self.present)
+            observed, obj = self.detector(bgr, depth, palm_px, palm_cam[2], self.K[cam][0], keep=self.present,
+                                          nearest=cam == 'd405')
             self.ms.append(1e3 * (time.perf_counter() - t0))
             if obj is not None:
-                obj = measure(obj, depth, self.K, palm_cam[2], self.thin_objects)
+                obj = measure(obj, depth, self.K[cam], palm_cam[2], self.thin_objects)
                 c = obj['centroid']
-                c_base = None if c is None else self.R @ c + self.t
+                c_base = None if c is None else R @ c + t_cam
                 if c is not None and (np.linalg.norm(c - palm_cam) > MAX_CENTROID_M
                                       or self.lateral(state, c_base) > MAX_LATERAL_M):
                     obj = None
                 else:
-                    obj.update(palm_px=palm_px, palm=self.palm(state))
+                    obj.update(palm_px=palm_px, palm=self.palm(state), cam=cam)
                     if c is not None:
                         obj['centroid'] = c_base
             self.update(stamp(rgb), self.palm(state), self.velocity(state), observed, obj)
@@ -391,9 +448,11 @@ class Grasp(Node):
             out.object_present = bool(out.valid and self.present and self.obj is not None)
             if self.seen is not None:
                 out.object_age = float(max(0.0, t - self.seen))
-            if out.object_present and self.K is not None:
+            pose = self.pose(self.obj['cam']) if out.object_present else None
+            if pose is not None and self.obj['cam'] in self.K:
                 o = self.obj
-                dpx = self.to_pixel(self.to_camera(palm)) - o['palm_px']
+                out.gripper_camera = o['cam'] == 'd405'
+                dpx = self.to_pixel(o['cam'], pose[0].T @ (palm - pose[1])) - o['palm_px']
                 out.object_confidence = o['score']
                 out.bbox_px = (o['bbox'] + np.tile(dpx, 2)).tolist()
                 out.contour_px = np.round(o['contour'] + dpx).astype(int).ravel().tolist()
