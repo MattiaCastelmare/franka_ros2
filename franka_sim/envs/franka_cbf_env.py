@@ -44,6 +44,29 @@ _DEFAULT_CONFIG = os.path.join(_HERE, '..', 'config.yaml')
 ARM_JOINTS = [f'fr3_joint{i}' for i in range(1, 8)]
 NV = 7
 
+#: Where an extra obstacle sphere waits when its episode does not use it: far
+#: below the floor, outside every box, excluded from the geometry pass anyway.
+_PARK = np.array([0.0, 0.0, -3.0])
+
+
+def _model_with_extra_obstacles(scene_path: str, n_extra: int) -> mujoco.MjModel:
+    """Compile the scene with ``n_extra`` more mocap spheres ``obstacle_k``.
+
+    Each is a copy of ``obstacle_geom`` (same radius and colour, no contacts),
+    added through ``MjSpec`` so the vendored MJCF is not edited. Everything
+    else — joints, actuators, keyframe, options — compiles identically
+    (tests/test_multi_obstacle.py checks the arm model is unchanged).
+    """
+    base = mujoco.MjModel.from_xml_path(scene_path)
+    og = mujoco.mj_name2id(base, mujoco.mjtObj.mjOBJ_GEOM, 'obstacle_geom')
+    radius, rgba = float(base.geom_size[og, 0]), base.geom_rgba[og].copy()
+    spec = mujoco.MjSpec.from_file(scene_path)
+    for k in range(1, int(n_extra) + 1):
+        body = spec.worldbody.add_body(name=f'obstacle_{k}', mocap=True, pos=_PARK.tolist())
+        body.add_geom(name=f'obstacle_geom_{k}', type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                      size=[radius, 0.0, 0.0], rgba=rgba.tolist(), contype=0, conaffinity=0)
+    return spec.compile()
+
 
 def precision_bonus(rw: dict, dist: float):
     """reward.w_prec · (1 − tanh(dist / prec_scale)): a steep bonus near the target.
@@ -57,6 +80,23 @@ def precision_bonus(rw: dict, dist: float):
     if w == 0.0:
         return 0.0
     return w * (1.0 - np.tanh(dist / float(rw.get('prec_scale', 0.05))))
+
+
+def correction_cost(rw: dict, correction: float):
+    """reward.w_correction · (1 − exp(−(c / correction_sigma)²)): bounded cost of a shield correction.
+
+    The correction term of CBF-RL (Yang, Werner, de Sa, Ames, ICRA 2026): with the
+    filter in the training loop, a cost on how far the filter moved the action teaches
+    the policy to propose actions the filter leaves alone, so it stops parking on the
+    d_safe shell. Bounded in [0, w), so one hard brake cannot dominate the return.
+    c = ‖q̈_safe − clip(q̈_nom, ±qddot_box)‖: box clipping alone is not a correction
+    (policies trained with alone_action: clip saturate on purpose).
+    """
+    w = float(rw.get('w_correction', 0.0))
+    if w == 0.0:
+        return 0.0
+    s = float(rw.get('correction_sigma', 2.0))
+    return w * (1.0 - np.exp(-(correction / s) ** 2))
 
 
 def _load_config(config) -> dict:
@@ -109,7 +149,22 @@ class FrankaCBFEnv(gym.Env):
         # ── MuJoCo model ─────────────────────────────────────────────────────
         scene = env_c.get('scene_xml')
         scene = os.path.join(_HERE, '..', scene) if scene else _DEFAULT_SCENE
-        self.model = mujoco.MjModel.from_xml_path(os.path.abspath(scene))
+        # Several obstacles (obstacle.count_range: [lo, hi]): the MJCF ships ONE
+        # mocap sphere; the extra ones are added at load time (MjSpec) so the
+        # asset stays untouched and a config without count_range loads exactly
+        # the model every existing policy was trained on. Per episode the count
+        # is drawn uniformly in [lo, hi]; sphere 0 ("obstacle") carries the task
+        # structure (blocking_fraction, IK check), the others are extra hazards
+        # that never block the target (see _sample_extras).
+        _cr = obs_c.get('count_range')
+        self.obs_count_range = None if _cr is None else (int(_cr[0]), int(_cr[1]))
+        if self.obs_count_range is not None and not (1 <= self.obs_count_range[0] <= self.obs_count_range[1]):
+            raise ValueError(f'obstacle.count_range must satisfy 1 <= lo <= hi, got {_cr}')
+        n_extra = 0 if self.obs_count_range is None else self.obs_count_range[1] - 1
+        if n_extra > 0:
+            self.model = _model_with_extra_obstacles(os.path.abspath(scene), n_extra)
+        else:
+            self.model = mujoco.MjModel.from_xml_path(os.path.abspath(scene))
         self.model.opt.timestep = self.sim_dt
         self.data = mujoco.MjData(self.model)
         self.n_substeps = max(1, int(round(self.dt / self.sim_dt)))
@@ -129,6 +184,17 @@ class FrankaCBFEnv(gym.Env):
         self._tgt_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'target')
         self._obs_mocap = int(self.model.body_mocapid[self._obs_body])
         self._tgt_mocap = int(self.model.body_mocapid[self._tgt_body])
+        # Extra spheres (obstacle_1 .. obstacle_n): mocap ids, and the ones
+        # active THIS episode with their own base/direction/phase/mode.
+        self._extra_mocap = [
+            int(self.model.body_mocapid[mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, f'obstacle_{k}')])
+            for k in range(1, n_extra + 1)]
+        self._extra: list = []
+        #: Centre of the sphere closest to the arm after the last geometry pass —
+        #: the observation's single `obstacle` slot, exactly what the robot's
+        #: nearest_obstacle() reconstructs from the closest reported point.
+        self._p_obs_near = None
         # Obstacle sphere radius (geom size) — used for the surface distance.
         og = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'obstacle_geom')
         self.r_obs = float(self.model.geom_size[og, 0])
@@ -449,12 +515,19 @@ class FrankaCBFEnv(gym.Env):
         then reason over one geometric picture instead of the filter seeing six
         links and the policy seeing a single scalar.
         """
-        p_obs = self.data.mocap_pos[self._obs_mocap].copy()
+        # Sphere 0 is the primary obstacle; the rest are this episode's extras.
+        centres = [self.data.mocap_pos[self._obs_mocap].copy()]
+        centres += [self.data.mocap_pos[e['mocap']].copy() for e in self._extra]
         obstacles = []
         d_min = np.inf
+        d_sphere = np.full(len(centres), np.inf)        # closest approach per sphere
         # Rows are dropped when the direction is degenerate, but the geometry
         # block is positional, so every control point ALWAYS gets a row here.
+        # With several spheres a control point reports its NEAREST one — the
+        # same reduction the robot's control_point_geometry() applies to the
+        # points the perception pipeline reports per link.
         cp_geom = np.zeros((self._n_cp, CP_WIDTH))
+        cp_best = np.full(self._n_cp, np.inf)
         # (z, r, Jz, J̇z q̇) per control point for the shield's floor rows,
         # and (p, r, Jp, J̇p q̇) for the base keep-out rows.
         self._floor_pts = []
@@ -462,31 +535,40 @@ class FrankaCBFEnv(gym.Env):
         cp_pts = {}
         for i, bid in enumerate(self._cp_body):
             p_cp = self.data.xpos[bid].copy()
-            diff = p_cp - p_obs
-            dist = float(np.linalg.norm(diff))
-            if dist < 1e-6:
-                # Control point ON the obstacle centre: the distance is real
-                # and maximally negative, the direction is undefined. Report
-                # both honestly — a "far away" placeholder here would hide the
-                # worst state the policy can be in.
-                cp_geom[i, 0] = -(self.r_obs + self._cp_radius[i])
-                continue
-            n_hat = diff / dist                              # obstacle → robot
-            d = dist - self.r_obs - self._cp_radius[i]       # surface distance
-            d_min = min(d_min, d)
-            cp_geom[i, 0] = d
-            cp_geom[i, 1:] = n_hat
             Jp = self._point_jac(bid, p_cp)
-            a = n_hat @ Jp                                   # (NV,)
-            # ċ = n̂ᵀ(J̇p q̇) via finite difference of the point Jacobian.
+            # J̇p q̇ via finite difference of the point Jacobian (shared by every
+            # sphere's row of this control point: it is a property of the link).
             jdq = np.zeros(3)
             if self._use_jdot and self._prev_a[i] is not None:
                 jdq = ((Jp - self._prev_a[i]) / self.dt) @ qdot
-            cdot = float(n_hat @ jdq)
             self._prev_a[i] = Jp
             self._floor_pts.append((p_cp[2], self._cp_radius[i], Jp[2], jdq[2]))
             cp_pts[self._cp_name[i]] = (p_cp, self._cp_radius[i], Jp, jdq)
-            obstacles.append(Obstacle(self._cp_name[i], d, a, cdot))
+            for k, p_obs in enumerate(centres):
+                diff = p_cp - p_obs
+                dist = float(np.linalg.norm(diff))
+                if dist < 1e-6:
+                    # Control point ON the obstacle centre: the distance is real
+                    # and maximally negative, the direction is undefined. Report
+                    # both honestly — a "far away" placeholder here would hide
+                    # the worst state the policy can be in.
+                    if not np.isfinite(cp_best[i]):
+                        cp_geom[i, 0] = -(self.r_obs + self._cp_radius[i])
+                        cp_geom[i, 1:] = 0.0
+                    continue
+                n_hat = diff / dist                              # obstacle → robot
+                d = dist - self.r_obs - self._cp_radius[i]       # surface distance
+                d_min = min(d_min, d)
+                d_sphere[k] = min(d_sphere[k], d)
+                if d < cp_best[i]:
+                    cp_best[i] = d
+                    cp_geom[i, 0] = d
+                    cp_geom[i, 1:] = n_hat
+                a = n_hat @ Jp                                   # (NV,)
+                cdot = float(n_hat @ jdq)                        # ċ = n̂ᵀ(J̇p q̇)
+                name = self._cp_name[i] if k == 0 else f'{self._cp_name[i]}:{k}'
+                obstacles.append(Obstacle(name, d, a, cdot))
+        self._p_obs_near = centres[int(np.argmin(d_sphere))] if np.isfinite(d_sphere).any() else centres[0]
         for name in ('fr3_link4', 'fr3_link5', 'fr3_link6', 'fr3_link7', 'fr3_hand'):
             if name in cp_pts:
                 self._base_pts.append(cp_pts[name])
@@ -631,8 +713,9 @@ class FrankaCBFEnv(gym.Env):
         velocity below.
         """
         q, qdot = self.randomizer.joint_state(self._q, self._qdot)
-        p_obs, d_min = self.randomizer.obstacle(
-            self.data.mocap_pos[self._obs_mocap], d_min)
+        # The slot carries the NEAREST sphere (set by _build_obstacles, which
+        # always runs first); with one obstacle that is the obstacle itself.
+        p_obs, d_min = self.randomizer.obstacle(self._p_obs_near, d_min)
 
         # v_obs from the OBSERVED centres, so the same delay/noise/LPF the
         # position carries is the noise the velocity inherits — the robot
@@ -649,9 +732,10 @@ class FrankaCBFEnv(gym.Env):
 
     # ── Obstacle / target motion ──────────────────────────────────────────────
 
-    def _obstacle_at(self, phase, base=None, direction=None):
+    def _obstacle_at(self, phase, base=None, direction=None, mode=None):
         """Obstacle centre at oscillation *phase* — the ONE place that maps
         phase → position, so ``reset`` and ``step`` cannot disagree.
+        *mode* defaults to the primary sphere's; extras pass their own.
 
         They used to. ``reset`` parked the sphere at ``_obs_base`` while
         ``_advance_obstacle`` evaluated ``base + amp·sin(phase)`` with a phase
@@ -665,11 +749,12 @@ class FrankaCBFEnv(gym.Env):
         """
         base = self._obs_base if base is None else base
         direction = self._obs_dir if direction is None else direction
-        if self.obs_mode in ('static', 'random_walk'):
+        mode = self.obs_mode if mode is None else mode
+        if mode in ('static', 'random_walk'):
             p = base
         else:  # 'sinusoidal' / 'linear' — oscillate along `direction`
             s = np.sin(phase)
-            if self.obs_mode == 'linear':
+            if mode == 'linear':
                 s = 2.0 * np.abs(((phase / np.pi) % 2.0) - 1.0) - 1.0   # triangle
             p = base + self.obs_amp * s * direction
         return np.clip(p, self.obs_box_min, self.obs_box_max)
@@ -680,10 +765,62 @@ class FrankaCBFEnv(gym.Env):
                 self._rng.normal(0.0, self.obs_rw_std, 3)
             self.data.mocap_pos[self._obs_mocap] = np.clip(
                 p, self.obs_box_min, self.obs_box_max)
-            return
-        if self.obs_mode != 'static':
-            self._obs_phase += 2.0 * np.pi * self.obs_speed * self.dt
-        self.data.mocap_pos[self._obs_mocap] = self._obstacle_at(self._obs_phase)
+        else:
+            if self.obs_mode != 'static':
+                self._obs_phase += 2.0 * np.pi * self.obs_speed * self.dt
+            self.data.mocap_pos[self._obs_mocap] = self._obstacle_at(self._obs_phase)
+        for e in self._extra:
+            if e['mode'] != 'static':
+                e['phase'] += 2.0 * np.pi * self.obs_speed * self.dt
+            self.data.mocap_pos[e['mocap']] = self._obstacle_at(
+                e['phase'], e['base'], e['dir'], e['mode'])
+
+    def _sample_extras(self):
+        """This episode's extra spheres (``obstacle.count_range``), or ``[]``.
+
+        The primary sphere carries the task structure; extras are additional
+        hazards, static or moving (each drawn with ``static_fraction``), that
+        must not make the episode unsolvable: every extra starts outside
+        ``reset_min_clearance`` of the arm, keeps its WHOLE sweep at least
+        ``target_clearance + 0.06`` from the target (so it can never block the
+        goal the IK check cleared for the primary), and starts at least one
+        diameter from every sphere already placed. A draw that finds no such
+        placement in 200 tries is skipped (the count can fall short). No RNG
+        is consumed unless ``count_range[1] > 1``, so every config without
+        extras replays its seeds bit-identically.
+        """
+        if self.obs_count_range is None or self.obs_count_range[1] <= 1:
+            return []
+        lo, hi = self.obs_count_range
+        n_extra = int(self._rng.integers(lo, hi + 1)) - 1
+        placed = [self._obstacle_at(self._obs_phase)]
+        keep_out = self.target_clearance + 0.06
+        out = []
+        for k in range(min(n_extra, len(self._extra_mocap))):
+            for _ in range(200):
+                base = self._rng.uniform(self.obs_box_min, self.obs_box_max)
+                v = self._rng.normal(0.0, 1.0, 3)
+                n = float(np.linalg.norm(v))
+                direction = v / n if n > 1e-6 else np.array([0.0, 1.0, 0.0])
+                phase = self._rng.uniform(0.0, 2.0 * np.pi)
+                mode = ('static' if self.static_fraction > 0.0
+                        and self._rng.random() < self.static_fraction
+                        else self._obs_mode_cfg)
+                if mode == 'random_walk':
+                    mode = 'static'
+                p0 = self._obstacle_at(phase, base, direction, mode)
+                if self._start_clearance(p0) < self.reset_min_clearance:
+                    continue
+                sweep = self._sweep_points(base, direction, mode)
+                if np.linalg.norm(sweep - self._target, axis=1).min() < keep_out:
+                    continue
+                if any(np.linalg.norm(p0 - q) < 2.0 * self.r_obs + 0.02 for q in placed):
+                    continue
+                out.append(dict(mocap=self._extra_mocap[k], base=base, dir=direction,
+                                phase=phase, mode=mode))
+                placed.append(p0)
+                break
+        return out
 
     # ── Reset-time feasibility ────────────────────────────────────────────────
     #
@@ -715,15 +852,16 @@ class FrankaCBFEnv(gym.Env):
             d = min(d, gap - self.r_obs - self._cp_radius[i])
         return d
 
-    def _sweep_points(self, base, direction):
+    def _sweep_points(self, base, direction, mode=None):
         """Obstacle centres over one oscillation — a single point when static.
 
         ``random_walk`` cannot be predicted, so its start point stands in.
         """
-        if self.obs_mode in ('static', 'random_walk'):
+        mode = self.obs_mode if mode is None else mode
+        if mode in ('static', 'random_walk'):
             return np.clip(np.asarray(base, float), self.obs_box_min,
                            self.obs_box_max)[None, :]
-        return np.array([self._obstacle_at(p, base, direction)
+        return np.array([self._obstacle_at(p, base, direction, mode)
                          for p in self._phases])
 
     def _target_always_blocked(self, target, base, direction):
@@ -893,6 +1031,13 @@ class FrankaCBFEnv(gym.Env):
         # _advance_obstacle must move the sphere by one tick's worth of travel,
         # not by up to a full amplitude. See _obstacle_at.
         self.data.mocap_pos[self._obs_mocap] = self._obstacle_at(self._obs_phase)
+        # Extra spheres: park them all out of reach, then place this episode's.
+        for m in self._extra_mocap:
+            self.data.mocap_pos[m] = _PARK
+        self._extra = self._sample_extras()
+        for e in self._extra:
+            self.data.mocap_pos[e['mocap']] = self._obstacle_at(
+                e['phase'], e['base'], e['dir'], e['mode'])
         mujoco.mj_forward(self.model, self.data)
 
         # Reset filter + finite-diff caches.
@@ -922,6 +1067,8 @@ class FrankaCBFEnv(gym.Env):
                                                ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd,
                                                floor_pts=self._floor_pts,
                                                base_pts=self._base_pts)
+            correction = float(np.linalg.norm(
+                qddot_safe - np.clip(qddot_nom, -self.cbf.qddot_box, self.cbf.qddot_box)))
         else:
             # Policy alone: the command IS the nominal, clipped only by the
             # action scale. Nothing here knows about limits or obstacles.
@@ -930,6 +1077,7 @@ class FrankaCBFEnv(gym.Env):
             elif self.alone_action == 'clip':
                 qddot_nom = np.clip(qddot_nom, -self.cbf.qddot_box, self.cbf.qddot_box)
             qddot_safe, info = np.asarray(qddot_nom, float), CBFInfo()
+            correction = 0.0
         self._tau_excess = 0.0
 
         # q̈_safe → torque, exactly like qddot_to_torque + the FR3 firmware.
@@ -1007,6 +1155,7 @@ class FrankaCBFEnv(gym.Env):
             - float(rw.get('w_qdot', 0.001)) * float(qdot @ qdot)
             - float(rw.get('w_ws_margin', 0.0)) * ws_pen
             + precision_bonus(rw, dist)
+            - correction_cost(rw, correction)
         )
         # terminate_on_collision: false keeps the episode running and charges
         # collision_penalty on EVERY tick spent inside the obstacle.
@@ -1050,9 +1199,10 @@ class FrankaCBFEnv(gym.Env):
             'dist': dist, 'd_min': d_min, 'success': bool(success),
             'is_success': bool(success),   # always present (Monitor info_keyword)
             'collision': bool(collision), 'cbf_slack': info.slack,
-            'cbf_intervention': info.intervention, 'cbf_n_c': info.n_c,
+            'cbf_intervention': info.intervention, 'cbf_correction': correction, 'cbf_n_c': info.n_c,
             'cbf_braking': info.braking, 'obs_pen': obs_pen,
             'floor_contact': self._floor_contact(),
+            'n_obstacles': 1 + len(self._extra),
         }
         if con_ex is not None:
             info_out['constraint_excess'] = con_ex

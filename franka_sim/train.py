@@ -64,7 +64,7 @@ class SafetyMetricsCallback(BaseCallback):
         self._reset_buffers()
 
     def _reset_buffers(self):
-        self._d_min, self._interv, self._slack = [], [], []
+        self._d_min, self._interv, self._slack, self._corr = [], [], [], []
         self._active, self._collisions, self._n = 0, 0, 0
         self._viol, self._con_term = {}, 0
 
@@ -75,6 +75,7 @@ class SafetyMetricsCallback(BaseCallback):
             self._n += 1
             self._d_min.append(info['d_min'])
             self._interv.append(info['cbf_intervention'])
+            self._corr.append(info.get('cbf_correction', 0.0))
             self._slack.append(info['cbf_slack'])
             self._active += int(info['cbf_n_c'] > 0)
             self._collisions += int(info.get('collision', False))
@@ -87,6 +88,8 @@ class SafetyMetricsCallback(BaseCallback):
             self.logger.record('safety/mean_surface_dist', float(np.mean(self._d_min)))
             self.logger.record('safety/cbf_active_frac', self._active / self._n)
             self.logger.record('safety/mean_intervention', float(np.mean(self._interv)))
+            self.logger.record('safety/mean_correction', float(np.mean(self._corr)))
+            self.logger.record('safety/correction_frac', float(np.mean(np.array(self._corr) > 0.1)))
             self.logger.record('safety/mean_slack', float(np.mean(self._slack)))
             for k, c in self._viol.items():
                 self.logger.record(f'constraints/{k}_step_rate', c / self._n)
@@ -407,7 +410,24 @@ def main():
                 else DummyVecEnv(env_fns))
     eval_env  = DummyVecEnv([make_env(cfg, seed + 1000)])
 
+    policy = rl.get('policy', 'MlpPolicy')
     policy_kwargs = dict(net_arch=list(rl.get('net_arch', [256, 256])))
+    simba = None
+    if policy == 'SimbaPolicy':
+        # SimBa networks (policies/simba.py): running-stat obs normalisation,
+        # residual pre-LN blocks, AdamW with weight decay. Sizes from rl.simba.
+        from franka_sim.policies.simba import DEFAULTS as SIMBA_DEFAULTS, SimbaSACPolicy
+        simba = {**SIMBA_DEFAULTS, **(rl.get('simba') or {})}
+        policy = SimbaSACPolicy
+        policy_kwargs = dict(simba)
+        if rl.get('log_std_init') is not None:
+            policy_kwargs['log_std_init'] = float(rl['log_std_init'])
+    if bool(rl.get('tf32', True)):
+        # TensorFloat-32 matmuls: ~2x on the wide SimBa critics, RL does not
+        # need fp32 mantissas. Off for a bit-exact replay of an old run.
+        import torch as th
+        th.backends.cuda.matmul.allow_tf32 = True
+        th.backends.cudnn.allow_tf32 = True
     ent_coef = rl.get('ent_coef', 'auto')
     # 'auto' = SB3's −dim(A) = −7. The average over the batch meets it with
     # the saturated transit actions, which leaves the policy at std ≈ 0.5 on
@@ -418,7 +438,7 @@ def main():
 
     def fresh_model():
         return SAC(
-            rl.get('policy', 'MlpPolicy'), train_env,
+            policy, train_env,
             learning_rate=float(rl.get('learning_rate', 3e-4)),
             buffer_size=int(rl.get('buffer_size', 1_000_000)),
             batch_size=int(rl.get('batch_size', 512)),
@@ -488,17 +508,23 @@ def main():
                 else int(rl.get('checkpoint_freq_episodes', 0)))
 
     callbacks = [
+        # SB3 counts these in CALLS (one per vec-env step), so divide by n_envs to
+        # keep checkpoint_freq / eval_freq in ENV steps whatever n_envs is.
         CheckpointCallback(
-            save_freq=int(rl.get('checkpoint_freq', 50_000)),
+            save_freq=max(1, int(rl.get('checkpoint_freq', 50_000)) // n_envs),
             save_path=ckpt_dir, name_prefix='sac'),
         EvalCallback(
             eval_env, best_model_save_path=model_dir,
-            log_path=model_dir, eval_freq=int(rl.get('eval_freq', 25_000)),
+            log_path=model_dir, eval_freq=max(1, int(rl.get('eval_freq', 25_000)) // n_envs),
             n_eval_episodes=10, deterministic=True, render=False),
         SafetyMetricsCallback(log_freq=2000),
     ]
     if args.policy_warmup > 0:
         callbacks.insert(0, PolicyWarmupCallback(args.policy_warmup))
+    if simba is not None:
+        from franka_sim.policies.simba import RSNormUpdateCallback, count_parameters
+        callbacks.append(RSNormUpdateCallback(verbose=1))
+        print(f'SimBa policy {simba}  params {count_parameters(model.policy)}')
     if ep_every > 0:
         callbacks.append(EpisodeCheckpointCallback(
             every=ep_every, save_path=ckpt_dir,

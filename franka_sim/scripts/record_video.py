@@ -57,6 +57,9 @@ SUMMARY_S = 8.0                      # closing card with the aggregate metrics
 # is useless for this: the six obstacle rows and the workspace rows are
 # always in the QP, so n_c > 0 on every tick.
 ACTIVE_TOL = 0.05
+# Constraint families that make a policy-alone episode not "clean"
+# (runs/eval_all/alone/summary.py); shown when constraints.enabled.
+REQ = ('pos', 'vel', 'acc', 'self_coll', 'sing')
 
 # BGR, matching the lab overlay colours.
 C_WHITE = (255, 255, 255)
@@ -71,6 +74,13 @@ C_MAGENTA = (255, 0, 255)
 def _rgba(bgr, a=1.0):
     b, g, r = bgr
     return np.array([r / 255, g / 255, b / 255, a], np.float32)
+
+
+def _viol_line(viol):
+    """One overlay line: constraint ticks so far (policy-alone requirement)."""
+    bad = [f'{k} {n}' for k, n in viol.items() if n]
+    return ((('VIOLATION ticks: ' + '  '.join(bad)), C_RED) if bad
+            else ('constraints clean (pos/vel/acc/self-coll/sing)', C_GREEN))
 
 
 def _margin_colour(d, d_safe):
@@ -102,16 +112,21 @@ def _add_segment(scn, p0, p1, width, rgba):
 
 
 def _decorate(scn, env, trail, d_safe, segments):
-    p_obs = env.data.mocap_pos[env._obs_mocap]
-    # d_safe shell around the obstacle: where the barrier starts to bite.
-    _add_geom(scn, mujoco.mjtGeom.mjGEOM_SPHERE, [env.r_obs + d_safe] * 3,
-              p_obs, _rgba(C_ORANGE, 0.10))
+    # Every sphere of this episode (primary + obstacle.count_range extras).
+    centres = [env.data.mocap_pos[env._obs_mocap]]
+    centres += [env.data.mocap_pos[e['mocap']] for e in getattr(env, '_extra', [])]
+    # d_safe shell around each obstacle: where the barrier starts to bite.
+    for p_obs in centres:
+        _add_geom(scn, mujoco.mjtGeom.mjGEOM_SPHERE, [env.r_obs + d_safe] * 3,
+                  p_obs, _rgba(C_ORANGE, 0.10))
     for k in range(1, len(trail)):
         _add_segment(scn, trail[k - 1], trail[k], 0.004, _rgba(C_BLUE))
     if not segments:
         return
     for bid, r_cp in zip(env._cp_body, env._cp_radius):
         p_cp = env.data.xpos[bid]
+        # One segment per control point, to its NEAREST sphere (the obs block).
+        p_obs = min(centres, key=lambda c: np.linalg.norm(p_cp - c))
         diff = p_cp - p_obs
         dist = float(np.linalg.norm(diff))
         if dist < 1e-6:
@@ -266,7 +281,8 @@ def main():
     cfg_d['reward']['terminate_on_collision'] = True
     env = FrankaCBFEnv(config=cfg_d)
     d_safe = float(env.cfg['cbf']['d_safe'])
-    shield = ('HOCBF shield' if env.cbf_obstacle_enabled
+    shield = ('NO shield (policy alone)' if not env.shield
+              else 'HOCBF shield' if env.cbf_obstacle_enabled
               else 'NO obstacle CBF (joint/ws box only)')
     print(f'policy={args.model} ({kind})  config={cfg}  episodes={args.episodes}')
 
@@ -304,6 +320,7 @@ def main():
         trail = [env._ee_pos()]
         d_hist, act_hist, int_hist = [], [], []
         floor_steps = 0
+        viol = {k: 0 for k in REQ}
         info = {'dist': float(np.linalg.norm(trail[0] - env._target)),
                 'd_min': 99.0, 'cbf_intervention': 0.0}
         step, next_frame, outcome, t_reach = 0, 0.0, None, None
@@ -330,6 +347,7 @@ def main():
                     f'  {tally["TIMEOUT"]} timeout'), C_WHITE),
                 ((f'FLOOR CONTACT  ({floor_steps} steps)', C_RED) if floor_steps
                  else ('no floor contact', C_GREEN)),
+                *([_viol_line(viol)] if 'constraint_excess' in info else []),
                 ('blue = measured EE', C_BLUE),
                 [('green = target', C_GREEN), ('   red = obstacle', C_RED),
                  ('   orange shell = d_safe', C_ORANGE)],
@@ -364,6 +382,8 @@ def main():
             act_hist.append(info['cbf_intervention'] > ACTIVE_TOL)
             int_hist.append(info['cbf_intervention'])
             floor_steps += bool(info.get('floor_contact', False))
+            for k in REQ:
+                viol[k] += info.get('constraint_excess', {}).get(k, 0.0) > 0
             if info['success'] and t_reach is None:
                 t_reach = step * env.dt
             if info['collision']:
@@ -380,7 +400,8 @@ def main():
         st = {'outcome': outcome, 't_reach': t_reach, 'err': info['dist'],
               'min_d': min(d_hist), 'active': float(np.mean(act_hist)),
               'interv': float(np.mean(int_hist)), 't_end': step * env.dt,
-              'floor': floor_steps}
+              'floor': floor_steps, 'viol': dict(viol),
+              'monitored': 'constraint_excess' in info}
         stats.append(st)
         _banner(last[:, :PW], outcome, col)
         _label_block(last[:, :PW], [
@@ -392,7 +413,8 @@ def main():
             (f'shield active {100 * st["active"]:.0f}% of steps', C_WHITE),
             ((f'floor contact {floor_steps} steps', C_RED) if floor_steps
              else ('no floor contact', C_GREEN)),
-        ], x=6, y=H - 146)
+            *([_viol_line(viol)] if st['monitored'] else []),
+        ], x=6, y=H - 146 - 28 * st['monitored'])
         n_hold = int(round(HOLD_S * FPS))
         if args.pad:   # frames a full episode would have written in the loop: ticks 0 .. episode_s
             n_hold += max(0, int(np.floor(args.episode_s * FPS + 1e-6)) + 1 - (n_frames - n_frames_ep0))
@@ -424,6 +446,10 @@ def main():
          C_WHITE),
         (f'episodes touching the floor: {sum(s["floor"] > 0 for s in stats)}/{n}',
          C_RED if any(s['floor'] for s in stats) else C_GREEN),
+        *([(f'episodes with a constraint violation ({"/".join(REQ)}): '
+            f'{sum(any(s["viol"].values()) for s in stats)}/{n}',
+            C_RED if any(any(s['viol'].values()) for s in stats) else C_GREEN)]
+          if stats and stats[0]['monitored'] else []),
         ('', C_WHITE),
     ]
     summary += [(line, C_GREEN) for line in args.intro]
@@ -433,7 +459,8 @@ def main():
         rt = f'{s["t_reach"]:.2f} s' if s['t_reach'] is not None else '  -  '
         per_ep.append((f'ep {k + 1:2d}  {s["outcome"]:9s}  reached {rt:>7s}  '
                         f'err {1000 * s["err"]:4.0f} mm  min d {1000 * s["min_d"]:4.0f} mm'
-                        + ('  FLOOR' if s['floor'] else ''),
+                        + ('  FLOOR' if s['floor'] else '')
+                        + ''.join(f'  {k.upper()}' for k in REQ if s['viol'][k]),
                         col))
     n_frames += _card(writer, summary, args.summary_s, scale=0.55, right=per_ep)
     print(f'summary: {tally}  mean err {np.mean([s["err"] for s in stats]):.3f} m')
