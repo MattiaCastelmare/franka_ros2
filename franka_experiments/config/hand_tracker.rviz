@@ -1,27 +1,87 @@
 Panels:
   - Class: rviz_common/Displays
+    Help Height: 138
     Name: Displays
-
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+    Tree Height: 290
 Visualization Manager:
   Class: ""
-
+  Displays:
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Hand State Debug
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /handover/hand_debug_image
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Gripper Camera Debug (D405)
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /handover/gripper_debug_image
+      Value: true
+  Enabled: true
   Global Options:
     Background Color: 48; 48; 48
     Fixed Frame: fr3_link0
     Frame Rate: 15
-
+  Name: root
+  Tools: ~
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 10
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.7853981852531433
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 0.7853981852531433
+    Saved: ~
+Window Geometry:
   Displays:
-
-    - Class: rviz_default_plugins/Image
-      Name: Hand State Debug
-      Enabled: true
-      Topic:
-        Value: /handover/hand_debug_image
-      Value: true
-    # Gripper camera (D405): same overlay; empty when the D405 is not present.
-    - Class: rviz_default_plugins/Image
-      Name: Gripper Camera Debug (D405)
-      Enabled: true
-      Topic:
-        Value: /handover/gripper_debug_image
-      Value: true
+    collapsed: false
+  Gripper Camera Debug (D405):
+    collapsed: false
+  Hand State Debug:
+    collapsed: false
+  Height: 1792
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000100000000000008470000066efc0200000003fb0000002000480061006e00640020005300740061007400650020004400650062007500670100000069000002430000004500fffffffb000000360047007200690070007000650072002000430061006d006500720061002000440065006200750067002000280044003400300035002901000002b8000002030000004500fffffffb000000100044006900730070006c00610079007301000004c7000002100000017800ffffff000003210000066e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Width: 2932
+  X: 140
+  Y: 54

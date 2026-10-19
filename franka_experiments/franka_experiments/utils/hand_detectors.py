@@ -97,8 +97,9 @@ class RtmwHandDetector:
     SWITCH_M = 0.3     # another person takes over when this much nearer the robot
     HUMAN_MIN = 0.7    # mean face + best hand keypoint score; the robot arm seen as a person stays below
     SWITCH_FRAMES = 5  # frames in a row a nearer person must be seen before taking over
-    MAX_HAND_M = 1.1   # interacting person: a wrist and the torso this near the robot base (horizontal);
-    MAX_BODY_M = 0.95  # 14/10 lab: giver torso 0.47-0.70 m, person at the desk next to the robot 1.08-1.50 m
+    KEEP_FRAMES = 15   # the tracked person stays taken this long unseen (0.5 s) before a new one must engage
+    ENGAGE_M = 0.9     # a person is taken only once a wrist comes this near the robot base (horizontal), then
+                       # followed at any distance; 14/10 lab: people at the desks keep their wrists at 1.1-2.2 m
 
     # RTMPose-m hand (rtmlib, Apache-2.0), palm orientation only: hand_keypoints()
     HAND_POSE = ('https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/'
@@ -134,6 +135,7 @@ class RtmwHandDetector:
         self.enter, self.keep = enter, keep
         self.kept, self.centre = set(), None
         self.pending, self.pending_n = None, 0  # nearer person waiting to take over
+        self.unseen = 0                         # frames the tracked person has not been found
         self.to_base = to_base  # (u, v, z) -> robot base frame point; None = largest person
         self.filters = {key: OneEuro() for key, *_ in self.HANDS}
 
@@ -264,35 +266,35 @@ class RtmwHandDetector:
         """The person interacting with the robot: the one tracked so far; another one takes over
         when its torso is nearer the robot base by SWITCH_M for SWITCH_FRAMES frames (a person at a
         desk behind does not keep the hands). Only people with face and hands count (HUMAN_MIN):
-        RTMW also sees the robot arm as a "person" whose torso sits on the robot base.
-        Only a person with a wrist within MAX_HAND_M and the torso within MAX_BODY_M of the base counts. Without depth / robot geometry: the largest person."""
+        RTMW also sees the robot arm as a "person" whose torso sits on the robot base. A new person is
+        taken only with a wrist within ENGAGE_M of the base (reaching into the robot workspace), so people
+        at the desks are never taken; the tracked one is kept at any distance. Without depth / robot
+        geometry: the largest person."""
         people = []
         for i, (k, s) in enumerate(zip(keypoints, scores)):
             pts = k[:17][s[:17] > 0.3]
             if len(pts) >= 4:
                 human = 0.5 * (s[23:91].mean() + max(s[91:112].mean(), s[112:133].mean()))
-                hand = self._robot_distance(k, s, depth, depth_scale, (9, 10))
-                body = self._robot_distance(k, s, depth, depth_scale)
-                if self.to_base is None or depth is None or (hand is not None and hand <= self.MAX_HAND_M
-                                                             and body is not None and body <= self.MAX_BODY_M):
-                    people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]), body, human))
+                people.append((i, pts.mean(0), np.ptp(pts[:, 0]) * np.ptp(pts[:, 1]), human,
+                               *self._robot_distances(k, s, depth, depth_scale)))
         if not people:
-            self.centre = None
+            self._unseen()
             return None
 
-        # people: (index, centre px, area px, robot distance, human score)
+        # people: (index, centre px, area px, human score, torso / wrist robot distance)
         near = ([] if self.centre is None
                 else [p for p in people if np.linalg.norm(p[1] - self.centre) < 0.15 * w])
         current = min(near, key=lambda p: np.linalg.norm(p[1] - self.centre)) if near else None
-        located = [p for p in people if p[3] is not None and p[4] >= self.HUMAN_MIN]
-        nearest = min(located, key=lambda p: p[3]) if located else None
+        located = [p for p in people if p[3] >= self.HUMAN_MIN and p[4] is not None
+                   and p[5] is not None and p[5] <= self.ENGAGE_M]
+        nearest = min(located, key=lambda p: p[4]) if located else None
 
         if nearest is not None and current is None:
             current = nearest
         elif (nearest is not None and nearest[0] != current[0]
-              and (current[3] is None
-                   or current[4] < self.HUMAN_MIN
-                   or nearest[3] < current[3] - self.SWITCH_M)):
+              and (current[4] is None
+                   or current[3] < self.HUMAN_MIN
+                   or nearest[4] < current[4] - self.SWITCH_M)):
             same = self.pending is not None and np.linalg.norm(nearest[1] - self.pending) < 0.15 * w
             self.pending, self.pending_n = nearest[1], (self.pending_n + 1 if same else 1)
             if self.pending_n >= self.SWITCH_FRAMES:
@@ -300,20 +302,40 @@ class RtmwHandDetector:
         else:
             self.pending, self.pending_n = None, 0
 
+        if current is None and self.to_base is not None and depth is not None:
+            self._unseen()  # nobody reaching into the workspace
+            return None
         i, self.centre = (current or max(people, key=lambda p: p[2]))[:2]
+        self.unseen = 0
         return i
 
-    def _robot_distance(self, k, s, depth, depth_scale, joints=(5, 6, 11, 12)):
-        """Horizontal distance of the nearest joint (default torso: shoulders, hips) from the robot base."""
-        if self.to_base is None or depth is None:
-            return None
+    def _unseen(self):
+        self.unseen += 1
+        if self.unseen > self.KEEP_FRAMES:
+            self.centre = None
 
-        d = []
-        for j in joints:
-            z = patch_depth(depth, depth_scale, k[j]) if s[j] > 0.3 else None
-            if z is not None and 0.1 < z < 6.0:
-                d.append(float(np.linalg.norm(self.to_base(k[j, 0], k[j, 1], z)[:2])))
-        return min(d) if d else None
+    def _robot_distances(self, k, s, depth, depth_scale):
+        """Horizontal distances from the robot base of the torso (nearest shoulder / hip) and of the nearest
+        wrist, (None, None) without depth. A joint seen in front of the torso (camera depth below the torso
+        median by more than 0.4 m, a wrist by more than an arm, 0.8 m) lies on something in front of the
+        person, e.g. the robot in front of someone standing behind it, and is skipped."""
+        if self.to_base is None or depth is None:
+            return None, None
+
+        z = {}
+        for j in (5, 6, 11, 12, 9, 10):
+            d = patch_depth(depth, depth_scale, k[j]) if s[j] > 0.3 else None
+            if d is not None and 0.1 < d < 6.0:
+                z[j] = d
+        torso_z = [z[j] for j in (5, 6, 11, 12) if j in z]
+        if not torso_z:
+            return None, None
+
+        ref = float(np.median(torso_z))
+        horizontal = lambda j: float(np.linalg.norm(self.to_base(k[j, 0], k[j, 1], z[j])[:2]))
+        torso = min(horizontal(j) for j in (5, 6, 11, 12) if j in z and z[j] > ref - 0.4)
+        wrists = [horizontal(j) for j in (9, 10) if j in z and z[j] > ref - 0.8]
+        return torso, (min(wrists) if wrists else None)
 
 
 class MediapipeHandDetector:

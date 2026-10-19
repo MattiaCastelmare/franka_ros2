@@ -107,16 +107,18 @@ kalman_hand:
 distance_handover_estimator:
   ros__parameters:
     ttc_min_closing_speed: 0.02
-    # observer (APPROACHING / HOLD / RETREATING), distance_handover_estimator docstring. 12/10, 68 clips labelled
-    # by the user, leave-one-bag-out on 15 replays: balanced 0.88 against 0.78 of the old speed thresholds
+    # observer (APPROACHING / HOLD / RETREATING), distance_handover_estimator docstring. 16/10: user's clips of
+    # 12/10 (80, 98 replays) and of the 14/10 observer bag (39): 0.929 / 0.989 against 0.907 / 0.856 of the 12/10
+    # thresholds (0.5 s 0.08 m 0.20 m/s, 0.2 s 0.06 m 0.20 m/s, 2 frames), which flickered on a waiting hand.
+    # Speed only for quick moves (0.30 m/s); a slow steady one (>= 0.20 m/s) through the displacement windows
     observer_approach_window_s: 0.5
-    observer_approach_displacement_m: 0.08
-    observer_approach_speed: 0.20
-    observer_retreat_window_s: 0.2
+    observer_approach_displacement_m: 0.10
+    observer_approach_speed: 0.30
+    observer_retreat_window_s: 0.3
     observer_retreat_displacement_m: 0.06
-    observer_retreat_speed: 0.20
-    observer_exit_fraction: 0.5
-    observer_confirm_frames: 2
+    observer_retreat_speed: 0.30
+    observer_exit_fraction: 0.7
+    observer_confirm_frames: 3
     # closing speed of the hand alone, not hand - gripper (distance_handover_estimator docstring)
     observer_hand_only: true
     # 1-sigma camera-robot calibration error [m], added to the palm covariance in distance_sigma

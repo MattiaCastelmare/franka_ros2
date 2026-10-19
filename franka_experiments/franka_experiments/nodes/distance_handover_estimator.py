@@ -30,6 +30,7 @@ from geometry_msgs.msg import Point, Vector3
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import JointState
 from tf2_ros import Buffer, TransformListener
@@ -151,13 +152,17 @@ class HandoverDistanceEstimator(Node):
         fallback = topics['joint_states_topic']
 
         # the fast stream runs at ~1 kHz: no callback per message (30-40 % of a core), the subscriptions
-        # live on a node that is never spun and the newest message is taken from the DDS queue (depth 1)
+        # live on a node that is never spun and the newest message is taken from the DDS queue (depth 1).
+        # Best effort: only the newest sample is used, a reliable reader would hold the following ones back while a
+        # lost one is resent (replays 17/10, 15 fps bags: the newest joint state stuck for 0.3 s every ~0.45 s in 3
+        # runs of 5, ~250 EE gaps > 0.1 s per run; other readers of the same stream lost nothing)
         self.reader = rclpy.create_node('end_effector_state_joint_reader')
+        newest = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.joint_subs = {
-            'primary': self.reader.create_subscription(JointState, primary, lambda msg: None, 1)}
+            'primary': self.reader.create_subscription(JointState, primary, lambda msg: None, newest)}
         if fallback != primary:
             self.joint_subs['fallback'] = self.reader.create_subscription(
-                JointState, fallback, lambda msg: None, 1)
+                JointState, fallback, lambda msg: None, newest)
 
         self.ee_publisher = self.create_publisher(EndEffectorState, '/handover/end_effector_state', 10)
         self.create_timer(0.01, self.update_gripper)

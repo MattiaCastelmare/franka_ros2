@@ -3,7 +3,8 @@
 
 Stage 1 (camera callback): hand detector, RTMW (GPU) or MediaPipe Holistic (fallback).
 Stage 2 (worker thread, overlapped with the next stage 1): ACTIVE hand (HandSelector),
-3D landmarks from the aligned depth, palm plane, publishing.
+landmarks = mean of RTMW and the hand model on the hand crop (model_landmarks), 3D from the
+aligned depth, palm plane, publishing.
 When the ACTIVE hand is not seen: gripper camera (D405), then the arm bridge (pose
 wrist + elbow, up to arm_bridge_s), then NO_HAND.
 """
@@ -11,6 +12,7 @@ wrist + elbow, up to arm_bridge_s), then NO_HAND.
 import queue
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
 
 import cv2
@@ -120,6 +122,7 @@ class HumanHandTracker(Node):
         self.selector = HandSelector(self, config_dir + 'fr3_complete.yaml', self.target_frame, self.param)
         self.gripper = None
         self._last_active = None  # (t, side, palm in base) of the last measured ACTIVE hand
+        self._gripper_offsets = deque(maxlen=30)  # (t, main - gripper camera palm) with both cameras on the hand
         self._arm_anchor = None
         if bool(self.param('gripper_camera')):
             self.gripper = GripperCamera(
@@ -248,6 +251,20 @@ class HumanHandTracker(Node):
         anchor = unit(np.cross(points[5] - points[0], points[17] - points[0]))
         return (None, None) if normal is None or anchor is None else (normal, anchor)
 
+    @staticmethod
+    def model_landmarks(hand, keypoints, shape):
+        """ACTIVE hand: mean of the RTMW and hand model keypoints (RTMPose-m on the hand crop, hand_keypoints) when
+        the two agree (median distance < 0.3 hand sizes), else RTMW. Their errors are partly independent: 17/10, 6
+        bags, triangle vertex jitter -15-30 % (D405 bag, hand at 1.3 m: 2.8 -> 2.0 px median), tracking, gaps, +200 ms
+        prediction, Hz and latency unchanged. The hand model alone: more outliers (p90 +40 % on rosbag2); One-Euro
+        filtered: gaps > 0.5 s (report 17/10)."""
+        h, w = shape[:2]
+        rtmw = np.array([[p.x * w, p.y * h] for p in hand])
+        if np.median(np.linalg.norm(keypoints - rtmw, axis=1)) >= 0.3 * max(float(np.ptp(rtmw, axis=0).max()), 10.0):
+            return hand
+        return [SimpleNamespace(x=u / w, y=v / h, visibility=p.visibility)
+                for p, (u, v) in zip(hand, 0.5 * (keypoints + rtmw))]
+
     def smooth_chirality(self, side, t, chirality):
         """Chirality of the same hand averaged over the last frames (0.5 / 0.5, restarted after 0.5 s): one frame
         with a misplaced keypoint does not flip the palm."""
@@ -359,7 +376,11 @@ class HumanHandTracker(Node):
 
         right = side == RAW.HAND_RIGHT
         n = self.gripper.palm_normal(hand, right)
-        points = hand['pts']
+        # moved by the offset between the two cameras on the same hand in the last 2 s (calibrations and opposite
+        # sides of the hand, ~5 cm on the D405 bag 14/10): unmoved, every switch was a palm jump of that size
+        recent = [d for s, d in self._gripper_offsets if 0.0 <= t - s <= 2.0]
+        offset = np.median(recent, axis=0) if len(recent) >= 3 else np.zeros(3)
+        points = [None if p is None else p + offset for p in hand['pts']]
         valid = [p for p in points if p is not None]
         self.publish_tracking(
             stamp, RAW.TRACKING_FULL if len(valid) == 4 else RAW.TRACKING_PARTIAL, points,
@@ -460,8 +481,10 @@ class HumanHandTracker(Node):
             return
 
         hand, right = hand_landmarks.landmark, active_side == RAW.HAND_RIGHT
-        plane, anchor = self.palm_plane(hand, shape, depth_image, encoding, right)
         keypoints = self.detector.hand_keypoints(image, hand) if hasattr(self.detector, 'hand_keypoints') else None
+        if keypoints is not None:
+            hand = self.model_landmarks(hand, keypoints, shape)
+        plane, anchor = self.palm_plane(hand, shape, depth_image, encoding, right)
         if keypoints is not None:
             plane, anchor = self.palm_up_side_down(keypoints, active_side, right, stamp_s, shape, depth_image,
                                                    encoding)
@@ -493,9 +516,18 @@ class HumanHandTracker(Node):
             n = None if seen is None else self.gripper.palm_normal(seen, right)
             if n is not None:
                 plane, anchor = n, (n if right else -n)
+            same = None if self.gripper is None or valid_count < 4 else self.gripper.hand_near(palm, stamp_s, 0.15)
+            if same is not None and all(p is not None for p in same['pts']):
+                self._gripper_offsets.append((stamp_s, palm - np.mean(same['pts'], axis=0)))
 
+        # 21 points for the grasp filters: a depth farther than 10 cm from the hand median (table or object behind a
+        # finger: thumb 23 cm from the wrist on the D405 bag) takes the median, along the same pixel ray
+        cam = [None if lm.visibility <= 0.3 else self.landmark_to_3d(lm, shape, depth_image, encoding) for lm in hand]
+        z = np.median([p[2] for p in cam if p is not None]) if any(p is not None for p in cam) else None
+        hand_points = [np.full(3, np.nan) if p is None
+                       else self.apply_transform(p if abs(p[2] - z) <= 0.10 else p * z / p[2]) for p in cam]
         self.publish_tracking(stamp, state, points_base, types, start_time, handedness=int(active_side),
-                              palm_plane_normal=plane, palm_anchor_cross=anchor)
+                              palm_plane_normal=plane, palm_anchor_cross=anchor, hand_points=hand_points)
         self._store_arm_anchor(result.pose_landmarks, int(active_side), points_camera, shape, depth_image,
                                encoding, stamp_s)
 
@@ -510,7 +542,7 @@ class HumanHandTracker(Node):
 
     # ------------------------------------------------------------ publishing
     def publish_tracking(self, stamp, tracking_state, points, measurement_types, start_time,
-                         handedness=None, palm_plane_normal=None, palm_anchor_cross=None):
+                         handedness=None, palm_plane_normal=None, palm_anchor_cross=None, hand_points=()):
         msg = HandTrackingRaw()
         msg.header.stamp, msg.header.frame_id = stamp, self.target_frame
         msg.tracking_state = int(tracking_state)
@@ -528,6 +560,7 @@ class HumanHandTracker(Node):
                                             z=float(palm_anchor_cross[2]))
         msg.positions = [Point() if p is None else Point(x=float(p[0]), y=float(p[1]), z=float(p[2]))
                          for p in points]
+        msg.hand_points = [Point(x=float(p[0]), y=float(p[1]), z=float(p[2])) for p in hand_points]
         self.tracking_publisher.publish(msg)
 
     def publish_debug_image(self, image, original_msg):

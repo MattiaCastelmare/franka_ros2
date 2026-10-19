@@ -33,3 +33,7 @@ bool palm_plane_valid
 geometry_msgs/Vector3 palm_plane_normal
 
 geometry_msgs/Vector3 palm_anchor_cross
+
+# The 21 keypoints of the hand model (MediaPipe order) in the target frame, for the grasp filters only (not
+# filtered): NaN without depth or with a score <= 0.3; empty without hand landmarks (gripper camera, arm).
+geometry_msgs/Point[] hand_points

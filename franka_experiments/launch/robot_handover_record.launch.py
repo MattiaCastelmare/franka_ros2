@@ -28,6 +28,7 @@ ROSBAG_TOPICS += [
     # Robot state
     '/NS_1/franka/joint_states',
     '/NS_1/joint_states',
+    '/NS_1/franka_gripper/joint_states',
     '/tf',
     '/tf_static',
 
@@ -41,6 +42,8 @@ ROSBAG_TOPICS += [
     '/handover/distance',
     '/handover/observer',
     '/handover/hand_object',
+    '/handover/grasp_pose',
+    '/handover/grasp_phase',
 
     # Control
     '/NS_1/qddot_nom',

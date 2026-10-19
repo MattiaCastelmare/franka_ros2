@@ -6,10 +6,11 @@ active palm, in a worker thread. It classifies the hand contact state and,
 for "object contact", returns the held object's mask. One camera at a time: the gripper D405 while
 the active palm is in its image (it sees the object from 10-40 cm), else the main camera. A gate rejects what a
 held object cannot be (much larger than the hand, or away from the palm
-depth: tables, robot, background) or only touched by a non-prehensile hand
-(palm resting on a marker). Two concordant detections confirm or
+depth: tables, robot, background), lying on the arm with the hand behind it (the link in front of it) or only
+touched by a non-prehensile hand (palm resting on a marker). Two concordant detections confirm or
 release the object. Between detections outline and centroid follow the palm,
-so /handover/hand_object is published at HandState rate.
+so /handover/hand_object is published at HandState rate; the outline of the detection frame
+goes along with its stamp (the grasp pose node runs HGGD on that frame).
 """
 
 import ctypes
@@ -50,6 +51,11 @@ TOUCHED_ONLY = (0, 3, 5)    # Hands23 touch: tool / container / neither "touched
 THIN_RATIO = 2.5       # mask principal axes ratio above which an object is thin and elongated
 NEAR_HAND_PX = 200     # D405: hand box nearest the projected palm (calibrations put it ~120 px off)
 SWITCH_FRAMES = 3      # frames in a row the palm must be in / out of the D405 image to switch camera
+ARM_LINKS = tuple(f'fr3_link{i}' for i in range(1, 8))  # arm capsules between these origins: not the gripper
+                       # (the handed object reaches it), not the base column (1005: the gripper works next to it, the
+                       # pen handed there sat 4-9 cm from it)
+ARM_R = 0.10           # arm radius 5 cm (fr3_complete.yaml) + 5 cm of calibration and depth error
+ON_ARM = 0.5           # object rejected with more than this fraction of its pixels on the arm
 
 
 def elongated(mask):
@@ -93,6 +99,12 @@ class Hands23:
         # half precision on the GPU (tensor cores): same detections, faster
         self.torch, self.fp16 = torch, bool(fp16) and device == 'cuda'
         self.thin_objects = bool(thin_objects)
+        # the first inferences take ~1 s each (CUDA / cuDNN set-up): here, not on the first hand (17/10, D405 bag:
+        # ball under the D405 for 6 s before the first object)
+        dummy = np.random.default_rng(0).integers(0, 255, (2 * input_size, 2 * input_size, 3), np.uint8)
+        for _ in range(3):
+            with torch.autocast('cuda', dtype=torch.float16, enabled=self.fp16):
+                self.predictor(dummy)
 
     def __call__(self, bgr, depth, palm_px, palm_z, fx, keep=False, nearest=False):
         observed, obj, gripping = self._detect(bgr, depth, palm_px, palm_z, fx, CROP_M, False, nearest)
@@ -169,6 +181,106 @@ class Hands23:
         return True, {'mask': obj, 'hand': hand, 'score': float(score[o])}, gripping
 
 
+class MaskRefiner:
+    """Object outline refined by a promptable segmenter on the Hands23 crop: Hands23 says which object the hand
+    holds, the segmenter draws its border. Prompt: 3 positive points at the interior maxima of the Hands23 object
+    mask, up to 4 negative points on the Hands23 hand mask away from it (no box: worse for every model).
+    16/10, 50 frames with the user's contours (IoU mean / median)"""
+    MIN_AGREE = 0.3
+    SAME = 0.5
+    PREV = 2.0
+    MODELS = {  # repository clone, config, checkpoint
+        'etam': ('/ros2_ws/EfficientTAM', 'configs/efficienttam/efficienttam_ti.yaml', 'checkpoints/efficienttam_ti.pt'),
+        'sam2': ('/ros2_ws/sam2', 'configs/sam2.1/sam2.1_hiera_t.yaml', 'checkpoints/sam2.1_hiera_tiny.pt')}
+
+    def __init__(self, model):
+        root, config, checkpoint = self.MODELS[model]
+        sys.path.insert(0, root)
+        import torch
+        if model == 'etam':
+            from efficient_track_anything.build_efficienttam import build_efficienttam as build
+            from efficient_track_anything.efficienttam_image_predictor import EfficientTAMImagePredictor as Predictor
+        else:
+            from sam2.build_sam import build_sam2 as build
+            from sam2.sam2_image_predictor import SAM2ImagePredictor as Predictor
+        self.torch = torch
+        self.predictor = Predictor(build(config, f'{root}/{checkpoint}', device='cuda'))
+        dummy, obj = np.zeros((480, 480, 3), np.uint8), np.zeros((480, 480), bool)  # warm-up, as Hands23
+        obj[200:280, 200:280] = True
+        for _ in range(2):
+            self(dummy, obj, np.zeros_like(obj), (0, 0, 480, 480))
+
+    @staticmethod
+    def _positives(obj, n=3):
+        dt = cv2.distanceTransform(obj.astype(np.uint8), cv2.DIST_L2, 5)
+        pts = []
+        for _ in range(n):
+            v, u = np.unravel_index(np.argmax(dt), dt.shape)
+            if dt[v, u] <= 1:
+                break
+            pts.append((u, v))
+            cv2.circle(dt, (int(u), int(v)), max(4, int(dt[v, u])), 0, -1)
+        return pts
+
+    @staticmethod
+    def _negatives(hand, obj, n=4):
+        h = hand & ~(cv2.dilate(obj.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0)
+        if h.sum() < 20:
+            return []
+        dt = cv2.distanceTransform((~obj).astype(np.uint8), cv2.DIST_L2, 5)
+        v, u = np.nonzero(h)
+        pts = []
+        for i in np.argsort(-dt[v, u])[::max(1, len(v) // 40)]:
+            if all(np.hypot(u[i] - a, v[i] - b) > 12 for a, b in pts):
+                pts.append((u[i], v[i]))
+            if len(pts) == n:
+                break
+        return pts
+
+    def __call__(self, bgr, obj, hand, window, prev=None):
+        """obj, hand: full-image masks; window: (x0, y0, x1, y1) crop SAM sees; prev: the previous outline moved to this
+        frame (D405) or None. Returns the refined mask or obj."""
+        x0, y0, x1, y1 = window
+        o, h = obj[y0:y1, x0:x1], hand[y0:y1, x0:x1]
+        pos, neg = self._positives(o), self._negatives(h, o)
+        if not pos:
+            return obj
+        pts = np.array(pos + neg, np.float32)
+        labels = np.r_[np.ones(len(pos)), np.zeros(len(neg))]
+        with self.torch.inference_mode(), self.torch.autocast('cuda', dtype=self.torch.bfloat16):
+            self.predictor.set_image(np.ascontiguousarray(bgr[y0:y1, x0:x1, ::-1]))
+            masks, scores, _ = self.predictor.predict(point_coords=pts, point_labels=labels, multimask_output=True)
+        masks = [np.asarray(m).astype(bool) for m in masks]
+        agree = [(m & o).sum() / max((m | o).sum(), 1) for m in masks]
+        if prev is None:
+            near = [i for i in range(len(masks)) if agree[i] >= self.SAME]
+            best = max(near, key=lambda i: scores[i]) if near else int(np.argmax(scores))
+        else:  # the same object as before: score + PREV x overlap with the previous outline
+            p = prev[y0:y1, x0:x1]
+            near = [i for i in range(len(masks)) if agree[i] >= self.MIN_AGREE] or [int(np.argmax(scores))]
+            best = max(near, key=lambda i: scores[i] + self.PREV * (masks[i] & p).sum() / max((masks[i] | p).sum(), 1))
+        m = masks[best]
+        if agree[best] < self.MIN_AGREE:
+            return obj
+        out = np.zeros_like(obj)
+        out[y0:y1, x0:x1] = m
+        return out
+
+
+def moved_outline(grey0, grey1, mask):
+    """mask moved from grey0 to grey1 by the median Lucas-Kanade flow of corners inside it (unmoved if < 5 agree)."""
+    p0 = cv2.goodFeaturesToTrack(grey0, 40, 0.01, 4, mask=cv2.dilate(mask.astype(np.uint8) * 255, np.ones((9, 9), np.uint8)))
+    if p0 is None or len(p0) < 5:
+        return mask
+    p1, ok, _ = cv2.calcOpticalFlowPyrLK(grey0, grey1, p0, None, winSize=(21, 21), maxLevel=3)
+    back, ok2, _ = cv2.calcOpticalFlowPyrLK(grey1, grey0, p1, None, winSize=(21, 21), maxLevel=3)
+    good = (ok.ravel() == 1) & (ok2.ravel() == 1) & (np.linalg.norm(back - p0, axis=2).ravel() < 1.0)
+    if good.sum() < 5:
+        return mask
+    dx, dy = np.median((p1 - p0)[good].reshape(-1, 2), axis=0)
+    return cv2.warpAffine(mask.astype(np.uint8), np.float32([[1, 0, dx], [0, 1, dy]]), mask.shape[::-1]) > 0
+
+
 def measure(obj, depth, K, palm_z, thin_objects=True):
     """Outline, box, centroid (camera) and principal extents of the object.
 
@@ -240,6 +352,14 @@ class Grasp(Node):
         self.thin_objects = bool(par('thin_objects', True))
         self.detector = Hands23(par('hands23_root', H23), int(par('input_size', 384)),
                                 par('device', 'cuda'), bool(par('fp16', True)), self.thin_objects)
+        # object outline: 'etam' / 'sam2' = Hands23 mask refined by EfficientTAM / SAM 2.1 tiny (MaskRefiner),
+        # 'none' = the Hands23 mask
+        refine, self.refiner = str(par('object_refine', 'etam')), None
+        if refine != 'none':
+            try:
+                self.refiner = MaskRefiner(refine)
+            except Exception as error:  # model not installed on this machine: the Hands23 outline
+                self.get_logger().warn(f'object outline {refine} not available ({error}): Hands23 mask only')
 
         ext = yaml.safe_load(open(os.path.join(
             get_package_share_directory('franka_experiments'), 'config', 'camera_extrinsics.yaml')))
@@ -273,7 +393,9 @@ class Grasp(Node):
             self.create_subscription(Image, ns + 'aligned_depth_to_color/image_raw',
                                      self.depth[name].append, qos_profile_sensor_data)
         self.create_subscription(HandState, '/handover/hand_state', self.on_state, 10)
-        self.ms = deque(maxlen=50)
+        self.ms, self.ms_refine = deque(maxlen=50), deque(maxlen=50)
+        self.outline = None  # D405: (grey, refined outline, stamp) of the last detection, for the next choice
+        self.n_arm = 0  # objects rejected on the arm since the last log
         self.create_timer(5.0, self.log_rate,
                           clock=Clock(clock_type=ClockType.STEADY_TIME))  # sim time jumps at bag start
         self.stopping = threading.Event()
@@ -283,9 +405,11 @@ class Grasp(Node):
     def log_rate(self):
         # only while detections are running (silent once the bag/camera stops)
         if self.ms:
-            self.get_logger().info(f'Hands23 {np.median(self.ms):.0f} ms/detection on {self.cam}, '
-                                   f'present={self.present}')
-            self.ms.clear()
+            refine = f' + outline {np.median(self.ms_refine):.0f} ms' if self.ms_refine else ''
+            self.get_logger().info(f'Hands23 {np.median(self.ms):.0f} ms/detection{refine} on {self.cam}, '
+                                   f'present={self.present}, on the arm {self.n_arm}')
+            self.ms.clear(); self.ms_refine.clear()
+            self.n_arm = 0
 
     def reset(self):
         self.palm_ref, self.pos, self.neg, self.present = None, 0, 0, False
@@ -384,7 +508,7 @@ class Grasp(Node):
                 continue
             cam, rgb, depth_msg, state = job
             done = rgb
-            if not state.position_valid or self.choose_camera(self.palm(state)) != cam:
+            if not state.position_valid or self.cam != cam:  # camera switched since (on_state)
                 continue
             pose = self.pose(cam)
             if pose is None:
@@ -400,6 +524,20 @@ class Grasp(Node):
             observed, obj = self.detector(bgr, depth, palm_px, palm_cam[2], self.K[cam][0], keep=self.present,
                                           nearest=cam == 'd405')
             self.ms.append(1e3 * (time.perf_counter() - t0))
+            if obj is not None and self.refiner is not None:
+                t1 = time.perf_counter()
+                r = int(CROP_M * self.K[cam][0] / palm_cam[2])
+                window = (max(0, int(palm_px[0]) - r), max(0, int(palm_px[1]) - r),
+                          min(bgr.shape[1], int(palm_px[0]) + r), min(bgr.shape[0], int(palm_px[1]) + r))
+                grey, prev = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), None
+                if cam == 'd405' and self.outline is not None and 0.0 < stamp(rgb) - self.outline[2] <= 0.5:
+                    prev = moved_outline(self.outline[0], grey, self.outline[1])
+                obj['mask'] = self.refiner(bgr, obj['mask'], obj['hand'], window, prev)
+                if cam == 'd405':
+                    self.outline = (grey, obj['mask'], stamp(rgb))
+                self.ms_refine.append(1e3 * (time.perf_counter() - t1))
+            if obj is not None and self.on_arm(obj, depth, cam, R, t_cam, self.palm(state)) > ON_ARM:
+                obj, self.n_arm = None, self.n_arm + 1
             if obj is not None:
                 obj = measure(obj, depth, self.K[cam], palm_cam[2], self.thin_objects)
                 c = obj['centroid']
@@ -408,10 +546,39 @@ class Grasp(Node):
                                       or self.lateral(state, c_base) > MAX_LATERAL_M):
                     obj = None
                 else:
-                    obj.update(palm_px=palm_px, palm=self.palm(state), cam=cam)
+                    obj.update(palm_px=palm_px, palm=self.palm(state), cam=cam, stamp=rgb.header.stamp)
                     if c is not None:
                         obj['centroid'] = c_base
             self.update(stamp(rgb), self.palm(state), self.velocity(state), observed, obj)
+
+    def on_arm(self, obj, depth, cam, R, t_cam, palm):
+        """Fraction of the object pixels (with depth, hand excluded) inside the arm capsules fr3_link1 -> fr3_link7,
+        only when the arm is between the camera and the palm (the line of sight to the palm crosses a capsule 5 cm or
+        more before it): a hand behind the robot "holds" the link in front of it for Hands23. With the hand in front of
+        the arm or beside it nothing is rejected: an object held a few cm in front of a link is inside the capsules
+        too (10 cm = 5 cm of link + 5 cm of calibration error). The gripper is left out, the handed object reaches it.
+        0 without TF."""
+        try:
+            joints = np.array([[p.x, p.y, p.z] for p in (
+                self.tf.lookup_transform('base', link, Time()).transform.translation for link in ARM_LINKS)])
+        except TransformException:
+            return 0.0
+        a, ab = joints[:-1], np.diff(joints, axis=0)
+        dist = lambda p: np.linalg.norm(p[:, None] - (a + np.clip(np.einsum('nkd,kd->nk', p[:, None] - a, ab) / np.maximum(
+            (ab * ab).sum(1), 1e-9), 0.0, 1.0)[..., None] * ab), axis=2).min(1)
+        length = np.linalg.norm(palm - t_cam)
+        sight = t_cam + np.linspace(0.0, max(length - 0.05, 0.0), 60)[:, None] * (palm - t_cam) / max(length, 1e-9)
+        if not (dist(sight) < ARM_R).any():
+            return 0.0
+        v, u = np.nonzero(obj['mask'] & ~obj['hand'])
+        z = depth[v, u]
+        step = max(1, int(np.sum(z > 0.1)) // 400)
+        u, v, z = u[z > 0.1][::step], v[z > 0.1][::step], z[z > 0.1][::step]
+        if len(z) < 20:
+            return 0.0
+        fx, fy, cx, cy = self.K[cam]
+        p = np.column_stack([(u - cx) * z / fx, (v - cy) * z / fy, z]) @ R.T + t_cam
+        return float(np.mean(dist(p) < ARM_R))
 
     def update(self, t, palm, velocity, observed, obj):
         # Same hand = continuous palm, not the LEFT/RIGHT label (it flips).
@@ -440,6 +607,7 @@ class Grasp(Node):
         out.object_age = float('inf')
         if state.position_valid:
             self.last_palm = self.palm(state)
+            self.choose_camera(self.last_palm)  # every frame (SWITCH_FRAMES = 0.1 s), not every detection
         palm = self.last_palm  # short tracking gaps: keep the last palm
         with self.lock:
             out.valid = bool(palm is not None and self.palm_ref is not None
@@ -456,6 +624,8 @@ class Grasp(Node):
                 out.object_confidence = o['score']
                 out.bbox_px = (o['bbox'] + np.tile(dpx, 2)).tolist()
                 out.contour_px = np.round(o['contour'] + dpx).astype(int).ravel().tolist()
+                out.detection_stamp = o['stamp']
+                out.detection_contour_px = np.round(o['contour']).astype(int).ravel().tolist()
                 out.dimensions.x, out.dimensions.y, out.dimensions.z = map(float, o['dims'])
                 if o['centroid'] is not None:
                     c = o['centroid'] + palm - o['palm']

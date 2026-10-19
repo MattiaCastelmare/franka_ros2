@@ -16,6 +16,10 @@ float32 object_age
 float32[4] bbox_px
 int32[] contour_px
 bool gripper_camera
+# Colour frame of the last accepted detection and the object outline in it (not moved): the grasp
+# pose node runs HGGD on that frame with this outline.
+builtin_interfaces/Time detection_stamp
+int32[] detection_contour_px
 # Extents of the visible surface along its principal axes [m], descending.
 # The axis along the camera ray is underestimated (only one side is seen).
 geometry_msgs/Vector3 dimensions

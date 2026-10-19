@@ -7,9 +7,16 @@
   status      speed, distance, palm UP / SIDE / DOWN (hysteresis on normal.z), timestamp, '*' = estimated;
               palm coordinates in the base frame, observer state, grasp executor phase
   prediction  hand + velocity x 0.2 s (red), when the velocity is fresh
-  object      Hands23 object (HandObjectState) and the grasp pose (handover_grasp.py pose) with its width, if
-              published: light blue = new from the backend, grey = moved with the palm
-The D405 view reuses the same drawing with the D405 pose (TF base -> fr3_link8 + d405_extrinsics.yaml).
+  object      Hands23 outline of the last detection (the one HGGD uses), on the image of the camera it ran on,
+              moved by the image motion since the detection frame (detections are ~0.2-0.3 s old: unmoved, the
+              outline lags behind the moving hand): median Lucas-Kanade flow of corners inside the outline, else
+              the motion of the filtered palm (main-camera palm, coarse on the D405)
+  grasp       grasp pose (handover_grasp.py pose) with its width, D405 image only: light blue = new from the
+              backend, grey = moved with the palm
+  skeleton    the 21 hand points of the tracker (HandTrackingRaw.hand_points, grasp filter), main image only
+The D405 view reuses the same drawing with the D405 pose (TF base -> fr3_link8 + d405_extrinsics.yaml), without the
+main-camera landmarks and prediction: seen from 20-30 cm, their ~1 cm noise at 1.4 m and the ~5 cm offset between the
+two calibrations (17/10) become 20-100 px (the D405 hand is the tracker's MediaPipe overlay).
 """
 
 from collections import deque
@@ -34,6 +41,9 @@ from tf2_ros import Buffer, TransformListener
 
 from franka_experiments.nodes.grasp import CROP_M
 from franka_experiments.utils.camera_yaml import load_camera_info_yaml
+
+BONES = ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (0, 9), (9, 10), (10, 11), (11, 12), (0, 13),
+         (13, 14), (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13), (13, 17))
 
 F, O = HandTrackingFiltered, HandoverObserver
 SIDE_ENTER, SIDE_EXIT = 0.45, 0.55  # around the pipeline's SIDE, |normal z| < 0.5
@@ -91,8 +101,12 @@ class HandVisualizer(Node):
 
         self.gripper_k, self._latest = None, None
         self.palm_ud, self.display_side = None, None  # UP/SIDE/DOWN display state, reset with the physical hand
-        self._raw_state_by_stamp = {}                 # raw tracking state of recent frames (the '*' marker)
+        self._raw_state_by_stamp = {}                 # raw tracking state and 21 hand points of recent frames
         self._object_states, self._grasp_poses = deque(maxlen=60), deque(maxlen=30)
+        self._palms = deque(maxlen=60)  # (stamp, filtered palm in base) of the last 2 s
+        self._camera_at = lambda t: self.camera  # camera of the drawn image at time t (D405: TF at t)
+        self._greys = {True: deque(maxlen=20), False: deque(maxlen=20)}  # main / D405: (stamp, grey image)
+        self._corners = {}  # (main, detection stamp) -> corners inside the outline in the detection frame
         self._observer, self._phase = None, None  # last HandoverObserver, grasp executor phase
         self.bridge = CvBridge()
         self.tf_buffer = Buffer()
@@ -132,27 +146,41 @@ class HandVisualizer(Node):
 
     def _raw_state_callback(self, msg):
         self._raw_state_by_stamp[(int(msg.header.stamp.sec), int(msg.header.stamp.nanosec))] = \
-            int(msg.tracking_state)
+            (int(msg.tracking_state), msg.hand_points)
         while len(self._raw_state_by_stamp) > 64:
             self._raw_state_by_stamp.pop(next(iter(self._raw_state_by_stamp)), None)
 
+    @staticmethod
+    def pixel(p, camera):
+        """Base-frame point -> (u, v) float in `camera`, None if behind it."""
+        fx, fy, cx, cy, r_base_camera, t_camera_base = camera
+        x, y, z = r_base_camera @ (p - t_camera_base)
+        return None if z <= 1e-6 or not np.isfinite([x, y, z]).all() else np.array([fx * x / z + cx, fy * y / z + cy])
+
     def project(self, point, width, height):
         """Base-frame point -> pixel of the current camera, None if behind it or outside the image."""
-        p = xyz(point)
-        if not np.all(np.isfinite(p)):
+        uv = self.pixel(xyz(point), self.camera)
+        if uv is None:
             return None
-
-        fx, fy, cx, cy, r_base_camera, t_camera_base = self.camera
-        x, y, z = r_base_camera @ (p - t_camera_base)
-        if z <= 1e-6:
-            return None
-        u, v = int(round(fx * x / z + cx)), int(round(fy * y / z + cy))
+        u, v = int(round(uv[0])), int(round(uv[1]))
         return (u, v) if 0 <= u < width and 0 <= v < height else None
+
+    def _palm_shift(self, t_then, t_now):
+        """Image motion (px) of the filtered palm from t_then to t_now in the drawn camera, 0 if unknown."""
+        near = lambda t: min(self._palms, default=None, key=lambda p: abs(p[0] - t))
+        then, now, camera = near(t_then), near(t_now), self._camera_at(t_then)
+        if then is None or camera is None or abs(then[0] - t_then) > 0.05 or abs(now[0] - t_now) > 0.1:
+            return 0
+        a, b = self.pixel(then[1], camera), self.pixel(now[1], self.camera)
+        return 0 if a is None or b is None else np.round(b - a).astype(np.int32)
 
     # ------------------------------------------------------------ images
     def callback(self, image_msg, filtered_msg, state_msg, distance_msg):
         self._latest = (filtered_msg, state_msg, distance_msg)
+        if state_msg.position_valid:
+            self._palms.append((stamp_s(state_msg.header.stamp), xyz(state_msg.palm_position)))
         image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8')
+        self._greys[True].append((stamp_s(image_msg.header.stamp), cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
         self._draw(image, image_msg, filtered_msg, state_msg, distance_msg)
         output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
         output.header = image_msg.header
@@ -162,27 +190,55 @@ class HandVisualizer(Node):
         """The latest state drawn on the D405 image, with the D405 pose and intrinsics; the main-camera
         model and the display state are left untouched."""
         image = self.bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8')
+        self._greys[False].append((stamp_s(image_msg.header.stamp), cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
         latest, k = self._latest, self.gripper_k
-        try:
-            tf = self.tf_buffer.lookup_transform(self.base_frame, self.gripper_link, Time())
-        except Exception:
-            tf = None
+        camera = None if k is None else self._gripper_camera(k, Time())
 
-        if (latest is not None and k is not None and tf is not None
+        if (latest is not None and camera is not None
                 and abs(stamp_s(image_msg.header.stamp) - stamp_s(latest[1].header.stamp)) <= 0.2):
-            q, t = tf.transform.rotation, tf.transform.translation
-            r_link = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
             main, display = self.camera, (self.palm_ud, self.display_side)
-            self.camera = [*k, (r_link @ self.r_link_gripper).T,
-                           r_link @ self.t_link_gripper + np.array([t.x, t.y, t.z])]
+            self.camera = camera
+            self._camera_at = lambda t: self._gripper_camera(k, Time(nanoseconds=int(t * 1e9)))
             try:
                 self._draw(image, image_msg, *latest, main=False)
             finally:
                 self.camera, (self.palm_ud, self.display_side) = main, display
+                self._camera_at = lambda t: self.camera
 
         output = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
         output.header = image_msg.header
         self.gripper_publisher.publish(output)
+
+    def _flow_shift(self, main, t_then, contour):
+        """Median Lucas-Kanade flow (px) of corners inside the outline from the detection frame to the newest image of
+        that camera, forward-backward checked; None without the frame or with < 5 corners tracked."""
+        frames = self._greys[main]
+        then = min(frames, default=None, key=lambda f: abs(f[0] - t_then))
+        if then is None or abs(then[0] - t_then) > 0.02:
+            return None
+        if then is frames[-1]:
+            return 0
+        if (key := (main, t_then)) not in self._corners:
+            mask = cv2.dilate(cv2.fillPoly(np.zeros_like(then[1]), [contour], 255), np.ones((9, 9), np.uint8))
+            self._corners = {key: cv2.goodFeaturesToTrack(then[1], 40, 0.01, 4, mask=mask)}
+        p0 = self._corners[key]
+        if p0 is None or len(p0) < 5:
+            return None
+        lk = dict(winSize=(21, 21), maxLevel=3)
+        p1, ok, _ = cv2.calcOpticalFlowPyrLK(then[1], frames[-1][1], p0, None, **lk)
+        back, ok_back, _ = cv2.calcOpticalFlowPyrLK(frames[-1][1], then[1], p1, None, **lk)
+        good = (ok.ravel() == 1) & (ok_back.ravel() == 1) & (np.linalg.norm(back - p0, axis=2).ravel() < 1.0)
+        return np.round(np.median((p1 - p0)[good].reshape(-1, 2), axis=0)).astype(np.int32) if good.sum() >= 5 else None
+
+    def _gripper_camera(self, k, stamp):
+        """D405 camera (intrinsics k) at `stamp` from TF base -> flange, None without TF."""
+        try:
+            tf = self.tf_buffer.lookup_transform(self.base_frame, self.gripper_link, stamp)
+        except Exception:
+            return None
+        q, t = tf.transform.rotation, tf.transform.translation
+        r_link = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        return [*k, (r_link @ self.r_link_gripper).T, r_link @ self.t_link_gripper + np.array([t.x, t.y, t.z])]
 
     # ------------------------------------------------------------ drawing
     @staticmethod
@@ -244,7 +300,7 @@ class HandVisualizer(Node):
         if (p := self.project(palm + velocity * PREDICTION_S, w, h)) is not None:
             cv2.drawMarker(image, p, color, cv2.MARKER_CROSS, 11, 2, cv2.LINE_AA)
 
-    def _draw_object_overlay(self, image, image_msg, state_msg, pixels=True):
+    def _draw_object_overlay(self, image, image_msg, state_msg, main=True):
         t_image = stamp_s(image_msg.header.stamp)
         msg = min(self._object_states, default=None,
                   key=lambda m: abs(t_image - stamp_s(m.header.stamp)))
@@ -264,17 +320,20 @@ class HandVisualizer(Node):
                         text = (f'Oggetto: CONFERMATO  c={msg.object_confidence:.2f}  eta={msg.object_age:.2f}s'
                                 f'  dim={100*d.x:.0f}x{100*d.y:.0f}x{100*d.z:.0f} cm')
                         color = (60, 255, 60)
-                    if msg.object_present and pixels:  # contour / box are main-camera pixels
-                        contour = np.array(msg.contour_px, np.int32).reshape(-1, 1, 2)
-                        if len(contour) >= 3:
-                            fill = image.copy()
-                            cv2.fillPoly(fill, [contour], color)
-                            cv2.addWeighted(fill, .35, image, .65, 0, image)
-                            cv2.polylines(image, [contour], True, color, 2, cv2.LINE_AA)
-
-                        u0, v0, u1, v1 = map(int, msg.bbox_px)
-                        cv2.rectangle(image, (u0, v0), (u1, v1), color, 1, cv2.LINE_AA)
-                        cv2.putText(image, f'OGGETTO {100*d.x:.0f}x{100*d.y:.0f} cm', (u0, max(12, v0 - 6)),
+                        if msg.gripper_camera:
+                            text += '  (D405)'
+                    # outline of the detection frame in the image of its camera, moved with the palm since then
+                    contour = np.array(msg.detection_contour_px, np.int32).reshape(-1, 1, 2)
+                    if msg.object_present and main != msg.gripper_camera and len(contour) >= 3:
+                        t_detection = stamp_s(msg.detection_stamp)
+                        shift = self._flow_shift(main, t_detection, contour)
+                        contour = contour + (self._palm_shift(t_detection, t_image) if shift is None else shift)
+                        fill = image.copy()
+                        cv2.fillPoly(fill, [contour], color)
+                        cv2.addWeighted(fill, .35, image, .65, 0, image)
+                        cv2.polylines(image, [contour], True, color, 2, cv2.LINE_AA)
+                        u0, v0 = contour.reshape(-1, 2).min(0)
+                        cv2.putText(image, f'OGGETTO {100*d.x:.0f}x{100*d.y:.0f} cm', (int(u0), max(12, int(v0) - 6)),
                                     cv2.FONT_HERSHEY_SIMPLEX, .4, color, 1, cv2.LINE_AA)
 
         width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .4, 1)[0][0]
@@ -313,12 +372,14 @@ class HandVisualizer(Node):
                     px(s * half, -f)] for s in (-1, 1)]
         body = [px(-half - 0.03, -f), px(half + 0.03, -f), px(half + 0.03, -f - b), px(-half - 0.03, -f - b)]
         approach = [px(0.0, -f - b), px(0.0, -f - b - self._APPROACH_M)]
-        if any(p is None for p in sum(fingers, []) + body + approach):
+        if any(p is None for p in sum(fingers, [])):  # the fingers; body and approach only when in the image
             return
+        body = body if all(p is not None for p in body) else None
+        approach = approach if all(p is not None for p in approach) else None
 
         new = stamp_s(msg.source_stamp) in (0.0, stamp_s(msg.header.stamp))  # 0: publisher without it
         color, dark = ((255, 190, 40), (60, 30, 0)) if new else ((190, 190, 190), (40, 40, 40))
-        shapes = [np.array(s, np.int32) for s in fingers + [body]]
+        shapes = [np.array(s, np.int32) for s in fingers + ([body] if body else [])]
         layer = image.copy()
         for poly in shapes:
             cv2.fillPoly(layer, [poly], color, cv2.LINE_AA)
@@ -327,23 +388,24 @@ class HandVisualizer(Node):
             cv2.polylines(image, [poly], True, dark, 4, cv2.LINE_AA)
             cv2.polylines(image, [poly], True, color, 2, cv2.LINE_AA)
 
-        a, e = np.array(approach[1], float), np.array(approach[0], float)
-        for k in range(0, 10, 2):  # dashed approach path into the hand body
-            p0, p1 = a + (e - a) * k / 10, a + (e - a) * (k + 1) / 10
-            cv2.line(image, tuple(map(int, p0)), tuple(map(int, p1)), color, 2, cv2.LINE_AA)
+        if approach:
+            a, e = np.array(approach[1], float), np.array(approach[0], float)
+            for k in range(0, 10, 2):  # dashed approach path into the hand body
+                p0, p1 = a + (e - a) * k / 10, a + (e - a) * (k + 1) / 10
+                cv2.line(image, tuple(map(int, p0)), tuple(map(int, p1)), color, 2, cv2.LINE_AA)
 
         for tip in (fingers[0][0], fingers[1][0]):
             cv2.circle(image, tip, 4, dark, -1, cv2.LINE_AA)
             cv2.circle(image, tip, 3, (255, 255, 255), -1, cv2.LINE_AA)
         label = f'PRESA {100 * msg.width:.0f} cm' + ('' if new else ' (spostata)')
         for ink, thickness in ((dark, 3), (color, 1)):
-            cv2.putText(image, label, (approach[1][0] + 8, approach[1][1] + 4),
+            cv2.putText(image, label, (fingers[1][2][0] + 8, fingers[1][2][1] + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, ink, thickness, cv2.LINE_AA)
 
     def _draw(self, image, image_msg, filtered, state, distance, main=True):
         h, w = image.shape[:2]
         trusted = self._hand_trusted(state)
-        if trusted and all(s in (F.TRACKING, F.PREDICT_ONLY) for s in filtered.landmark_state):
+        if main and trusted and all(s in (F.TRACKING, F.PREDICT_ONLY) for s in filtered.landmark_state):
             pixels = [self.project(p, w, h) for p in filtered.positions]
             if all(p is not None for p in pixels):
                 cv2.polylines(image, [np.array(pixels, dtype=np.int32).reshape((-1, 1, 2))], True,
@@ -394,7 +456,13 @@ class HandVisualizer(Node):
                             (14, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
         # status line: '*' = trusted but estimated (raw not full, degraded / held / predicted state)
-        raw = self._raw_state_by_stamp.get((int(state.header.stamp.sec), int(state.header.stamp.nanosec)))
+        raw, hand_points = self._raw_state_by_stamp.get(
+            (int(state.header.stamp.sec), int(state.header.stamp.nanosec)), (None, ()))
+        if main and len(hand_points) == 21:  # hand skeleton of the grasp filter
+            pixels = [self.project(p, w, h) for p in hand_points]
+            for a, b in BONES:
+                if pixels[a] is not None and pixels[b] is not None:
+                    cv2.line(image, pixels[a], pixels[b], (0, 220, 255), 1, cv2.LINE_AA)
         raw_no_hand = raw is not None and raw == int(HandTrackingRaw.NO_HAND)
         raw_degraded = raw is not None and not raw_no_hand and raw != int(HandTrackingRaw.TRACKING_FULL)
         estimated = trusted and (
@@ -423,9 +491,10 @@ class HandVisualizer(Node):
         coordinates += f'   {self._observer_text(state)}   fase={self._phase or "--"}'
         text_box(image, coordinates, (14, 54), (8, 39, 60), 0.38, (0, 255, 255))
 
-        self._draw_prediction(image, filtered, state)
-        self._draw_object_overlay(image, image_msg, state, pixels=main)
-        if main:  # grasp drawn with the main-camera intrinsics
+        if main:
+            self._draw_prediction(image, filtered, state)
+        self._draw_object_overlay(image, image_msg, state, main)
+        if not main:
             self._draw_grasp_overlay(image, image_msg)
 
 
