@@ -20,12 +20,15 @@ while true; do
   list=""; done_all=1
   for r in $RUNS; do
     [ -f models/sac_e1_$r/final_model.zip ] || done_all=0
-    for f in models/sac_e1_$r/checkpoints/sac_*000000_steps.zip; do
-      [ -f "$f" ] || continue
-      k=$(basename $f .zip | sed 's/sac_\([0-9]*\)_steps/\1/'); k=$((k / 1000))
+    # checkpoint_freq is divided by n_envs in train.py, so the files land at 499998, 999996, ...:
+    # round to the nearest 500k for the tag. Newest first, so the latest checkpoints are scored first.
+    for f in $(ls models/sac_e1_$r/checkpoints/sac_[0-9]*_steps.zip 2>/dev/null | awk -F'sac_' '{print $NF" "$0}' | sort -n -r | cut -d' ' -f2); do
+      k=$(basename $f .zip | sed 's/sac_\([0-9]*\)_steps/\1/'); k=$(( (k + 250000) / 500000 * 500 ))
       list="$list
 e1_${r}_${k}k|zip:franka_sim/$f|franka_sim/models/sac_e1_$r/config.yaml"
     done
+    [ -f models/sac_e1_$r/final_model.zip ] && list="$list
+e1_${r}_final|zip:franka_sim/models/sac_e1_$r/final_model.zip|franka_sim/models/sac_e1_$r/config.yaml"
   done
   if [ -n "$list" ]; then
     echo "$list" | run_eval one full
