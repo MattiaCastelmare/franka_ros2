@@ -20,6 +20,7 @@ Outputs (under franka_sim/):
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import shutil
 from datetime import datetime
@@ -35,7 +36,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from franka_sim.envs.franka_cbf_env import FrankaCBFEnv, precision_bonus
-from franka_sim.envs.obs_layout import spec_from_config
+from franka_sim.envs.obs_layout import CP_WIDTH, spec_from_config
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_HERE, 'config.yaml')
@@ -247,39 +248,93 @@ def _chronological(buf) -> np.ndarray:
             if buf.full else np.arange(n))
 
 
-def widen_buffer(old, new, cfg: dict):
-    """Copy a 24-D buffer into a `new` one whose obs also carries v_obs (b4 / C4).
+def _cp_geometry_from_obs(cfg: dict, obs: np.ndarray, slot: dict) -> np.ndarray:
+    """(N, D) single-sphere observations → (N, n_cp·4) control-point block (e2).
 
-    v_obs is what the env would have observed: the finite difference of the
+    Forward kinematics of the stored q against the stored obstacle centre:
+    dᵢ = ‖p_cpᵢ − c‖ − r_obs − rᵢ, n̂ᵢ = (p_cpᵢ − c)/‖·‖, clipped like
+    obs_layout.assemble. Exactly the env's block for an un-randomised
+    one-sphere rollout; with randomisation it inherits the noise and delay of
+    the stored q and centre instead of the env's own perception draws.
+    """
+    import mujoco
+    from franka_sim.envs.franka_cbf_env import FrankaCBFEnv
+    c = copy.deepcopy(cfg)
+    c.setdefault('obstacle', {})['count_range'] = None
+    env = FrankaCBFEnv(config=c)
+    spec = spec_from_config(cfg)
+    m, data = env.model, mujoco.MjData(env.model)
+    q, po = obs[:, slot['q'][0]:slot['q'][0] + 7].astype(np.float64), slot['obstacle'][0]
+    pts = np.empty((len(obs), env._n_cp, 3))
+    for k in range(len(obs)):
+        data.qpos[env._qadr] = q[k]
+        mujoco.mj_kinematics(m, data)
+        pts[k] = data.xpos[env._cp_body]
+    diff = pts - obs[:, None, po:po + 3].astype(np.float64)
+    dist = np.linalg.norm(diff, axis=-1)
+    g = np.empty((len(obs), env._n_cp, 4))
+    g[..., 0] = np.minimum(dist - env.r_obs - env._cp_radius[None], spec.clip_distance)
+    g[..., 1:] = diff / np.maximum(dist, 1e-9)[..., None]
+    env.close()
+    return g.reshape(len(obs), -1)
+
+
+def widen_buffer(old, new, cfg: dict):
+    """Copy a narrower buffer into a `new` one whose obs carries more slots (b4 / C4, e2).
+
+    The old obs must be a prefix of the new layout (obs_layout is a strict
+    prefix extension). Appended slots are rebuilt from what the old obs holds:
+
+    v_obs — what the env would have observed: the finite difference of the
     observed obstacle centre, (p_t − p_{t−1})/dt, and 0 on the first obs after
     a reset. A transition's next_obs velocity is (p' − p)/dt; its obs velocity
     is the previous transition's next_obs velocity in the same episode. The
     oldest transition, whose predecessor is gone, reuses its own next velocity.
+
+    cp:* — forward kinematics of the stored q against the stored obstacle
+    centre (_cp_geometry_from_obs); valid for buffers collected with ONE sphere.
+
     Raw slots are preserved, so a mask computed on `old` indexes `new` too.
     """
-    slot = {k: (s, w) for k, s, w in spec_from_config(cfg).slots}
-    po, (pv, wv) = slot['obstacle'][0], slot['v_obs']
-    d_old = old.observations.shape[-1]
-    assert pv == d_old and new.observations.shape[-1] == d_old + wv, 'v_obs must be appended'
+    slots = spec_from_config(cfg).slots
+    slot = {k: (s, w) for k, s, w in slots}
+    po = slot['obstacle'][0]
+    d_old, d_new = old.observations.shape[-1], new.observations.shape[-1]
+    missing = [(k, s, w) for k, s, w in slots if s >= d_old]
+    assert missing and missing[0][1] == d_old and d_new == sum(w for *_, w in slots), \
+        f'old obs ({d_old}) must be a prefix of the new layout ({d_new})'
+    assert all(k == 'v_obs' or k.startswith('cp:') for k, *_ in missing), missing
     assert new.buffer_size == old.buffer_size and old.n_envs == new.n_envs == 1
-    dt = 1.0 / float(cfg['env'].get('control_rate_hz', 100.0))
     order = _chronological(old)
     o, x = old.observations[order, 0], old.next_observations[order, 0]
-    v_next = (x[:, po:po + 3].astype(np.float64) - o[:, po:po + 3]) / dt
-    v_obs = np.empty_like(v_next)
-    v_obs[0] = v_next[0]
-    v_obs[1:] = v_next[:-1]
-    v_obs[1:][old.dones[order[:-1], 0].astype(bool)] = 0.0
     n = len(order)
     for name in ('observations', 'next_observations'):
         getattr(new, name)[:n, :, :d_old] = getattr(old, name)[:n]
-    new.observations[order, 0, pv:pv + wv] = v_obs
-    new.next_observations[order, 0, pv:pv + wv] = v_next
+    msg = []
+    if 'v_obs' in slot and slot['v_obs'][0] >= d_old:
+        pv, wv = slot['v_obs']
+        dt = 1.0 / float(cfg['env'].get('control_rate_hz', 100.0))
+        v_next = (x[:, po:po + 3].astype(np.float64) - o[:, po:po + 3]) / dt
+        v_obs = np.empty_like(v_next)
+        v_obs[0] = v_next[0]
+        v_obs[1:] = v_next[:-1]
+        v_obs[1:][old.dones[order[:-1], 0].astype(bool)] = 0.0
+        new.observations[order, 0, pv:pv + wv] = v_obs
+        new.next_observations[order, 0, pv:pv + wv] = v_next
+        msg.append(f'|v_obs| p50 {np.median(np.linalg.norm(v_next, axis=1)):.3f} '
+                   f'max {np.linalg.norm(v_next, axis=1).max():.3f} m/s')
+    cps = [s for k, s, _ in missing if k.startswith('cp:')]
+    if cps:
+        c0, c1 = min(cps), max(cps) + CP_WIDTH
+        g_obs = _cp_geometry_from_obs(cfg, o, slot)
+        g_next = _cp_geometry_from_obs(cfg, x, slot)
+        new.observations[order, 0, c0:c1] = g_obs
+        new.next_observations[order, 0, c0:c1] = g_next
+        msg.append(f'cp d p50 {np.median(g_next[:, ::CP_WIDTH]):.3f} min {g_next[:, ::CP_WIDTH].min():.3f} m')
     for name in ('actions', 'rewards', 'dones', 'timeouts'):
         getattr(new, name)[:n] = getattr(old, name)[:n]
     new.pos, new.full = old.pos, old.full
-    print(f'widened {n} transitions {d_old}→{d_old + wv}-D: |v_obs| p50 '
-          f'{np.median(np.linalg.norm(v_next, axis=1)):.3f} max {np.linalg.norm(v_next, axis=1).max():.3f} m/s')
+    print(f'widened {n} transitions {d_old}→{d_new}-D: ' + ', '.join(msg))
 
 
 def mask_buffer(buf, valid: np.ndarray):

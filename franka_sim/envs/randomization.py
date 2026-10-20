@@ -64,6 +64,19 @@ class Randomizer:
         self.obs_dropout_p = float(obs.get('dropout_prob', 0.0))
         self._lpf_state = None
         self._last_good = None
+        self._dropped = False
+
+        # ── 2b. Control-point block (`randomization.cp_geometry`) ────────
+        # On the robot dᵢ, n̂ᵢ arrive in the SAME MultiLinkDistance message as
+        # d_min, so they are exactly as old and as noisy. Off, the 51-D policy
+        # reads the sim's true, current geometry next to a delayed obstacle
+        # slot: privileged information it would learn to lean on and never
+        # get on hardware. Off by default so the e1 runs replay unchanged.
+        self.cp_enabled = bool(c.get('cp_geometry', False))
+        self.cp_normal_std = float(obs.get('cp_normal_std', 0.05))
+        self._cp_buf: deque = deque()
+        self._cp_lpf = None
+        self._cp_last_good = None
 
         # ── 3. Joint sensor noise ─────────────────────────────────────────
         js = c.get('joint_noise', {}) or {}
@@ -86,7 +99,11 @@ class Randomizer:
         self.rng = rng
         self._lpf_state = None
         self._last_good = None
+        self._dropped = False
         self._delay_buf.clear()
+        self._cp_buf.clear()
+        self._cp_lpf = None
+        self._cp_last_good = None
 
         if self.enabled and self.lat_enabled:
             # One delay per EPISODE, not per step: a delay that changes every
@@ -144,7 +161,8 @@ class Randomizer:
             p = p.copy()
 
         if self.obs_enabled:
-            if self.obs_dropout_p > 0.0 and self.rng.random() < self.obs_dropout_p:
+            self._dropped = self.obs_dropout_p > 0.0 and self.rng.random() < self.obs_dropout_p
+            if self._dropped:
                 # A dropped frame HOLDS the last good value, as a perception
                 # pipeline does; it does not teleport the obstacle to zero.
                 if self._last_good is not None:
@@ -168,3 +186,51 @@ class Randomizer:
             self._last_good = (p.copy(), d)
 
         return p, d
+
+    def cp_geometry(self, cp_geom):
+        """The ``(n_cp, 4)`` ``[dᵢ, n̂ᵢ]`` block as MultiLinkDistance reports it.
+
+        Same chain and same constants as :meth:`obstacle` — the two travel in
+        one message: delay, noise (``d_min_std`` on every dᵢ,
+        ``cp_normal_std`` on the normals, renormalised), LPF, clamp at 0, and
+        a frame :meth:`obstacle` dropped this tick is dropped here too. Call it
+        right after :meth:`obstacle`, once per tick. Identity unless
+        ``randomization.cp_geometry``.
+        """
+        if not (self.enabled and self.cp_enabled):
+            return cp_geom
+
+        g = np.array(cp_geom, dtype=float)
+
+        if self.lat_enabled:
+            self._cp_buf.append(g.copy())
+            while len(self._cp_buf) > self._n_delay + 1:
+                self._cp_buf.popleft()
+            g = self._cp_buf[0].copy()
+
+        if self.obs_enabled:
+            if self._dropped and self._cp_last_good is not None:
+                g = self._cp_last_good.copy()
+            elif not self._dropped:
+                g[:, 0] += self.rng.normal(0.0, self.obs_d_std, g.shape[0])
+                has_n = np.linalg.norm(g[:, 1:], axis=1) > 0.0
+                if self.cp_normal_std > 0.0 and has_n.any():
+                    g[has_n, 1:] += self.rng.normal(0.0, self.cp_normal_std, (int(has_n.sum()), 3))
+
+            a = self.obs_lpf_alpha
+            if 0.0 < a < 1.0:
+                if self._cp_lpf is None:
+                    self._cp_lpf = g.copy()
+                else:
+                    g = a * g + (1.0 - a) * self._cp_lpf
+                    self._cp_lpf = g.copy()
+
+            if self.obs_clamp_zero:
+                g[:, 0] = np.maximum(g[:, 0], 0.0)
+            self._cp_last_good = g.copy()
+
+        # A normal is a direction: noise and the LPF shorten it, the robot's
+        # EMA-smoothed normal is renormalised. Zero stays zero ("no direction").
+        nrm = np.linalg.norm(g[:, 1:], axis=1, keepdims=True)
+        g[:, 1:] = np.where(nrm > 1e-9, g[:, 1:] / np.maximum(nrm, 1e-9), 0.0)
+        return g

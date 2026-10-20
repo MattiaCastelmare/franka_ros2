@@ -157,9 +157,32 @@ def test_widen_buffer_reproduces_env_velocity():
     assert np.abs(truth.observations[order, 0, 24:27]).max() > 0.05     # the obstacle really moves
 
 
-def test_widen_model_is_the_same_function():
+def _wide51(c):
+    c = copy.deepcopy(c)
+    c['obs'].update(obstacle_velocity=True, control_point_geometry=True, clip_distance=1.2)
+    return c
+
+
+def test_widen_buffer_rebuilds_cp_geometry():
+    """e2: 24-D → 51-D, the control-point block from forward kinematics equals the env's own."""
+    c51 = _wide51(_cfg(cbf_obstacle_enabled=False))
+    rows = _rollout(c51, 1150, seed=6)
+    truth = _buf(c51, 1000)
+    _fill(truth, rows)
+    narrow = _buf(_cfg(cbf_obstacle_enabled=False), 1000)
+    _fill(narrow, rows, obs_dim=24)
+    new = _buf(c51, 1000)
+    widen_buffer(narrow, new, c51)
+    order = chronological(1000, truth.pos, truth.full)[1:]
+    np.testing.assert_allclose(new.observations[order], truth.observations[order], atol=2e-4)
+    np.testing.assert_allclose(new.next_observations[order], truth.next_observations[order], atol=2e-4)
+    assert truth.observations[order, 0, 27::4].min() < 0.3     # some link really comes close
+
+
+@pytest.mark.parametrize('wide', [_wide, _wide51], ids=['27', '51'])
+def test_widen_model_is_the_same_function(wide):
     c24 = _cfg(cbf_obstacle_enabled=False)
-    c27 = _wide(c24)
+    c27 = wide(c24)
     e24, e27 = FrankaCBFEnv(config=c24), FrankaCBFEnv(config=c27)
     old = SAC('MlpPolicy', e24, device='cpu', seed=0, learning_starts=0, batch_size=8)
     old.set_logger(configure(None, []))
@@ -171,7 +194,8 @@ def test_widen_model_is_the_same_function():
     new = SAC('MlpPolicy', e27, device='cpu', seed=1)
     widen_model(old, new)
     o24 = np.random.randn(16, 24).astype(np.float32)
-    o27 = np.concatenate([o24, np.random.randn(16, 3).astype(np.float32)], 1)
+    d_new = e27.observation_space.shape[0]
+    o27 = np.concatenate([o24, np.random.randn(16, d_new - 24).astype(np.float32)], 1)
     a_old, _ = old.predict(o24, deterministic=True)
     a_new, _ = new.predict(o27, deterministic=True)
     np.testing.assert_allclose(a_new, a_old, atol=1e-6)
@@ -183,7 +207,7 @@ def test_widen_model_is_the_same_function():
             np.testing.assert_allclose(y.detach().numpy(), x.detach().numpy(), atol=1e-5)
     assert float(new.log_ent_coef) == pytest.approx(float(old.log_ent_coef))
     st = new.critic.optimizer.state_dict()['state']
-    assert st[0]['exp_avg'].shape == (256, 27 + 7) and st[0]['exp_avg'][:, 24:27].abs().max() == 0
+    assert st[0]['exp_avg'].shape == (256, d_new + 7) and st[0]['exp_avg'][:, 24:d_new].abs().max() == 0
     assert st[0]['exp_avg'][:, :24].abs().max() > 0
 
 

@@ -229,3 +229,54 @@ def test_dynamics_randomisation_restores_nominal_when_disabled(base):
     env.close()
     assert not np.allclose(perturbed, nominal), 'dynamics randomisation had no effect'
     assert np.allclose(restored, nominal), 'nominal masses were not restored'
+
+
+# ── Control-point block perceived like d_min (randomization.cp_geometry, e2) ──
+
+def _cp_randomizer(**obs_noise):
+    r = Randomizer({'enabled': True, 'cp_geometry': True,
+                    'latency': {'enabled': True, 'mean_s': 0.03, 'jitter_s': 0.0},
+                    'obs_noise': {'enabled': bool(obs_noise), **obs_noise}},
+                   dt=0.01, rng=np.random.default_rng(0))
+
+    class _M:
+        body_mass = np.ones(3); dof_damping = np.ones(3); dof_frictionloss = np.ones(3)
+    r.reset(_M(), np.random.default_rng(0))
+    return r
+
+
+def test_cp_block_is_delayed_with_the_obstacle_slot():
+    """Same message on the robot → same delay as d_min, tick for tick."""
+    r = _cp_randomizer()
+    n_hat = np.array([0.0, 0.0, 1.0])
+    for i in range(8):
+        _, d = r.obstacle(np.zeros(3), float(i))
+        g = r.cp_geometry(np.tile(np.r_[float(i), n_hat], (6, 1)))
+        assert np.allclose(g[:, 0], d)
+        assert np.allclose(g[:, 1:], n_hat)
+
+
+def test_cp_block_noise_keeps_unit_normals_and_never_penetrates():
+    r = _cp_randomizer(d_min_std=0.2, lpf_alpha=0.5, obstacle_pos_std=0.0, cp_normal_std=0.3)
+    raw = np.tile([0.01, 1.0, 0.0, 0.0], (6, 1))
+    raw[5] = [-0.05, 0.0, 0.0, 0.0]                  # degenerate row: no direction
+    for _ in range(100):
+        r.obstacle(np.zeros(3), 0.01)
+        g = r.cp_geometry(raw)
+        assert (g[:, 0] >= 0.0).all()
+        np.testing.assert_allclose(np.linalg.norm(g[:5, 1:], axis=1), 1.0, atol=1e-9)
+        assert not g[5, 1:].any(), 'a zero normal must stay the "no direction" token'
+
+
+def test_cp_perception_off_is_bit_identical_and_on_never_moves_the_arm(base):
+    """cp_geometry false/absent replays every 51-D run; true changes only what the policy reads."""
+    b = copy.deepcopy(base)
+    b['obs'] = {'obstacle_velocity': True, 'control_point_geometry': True}
+    rnd = {'enabled': True, 'latency': {'enabled': True, 'mean_s': 0.05, 'jitter_s': 0.0},
+           'obs_noise': {'enabled': True}, 'joint_noise': {'enabled': True}}
+    ref_obs, ref_q = _rollout(_with(b, 'randomization', rnd))
+    off_obs, off_q = _rollout(_with(b, 'randomization', {**rnd, 'cp_geometry': False}))
+    on_obs, on_q = _rollout(_with(b, 'randomization', {**rnd, 'cp_geometry': True}))
+    np.testing.assert_array_equal(off_obs, ref_obs)
+    np.testing.assert_array_equal(on_q, ref_q)
+    assert not np.array_equal(on_obs[:, 27:], ref_obs[:, 27:]), 'cp perception had no effect'

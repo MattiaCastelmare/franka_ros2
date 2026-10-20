@@ -716,6 +716,10 @@ class FrankaCBFEnv(gym.Env):
         # The slot carries the NEAREST sphere (set by _build_obstacles, which
         # always runs first); with one obstacle that is the obstacle itself.
         p_obs, d_min = self.randomizer.obstacle(self._p_obs_near, d_min)
+        # The control-point block rides the same message (identity unless
+        # randomization.cp_geometry; the CBF rows keep the true geometry).
+        if cp_geom is not None and self.obs_spec.n_cp:
+            cp_geom = self.randomizer.cp_geometry(cp_geom)
 
         # v_obs from the OBSERVED centres, so the same delay/noise/LPF the
         # position carries is the noise the velocity inherits — the robot
