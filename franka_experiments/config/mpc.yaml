@@ -1,0 +1,61 @@
+# Parameters of mpc_commander. Every section is declared as ROS parameters (override with
+# --ros-args -p name:=value). The 'horizon', 'weights' and 'safety' keys are the fields of
+# utils/mpc_problem.MPCSettings: see its comments, and "MPC per la tesi — guida di studio".
+
+io:
+  joint_state_topic:     __auto__            # joint_states_fast of fr3_control.yaml (1 kHz)
+  qddot_nom_topic:       __auto__            # qddot_nom of fr3_control.yaml
+  q_des_topic:           /NS_1/q_des_state   # the plan's next state, as the commander's q_d
+  task_trajectory_topic: /task/trajectory    # task preview (pick_place_qddot_commander, reference_only)
+  plan_topic:            /mpc/plan           # planned TCP path, drawn by human_visualizer
+  diagnostics_topic:     /mpc/diagnostics    # one MpcDiagnostics per solve, logged by human_logging
+  ee_frame:              fr3_hand_tcp        # frame the task preview names (checked at runtime)
+
+# Stopping and fallbacks. q̈ = 0 is NOT a stop (rt_torque_controller integrates q̈):
+# every stop brakes with q̈ = -brake_gain·q̇, scaled into the q̈ limits.
+safety_io:
+  brake_gain:            3.0    # [1/s]
+  joint_state_timeout_s: 0.1    # [s] older joint state -> brake
+  task_timeout_s:        0.2    # [s] older task preview (or none yet) -> brake
+  max_failures:          3      # failed solves in a row running the previous plan, then brake
+  log_period_s:          1.0    # [s] one summary line (logging_utils.format_mpc_summary)
+
+horizon:
+  dt:             0.05     # [s] also the period of the control loop
+  n_steps:        10       # N: horizon 0.5 s (the CV forecast is good to ~0.3 s)
+  pairs_per_step: 4        # K human rows per step
+  solver:         daqp     # daqp (dense active set, in the image) | osqp (ADMM: stalls with active human rows)
+  terminal:       soft     # soft | hard | none: stop at the end of the horizon ('none', not 'off': YAML reads off as false)
+  trust_region:   0.0      # [rad/s²] 0 = off
+
+limits:
+  qdot_scale:   0.7        # |q̇| ≤ qdot_scale · q̇_max, headroom for the CBF shield
+  joint_margin: 0.05       # [rad] from the position limits
+  qddot_cap:    10.0       # [rad/s²] on the q̈ limits of fr3_control.yaml (17 on joints 5, 7 > libfranka)
+
+weights:
+  w_position:      1000.0  # ‖p_tcp − p_ref‖² [m²]
+  w_orientation:   300.0   # ‖e_R‖² [rad²]
+  w_posture:       1.0     # ‖q − q_home‖², the null space
+  w_velocity:      0.1     # ‖q̇_k‖²
+  w_accel:         0.01    # ‖u_k‖²
+  w_jerk:          1.0e-4  # ‖(u_k − u_{k−1}) / dt‖²
+  w_terminal:      10.0    # ‖q̇_N‖² with terminal: soft
+  slack_linear:    1000.0  # ρ, above the multipliers of the human rows (grow with w_position)
+  slack_quadratic: 1000.0  # σ
+  q_home: [0.0, -0.785, 0.0, -2.356, 0.0, 1.578, 0.785]   # [rad] posture, as the commander's
+
+safety:
+  d_safe: 0.15             # [m] as the CBF
+  delta:  0.05             # [m] on top of d_safe: the MPC keeps away first, the shield rarely acts
+
+human:
+  human_enabled:     true
+  human_mode:        prediction   # prediction (CV forecast) | static (arm frozen: ablation A1)
+  prediction_cap_s:  0.3          # [s] forecast along the Kalman velocity up to here, then held
+  velocity_deadband: 0.15         # [m/s] as the CBF: below it the arm is treated as still
+  t_blind:           0.085        # [s] perception latency, as the CBF's latency_t_blind
+  k_sigma:           1.0          # margin m(τ) = min(k_sigma · σ_pred(τ), margin_max)
+  margin_max:        0.15         # [m]
+  max_state_age_s:   0.3          # [s] older arm state: its capsules are dropped
+  d_activate:        0.40         # [m] only pairs closer than this become rows
