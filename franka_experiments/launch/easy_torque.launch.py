@@ -26,6 +26,11 @@ Examples
     ros2 launch franka_experiments easy_torque.launch.py control_mode:=cbf human:=true
     ros2 launch franka_experiments easy_torque.launch.py real:=false \\
         control_mode:=cbf human:=true human_bag:=/bags/varied
+
+commander:=mpc replaces the pick & place controller with mpc_commander: the pick & place
+node keeps running as the task only (reference_only: publishes /task/trajectory, no q̈)
+and the MPC publishes /NS_1/qddot_nom. With control_mode:=cbf the CBF filters it
+(shielded MPC). Logs go to experiment_logs/<nominal|cbf|mpc|mpc_cbf>/<run_name>.
 """
 
 import os
@@ -70,6 +75,7 @@ _QDDOT_NOM_TOPIC = '/NS_1/qddot_nom'
 _QDDOT_SAFE_TOPIC = '/NS_1/qddot_safe'
 _FAST_JOINT_STATES = '/NS_1/franka/joint_states'
 _CONTROL_MODES = ('nominal', 'cbf')
+_COMMANDERS = ('pick_place', 'mpc')
 
 # human_distance's output, merged by cbf_safety_filter with real_time_distance's
 _HUMAN_PER_LINK_TOPIC = '/human/per_link_distances'
@@ -191,7 +197,7 @@ def _real_robot_actions(p, controllers_yaml, cm_name, use_fake):
 
     actions.append(TimerAction(period=2.5, actions=_filter_and_dynamics_nodes(p, False)))
     actions.append(TimerAction(period=3.0, actions=[_rviz_node(p, False)]))
-    actions.append(TimerAction(period=4.0, actions=[_commander_node(p, False)]))
+    actions.append(TimerAction(period=4.0, actions=_commander_nodes(p, False)))
 
     if _cbf_enabled(p) or _as_bool(p['human']):
         # RealSense driver with depth aligned to color, as human.launch.py
@@ -206,6 +212,7 @@ def _real_robot_actions(p, controllers_yaml, cm_name, use_fake):
         actions.append(TimerAction(period=2.5, actions=[_real_time_distance_node()]))
     if _as_bool(p['human']):
         actions.extend(_human_nodes(p, False))
+    actions += [_logger_node(p, False), _visualizer_node(False)]
     return actions
 
 
@@ -284,10 +291,11 @@ def _simulation_actions(p, controllers_yaml, cm_name):
         on_exit=[torque_spawner, *_filter_and_dynamics_nodes(p, True)])))
     actions.append(RegisterEventHandler(OnProcessExit(
         target_action=torque_spawner,
-        on_exit=[TimerAction(period=2.0, actions=[_commander_node(p, True)])])))
+        on_exit=[TimerAction(period=2.0, actions=_commander_nodes(p, True))])))
 
     actions.append(TimerAction(period=3.0, actions=[_rviz_node(p, True)]))
 
+    actions += [_logger_node(p, True), _visualizer_node(True)]
     if _as_bool(p['human']):
         actions.extend(_human_nodes(p, True))
         if p['human_bag']:
@@ -393,30 +401,74 @@ def _human_nodes(p, use_sim_time):
         )
 
     return [
-        LogInfo(msg=f'[easy_torque] human perception: tracker, distance → {_HUMAN_PER_LINK_TOPIC}, '
-                    'visualizer, logger'),
+        LogInfo(msg=f'[easy_torque] human perception: tracker, distance → {_HUMAN_PER_LINK_TOPIC}'),
         camera_tf,
         human_node('human_tracker', 'human_tracker'),
         human_node('human_distance', 'human_distance', {'joint_state_topic': _FAST_JOINT_STATES}),
-        human_node('human_visualizer', 'human_visualizer'),
-        human_node('human_logging', 'human_logger', {
-            'run_name': p['run_name'],
-            'robot_state_topic': _FAST_JOINT_STATES,
-        }),
     ]
 
 
-def _commander_node(p, use_sim_time):
-    # ── Pick & Place Qddot Commander ────
+def _visualizer_node(use_sim_time):
+    """RViz markers (/human_robot/markers) of every run: the TCP task preview, the MPC plan and
+    the TCP trail, plus the arm, its forecast and the distances when human:=true."""
     return Node(
+        package='franka_experiments',
+        executable='human_visualizer',
+        name='human_visualizer',
+        output='screen',
+        additional_env=_SINGLE_THREAD_BLAS,
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
+
+def _logger_node(p, use_sim_time):
+    """CSV logs of every run: experiment_logs/<control_mode>/<run_name>, human CSVs with human:=true."""
+    return Node(
+        package='franka_experiments',
+        executable='human_logging',
+        name='human_logger',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'run_name': p['run_name'],
+            'controller': _controller_name(p),
+            'log_human': _as_bool(p['human']),
+            'robot_state_topic': _FAST_JOINT_STATES,
+        }],
+    )
+
+
+def _commander_nodes(p, use_sim_time):
+    """The pick & place commander and, with commander:=mpc, mpc_commander tracking its preview."""
+    mpc = p['commander'] == 'mpc'
+    nodes = [Node(
         package='franka_experiments',
         executable='pick_place_qddot_commander',
         name='pick_place_qddot_commander',
         namespace=p['namespace'],
         output='screen',
         additional_env=_SINGLE_THREAD_BLAS,
-        parameters=[{'use_sim_time': use_sim_time}],
-    )
+        # With the MPC it is only the task: preview, phase, clock, no q̈
+        parameters=[{'use_sim_time': use_sim_time, 'reference_only': mpc}],
+    )]
+    if mpc:
+        nodes.append(Node(
+            package='franka_experiments',
+            executable='mpc_commander',
+            name='mpc_commander',
+            namespace=p['namespace'],
+            output='screen',
+            additional_env=_SINGLE_THREAD_BLAS,
+            parameters=[{'use_sim_time': use_sim_time}],
+        ))
+    return nodes
+
+
+def _controller_name(p) -> str:
+    """What drives the robot, as human_logging names its folders."""
+    if p['commander'] == 'mpc':
+        return 'mpc_cbf' if _cbf_enabled(p) else 'mpc'
+    return p['control_mode']
 
 
 def _rviz_node(p, use_sim_time):
@@ -478,9 +530,12 @@ def _launch_all(context):
         'human_k0_cbf': LaunchConfiguration('human_k0_cbf').perform(context).strip(),
         'human_k1_cbf': LaunchConfiguration('human_k1_cbf').perform(context).strip(),
         'run_name': LaunchConfiguration('run_name').perform(context),
+        'commander': LaunchConfiguration('commander').perform(context).strip().lower(),
     }
     if p['control_mode'] not in _CONTROL_MODES:
         raise RuntimeError(f"control_mode must be one of {_CONTROL_MODES}, got '{p['control_mode']}'")
+    if p['commander'] not in _COMMANDERS:
+        raise RuntimeError(f"commander must be one of {_COMMANDERS}, got '{p['commander']}'")
 
     real = _as_bool(p['real'])
     use_fake = real and _as_bool(p['use_fake_hardware'])
@@ -543,6 +598,12 @@ def generate_launch_description():
                             'cbf = through cbf_safety_filter'
             ),
             DeclareLaunchArgument(
+                'commander',
+                default_value='pick_place',
+                description='pick_place = the pick & place OSC commander; mpc = mpc_commander tracking '
+                            'its task preview (the pick & place node runs with reference_only)'
+            ),
+            DeclareLaunchArgument(
                 'human',
                 default_value='false',
                 description='true = human-arm perception (tracker, distance, visualizer, logger)'
@@ -592,7 +653,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 'run_name',
                 default_value=time.strftime('%Y%m%d_%H%M%S'),
-                description='human_logging output folder experiment_logs/<run_name>'
+                description='human_logging output folder experiment_logs/<control_mode>/<run_name>'
             ),
             DeclareLaunchArgument(
                 'rosbag_record',

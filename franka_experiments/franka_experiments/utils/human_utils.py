@@ -446,3 +446,13 @@ def mpc_diagnostics_msg(diag, stamp, fallback: bool = False) -> MpcDiagnostics:
         setattr(msg, field.name, getattr(diag, field.name))
     msg.fallback = bool(fallback)
     return msg
+
+
+def braking_qddot(qdot: np.ndarray, gain: float, qddot_max: np.ndarray) -> np.ndarray:
+    """q̈ = -gain·q̇, scaled uniformly into the q̈ limits (the direction is kept).
+    rt_torque_controller integrates q̈ into its velocity reference, so q̈ = 0 would keep
+    the current velocity; this makes it decay as exp(-gain·t).
+    """
+    qddot = -float(gain) * np.asarray(qdot, dtype=float)
+    peak = float(np.max(np.abs(qddot) / np.asarray(qddot_max, dtype=float)))
+    return qddot / peak if peak > 1.0 else qddot

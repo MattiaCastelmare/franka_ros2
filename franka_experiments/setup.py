@@ -71,6 +71,7 @@ setup(
             'human_logging = franka_experiments.nodes.human_logging:main',
             'pick_place_velocity_commander = franka_experiments.nodes.pick_place_velocity_commander:main',
             'pick_place_qddot_commander = franka_experiments.nodes.pick_place_qddot_commander:main',
+            'mpc_commander = franka_experiments.nodes.mpc_commander:main',
         ],
     },
 )
