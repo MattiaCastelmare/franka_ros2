@@ -77,6 +77,18 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /NS_1/trajectory_markers
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Human-Robot Markers
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /human_robot/markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

@@ -145,3 +145,14 @@ human_visualizer:
   draw_labels: true
   draw_prediction: true        # red ghosts of the constant-velocity prediction (as in RViz)
   prediction_steps_2d: 5       # ghosts drawn: up to 5 x prediction_dt = 0.5 s ahead
+
+  # TCP paths in RViz (human_utils MultiDOFJointTrajectory messages): the task preview in green, the
+  # MPC plan in magenta (mpc_commander only), the path the TCP took in white (from TF).
+  # The CBF plans nothing ahead: with it, the white trail against the green preview is
+  # how far the filter bent the task.
+  draw_ee_paths: true
+  task_trajectory_topic: /task/trajectory
+  plan_topic: /mpc/plan
+  ee_frame: fr3_hand_tcp
+  ee_trail_s: 3.0              # [s] length of the white trail
+  ee_path_timeout_s: 0.5       # [s] a preview or plan not refreshed for this long is removed

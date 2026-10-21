@@ -5,6 +5,8 @@ The 2D overlay shows the arm as the tracker uses it, like the 3D markers: only t
 keypoints valid in the arm state, filled where measured in that frame (MediaPipe's
 pixel), hollow where only predicted by the Kalman filter (its estimate projected),
 under the fading red ghosts of the constant-velocity prediction (draw_prediction).
+In RViz it also draws the robot TCP paths (draw_ee_paths): the task preview, the MPC
+plan and the trail of where the TCP actually went (see utils/human_markers.py).
 With sync_to_landmarks the overlay is drawn on the newest camera frame the tracker
 has published a state for (constant delay, landmarks aligned with the image).
 Otherwise it renders the newest frame, with landmarks held for short dropouts
@@ -21,6 +23,7 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.time import Time
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -28,18 +31,22 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import Image, PointCloud, CameraInfo
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformException, TransformListener
+from trajectory_msgs.msg import MultiDOFJointTrajectory
 from visualization_msgs.msg import MarkerArray
 from franka_msgs.msg import HumanArmState, MultiLinkDistance, HumanArmPrediction
 
 from franka_experiments.utils.distance_utils import load_robot_config
-from franka_experiments.utils.human_markers import arm_markers, distance_markers
+from franka_experiments.utils.human_markers import (
+    EE_PLAN_COLOR, EE_REFERENCE_COLOR, EE_TRAIL_COLOR, arm_markers, distance_markers, ee_path_markers,
+)
 from franka_experiments.utils.human_overlay import (
     CameraProjector, arm_speeds, draw_info_bar, draw_distance_line, draw_predicted_arm,
     draw_tracked_arm, landmarks_are_recent, parse_landmarks_msg, predicted_pixels,
     prediction_pixels, tracked_arm_pixels, update_display_points,
 )
-from franka_experiments.utils.human_utils import format_topic, stamp_to_ns
+from franka_experiments.utils.human_utils import ee_trajectory_arrays, format_topic, stamp_to_ns
+from franka_experiments.utils.trajectory_trace import TraceBuffer
 
 
 class HumanArmVisualizer(Node):
@@ -101,6 +108,14 @@ class HumanArmVisualizer(Node):
         self.latest_arm_predictions = {side: None for side in self.active_sides}
         self.latest_distances = None
 
+        # --- TCP paths: task preview, MPC plan (latest message and its receipt time) and trail ---
+        self.draw_ee_paths = bool(config.get('draw_ee_paths', True))
+        self.ee_frame = str(config.get('ee_frame', 'fr3_hand_tcp'))
+        self.ee_trail_s = float(config.get('ee_trail_s', 3.0))
+        self.ee_path_timeout_s = float(config.get('ee_path_timeout_s', 0.5))
+        self.ee_paths = {'ee_reference': None, 'ee_plan': None}
+        self.ee_trail = TraceBuffer(max_points=2000, min_spacing_m=0.002, jump_reset_m=0.10)
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         # Base-frame points to overlay pixels (intrinsics from camera_info_cb)
@@ -149,6 +164,17 @@ class HumanArmVisualizer(Node):
             self.landmarks_subs[side] = self.create_subscription(
                 PointCloud, l2d_topic, partial(self.landmarks_cb, side=side), sensor_qos
             )
+
+        if self.draw_ee_paths:
+            path_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+            self.ee_path_subs = [
+                self.create_subscription(
+                    MultiDOFJointTrajectory, str(config.get('task_trajectory_topic', '/task/trajectory')),
+                    partial(self.ee_path_cb, ns='ee_reference'), path_qos),
+                self.create_subscription(
+                    MultiDOFJointTrajectory, str(config.get('plan_topic', '/mpc/plan')),
+                    partial(self.ee_path_cb, ns='ee_plan'), path_qos),
+            ]
 
         # --- Publishers ---    
         overlay_qos = QoSProfile(
@@ -219,6 +245,9 @@ class HumanArmVisualizer(Node):
     def pred_cb(self, msg: HumanArmPrediction, side: str) -> None:
         self.latest_arm_predictions[side] = msg
 
+    def ee_path_cb(self, msg: MultiDOFJointTrajectory, ns: str) -> None:
+        self.ee_paths[ns] = (msg, self.get_clock().now())
+
     def landmarks_cb(self, msg: PointCloud, side: str) -> None:
         """Accept complete MediaPipe detections; the frame is drawn once its state arrives."""
         self.update_landmarks(msg, side)
@@ -268,7 +297,36 @@ class HumanArmVisualizer(Node):
             marker_array.markers += distance_markers(
                 self.latest_distances.links, base_frame, timestamp)
 
+        if self.draw_ee_paths:
+            marker_array.markers += self.ee_markers(base_frame, timestamp)
+
         self.marker_pub.publish(marker_array)
+
+    def ee_markers(self, base_frame: str, timestamp) -> list:
+        """Task preview and MPC plan while they keep arriving, and the TCP trail from TF."""
+        now = self.get_clock().now()
+        markers = []
+        for ns, color in (('ee_reference', EE_REFERENCE_COLOR), ('ee_plan', EE_PLAN_COLOR)):
+            latest = self.ee_paths[ns]
+            if latest is not None and (now - latest[1]).nanoseconds * 1e-9 <= self.ee_path_timeout_s:
+                msg = latest[0]
+                markers += ee_path_markers(ee_trajectory_arrays(msg)[1], ns, color,
+                                           msg.header.frame_id, timestamp)
+            else:
+                markers += ee_path_markers((), ns, color, base_frame, timestamp)
+
+        now_s = now.nanoseconds * 1e-9
+        if now_s < self.ee_trail.tip_time:
+            self.ee_trail.clear()  # time jumped back (bag loop)
+        try:
+            tcp = self.tf_buffer.lookup_transform(base_frame, self.ee_frame, Time()).transform.translation
+            self.ee_trail.add((tcp.x, tcp.y, tcp.z), now_s)
+        except TransformException:
+            pass  # no robot TF (e.g. a camera-only bag): no trail
+        self.ee_trail.expire(now_s, self.ee_trail_s)
+        markers += ee_path_markers(self.ee_trail.points, 'ee_trail', EE_TRAIL_COLOR,
+                                   base_frame, timestamp, width=0.005, dot_size=0.0)
+        return markers
 
     # -------------------------------------------------------------------------
     # Main Render Loop

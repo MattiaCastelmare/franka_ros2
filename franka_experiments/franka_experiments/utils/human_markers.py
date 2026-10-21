@@ -1,8 +1,10 @@
-"""RViz markers of the tracked arm and of the robot-human distances, for human_visualizer.
+"""RViz markers of the tracked arm, of the robot-human distances and of the TCP paths, for human_visualizer.
 
 Per arm: the arm as a blue line strip (valid keypoints only), the fading red ghosts of the
 constant-velocity prediction and a green velocity arrow per keypoint. Distances: the
 robot control points and an arrow per link, the shortest one coloured by its zone.
+TCP paths (ee_path_markers): the task preview in green, the controller's plan in magenta
+and the path the TCP actually took in white, each a line with a dot per sample.
 """
 
 from geometry_msgs.msg import Point
@@ -15,6 +17,9 @@ ZONE_COLORS = {
     'danger': ColorRGBA(r=1.0, g=0.5, b=0.0, a=1.0),
 }
 SAFE_COLOR = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
+EE_REFERENCE_COLOR = ColorRGBA(r=0.1, g=0.8, b=0.3, a=0.9)   # where the task wants the TCP
+EE_PLAN_COLOR = ColorRGBA(r=0.9, g=0.2, b=0.9, a=0.9)        # where the MPC plans to take it
+EE_TRAIL_COLOR = ColorRGBA(r=0.9, g=0.9, b=0.9, a=0.7)       # where it actually went
 
 
 def _marker(frame_id, stamp, ns, marker_id=0, marker_type=Marker.LINE_STRIP,
@@ -122,4 +127,28 @@ def distance_markers(links, frame_id, stamp):
             _scale(arrow, 0.005, 0.010)
             arrow.color = ColorRGBA(r=0.6, g=0.6, b=0.6, a=0.4)
         markers.append(arrow)
+    return markers
+
+
+def ee_path_markers(positions, ns, color, frame_id, stamp, width=0.008, dot_size=0.015):
+    """A TCP path, (n, 3) positions in time order: a line strip and a dot per sample.
+
+    The samples of the task preview and of the MPC plan are equally spaced in time,
+    so the spacing of the dots shows the speed (dot_size 0: line only). Deleted with
+    fewer than 2 points.
+    """
+    if len(positions) < 2:
+        return delete_all([ns], frame_id, stamp)
+    points = [Point(x=float(p[0]), y=float(p[1]), z=float(p[2])) for p in positions]
+    line = _marker(frame_id, stamp, ns, 0)
+    line.scale.x = width
+    markers = [line]
+    if dot_size > 0.0:
+        dots = _marker(frame_id, stamp, ns, 1, Marker.SPHERE_LIST)
+        _scale(dots, dot_size)
+        markers.append(dots)
+    for marker in markers:
+        marker.pose.orientation.w = 1.0
+        marker.color = color
+        marker.points = points
     return markers
