@@ -469,3 +469,41 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'trk_err={float(np.linalg.norm(qddot_safe - qddot_real)):.3f} '
         f'slew={"".join("X" if b else "." for b in slew_bite)} '
         f'| {format_velocity_summary(qdot, vel_ratio, vel_bite)}')
+
+
+def format_mpc_summary(diags, fallbacks: int = 0) -> str:
+    """One readable line summarising the MPC solves of the last period (~1 s).
+
+    ``diags`` are the ``MPCDiagnostics`` collected since the previous line, ``fallbacks``
+    the cycles in which the node published something other than a fresh plan (the
+    previous plan or the brake). The full per-solve data goes to the CSV through
+    /mpc/diagnostics (human_logging); this line is for watching a run live:
+
+        MPC 20 solves, 0 failed, 0 fallback | solve 0.35 ms median, 1.02 max, 58 it max
+            | human: 6 rows, 2 binding, clearance +0.031 m, slack 0.000 m | q̈ at box 3%
+
+    clearance is the smallest margin of the linearised distance over d_safe + δ + m(τ)
+    along the horizon (negative: the plan leans on slack). Failed solves add the
+    status of the last one.
+    """
+    if not diags:
+        return 'MPC no solves'
+    solved = [d for d in diags if d.solved]
+    times = np.array([d.solve_time_ms for d in diags])
+    parts = [f'MPC {len(diags)} solves, {len(diags) - len(solved)} failed, {fallbacks} fallback',
+             f'solve {np.median(times):.2f} ms median, {times.max():.2f} max, '
+             f'{max(d.iterations for d in diags)} it max']
+    with_rows = [d for d in solved if d.human_rows]
+    if with_rows:
+        parts.append(f'human: {max(d.human_rows for d in with_rows)} rows, '
+                     f'{max(d.human_binding for d in with_rows)} binding, '
+                     f'clearance {min(d.human_clearance for d in with_rows):+.3f} m, '
+                     f'slack {max(d.max_slack for d in with_rows):.3f} m')
+    elif solved:
+        parts.append('human: none')
+    if solved:
+        parts.append(f'q̈ at box {100.0 * np.mean([d.accel_saturation for d in solved]):.0f}%')
+    failed = [d for d in diags if not d.solved]
+    if failed:
+        parts.append(f'last failure: {failed[-1].status}')
+    return ' | '.join(parts)

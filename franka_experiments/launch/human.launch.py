@@ -301,6 +301,8 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'run_name': ParameterValue(run_name, value_type=str),
+            # Tracking only, the robot does not move: experiment_logs/human/<run_name>
+            'controller': 'human',
             'robot_state_topic': ParameterValue(joint_state_topic, value_type=str),
         }],
         output='screen'
