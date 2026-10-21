@@ -202,6 +202,17 @@ RUN python3 -m pip install --user --no-cache-dir \
         "protobuf>=4.25.3,<5"
 
 # ============================================================================
+# MPC QP solver (franka_experiments/utils/mpc_problem.py, solver: daqp).
+#
+# Dense active-set solver for the condensed MPC QP. With several distance rows
+# active together OSQP's ADMM needs thousands of iterations (100+ ms) where DAQP
+# solves the same QPs in ~0.3–1 ms (scripts/mpc_problem_demo.py). No Python
+# dependencies, works with the numpy 1.26 pinned above. Own layer, so adding it
+# does not rebuild the stacks above.
+# ============================================================================
+RUN python3 -m pip install --user --no-cache-dir "daqp==0.10.3"
+
+# ============================================================================
 # Python environment smoke test.
 #
 # Fails the build if any core import is broken. For OpenCV the loaded
@@ -219,7 +230,7 @@ assert 'osqp' in qpsolvers.available_solvers, \
     'filters would raise SolverNotFound at runtime'; \
 print('qpsolvers', qpsolvers.__version__, qpsolvers.available_solvers)" \
  && python3 -c "\
-import torch, mujoco, gymnasium, stable_baselines3, onnx, onnxruntime, osqp; \
+import torch, mujoco, gymnasium, stable_baselines3, onnx, onnxruntime, osqp, daqp; \
 from torch.utils.tensorboard import SummaryWriter; \
 import mediapipe, google.protobuf as pb; \
 print('torch    ', torch.__version__, 'cuda-build', torch.version.cuda); \
