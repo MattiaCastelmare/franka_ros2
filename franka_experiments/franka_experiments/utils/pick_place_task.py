@@ -137,6 +137,21 @@ class PickPlaceTrajectory:
         p, v, a, phase, cycle = self.evaluate(s)
         return p.copy(), v * s_dot, a * (s_dot * s_dot) + v * s_ddot, phase, cycle
 
+    def preview(self, s: float, s_dot: float, step: float, n_points: int):
+        """The reference over the next ``n_points`` instants, ``step`` seconds of real time apart.
+
+        Point j is the reference at s + j·step·s_dot with s_dot held constant
+        (s_ddot = 0): what a predictive controller tracks over its horizon. With
+        s_dot = 0 every point is the current one, i.e. the task waits.
+        Returns (p, v, a), each (n_points, 3).
+        """
+        p = np.empty((n_points, 3))
+        v = np.empty((n_points, 3))
+        a = np.empty((n_points, 3))
+        for j in range(n_points):
+            p[j], v[j], a[j], _, _ = self.reference(s + j * step * s_dot, s_dot, 0.0)
+        return p, v, a
+
 
 class TaskClock:
     """Virtual task time s that advances only while the end-effector keeps up with the reference.

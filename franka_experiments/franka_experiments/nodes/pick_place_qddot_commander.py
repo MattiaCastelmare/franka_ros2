@@ -25,6 +25,13 @@ q̈ = 0 holds the current joint velocity instead of stopping. Every stop path
 Task clock: the reference is evaluated at a virtual time s (utils.pick_place_task)
 that slows down when the end-effector falls behind it, e.g. while a safety
 filter pushes the arm away, so phases are delayed instead of skipped.
+
+Task preview: every tick the node also publishes the reference over the next
+second (MultiDOFJointTrajectory, the task clock rate held constant), for a
+predictive controller. With ``reference_only`` the node is just the task: it
+publishes phase, clock, reference and preview but no q̈, and mpc_commander
+tracks the preview. The clock still runs on this node's own Cartesian error,
+so the task waits while the MPC dodges.
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String, UInt32
+from trajectory_msgs.msg import MultiDOFJointTrajectory
 
 from franka_experiments.utils.constants import FR3_JOINT_NAMES, NUM_JOINTS, AUTO_SENTINEL
 from franka_experiments.utils.node_runtime import (
@@ -50,6 +58,7 @@ from franka_experiments.utils.node_runtime import (
     run_node_main,
 )
 from franka_experiments.utils.distance_utils import load_robot_config
+from franka_experiments.utils.human_utils import fill_ee_trajectory_msg, make_ee_trajectory_msg
 from franka_experiments.utils.kinematics import (
     generate_urdf_from_xacro,
     load_pinocchio_model,
@@ -109,6 +118,10 @@ class PickPlaceQddotCommander(Node):
         self.rate_hz   = _f('rate_hz')
         self.warmup_s  = _f('warmup_s')
         self.ramp_s    = _f('ramp_s')
+
+        self.preview_points = int(self.get_parameter('preview_points').value)
+        self.preview_step_s = _f('preview_step_s')
+        self.reference_only = bool(self.get_parameter('reference_only').value)
 
         self.lateral_offset = _f('lateral_offset')
         self.down_offset    = _f('down_offset')
@@ -308,6 +321,13 @@ class PickPlaceQddotCommander(Node):
         self._ref_msg.pose.orientation.w = float(q_ref.w)
         self._clock_msg = Float64MultiArray()
         self._clock_msg.data = [0.0, 0.0, 0.0]
+        self._traj_pub = None
+        if self.preview_points > 0:
+            self._traj_pub = self.create_publisher(
+                MultiDOFJointTrajectory, self.get_parameter('task_trajectory_topic').value, 1)
+            self._traj_msg = make_ee_trajectory_msg(
+                ee_frame_name, self.preview_points, self.preview_step_s,
+                orientation=(q_ref.x, q_ref.y, q_ref.z, q_ref.w))
         self.timer   = self.create_timer(self._dt, self._tick)
         self.t0      = self.get_clock().now()
         self._tlog   = ThrottledLogger(self.get_logger())
@@ -318,7 +338,9 @@ class PickPlaceQddotCommander(Node):
             f'  js_topic : {js_topic}\n'
             f'  R_des    : EE z along base -z (6D task, 1 redundant DOF)\n'
             f'  rate     : {self.rate_hz} Hz\n'
-            f'  offsets  : lateral={self.lateral_offset}, down={self.down_offset}, drop={self.drop_offset}')
+            f'  offsets  : lateral={self.lateral_offset}, down={self.down_offset}, drop={self.drop_offset}\n'
+            f'  preview  : {self.preview_points} x {self.preview_step_s} s'
+            f'{" (reference only: no q̈ published)" if self.reference_only else ""}')
 
     def _js_cb(self, msg: JointState) -> None:
         # Re-map whenever the name list changes
@@ -352,6 +374,8 @@ class PickPlaceQddotCommander(Node):
         self.get_logger().info(f'Stopping: braking for {dur} s')
 
     def _publish_qddot(self, qddot: np.ndarray, dt: float) -> None:
+        if self.reference_only:
+            return  # another node commands the arm
         for i in range(NUM_JOINTS):
             self._out_msg.data[i] = float(qddot[i])
         self.pub.publish(self._out_msg)
@@ -610,13 +634,14 @@ class PickPlaceQddotCommander(Node):
         # Publish qddot output for the safety filter
         self._publish_qddot(self._q_ddot, actual_dt)
 
-        # Publish JointState setpoint
+        # Publish JointState setpoint (not in reference_only: nobody integrates this q̈)
         self._sp_msg.header.stamp = self.get_clock().now().to_msg()
-        for i in range(NUM_JOINTS):
-            self._sp_msg.position[i] = float(self._q_d[i])
-            self._sp_msg.velocity[i] = float(self._dq_d[i])
-            self._sp_msg.effort[i]   = float(self._q_ddot[i])
-        self._sp_pub.publish(self._sp_msg)
+        if not self.reference_only:
+            for i in range(NUM_JOINTS):
+                self._sp_msg.position[i] = float(self._q_d[i])
+                self._sp_msg.velocity[i] = float(self._dq_d[i])
+                self._sp_msg.effort[i]   = float(self._q_ddot[i])
+            self._sp_pub.publish(self._sp_msg)
 
         # Publish the task reference and the clock state [s, s_dot, ee_err]
         self._ref_msg.header.stamp = self._sp_msg.header.stamp
@@ -628,6 +653,11 @@ class PickPlaceQddotCommander(Node):
         self._clock_msg.data[1] = float(s_dot)
         self._clock_msg.data[2] = ee_err
         self._clock_pub.publish(self._clock_msg)
+        if self._traj_pub is not None:
+            # Task preview stamped at its first point: the reference every preview_step_s from now
+            p, v, a = self.trajectory.preview(s, s_dot, self.preview_step_s, self.preview_points)
+            fill_ee_trajectory_msg(self._traj_msg, self._sp_msg.header.stamp, p, v, a)
+            self._traj_pub.publish(self._traj_msg)
 
     def _start_trajectory(self, js: dict) -> None:
         np.copyto(self._q_full, js['q_full'])

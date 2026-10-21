@@ -46,6 +46,22 @@ def test_reference_applies_the_chain_rule():
     assert np.allclose(a_d, a * s_dot**2 + v * s_ddot)
 
 
+def test_preview_samples_the_reference_at_the_held_clock_rate():
+    traj = _trajectory()
+    s, s_dot, step = 1.3, 0.6, 0.05
+    p, v, a = traj.preview(s, s_dot, step, 20)
+    assert p.shape == v.shape == a.shape == (20, 3)
+    for j in (0, 7, 19):
+        p_j, v_j, a_j, _, _ = traj.reference(s + j * step * s_dot, s_dot, 0.0)
+        assert np.allclose(p[j], p_j) and np.allclose(v[j], v_j) and np.allclose(a[j], a_j)
+
+
+def test_preview_of_a_stopped_clock_holds_the_current_reference():
+    traj = _trajectory()
+    p, v, a = traj.preview(1.3, 0.0, 0.05, 10)
+    assert np.allclose(p, p[0]) and np.allclose(v, 0.0) and np.allclose(a, 0.0)
+
+
 def test_clock_runs_at_real_time_while_tracking_is_good():
     clock = TaskClock(e_ok=0.03, e_stop=0.10, s_ddot_max=2.0)
     for _ in range(500):

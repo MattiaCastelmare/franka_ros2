@@ -1,14 +1,25 @@
 """Shared helper functions for human tracking and visualization.
+
+Also the messages of the TCP paths: the task preview (/task/trajectory, published by
+pick_place_qddot_commander) and the MPC plan (/mpc/plan, mpc_commander) are
+trajectory_msgs/MultiDOFJointTrajectory, stamped at their first point: point j is at
+header.stamp + points[j].time_from_start, joint_names[0] is the frame that follows the
+path (e.g. fr3_hand_tcp), positions are in header.frame_id. Publishers preallocate the
+message once (make_ee_trajectory_msg) and refill it every tick (fill_ee_trajectory_msg).
+The MPC also publishes one franka_msgs/MpcDiagnostics per solve (mpc_diagnostics_msg).
 """
 
+import dataclasses
 import os
 import xacro
 import numpy as np
-from typing import Any
-from geometry_msgs.msg import Point, Vector3, Point32
+from typing import Any, Optional, Sequence, Tuple
+from geometry_msgs.msg import Point, Vector3, Point32, Transform, Twist
+from rclpy.duration import Duration
 from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud, ChannelFloat32
-from franka_msgs.msg import HumanArmState, HumanArmPrediction, LinkDistance
+from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
+from franka_msgs.msg import HumanArmState, HumanArmPrediction, LinkDistance, MpcDiagnostics
 from ament_index_python.packages import get_package_share_directory
 from franka_experiments.utils.ros_setup import build_reduced_pinocchio_model_from_urdf
 
@@ -374,4 +385,64 @@ def build_2d_landmarks_msg(landmarks, keypoint_names, header) -> PointCloud:
             visibility.values.append(landmark["visibility"])
 
     msg.channels.append(visibility)
+    return msg
+
+
+def make_ee_trajectory_msg(frame: str, n_points: int, step: float, base_frame: str = 'fr3_link0',
+                           orientation: Sequence[float] = (0.0, 0.0, 0.0, 1.0)) -> MultiDOFJointTrajectory:
+    """Preallocated message of n_points, step seconds apart, all with the quaternion (x, y, z, w)."""
+    msg = MultiDOFJointTrajectory()
+    msg.header.frame_id = base_frame
+    msg.joint_names = [frame]
+    for j in range(n_points):
+        transform = Transform()
+        (transform.rotation.x, transform.rotation.y,
+         transform.rotation.z, transform.rotation.w) = (float(c) for c in orientation)
+        point = MultiDOFJointTrajectoryPoint()
+        point.transforms = [transform]
+        point.velocities = [Twist()]
+        point.accelerations = [Twist()]
+        point.time_from_start = Duration(seconds=j * step).to_msg()
+        msg.points.append(point)
+    return msg
+
+
+def fill_ee_trajectory_msg(msg: MultiDOFJointTrajectory, stamp, positions,
+                           velocities: Optional[np.ndarray] = None,
+                           accelerations: Optional[np.ndarray] = None,
+                           orientations: Optional[np.ndarray] = None) -> None:
+    """Write (n, 3) positions, optionally linear velocities, accelerations and (n, 4) quaternions."""
+    msg.header.stamp = stamp
+    for j, point in enumerate(msg.points):
+        translation = point.transforms[0].translation
+        translation.x, translation.y, translation.z = (float(c) for c in positions[j])
+        if velocities is not None:
+            linear = point.velocities[0].linear
+            linear.x, linear.y, linear.z = (float(c) for c in velocities[j])
+        if accelerations is not None:
+            linear = point.accelerations[0].linear
+            linear.x, linear.y, linear.z = (float(c) for c in accelerations[j])
+        if orientations is not None:
+            rotation = point.transforms[0].rotation
+            rotation.x, rotation.y, rotation.z, rotation.w = (float(c) for c in orientations[j])
+
+
+def ee_trajectory_arrays(msg: MultiDOFJointTrajectory) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(times [s] from header.stamp, (n, 3) positions, (n, 4) quaternions x, y, z, w)."""
+    times = np.array([p.time_from_start.sec + 1e-9 * p.time_from_start.nanosec for p in msg.points])
+    positions = np.array([[p.transforms[0].translation.x, p.transforms[0].translation.y,
+                           p.transforms[0].translation.z] for p in msg.points]).reshape(-1, 3)
+    orientations = np.array([[p.transforms[0].rotation.x, p.transforms[0].rotation.y,
+                              p.transforms[0].rotation.z, p.transforms[0].rotation.w]
+                             for p in msg.points]).reshape(-1, 4)
+    return times, positions, orientations
+
+
+def mpc_diagnostics_msg(diag, stamp, fallback: bool = False) -> MpcDiagnostics:
+    """franka_msgs/MpcDiagnostics of one solve: an mpc_problem.MPCDiagnostics plus the node's fallback."""
+    msg = MpcDiagnostics()
+    msg.header.stamp = stamp
+    for field in dataclasses.fields(diag):
+        setattr(msg, field.name, getattr(diag, field.name))
+    msg.fallback = bool(fallback)
     return msg

@@ -14,6 +14,17 @@ io:
   task_reference_topic: /task/reference  # geometry_msgs/PoseStamped, every tick
   task_clock_topic:     /task/clock      # Float64MultiArray [s, s_dot, ee_err], every tick
 
+# Task preview for a predictive controller (mpc_commander): the reference of the
+# ee_frame over the next preview_points instants, preview_step_s apart, as a
+# trajectory_msgs/MultiDOFJointTrajectory stamped at its first point.
+# reference_only: true = publish the task (phase, cycle, clock, reference, preview)
+# without commanding: no q̈ and no q_des_state, another node tracks the preview.
+preview:
+  task_trajectory_topic: /task/trajectory
+  preview_points:        20      # 0 = do not publish the preview
+  preview_step_s:        0.05    # [s] 20 x 0.05 s = 1 s, longer than the MPC horizon
+  reference_only:        false
+
 # Stopping. q̈ = 0 is NOT a stop (rt_torque_controller integrates q̈ into its velocity
 # reference): every stop path brakes with q̈ = -brake_gain·q̇, scaled into the q̈ limits.
 safety:
