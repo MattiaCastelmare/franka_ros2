@@ -142,6 +142,7 @@ _ALL_PARAMS = [
     'start_rviz', 'trajectory_viz_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
+    'external_plant',
     'rl_target_sequence', 'rl_action_scale', 'isolation_test',
     'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
     'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
@@ -471,6 +472,13 @@ def _launch_all(context):
         ],
     )
 
+    # external_plant: someone else provides the robot -- robot_state_publisher,
+    # the controller_manager in <namespace> and joint_state_broadcaster (the
+    # Gazebo replica, franka_simulation_experiments). Only the bringup include
+    # is dropped; the rt_torque_controller spawner below still runs, against
+    # that controller_manager. Off by default: with it off this list is exactly
+    # what it was (test_torque_stack_external_plant_off_identical.py).
+    external_plant = _as_bool(p['external_plant'])
     actions = [
         LogInfo(msg=[
             '[torque_stack] accel-space pipeline'
@@ -478,7 +486,9 @@ def _launch_all(context):
             '  ip=', p['robot_ip'],
             '  fake=', p['use_fake_hardware'],
         ]),
-        franka_launch,
+        (LogInfo(msg='[torque_stack] [Execution]       franka bringup SKIPPED '
+                     '(external_plant:=true: the caller provides the robot)')
+         if external_plant else franka_launch),
         TimerAction(period=float(p['torque_world_tf_delay_s']),
                     actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
@@ -814,12 +824,17 @@ def _launch_all(context):
     # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
     # identical in both cases: the safety certificate does not depend on who
     # generates the nominal acceleration.
+    #   'none'     — no commander: the caller owns /NS_1/qddot_nom (the
+    #                Gazebo scenario commander). Never a default.
     motion_source = str(p['motion_source']).strip().lower()
-    if motion_source not in ('pentagon', 'rl'):
+    if motion_source not in ('pentagon', 'rl', 'none'):
         raise RuntimeError(
-            f'motion_source="{motion_source}" — expected "pentagon" or "rl"')
+            f'motion_source="{motion_source}" — expected "pentagon", "rl" or "none"')
 
-    if motion_source == 'rl':
+    if motion_source == 'none':
+        commander_node = None
+        commander_label = None
+    elif motion_source == 'rl':
         # Only non-empty overrides are passed: forwarding '' would override a
         # working node default with an invalid path. Left unset,
         #   onnx_model → the newest .onnx under franka_sim/models, resolved by
@@ -882,9 +897,13 @@ def _launch_all(context):
             parameters=[{'isolation_test': _as_bool(p['isolation_test'])}],
         )
         commander_label = 'pentagon_qddot_commander'
-    actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
-    actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     ', commander_label,
-                                ' (delay=', str(commander_delay), 's)']))
+    if commander_node is None:
+        actions.append(LogInfo(msg='[torque_stack] [Motion gen.]     NONE '
+                                   '(motion_source:=none: the caller publishes q̈_nom)'))
+    else:
+        actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
+        actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     ', commander_label,
+                                    ' (delay=', str(commander_delay), 's)']))
 
     # ── Experiment logger ─────────────────────────────────────────────────────
     if _as_bool(p['start_experiment_logger']):
@@ -1148,7 +1167,18 @@ def generate_launch_description():
                 'motion_source',
                 default_value=_DEFAULTS.get('motion_source', 'pentagon'),
                 description="Which node publishes q̈_nom: 'pentagon' "
-                            "(analytic path) or 'rl' (ONNX Safe-RL policy)"),
+                            "(analytic path), 'rl' (ONNX Safe-RL policy) or "
+                            "'none' (the caller does, e.g. the Gazebo scenario "
+                            "commander)"),
+            # Not in launch_defaults.yaml on purpose, like isolation_test: a
+            # run that does not pass it is the hardware stack, unchanged.
+            DeclareLaunchArgument(
+                'external_plant',
+                default_value='false',
+                description='Do not include franka_bringup: the caller provides '
+                            'robot_state_publisher, the controller_manager in '
+                            '<namespace> and joint_state_broadcaster (the Gazebo '
+                            'plant). rt_torque_controller is still spawned here'),
             DeclareLaunchArgument(
                 'rl_onnx_model',
                 default_value=_DEFAULTS.get('rl_onnx_model', ''),
