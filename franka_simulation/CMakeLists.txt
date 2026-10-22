@@ -91,7 +91,12 @@ install(DIRECTORY launch/
 # Install config files
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
-  FILES_MATCHING PATTERN "*.yaml"
+  FILES_MATCHING PATTERN "*.yaml" PATTERN "*.json"
+)
+
+# Gazebo worlds of the CBF experiments (worlds/fr3_cbf_lab.sdf)
+install(DIRECTORY worlds/
+  DESTINATION share/${PROJECT_NAME}/worlds
 )
 
 # Install rviz files
@@ -164,6 +169,26 @@ install(DIRECTORY test/config/
 
 
 
+
+# ScenarioObstacles: Ignition Fortress world system that moves the CBF
+# experiments' obstacles at the physics rate (docs/gz_cbf_experiments_plan.md §5.4).
+# Optional: without the Fortress dev libraries only this plugin is skipped, so the
+# hardware stack (franka_experiments exec_depends on this package) still builds.
+find_package(ignition-gazebo6 QUIET)
+find_package(ignition-plugin1 QUIET COMPONENTS register)
+find_package(ignition-transport11 QUIET)
+find_package(ignition-msgs8 QUIET)
+if(ignition-gazebo6_FOUND AND ignition-plugin1_FOUND AND ignition-transport11_FOUND
+   AND ignition-msgs8_FOUND)
+  add_library(franka_scenario_obstacles SHARED src/scenario_obstacles_system.cpp)
+  set_target_properties(franka_scenario_obstacles PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+  target_link_libraries(franka_scenario_obstacles
+    ignition-gazebo6::core ignition-plugin1::register ignition-transport11::core ignition-msgs8::core)
+  install(TARGETS franka_scenario_obstacles LIBRARY DESTINATION lib)
+else()
+  message(WARNING "Ignition Fortress dev libraries not found: franka_scenario_obstacles "
+                  "(Gazebo CBF experiments' moving obstacles) is NOT built")
+endif()
 
 # Install URDF files
 install(DIRECTORY urdf/

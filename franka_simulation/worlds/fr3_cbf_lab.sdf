@@ -1,0 +1,123 @@
+<?xml version="1.0"?>
+<!--
+  fr3_cbf_lab: the rig of the franka_experiments CBF runs, for Ignition Fortress.
+
+  SIM. Generated per run by scripts/utils/gz_world.py, which rewrites the camera
+  pose from config/sim/camera_extrinsics_sim.yaml, the depth-stream geometry,
+  the scene variant (rig | bare) and the obstacles. The values below are that
+  generator's defaults and are pinned by test/sim/test_gz_world.py.
+
+  Physics at 1 kHz, the RtTorqueController rate (plan H4). Gravity is exactly
+  -9.8: the gz_ros2_control plugin compensates with a KDL model at 9.8
+  (ign_system.cpp:644), so any other value leaves part of the arm's weight
+  uncompensated (plan H3).
+
+  Scene MEASURED from rosbag/irim1_raw (2026-10-09; 3 raw D455 frames
+  back-projected with config/camera_extrinsics.yaml, 0.2 m grid):
+    table top at z = 0 (robot base level), x in [-0.35, 0.80], y in [-0.60, 0.25]
+    a second surface at z = -0.15, x in [-0.80, 0.40], y in [0.25, 0.85]
+    floor at z = -0.88
+  The robot is fixed to the world by its own URDF (world -> base -> fr3_link0).
+-->
+<sdf version="1.9">
+  <world name="fr3_cbf_lab">
+    <physics name="1ms" type="dart">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="floor">
+      <static>true</static>
+      <pose>0 0 -0.88 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="rig_table_top">
+      <static>true</static>
+      <pose>0.225 -0.175 -0.025 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.15 0.85 0.05</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.15 0.85 0.05</size></box></geometry>
+          <material><ambient>0.45 0.35 0.25 1</ambient><diffuse>0.45 0.35 0.25 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="rig_side_table">
+      <static>true</static>
+      <pose>-0.2 0.55 -0.175 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.2 0.6 0.05</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.2 0.6 0.05</size></box></geometry>
+          <material><ambient>0.4 0.4 0.45 1</ambient><diffuse>0.4 0.4 0.45 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Tripod pole, behind the camera so it is outside its frustum. -->
+    <model name="d455_mount">
+      <static>true</static>
+      <pose>1.80 0.154 0.06 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.015</radius><length>1.88</length></cylinder></geometry>
+        </visual>
+      </link>
+    </model>
+
+    <!-- D455 scene camera. <pose> is the camera LINK (looks along +x), derived from
+         base -> camera_color_optical_frame in config/sim/camera_extrinsics_sim.yaml.
+         Depth only: 848x480 at 90 Hz, HFOV 2*atan(424/fx) with fx from
+         franka_experiments/config/depth_intrinsics.yaml. 32FC1 metres; the
+         depth_sim_adapter turns it into the 16UC1 millimetres the engine expects. -->
+    <model name="d455">
+      <static>true</static>
+      <pose>1.754113 0.154097 1.059057 -0.00749759073 0.299970105 -3.08608895</pose>
+      <link name="link">
+        <visual name="body">
+          <pose>-0.02 0 0 0 0 0</pose>
+          <geometry><box><size>0.026 0.124 0.029</size></box></geometry>
+          <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+        </visual>
+        <sensor name="depth" type="depth_camera">
+          <always_on>true</always_on>
+          <update_rate>90</update_rate>
+          <visualize>false</visualize>
+          <topic>d455/depth/image</topic>
+          <camera name="d455_depth">
+            <horizontal_fov>1.55943597</horizontal_fov>
+            <image><width>848</width><height>480</height><format>R_FLOAT32</format></image>
+            <clip><near>0.1</near><far>10.0</far></clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>

@@ -1,0 +1,20 @@
+# SIM. base -> camera_color_optical_frame of the simulated D455 (plan H8).
+# Default = the real calibration, franka_experiments/config/camera_extrinsics.yaml
+# @94cd7b0, number for number; test/sim/test_gz_world.py fails if the two drift.
+# Two things read it, so they cannot disagree: real_time_distance (through the
+# camera_extrinsics_path parameter) and utils/gz_world.py (the Gazebo sensor
+# pose). Change it here to move the simulated camera; leave the real file alone.
+# In sim the depth image is rendered IN this frame. On the rig it is not: the raw
+# depth stream is 5.9 cm from the colour frame these numbers calibrate
+# (fr3_complete.yaml:102-110), so this file removes that real offset (plan H11).
+parent_frame: base
+child_frame: camera_color_optical_frame
+translation:
+  x: 1.754113
+  y: 0.154097
+  z: 1.059057
+rotation:
+  x: 0.550892
+  y: 0.58674
+  z: -0.429626
+  w: -0.409481

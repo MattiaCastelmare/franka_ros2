@@ -1,0 +1,18 @@
+# SIM. Overrides merged into franka_experiments/config/fr3_complete.yaml for
+# Gazebo runs (ground rule 2: only what is physically different in sim, one
+# comment per key). Experiment toggles (tracking / IMM / prediction) are NOT
+# here: they come from the condition (franka_simulation_experiments
+# config/conditions.yaml), set explicitly per run (plan H12).
+#
+# Deliberately NOT overridden:
+#  * the depth encoding: depth_sim_adapter publishes the same 16UC1 millimetres
+#    the engine reads from the D455;
+#  * distance.depth_rate_hz: torque_control_stack writes it from
+#    camera_depth_profile, the same path the rig uses.
+booleans:
+  # Headless sim has no display for the OpenCV window. The container's OpenCV
+  # bundles Qt with the xcb platform only (no offscreen plugin, no Xvfb), so
+  # without a display cv2.imshow ABORTS the node (measured: exit -6 on the first
+  # frame). The overlay is still drawn and published (publish_overlay_image), so
+  # only imshow + waitKey are skipped. gz_cbf_stack gui:=true turns it back on.
+  visualize: false
