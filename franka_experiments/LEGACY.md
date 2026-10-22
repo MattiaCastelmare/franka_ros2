@@ -189,5 +189,4 @@ and `franka_experiments/ARCHITECTURE.md` (stale as described above, and
 regenerable from `torque_control_stack.launch.py`). The handover's gotchas and
 backlog were folded into `franka_sim_to_real_implementation_status.md` §8–§9, and
 the gravity analysis of `refactoring_code.md §10.2` into
-`franka_experiments/test/README.md`. `docs/reactivity_evasion_report.md` is now
-linked from the root README documentation map.
+`franka_experiments/test/README.md`.

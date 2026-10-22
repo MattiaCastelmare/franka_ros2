@@ -719,7 +719,6 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 | [`franka_sim/README.md`](./franka_sim/README.md) | Training, evaluation, the MuJoCo viewer, sim↔robot sync, gotchas |
 | [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md) | Safe-RL + CBF sim-to-real: the three-step specification, what is built, how it was validated, gotchas and the prioritised backlog |
 | [`franka_experiments/LEGACY.md`](./franka_experiments/LEGACY.md) | Inventory of everything unreachable from the torque stack, with the deletion units |
-| [`franka_experiments/docs/reactivity_evasion_report.md`](./franka_experiments/docs/reactivity_evasion_report.md) | Measured latency budget, retreat authority, and the reactivity/evasion rework (Sep 2026) |
 
 ---
 
