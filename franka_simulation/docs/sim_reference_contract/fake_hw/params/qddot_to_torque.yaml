@@ -1,0 +1,7 @@
+/qddot_to_torque:
+  ros__parameters:
+    iso_enabled: false
+    iso_tau_rate_max: 40.0
+    torque_out_topic: /NS_1/torque_cmd
+    use_sim_time: false
+

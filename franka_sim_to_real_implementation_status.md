@@ -727,8 +727,9 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
 * **The robot's QP is not bit-reproducible** (§5.3b). The sim pins
   `adaptive_rho_interval`; `cbf_safety_filter.py` does not. One line, but it
   touches the live filter — decide it with the arm available.
-* **Closed-loop hardware-in-the-loop validation** needs either Gazebo or the
-  real FR3.
+* **Closed-loop hardware-in-the-loop validation** needs the real FR3. The
+  Gazebo replica (§10 P1.6, SIM) now gives closed-loop runs with ground truth,
+  but not the hardware itself.
 
 ---
 
@@ -761,10 +762,25 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
    EXPERIMENTAL, not implementation: pick the latency budget from
    `scripts/latency_budget.py` on real hardware, then retrain with it on and
    measure what the robustness costs in task performance.
-6. **Hardware-in-the-loop.** Gazebo (`franka_simulation` has
-   `sim_torque.launch.py` and `sim_acceleration_bridge.py`;
-   `rt_torque_controller` has a `gazebo` argument) would give closed-loop
-   validation without the real FR3.
+6. ~~**Hardware-in-the-loop.**~~ **DONE 2026-10-21 as a Gazebo replica (SIM,
+   not hardware).** `franka_simulation_experiments` closes pipeline A, unchanged
+   (`torque_control_stack.launch.py` with `external_plant:=true`), around an
+   Ignition Fortress FR3 with `RtTorqueController` in `gazebo: true`, a
+   simulated D455 and scripted obstacles with ground truth:
+   `ros2 launch franka_simulation_experiments gz_cbf_stack.launch.py
+   condition:=kf scenario:=slow`. Phase 5 batch, 345 cells
+   (`franka_simulation/docs/gz_cbf_experiments_report.md`): the tracker's
+   v_obs error is 4–5× below the residual's with no lag, which buys min h
+   only below ~1.5 m/s; at ≥ 2 m/s every condition is in contact, limited by
+   warning time (the 0.7 m publish gate), not by the estimator; IMM and
+   prediction add nothing measurable; the velocity σ is too large for slow
+   obstacles. The ~10 cm per-lap pentagon excursion appears in sim and comes
+   from the table under the circle's lowest point (fingertip control point),
+   not from the singularity row — a hypothesis to check on the robot. Not
+   reproduced: the firmware's collision reflex and torque-rate limiter
+   (clips are counted), link friction as on the robot, the RL training plant
+   (franka_sim stays MuJoCo). Plan and deviations:
+   `franka_simulation/docs/gz_cbf_experiments_plan.md`.
 
 ### P1b — the benchmark's difficulty
 

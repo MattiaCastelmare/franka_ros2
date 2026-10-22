@@ -1,0 +1,24 @@
+== /NS_1/franka/joint_states
+	min: 0.009s max: 0.011s std dev: 0.00026s window: 200
+average rate: 99.997
+	min: 0.008s max: 0.012s std dev: 0.00032s window: 200
+== /NS_1/joint_states
+	min: 0.000s max: 0.035s std dev: 0.01434s window: 163
+average rate: 40.001
+	min: 0.000s max: 0.035s std dev: 0.01432s window: 200
+== /NS_1/qddot_nom
+average rate: 99.987
+	min: 0.009s max: 0.011s std dev: 0.00022s window: 200
+failed to initialize wait set: the given context is not valid, either rcl_init() was not called or rcl_shutdown() was called., at ./src/rcl/wait.c:130
+== /NS_1/qddot_safe
+average rate: 299.985
+	min: 0.002s max: 0.004s std dev: 0.00028s window: 200
+failed to initialize wait set: the given context is not valid, either rcl_init() was not called or rcl_shutdown() was called., at ./src/rcl/wait.c:130
+== /NS_1/torque_cmd
+	min: 0.001s max: 0.006s std dev: 0.00041s window: 200
+average rate: 300.109
+	min: 0.001s max: 0.005s std dev: 0.00037s window: 200
+== /NS_1/cbf_status
+	min: 0.002s max: 0.005s std dev: 0.00038s window: 200
+average rate: 299.969
+	min: 0.002s max: 0.005s std dev: 0.00032s window: 200

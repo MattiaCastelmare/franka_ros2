@@ -26,6 +26,7 @@ motion server with capsule-model obstacle avoidance.
 10. [Test infrastructure](#10-test-infrastructure)
 11. [Topic reference](#11-topic-reference)
 12. [Critical notes](#12-critical-notes)
+13. [Pipeline 5 — franka_experiments' CBF + Kalman stack on the Gazebo FR3](#13-pipeline-5--franka_experiments-cbf--kalman-stack-on-the-gazebo-fr3)
 
 ---
 
@@ -860,3 +861,75 @@ This path resolution **only works** when launched with `ros2 run` or from a
 launch file `Node(package='franka_simulation', executable='…')`. Running the
 `.py` files directly from their source location requires adding `scripts/` to
 `PYTHONPATH`.
+
+---
+
+## 13. Pipeline 5 — franka_experiments' CBF + Kalman stack on the Gazebo FR3
+
+Every output of this pipeline is **SIM**. Plan, hazard verification and every
+deviation: `docs/gz_cbf_experiments_plan.md`. Tables: `docs/gz_cbf_experiments_report.md`.
+
+The hardware pipeline A of `franka_experiments` (real_time_distance → cluster /
+Kalman / IMM tracker → `cbf_safety_filter` → `qddot_to_torque` →
+`RtTorqueController`), closed around a Gazebo FR3, a simulated D455 and scripted
+obstacles with known ground truth. Nothing of pipeline A is copied: the launch
+INCLUDES `torque_control_stack.launch.py` with `external_plant:=true`, so the
+nodes, parameters and wiring are the hardware ones.
+
+```bash
+# one experiment, headless (gui:=true for the Ignition client)
+ros2 launch franka_simulation_experiments gz_cbf_stack.launch.py \
+    condition:=kf scenario:=slow [seed:=0] [perception:=true|emulated|false] [gui:=false]
+
+# the Phase 5 grid / a custom grid / the report
+ros2 run franka_simulation_experiments run_gz_scenarios --grid phase5
+ros2 run franka_simulation_experiments run_gz_scenarios --scenarios ball wedge \
+    --conditions residual kf --seeds 0 1 --perception true emulated
+ros2 run franka_simulation_experiments run_gz_scenarios --report --batch-dir <dir>
+```
+
+Run inside the `franka_ros2` container with `ROS_DOMAIN_ID` set (77 here: another
+container shares the DDS domain).
+
+**Where things are.** The plant is in this package and depends on nothing of
+`franka_experiments`: `worlds/fr3_cbf_lab.sdf` (DART at 1 kHz, the measured rig
+tables, the D455 at the calibrated extrinsic), `launch/gz_fr3_plant.launch.py`,
+`scripts/utils/gz_robot_description.py` (bringup-compatible URDF: `base` frame,
+rigid fingers, reflected rotor inertia, initial q), `scripts/depth_sim_adapter.py`
+(32FC1 m → 16UC1 mm, optional delay / dropout / stereo range noise),
+`src/scenario_obstacles_system.cpp` (obstacles that follow their law every physics
+step and publish the truth) and the sim-only overrides in `config/sim/`, one
+commented key each. The harness is in `franka_simulation_experiments`, which
+depends on both packages (plan §6, option B: `franka_experiments` already depends
+on this package): the launch, the conditions (`config/conditions.yaml`, every
+toggle explicit), the scenario catalog (`config/scenarios.yaml`, ported 1:1 from
+`cbf_scenarios.py` plus pentagon and throw variants), the scenario commander, the
+ground-truth node, the reflex monitor, the episode supervisor and the batch runner.
+
+**Conditions.** `residual` (tracking off), `kf` (Kalman track), `imm`, `imm+pred`
+(ballistic prediction rows). The CBF flags mirror `launch_defaults.yaml` and are
+passed explicitly; `--set key=value` overrides one per run.
+
+**Perception modes.** `true`: Gazebo depth → `depth_sim_adapter` →
+`real_time_distance` (the full chain, 90 fps). `emulated`: `emulated_perception`
+publishes the rows `cbf_scenarios.py` feeds its offline filter (true gaps, noisy
+true velocity), built by the real `perception_msgs.build_cp_messages`; with it the
+Gazebo plant can be compared to the offline double integrator and to the full
+chain separately. `false`: no rows.
+
+**Outputs** go to `franka_simulation_experiments/sim_runs/` (git-ignored), never
+next to hardware logs: `run_manifest_sim.json` (plant gazebo, SIM, git hash, every
+toggle, RTF, reflex verdict), the logger's own files with SIM labels, a sim-time bag
+(no images), `truth.npz` (1 kHz true control points and gaps), `reflex_summary.json`.
+
+**Fidelity limits** (details in the plan §3 and the report):
+
+* the plugin's gravity is KDL's g(q) at 9.8; friction, the firmware's reflexes and
+  the torque-rate limiter are not simulated — `reflex_monitor` CHECKS the
+  velocity / position / torque limits at 1 kHz and counts would-be torque-rate clips;
+* the QP loop runs on sim time; on a shared host it loses ticks (220–290 Hz of a
+  nominal 300, reported per run). `filter_cpu:=2` pins `cbf_safety_filter` to an
+  isolated core and gives 300 Hz (avoid 3 while the robot runs: its RT core);
+* the simulated depth is noise-free unless `range_noise` is on, so the tracker's
+  static noise floor is far below the hardware's;
+* no D405 / eye-in-hand camera, no gripper actuation (fingers rigid at 0.04 m).

@@ -513,6 +513,24 @@ un CBF filter duplicato (`envs/cbf_filter.py`). `train.py` addestra con
 confermato), `export_onnx.py` esporta l'attore in ONNX. `rl_policy_commander.py` (pipeline
 A) esegue quel grafo ONNX sul robot reale.
 
+**Pipeline A in Gazebo (SIM, ottobre 2026).** `franka_simulation_experiments` (package
+sottile che dipende da `franka_experiments` e da `franka_simulation`; il verso inverso
+creerebbe un ciclo, `franka_experiments/package.xml` dipende già da `franka_simulation`)
+chiude la pipeline A reale attorno a un FR3 in Ignition Fortress:
+`gz_cbf_stack.launch.py` INCLUDE `torque_control_stack.launch.py` con
+`external_plant:=true` (niente bringup franka: la pianta è Gazebo con
+`franka_ign_ros2_control` e `RtTorqueController` in `gazebo: true`), quindi
+`real_time_distance`, tracker, `cbf_safety_filter`, `qddot_to_torque` e logger sono
+quelli dell'hardware, senza copie. Dal lato `franka_simulation` restano solo la pianta
+(`worlds/fr3_cbf_lab.sdf`, `launch/gz_fr3_plant.launch.py`, `depth_sim_adapter.py`, il
+world system `src/scenario_obstacles_system.cpp` che muove gli ostacoli a ogni passo di
+fisica e ne pubblica la verità) e gli override sim in `config/sim/`. Le tre modifiche a
+`franka_experiments` sono default-off con test bit-identici (`external_plant`,
+`motion_source:=none`, `experiment_logger.truth_topic`). Piano, verifica H1–H13 e
+deviazioni: `franka_simulation/docs/gz_cbf_experiments_plan.md`; tabelle:
+`franka_simulation/docs/gz_cbf_experiments_report.md`; uso: `franka_simulation/README.md`
+§13.
+
 ---
 
 ## 11. Package di supporto (survey leggero)

@@ -1,0 +1,766 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-10-21-11-04-39-522692-Alienware-294795
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [launch.user]: [torque_stack] accel-space pipeline  arm=fr3  ip=192.168.2.10  fake=true
+[INFO] [launch.user]: [torque_stack] [RT pinning]     ros2_control_node FF thread -> CPU''
+[INFO] [launch.user]: [torque_stack] [MoveIt]          move_group ENABLED
+[INFO] [launch.user]: [torque_stack] [MoveIt]          finger_state_publisher ENABLED
+[INFO] [launch.user]: [torque_stack] [Perception]      camera DISABLED
+[INFO] [launch.user]: [torque_stack] [Distance est.]   real_time_distance ENABLED (delay=2.0s)
+[INFO] [launch.user]: [torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque (delay=2.0s)
+[INFO] [launch.user]: [torque_stack] [ISO layer]      iso_safety_monitor DISABLED
+[INFO] [launch.user]: [torque_stack] [Motion gen.]     pentagon_qddot_commander (delay=12.0s)
+[INFO] [launch.user]: [torque_stack] [Logging]         experiment_logger ENABLED
+[INFO] [launch.user]: [torque_stack] [Viz]             trajectory_overlay ENABLED (red = commanded P(s), blue = measured EE, 2.0 s trail, window OFF)
+[INFO] [launch.user]: [torque_stack] [Viz]             trajectory_overlay has NO CAMERA (enable_camera:=false): it will wait for frames and draw nothing
+[INFO] [launch.user]: [torque_stack] [Viz]             trajectory_visualization DISABLED
+[INFO] [robot_state_publisher-1]: process started with pid [294846]
+[INFO] [ros2_control_node-2]: process started with pid [294848]
+[INFO] [joint_state_publisher-3]: process started with pid [294850]
+[INFO] [spawner-4]: process started with pid [294852]
+[INFO] [move_group-5]: process started with pid [294854]
+[ros2_control_node-2] [WARN] [1792580680.150640832] [NS_1.controller_manager]: [Deprecated] Passing the robot description parameter directly to the control_manager node is deprecated. Use '~/robot_description' topic from 'robot_state_publisher' instead.
+[ros2_control_node-2] text not specified in the prefix tag
+[ros2_control_node-2] [INFO] [1792580680.151011289] [resource_manager]: Loading hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1792580680.151437035] [resource_manager]: Initialize hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [WARN] [1792580680.151469453] [mock_generic_system]: Parameter 'fake_sensor_commands' has been deprecated from usage. Use'mock_sensor_commands' instead.
+[ros2_control_node-2] [INFO] [1792580680.151509384] [resource_manager]: Successful initialization of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1792580680.151572737] [resource_manager]: 'configure' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1792580680.151578538] [resource_manager]: Successful 'configure' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1792580680.151587042] [resource_manager]: 'activate' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1792580680.151590124] [resource_manager]: Successful 'activate' of hardware 'FrankaHardwareInterface'
+[move_group-5] [WARN] [1792580680.154343828] [move_group.move_group]: Falling back to using the the move_group node namespace (deprecated behavior).
+[robot_state_publisher-1] [INFO] [1792580680.171237217] [NS_1.robot_state_publisher]: got segment base
+[robot_state_publisher-1] [INFO] [1792580680.171451679] [NS_1.robot_state_publisher]: got segment fr3_link0
+[robot_state_publisher-1] [INFO] [1792580680.171460957] [NS_1.robot_state_publisher]: got segment fr3_link0_accelerometer_bottom
+[robot_state_publisher-1] [INFO] [1792580680.171465285] [NS_1.robot_state_publisher]: got segment fr3_link0_accelerometer_top
+[robot_state_publisher-1] [INFO] [1792580680.171468945] [NS_1.robot_state_publisher]: got segment fr3_link1
+[robot_state_publisher-1] [INFO] [1792580680.171472183] [NS_1.robot_state_publisher]: got segment fr3_link1_accelerometer_bottom
+[robot_state_publisher-1] [INFO] [1792580680.171475292] [NS_1.robot_state_publisher]: got segment fr3_link1_accelerometer_top
+[robot_state_publisher-1] [INFO] [1792580680.171478328] [NS_1.robot_state_publisher]: got segment fr3_link2
+[robot_state_publisher-1] [INFO] [1792580680.171481724] [NS_1.robot_state_publisher]: got segment fr3_link2_accelerometer_bottom
+[robot_state_publisher-1] [INFO] [1792580680.171484807] [NS_1.robot_state_publisher]: got segment fr3_link2_accelerometer_top
+[robot_state_publisher-1] [INFO] [1792580680.171487953] [NS_1.robot_state_publisher]: got segment fr3_link3
+[robot_state_publisher-1] [INFO] [1792580680.171491337] [NS_1.robot_state_publisher]: got segment fr3_link3_accelerometer_bottom
+[robot_state_publisher-1] [INFO] [1792580680.171494662] [NS_1.robot_state_publisher]: got segment fr3_link3_accelerometer_top
+[robot_state_publisher-1] [INFO] [1792580680.171497878] [NS_1.robot_state_publisher]: got segment fr3_link4
+[robot_state_publisher-1] [INFO] [1792580680.171500863] [NS_1.robot_state_publisher]: got segment fr3_link4_accelerometer_bottom
+[robot_state_publisher-1] [INFO] [1792580680.171503864] [NS_1.robot_state_publisher]: got segment fr3_link4_accelerometer_top
+[robot_state_publisher-1] [INFO] [1792580680.171506905] [NS_1.robot_state_publisher]: got segment fr3_link5
+[robot_state_publisher-1] [INFO] [1792580680.171509796] [NS_1.robot_state_publisher]: got segment fr3_link5_accelerometer_bottom
+[robot_state_publisher-1] [INFO] [1792580680.171512949] [NS_1.robot_state_publisher]: got segment fr3_link5_accelerometer_top
+[robot_state_publisher-1] [INFO] [1792580680.171515772] [NS_1.robot_state_publisher]: got segment fr3_link6
+[robot_state_publisher-1] [INFO] [1792580680.171518830] [NS_1.robot_state_publisher]: got segment fr3_link7
+[robot_state_publisher-1] [INFO] [1792580680.171521847] [NS_1.robot_state_publisher]: got segment fr3_link8
+[move_group-5] [INFO] [1792580680.173184808] [moveit_rdf_loader.rdf_loader]: Loaded robot model in 0.0186168 seconds
+[move_group-5] [INFO] [1792580680.173222113] [moveit_robot_model.robot_model]: Loading robot model 'fr3'...
+[ros2_control_node-2] [INFO] [1792580680.184613221] [NS_1.controller_manager]: update rate is 100 Hz
+[ros2_control_node-2] [INFO] [1792580680.184666686] [NS_1.controller_manager]: Spawning controller_manager RT thread with scheduler priority: 50
+[ros2_control_node-2] [INFO] [1792580680.186492605] [NS_1.controller_manager]: Successful set up FIFO RT scheduling policy with priority 50.
+[move_group-5] [INFO] [1792580680.192522727] [moveit.ros_planning_interface.moveit_cpp]: Listening to 'joint_states' for joint states
+[move_group-5] [INFO] [1792580680.193774848] [moveit_ros.current_state_monitor]: Listening to joint states on topic 'joint_states'
+[move_group-5] [INFO] [1792580680.197479115] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/NS_1/attached_collision_object' for attached collision objects
+[move_group-5] [INFO] [1792580680.198468726] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Publishing maintained planning scene on 'monitored_planning_scene'
+[move_group-5] [INFO] [1792580680.198602532] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting planning scene monitor
+[move_group-5] [INFO] [1792580680.198935455] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to '/NS_1/planning_scene'
+[move_group-5] [INFO] [1792580680.198948426] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Starting world geometry update monitor for collision objects, attached objects, octomap updates.
+[move_group-5] [INFO] [1792580680.199164345] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to 'collision_object'
+[move_group-5] [INFO] [1792580680.199355397] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Listening to 'planning_scene_world' for planning scene world geometry
+[move_group-5] [WARN] [1792580680.199628887] [moveit.ros.occupancy_map_monitor.middleware_handle]: Resolution not specified for Octomap. Assuming resolution = 0.1 instead
+[move_group-5] [ERROR] [1792580680.199643019] [moveit.ros.occupancy_map_monitor.middleware_handle]: No 3D sensor plugin(s) defined for octomap updates
+[move_group-5] [INFO] [1792580680.200449966] [moveit.ros_planning_interface.moveit_cpp]: Loading planning pipeline 'move_group'
+[move_group-5] [INFO] [1792580680.201563536] [moveit.ros_planning.planning_pipeline]: No '~planning_plugin' parameter specified, but only 'ompl_interface/OMPLPlanner' planning plugin is available. Using that one.
+[move_group-5] [INFO] [1792580680.209735131] [moveit.ros_planning.planning_pipeline]: Using planning interface 'OMPL'
+[move_group-5] [WARN] [1792580680.212465975] [moveit_ros.trajectory_execution_manager]: Parameter '~moveit_controller_manager' is not specified but only one matching plugin was found: 'moveit_simple_controller_manager/MoveItSimpleControllerManager'. Using that one.
+[move_group-5] [ERROR] [1792580680.216423706] [moveit.plugins.moveit_simple_controller_manager]: No controller_names specified.
+[move_group-5] [INFO] [1792580680.216737534] [moveit.plugins.moveit_simple_controller_manager]: Returned 0 controllers in list
+[move_group-5] [INFO] [1792580680.216750159] [moveit.plugins.moveit_simple_controller_manager]: Returned 0 controllers in list
+[move_group-5] [INFO] [1792580680.217411833] [moveit_ros.trajectory_execution_manager]: Trajectory execution is not managing controllers
+[move_group-5] [INFO] [1792580680.217428803] [move_group.move_group]: MoveGroup debug mode is ON
+[move_group-5] [INFO] [1792580680.227660080] [move_group.move_group]: 
+[move_group-5] 
+[move_group-5] ********************************************************
+[move_group-5] * MoveGroup using: 
+[move_group-5] *     - ApplyPlanningSceneService
+[move_group-5] *     - ClearOctomapService
+[move_group-5] *     - CartesianPathService
+[move_group-5] *     - ExecuteTrajectoryAction
+[move_group-5] *     - GetPlanningSceneService
+[move_group-5] *     - KinematicsService
+[move_group-5] *     - MoveAction
+[move_group-5] *     - MotionPlanService
+[move_group-5] *     - QueryPlannersService
+[move_group-5] *     - StateValidationService
+[move_group-5] ********************************************************
+[move_group-5] 
+[move_group-5] [INFO] [1792580680.227704451] [moveit_move_group_capabilities_base.move_group_context]: MoveGroup context using planning plugin ompl_interface/OMPLPlanner
+[move_group-5] [INFO] [1792580680.227712192] [moveit_move_group_capabilities_base.move_group_context]: MoveGroup context initialization complete
+[ros2_control_node-2] [INFO] [1792580680.476468896] [NS_1.controller_manager]: Loading controller 'joint_state_broadcaster'
+[spawner-4] [INFO] [1792580680.503678366] [NS_1.spawner_joint_state_broadcaster]: [94mLoaded [1mjoint_state_broadcaster[0m
+[joint_state_publisher-3] [INFO] [1792580680.503712140] [NS_1.joint_state_publisher]: Waiting for robot_description to be published on the robot_description topic...
+[ros2_control_node-2] [INFO] [1792580680.505777926] [NS_1.controller_manager]: Configuring controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1792580680.505867146] [NS_1.joint_state_broadcaster]: 'joints' or 'interfaces' parameter is empty. All available state interfaces will be published
+[spawner-4] [INFO] [1792580680.539251102] [NS_1.spawner_joint_state_broadcaster]: [92mConfigured and activated [1mjoint_state_broadcaster[0m
+[INFO] [spawner-4]: process has finished cleanly [pid 294852]
+[INFO] [static_transform_publisher-6]: process started with pid [294996]
+[static_transform_publisher-6] [INFO] [1792580681.138058130] [world_to_robot_base_tf]: Spinning until stopped - publishing transform
+[static_transform_publisher-6] translation: ('0.000000', '0.000000', '0.000000')
+[static_transform_publisher-6] rotation: ('0.000000', '0.000000', '0.000000', '1.000000')
+[static_transform_publisher-6] from 'world' to 'base'
+[INFO] [finger_state_publisher-7]: process started with pid [295006]
+[INFO] [real_time_distance-8]: process started with pid [295008]
+[INFO] [cbf_safety_filter-9]: process started with pid [295010]
+[INFO] [qddot_to_torque-10]: process started with pid [295012]
+[INFO] [experiment_logger-11]: process started with pid [295014]
+[qddot_to_torque-10] [INFO] [1792580682.390199520] [qddot_to_torque]: Building dynamics model via xacro …
+[qddot_to_torque-10] [INFO] [1792580682.487373198] [qddot_to_torque]: qddot_to_torque ready
+[qddot_to_torque-10]   qddot_safe ← /NS_1/qddot_safe
+[qddot_to_torque-10]   torque     → /NS_1/torque_cmd
+[real_time_distance-8] [INFO] [1792580682.709602255] [real_time_distance]: robot mask: DEPTH-GATED, an obstacle is SEEN when it is more than 0.100 m in front of the model surface corrected by 0.060 m (mask.depth_gate_bias_m — set it to the SYSTEMATIC part of the calibration_check residual, or the arm reads as its own obstacle)
+[real_time_distance-8] [INFO] [1792580682.709792242] [real_time_distance]: distance hold bound: 100 ms (0 = unbounded, the pre-ISO behaviour)
+[real_time_distance-8] [INFO] [1792580682.710050471] [real_time_distance]: distance EMA: tau=48 ms (rate-independent); legacy lpf_alpha=0.50 ignored, fallback alpha=0.79
+[real_time_distance-8] [INFO] [1792580682.710238841] [real_time_distance]: tracker lifecycle at 90 Hz nominal: confirm 3/5 frames, coast 15 frames (= 56 ms window, 167 ms coast)
+[real_time_distance-8] [INFO] [1792580682.714175479] [real_time_distance]: RealTimeDistance ready — mode=control_point  viz=True  ee_link=fr3_link8  tracking=True  sim_obstacle=False
+[cbf_safety_filter-9] [INFO] [1792580682.770939747] [cbf_safety_filter]: self-collision rows: 12 capsules, 24 pairs, margin=0.020 m, horizon=0.080 m, max_rows=8
+[cbf_safety_filter-9] [INFO] [1792580682.771243129] [cbf_safety_filter]: singularity row: sing:fr3_link8: floor=0.050 horizon=0.080 rot_scale=0.30 eps=1.0e-04
+[cbf_safety_filter-9] [INFO] [1792580682.772018042] [cbf_safety_filter]: zone ladder (x d_safe=0.15 m): zones hold<0.037 prio<0.075 active<0.150 notice<0.225 blend=0.030 k0=[50.0, 50.0, 25.0, 12.0] k1=[14.0, 14.0, 10.5, 7.0] m=[0.25, 0.5, 1.0, 1.0]
+[cbf_safety_filter-9] [INFO] [1792580682.772224955] [cbf_safety_filter]: state governor: qdot_band=0.300 rad/s @ 65% envelope, sigma>0.050+0.040, d_sc>0.020+0.040 m, resume=0.50 s
+[cbf_safety_filter-9] [INFO] [1792580682.778257993] [cbf_safety_filter]: warmup complete in 1.0 ms — one-shot lazy costs paid in __init__ (robot stationary), not on the first control tick
+[cbf_safety_filter-9] [INFO] [1792580682.778483602] [cbf_safety_filter]: CBF filter  QP=300 Hz  rows=50 Hz  solver=osqp
+[cbf_safety_filter-9]   config: /ros2_ws/install/franka_experiments/share/franka_experiments/config/fr3_control.yaml
+[cbf_safety_filter-9]   d_safe=0.15 m  horizon=1.2 m  k0=25.0 k1=10.5 rho=1000.0
+[cbf_safety_filter-9]   limits from franka_description: q margin=0.05 rad, brake_eta=0.6, qdot at 70%, qddot +-[6.0, 2.58, 3.5, 4.0, 6.0, 5.5, 6.0] rad/s^2
+[cbf_safety_filter-9] [INFO] [1792580682.782012206] [cbf_safety_filter]: _qp_tick thread (tid=295130) elevated to SCHED_FIFO prio 50
+[cbf_safety_filter-9] [WARN] [1792580682.782213928] [cbf_safety_filter]: qddot_nom stale → braking
+[experiment_logger-11] [INFO] [1792580682.916662406] [experiment_logger]: ExperimentLogger started
+[experiment_logger-11]   csv                  : /tmp/contract_capture_logs/20261021_110442_bag_02_dynamic_test/experiment_log.csv
+[experiment_logger-11]   d_safe               : 0.150 m
+[experiment_logger-11]   joint_state_topic    : /NS_1/joint_states
+[experiment_logger-11]   multi_distance_topic : /human_robot/multi_distance
+[experiment_logger-11]   qdot_nom_topic       : /NS_1/tracking_qdot
+[experiment_logger-11]   qdot_cmd_topic       : /NS_1/qdot_cmd
+[experiment_logger-11]   torque_cmd_topic     : /NS_1/torque_cmd
+[experiment_logger-11]   robot_state_topic    : /NS_1/franka_robot_state_broadcaster/robot_state
+[cbf_safety_filter-9] [INFO] [1792580683.112519475] [cbf_safety_filter]: tick=100 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[INFO] [trajectory_overlay_node-12]: process started with pid [295136]
+[trajectory_overlay_node-12] [INFO] [1792580683.404344403] [trajectory_overlay]: trajectory_overlay ready
+[trajectory_overlay_node-12]   image          ← /camera/camera/color/image_raw
+[trajectory_overlay_node-12]   camera_info    ← /camera/camera/color/camera_info
+[trajectory_overlay_node-12]   desired (red)  ← /NS_1/ee_desired
+[trajectory_overlay_node-12]   actual  (blue) ← /NS_1/ee_actual
+[trajectory_overlay_node-12]   overlay        → /NS_1/trajectory_overlay
+[trajectory_overlay_node-12]   window         OFF, trail 2.0 s, spacing 2 mm, extrinsics camera_extrinsics.yaml
+[cbf_safety_filter-9] [INFO] [1792580683.445736164] [cbf_safety_filter]: tick=200 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580683.779573565] [cbf_safety_filter]: tick=300 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580684.112602037] [cbf_safety_filter]: tick=400 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580684.445840836] [cbf_safety_filter]: tick=500 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580684.779700866] [cbf_safety_filter]: tick=600 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580684.785445483] [cbf_safety_filter]: qddot_nom stale → braking
+[cbf_safety_filter-9] [INFO] [1792580685.112501065] [cbf_safety_filter]: tick=700 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580685.445932333] [cbf_safety_filter]: tick=800 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580685.779720573] [cbf_safety_filter]: tick=900 n_c=0 solve=0.05ms qddot_nom_norm=0.00 qp_fails=0 fb=[900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580686.112617513] [cbf_safety_filter]: tick=1000 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580686.445841542] [cbf_safety_filter]: tick=1100 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580686.779062008] [cbf_safety_filter]: tick=1200 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580686.788742257] [cbf_safety_filter]: qddot_nom stale → braking
+[cbf_safety_filter-9] [INFO] [1792580687.112472628] [cbf_safety_filter]: tick=1300 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580687.446154416] [cbf_safety_filter]: tick=1400 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580687.779711047] [cbf_safety_filter]: tick=1500 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580688.112538924] [cbf_safety_filter]: tick=1600 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580688.396329238] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580688.445974551] [cbf_safety_filter]: tick=1700 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580688.779500995] [cbf_safety_filter]: tick=1800 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580688.789123796] [cbf_safety_filter]: qddot_nom stale → braking
+[cbf_safety_filter-9] [INFO] [1792580689.112560278] [cbf_safety_filter]: tick=1900 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[1900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580689.445972912] [cbf_safety_filter]: tick=2000 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580689.779537561] [cbf_safety_filter]: tick=2100 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580690.112439163] [cbf_safety_filter]: tick=2200 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[INFO] [spawner-13]: process started with pid [295146]
+[INFO] [bash-14]: process started with pid [295148]
+[bash-14] [pin_rt_thread] taskset failed on tid=294881 (permissions? cpuset?)
+[ERROR] [bash-14]: process has died [pid 295148, exit code 1, cmd 'bash /ros2_ws/install/franka_experiments/share/franka_experiments/scripts/pin_rt_thread.sh '' 60'].
+[ros2_control_node-2] [INFO] [1792580690.272599041] [NS_1.controller_manager]: Loading controller 'rt_torque_controller'
+[spawner-13] [INFO] [1792580690.298558035] [spawner_rt_torque_controller]: [94mLoaded [1mrt_torque_controller[0m
+[ros2_control_node-2] [INFO] [1792580690.300231180] [NS_1.controller_manager]: Configuring controller 'rt_torque_controller'
+[cbf_safety_filter-9] [INFO] [1792580690.445722836] [cbf_safety_filter]: tick=2300 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580690.779564903] [cbf_safety_filter]: tick=2400 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580690.789179096] [cbf_safety_filter]: qddot_nom stale → braking
+[cbf_safety_filter-9] [INFO] [1792580691.112563407] [cbf_safety_filter]: tick=2500 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[ros2_control_node-2] [WARN] [1792580691.301064351] [NS_1.rt_torque_controller]: SetFullCollisionBehavior timed out — no Franka hardware service? Continuing with default thresholds. (Pass gazebo:=true to suppress.)
+[ros2_control_node-2] [INFO] [1792580691.301987594] [NS_1.rt_torque_controller]: RtTorqueController configured (τ_ff + Kp·(q_des−q) + Kd·(q̇_des−q̇), clamp e_max=1.000 rad/s, qdot_margin=0.950, ff_fade_band=0.250 rad/s, accel_timeout=0.100 s, command_timeout=0.100 s, p_max=0.150 rad)  arm=fr3  τ_topic=torque_cmd  q̈_topic=/NS_1/qddot_safe  gazebo=false
+[ros2_control_node-2] [INFO] [1792580691.318516290] [NS_1.rt_torque_controller]: RtTorqueController ACTIVATED.
+[spawner-13] [INFO] [1792580691.329172617] [spawner_rt_torque_controller]: [92mConfigured and activated [1mrt_torque_controller[0m
+[cbf_safety_filter-9] [INFO] [1792580691.447261042] [cbf_safety_filter]: tick=2600 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[INFO] [spawner-13]: process has finished cleanly [pid 295146]
+[cbf_safety_filter-9] [INFO] [1792580691.780419723] [cbf_safety_filter]: tick=2700 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580692.112559670] [cbf_safety_filter]: tick=2800 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[INFO] [pentagon_qddot_commander-15]: process started with pid [295188]
+[pentagon_qddot_commander-15] [INFO] [1792580692.444448185] [NS_1.pentagon_qddot_commander]: governor: full speed above 0.225 m, floor below 0.120 m (x d_safe=0.15 m)
+[pentagon_qddot_commander-15] [INFO] [1792580692.444664819] [NS_1.pentagon_qddot_commander]: Generating URDF …
+[cbf_safety_filter-9] [INFO] [1792580692.445821618] [cbf_safety_filter]: tick=2900 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[2900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [INFO] [1792580692.539349311] [NS_1.pentagon_qddot_commander]: Logging to /tmp/contract_capture_logs/pentagon_run_20261021_110452.csv  (effort topic: /NS_1/joint_states)
+[pentagon_qddot_commander-15] [INFO] [1792580692.539520963] [NS_1.pentagon_qddot_commander]: pentagon_qddot_commander
+[pentagon_qddot_commander-15]   topic    : /NS_1/qddot_nom
+[pentagon_qddot_commander-15]   js_topic : /NS_1/franka/joint_states
+[pentagon_qddot_commander-15]   center   : [0.4, 0.0, 0.45]  r=0.25 m  plane=yz
+[pentagon_qddot_commander-15]   start_xyz: [0.4, 0.25, 0.45]
+[pentagon_qddot_commander-15]   cycle_t  : 6.0 s  Kp=20.0 Kd=9.0
+[pentagon_qddot_commander-15]   timing   : linear  approach_time=2.5 s
+[pentagon_qddot_commander-15]   qddot_max: [6.0, 2.585, 3.5, 4.0, 17.0, 5.5, 17.0] rad/s²  (per-joint)
+[pentagon_qddot_commander-15] [INFO] [1792580692.549558011] [NS_1.pentagon_qddot_commander]: [WARMUP 0.0/3.0s]
+[cbf_safety_filter-9] [INFO] [1792580692.779036464] [cbf_safety_filter]: tick=3000 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580693.112923175] [cbf_safety_filter]: tick=3100 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580693.147227871] [cbf_safety_filter]: _qp_tick gap: 17.9 ms
+[trajectory_overlay_node-12] [WARN] [1792580693.396187037] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580693.459905544] [cbf_safety_filter]: tick=3200 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [INFO] [1792580693.559346851] [NS_1.pentagon_qddot_commander]: [WARMUP 1.0/3.0s]
+[cbf_safety_filter-9] [INFO] [1792580693.792271491] [cbf_safety_filter]: tick=3300 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580694.125821524] [cbf_safety_filter]: tick=3400 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580694.458977465] [cbf_safety_filter]: tick=3500 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [INFO] [1792580694.569486179] [NS_1.pentagon_qddot_commander]: [WARMUP 2.0/3.0s]
+[cbf_safety_filter-9] [INFO] [1792580694.792360204] [cbf_safety_filter]: tick=3600 n_c=0 solve=0.05ms qddot_nom_norm=0.00 qp_fails=0 fb=[3600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580695.125802978] [cbf_safety_filter]: tick=3700 n_c=0 solve=0.01ms qddot_nom_norm=0.00 qp_fails=0 fb=[3700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580695.460178584] [cbf_safety_filter]: tick=3800 n_c=0 solve=0.12ms qddot_nom_norm=0.00 qp_fails=0 fb=[3800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [INFO] [1792580695.539839122] [NS_1.pentagon_qddot_commander]: Trajectory start: approach 0.3069, 0.0000, 0.4869 → 0.4000, 0.2500, 0.4500  (S_a=0.417, timing=linear)
+[pentagon_qddot_commander-15] [INFO] [1792580695.569983614] [NS_1.pentagon_qddot_commander]: [APPROACH s=0.000 t=3.0s] p=[0.3069, 0.0000, 0.4869] p_d=[0.3069, 0.0000, 0.4869] |e|=0.0000 m  |qddot|=0.001 rad/s²
+[pentagon_qddot_commander-15]         |null|=0.000 max_sat=0.00 nsat=0 sync_p=0.0000 sync_v=0.0000 λ²=1.00e-04
+[cbf_safety_filter-9] [INFO] [1792580695.792465501] [cbf_safety_filter]: tick=3900 n_c=0 solve=0.01ms qddot_nom_norm=0.06 qp_fails=0 fb=[3900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580696.125624385] [cbf_safety_filter]: tick=4000 n_c=0 solve=0.01ms qddot_nom_norm=0.45 qp_fails=0 fb=[4000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580696.459738333] [cbf_safety_filter]: tick=4100 n_c=0 solve=0.07ms qddot_nom_norm=1.37 qp_fails=0 fb=[4100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [INFO] [1792580696.579879061] [NS_1.pentagon_qddot_commander]: [APPROACH s=0.018 t=4.0s] p=[0.3069, 0.0000, 0.4869] p_d=[0.3109, 0.0108, 0.4853] |e|=0.0117 m  |qddot|=1.892 rad/s²
+[pentagon_qddot_commander-15]         |null|=0.000 max_sat=0.29 nsat=0 sync_p=0.0009 sync_v=0.0126 λ²=1.00e-04
+[cbf_safety_filter-9] [INFO] [1792580696.792493203] [cbf_safety_filter]: tick=4200 n_c=0 solve=0.01ms qddot_nom_norm=2.91 qp_fails=0 fb=[4200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580697.125795704] [cbf_safety_filter]: tick=4300 n_c=0 solve=0.06ms qddot_nom_norm=4.85 qp_fails=0 fb=[4300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580697.459110873] [cbf_safety_filter]: tick=4400 n_c=0 solve=0.01ms qddot_nom_norm=6.88 qp_fails=0 fb=[4400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580697.579815787] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.086 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580697.792343040] [cbf_safety_filter]: tick=4500 n_c=0 solve=0.01ms qddot_nom_norm=7.27 qp_fails=0 fb=[4500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580698.125844303] [cbf_safety_filter]: tick=4600 n_c=0 solve=0.06ms qddot_nom_norm=7.27 qp_fails=0 fb=[4600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580698.396367700] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580698.459141669] [cbf_safety_filter]: tick=4700 n_c=0 solve=0.01ms qddot_nom_norm=7.27 qp_fails=0 fb=[4700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580698.579715601] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.193 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580698.792383653] [cbf_safety_filter]: tick=4800 n_c=0 solve=0.01ms qddot_nom_norm=7.27 qp_fails=0 fb=[4800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580699.125662460] [cbf_safety_filter]: tick=4900 n_c=0 solve=0.01ms qddot_nom_norm=7.27 qp_fails=0 fb=[4900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580699.459163144] [cbf_safety_filter]: tick=5000 n_c=0 solve=0.01ms qddot_nom_norm=7.00 qp_fails=0 fb=[5000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580699.589957202] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.258 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580699.792292352] [cbf_safety_filter]: tick=5100 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[5100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580700.125851749] [cbf_safety_filter]: tick=5200 n_c=0 solve=0.08ms qddot_nom_norm=7.08 qp_fails=0 fb=[5200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580700.459135039] [cbf_safety_filter]: tick=5300 n_c=0 solve=0.01ms qddot_nom_norm=7.69 qp_fails=0 fb=[5300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580700.589909827] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580700.792364968] [cbf_safety_filter]: tick=5400 n_c=0 solve=0.01ms qddot_nom_norm=8.22 qp_fails=0 fb=[5400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580701.125835316] [cbf_safety_filter]: tick=5500 n_c=0 solve=0.07ms qddot_nom_norm=7.69 qp_fails=0 fb=[5500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580701.459100158] [cbf_safety_filter]: tick=5600 n_c=0 solve=0.01ms qddot_nom_norm=7.69 qp_fails=0 fb=[5600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580701.599651768] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.246 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580701.795834982] [cbf_safety_filter]: tick=5700 n_c=0 solve=0.01ms qddot_nom_norm=8.72 qp_fails=0 fb=[5700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580702.129495627] [cbf_safety_filter]: tick=5800 n_c=0 solve=0.01ms qddot_nom_norm=8.23 qp_fails=0 fb=[5800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580702.462346622] [cbf_safety_filter]: tick=5900 n_c=0 solve=0.05ms qddot_nom_norm=7.11 qp_fails=0 fb=[5900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580702.609841948] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.281 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580702.795820734] [cbf_safety_filter]: tick=6000 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[6000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580703.128949172] [cbf_safety_filter]: tick=6100 n_c=0 solve=0.01ms qddot_nom_norm=7.50 qp_fails=0 fb=[6100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580703.396186356] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580703.462436618] [cbf_safety_filter]: tick=6200 n_c=0 solve=0.05ms qddot_nom_norm=8.47 qp_fails=0 fb=[6200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580703.619595281] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580703.795753888] [cbf_safety_filter]: tick=6300 n_c=0 solve=0.01ms qddot_nom_norm=7.88 qp_fails=0 fb=[6300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580704.129036204] [cbf_safety_filter]: tick=6400 n_c=0 solve=0.01ms qddot_nom_norm=7.15 qp_fails=0 fb=[6400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580704.462405140] [cbf_safety_filter]: tick=6500 n_c=0 solve=0.05ms qddot_nom_norm=7.39 qp_fails=0 fb=[6500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580704.620060304] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.290 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580704.795730645] [cbf_safety_filter]: tick=6600 n_c=0 solve=0.07ms qddot_nom_norm=7.98 qp_fails=0 fb=[6600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580705.129059330] [cbf_safety_filter]: tick=6700 n_c=0 solve=0.01ms qddot_nom_norm=7.48 qp_fails=0 fb=[6700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580705.462872432] [cbf_safety_filter]: tick=6800 n_c=0 solve=0.01ms qddot_nom_norm=6.99 qp_fails=0 fb=[6800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580705.629472604] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.257 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580705.795964412] [cbf_safety_filter]: tick=6900 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[6900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580706.130393560] [cbf_safety_filter]: tick=7000 n_c=0 solve=0.08ms qddot_nom_norm=7.08 qp_fails=0 fb=[7000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580706.462345874] [cbf_safety_filter]: tick=7100 n_c=0 solve=0.01ms qddot_nom_norm=7.71 qp_fails=0 fb=[7100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580706.629797110] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580706.795866831] [cbf_safety_filter]: tick=7200 n_c=0 solve=0.01ms qddot_nom_norm=8.22 qp_fails=0 fb=[7200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580707.129001238] [cbf_safety_filter]: tick=7300 n_c=0 solve=0.01ms qddot_nom_norm=7.69 qp_fails=0 fb=[7300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580707.462251868] [cbf_safety_filter]: tick=7400 n_c=0 solve=0.01ms qddot_nom_norm=7.71 qp_fails=0 fb=[7400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580707.639513183] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.247 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580707.796323021] [cbf_safety_filter]: tick=7500 n_c=0 solve=0.01ms qddot_nom_norm=8.72 qp_fails=0 fb=[7500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580708.129896947] [cbf_safety_filter]: tick=7600 n_c=0 solve=0.20ms qddot_nom_norm=8.23 qp_fails=0 fb=[7600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580708.396222907] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580708.462930135] [cbf_safety_filter]: tick=7700 n_c=0 solve=0.05ms qddot_nom_norm=7.11 qp_fails=0 fb=[7700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580708.640089334] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.281 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580708.795656263] [cbf_safety_filter]: tick=7800 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[7800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580709.129426732] [cbf_safety_filter]: tick=7900 n_c=0 solve=0.11ms qddot_nom_norm=7.50 qp_fails=0 fb=[7900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580709.462377055] [cbf_safety_filter]: tick=8000 n_c=0 solve=0.05ms qddot_nom_norm=8.47 qp_fails=0 fb=[8000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580709.639748167] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580709.795792494] [cbf_safety_filter]: tick=8100 n_c=0 solve=0.01ms qddot_nom_norm=7.88 qp_fails=0 fb=[8100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580710.129344714] [cbf_safety_filter]: tick=8200 n_c=0 solve=0.19ms qddot_nom_norm=7.15 qp_fails=0 fb=[8200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580710.462370882] [cbf_safety_filter]: tick=8300 n_c=0 solve=0.01ms qddot_nom_norm=7.39 qp_fails=0 fb=[8300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580710.649742800] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.290 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580710.795612012] [cbf_safety_filter]: tick=8400 n_c=0 solve=0.01ms qddot_nom_norm=7.98 qp_fails=0 fb=[8400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580711.129292918] [cbf_safety_filter]: tick=8500 n_c=0 solve=0.18ms qddot_nom_norm=7.48 qp_fails=0 fb=[8500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580711.462268475] [cbf_safety_filter]: tick=8600 n_c=0 solve=0.01ms qddot_nom_norm=6.99 qp_fails=0 fb=[8600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580711.650205367] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.256 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580711.795881445] [cbf_safety_filter]: tick=8700 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[8700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580712.129174490] [cbf_safety_filter]: tick=8800 n_c=0 solve=0.01ms qddot_nom_norm=7.08 qp_fails=0 fb=[8800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580712.462305350] [cbf_safety_filter]: tick=8900 n_c=0 solve=0.07ms qddot_nom_norm=7.71 qp_fails=0 fb=[8900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580712.659729694] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580712.795901488] [cbf_safety_filter]: tick=9000 n_c=0 solve=0.01ms qddot_nom_norm=8.22 qp_fails=0 fb=[9000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580713.129030319] [cbf_safety_filter]: tick=9100 n_c=0 solve=0.01ms qddot_nom_norm=7.69 qp_fails=0 fb=[9100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580713.396082460] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580713.462416586] [cbf_safety_filter]: tick=9200 n_c=0 solve=0.01ms qddot_nom_norm=7.71 qp_fails=0 fb=[9200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580713.659721847] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.248 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580713.795724470] [cbf_safety_filter]: tick=9300 n_c=0 solve=0.01ms qddot_nom_norm=8.72 qp_fails=0 fb=[9300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580714.128929888] [cbf_safety_filter]: tick=9400 n_c=0 solve=0.01ms qddot_nom_norm=8.23 qp_fails=0 fb=[9400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580714.462340361] [cbf_safety_filter]: tick=9500 n_c=0 solve=0.05ms qddot_nom_norm=7.11 qp_fails=0 fb=[9500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580714.659594145] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.282 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580714.795660094] [cbf_safety_filter]: tick=9600 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[9600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580715.129495542] [cbf_safety_filter]: tick=9700 n_c=0 solve=0.22ms qddot_nom_norm=7.50 qp_fails=0 fb=[9700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580715.465788581] [cbf_safety_filter]: tick=9800 n_c=0 solve=0.01ms qddot_nom_norm=8.47 qp_fails=0 fb=[9800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580715.669645899] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580715.800980107] [cbf_safety_filter]: tick=9900 n_c=0 solve=0.01ms qddot_nom_norm=7.88 qp_fails=0 fb=[9900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580716.132260195] [cbf_safety_filter]: tick=10000 n_c=0 solve=0.01ms qddot_nom_norm=7.14 qp_fails=0 fb=[10000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580716.465648722] [cbf_safety_filter]: tick=10100 n_c=0 solve=0.01ms qddot_nom_norm=7.39 qp_fails=0 fb=[10100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580716.679567915] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.289 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580716.799033487] [cbf_safety_filter]: tick=10200 n_c=0 solve=0.01ms qddot_nom_norm=7.98 qp_fails=0 fb=[10200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580717.132421362] [cbf_safety_filter]: tick=10300 n_c=0 solve=0.01ms qddot_nom_norm=7.46 qp_fails=0 fb=[10300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580717.465763905] [cbf_safety_filter]: tick=10400 n_c=0 solve=0.05ms qddot_nom_norm=6.99 qp_fails=0 fb=[10400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580717.689657957] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.255 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580717.799171812] [cbf_safety_filter]: tick=10500 n_c=0 solve=0.01ms qddot_nom_norm=6.83 qp_fails=0 fb=[10500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580718.132702479] [cbf_safety_filter]: tick=10600 n_c=0 solve=0.01ms qddot_nom_norm=7.10 qp_fails=0 fb=[10600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580718.396124664] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580718.465822895] [cbf_safety_filter]: tick=10700 n_c=0 solve=0.01ms qddot_nom_norm=7.71 qp_fails=0 fb=[10700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580718.699577462] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580718.800153450] [cbf_safety_filter]: tick=10800 n_c=0 solve=0.06ms qddot_nom_norm=8.22 qp_fails=0 fb=[10800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580719.132758204] [cbf_safety_filter]: tick=10900 n_c=0 solve=0.02ms qddot_nom_norm=7.67 qp_fails=0 fb=[10900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580719.242530045] [cbf_safety_filter]: _qp_tick gap: 13.2 ms
+[cbf_safety_filter-9] [INFO] [1792580719.476309750] [cbf_safety_filter]: tick=11000 n_c=0 solve=0.13ms qddot_nom_norm=7.73 qp_fails=0 fb=[11000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580719.700251742] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.249 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580719.830347352] [cbf_safety_filter]: tick=11100 n_c=0 solve=0.02ms qddot_nom_norm=8.79 qp_fails=0 fb=[11100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580719.903924004] [cbf_safety_filter]: _qp_tick gap: 10.5 ms
+[cbf_safety_filter-9] [INFO] [1792580720.174708122] [cbf_safety_filter]: tick=11200 n_c=0 solve=0.02ms qddot_nom_norm=8.04 qp_fails=0 fb=[11200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580720.465649470] [cbf_safety_filter]: _qp_tick gap: 16.1 ms
+[cbf_safety_filter-9] [WARN] [1792580720.516733764] [cbf_safety_filter]: _qp_tick gap: 16.6 ms
+[cbf_safety_filter-9] [INFO] [1792580720.536075364] [cbf_safety_filter]: tick=11300 n_c=0 solve=0.02ms qddot_nom_norm=6.97 qp_fails=0 fb=[11300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580720.710519121] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.284 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580720.872840293] [cbf_safety_filter]: tick=11400 n_c=0 solve=0.02ms qddot_nom_norm=6.92 qp_fails=0 fb=[11400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580721.131850863] [cbf_safety_filter]: _qp_tick gap: 12.8 ms
+[cbf_safety_filter-9] [INFO] [1792580721.216818467] [cbf_safety_filter]: tick=11500 n_c=0 solve=0.16ms qddot_nom_norm=7.78 qp_fails=0 fb=[11500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580721.247643849] [cbf_safety_filter]: _qp_tick gap: 27.3 ms
+[cbf_safety_filter-9] [WARN] [1792580721.313731561] [cbf_safety_filter]: _qp_tick gap: 10.6 ms
+[cbf_safety_filter-9] [WARN] [1792580721.337164685] [cbf_safety_filter]: _qp_tick gap: 17.4 ms
+[cbf_safety_filter-9] [INFO] [1792580721.601119028] [cbf_safety_filter]: tick=11600 n_c=0 solve=0.10ms qddot_nom_norm=8.52 qp_fails=0 fb=[11600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580721.699890799] [cbf_safety_filter]: _qp_tick gap: 10.8 ms
+[pentagon_qddot_commander-15] [WARN] [1792580721.711297674] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.302 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [WARN] [1792580721.796606359] [cbf_safety_filter]: _qp_tick gap: 16.7 ms
+[cbf_safety_filter-9] [INFO] [1792580721.958021136] [cbf_safety_filter]: tick=11700 n_c=0 solve=0.01ms qddot_nom_norm=7.42 qp_fails=0 fb=[11700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580722.296243268] [cbf_safety_filter]: tick=11800 n_c=0 solve=0.02ms qddot_nom_norm=7.14 qp_fails=0 fb=[11800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580722.632669953] [cbf_safety_filter]: tick=11900 n_c=0 solve=0.12ms qddot_nom_norm=7.84 qp_fails=0 fb=[11900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580722.681340542] [cbf_safety_filter]: _qp_tick gap: 10.1 ms
+[pentagon_qddot_commander-15] [WARN] [1792580722.720237991] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.288 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [WARN] [1792580722.733388557] [cbf_safety_filter]: _qp_tick gap: 30.9 ms
+[cbf_safety_filter-9] [INFO] [1792580723.000052756] [cbf_safety_filter]: tick=12000 n_c=0 solve=0.02ms qddot_nom_norm=7.70 qp_fails=0 fb=[12000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580723.343061069] [cbf_safety_filter]: tick=12100 n_c=0 solve=0.01ms qddot_nom_norm=7.14 qp_fails=0 fb=[12100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580723.396348560] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580723.681605434] [cbf_safety_filter]: tick=12200 n_c=0 solve=0.01ms qddot_nom_norm=6.84 qp_fails=0 fb=[12200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580723.730733053] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.253 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580724.012408529] [cbf_safety_filter]: tick=12300 n_c=0 solve=0.01ms qddot_nom_norm=6.95 qp_fails=0 fb=[12300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580724.349541837] [cbf_safety_filter]: tick=12400 n_c=0 solve=0.01ms qddot_nom_norm=7.46 qp_fails=0 fb=[12400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580724.682543253] [cbf_safety_filter]: tick=12500 n_c=0 solve=0.01ms qddot_nom_norm=8.11 qp_fails=0 fb=[12500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580724.739705061] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580725.015741985] [cbf_safety_filter]: tick=12600 n_c=0 solve=0.01ms qddot_nom_norm=7.93 qp_fails=0 fb=[12600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580725.349053235] [cbf_safety_filter]: tick=12700 n_c=0 solve=0.01ms qddot_nom_norm=7.56 qp_fails=0 fb=[12700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580725.682374662] [cbf_safety_filter]: tick=12800 n_c=0 solve=0.05ms qddot_nom_norm=8.31 qp_fails=0 fb=[12800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580725.739643953] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.250 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580726.015679593] [cbf_safety_filter]: tick=12900 n_c=0 solve=0.01ms qddot_nom_norm=8.66 qp_fails=0 fb=[12900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580726.348912673] [cbf_safety_filter]: tick=13000 n_c=0 solve=0.01ms qddot_nom_norm=7.44 qp_fails=0 fb=[13000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580726.682530093] [cbf_safety_filter]: tick=13100 n_c=0 solve=0.01ms qddot_nom_norm=6.81 qp_fails=0 fb=[13100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580726.749649226] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.285 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580727.015710486] [cbf_safety_filter]: tick=13200 n_c=0 solve=0.05ms qddot_nom_norm=7.20 qp_fails=0 fb=[13200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580727.349020972] [cbf_safety_filter]: tick=13300 n_c=0 solve=0.01ms qddot_nom_norm=8.22 qp_fails=0 fb=[13300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580727.682271927] [cbf_safety_filter]: tick=13400 n_c=0 solve=0.01ms qddot_nom_norm=8.27 qp_fails=0 fb=[13400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580727.759795005] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.302 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580728.015599563] [cbf_safety_filter]: tick=13500 n_c=0 solve=0.01ms qddot_nom_norm=7.30 qp_fails=0 fb=[13500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580728.349105655] [cbf_safety_filter]: tick=13600 n_c=0 solve=0.06ms qddot_nom_norm=7.18 qp_fails=0 fb=[13600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580728.396089605] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580728.682319316] [cbf_safety_filter]: tick=13700 n_c=0 solve=0.01ms qddot_nom_norm=7.99 qp_fails=0 fb=[13700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580728.769677118] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.286 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580729.015749504] [cbf_safety_filter]: tick=13800 n_c=0 solve=0.01ms qddot_nom_norm=7.67 qp_fails=0 fb=[13800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580729.348997507] [cbf_safety_filter]: tick=13900 n_c=0 solve=0.01ms qddot_nom_norm=7.14 qp_fails=0 fb=[13900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580729.682277328] [cbf_safety_filter]: tick=14000 n_c=0 solve=0.01ms qddot_nom_norm=6.84 qp_fails=0 fb=[14000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580729.769558613] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.252 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580730.015619720] [cbf_safety_filter]: tick=14100 n_c=0 solve=0.01ms qddot_nom_norm=6.95 qp_fails=0 fb=[14100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580730.349258601] [cbf_safety_filter]: tick=14200 n_c=0 solve=0.08ms qddot_nom_norm=7.46 qp_fails=0 fb=[14200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580730.682365040] [cbf_safety_filter]: tick=14300 n_c=0 solve=0.01ms qddot_nom_norm=8.11 qp_fails=0 fb=[14300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580730.769933730] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580731.015793683] [cbf_safety_filter]: tick=14400 n_c=0 solve=0.01ms qddot_nom_norm=7.93 qp_fails=0 fb=[14400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580731.348894162] [cbf_safety_filter]: tick=14500 n_c=0 solve=0.01ms qddot_nom_norm=7.56 qp_fails=0 fb=[14500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580731.682420667] [cbf_safety_filter]: tick=14600 n_c=0 solve=0.01ms qddot_nom_norm=8.31 qp_fails=0 fb=[14600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580731.779488327] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.251 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580732.015855531] [cbf_safety_filter]: tick=14700 n_c=0 solve=0.07ms qddot_nom_norm=8.66 qp_fails=0 fb=[14700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580732.348958882] [cbf_safety_filter]: tick=14800 n_c=0 solve=0.01ms qddot_nom_norm=7.44 qp_fails=0 fb=[14800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580732.682305567] [cbf_safety_filter]: tick=14900 n_c=0 solve=0.01ms qddot_nom_norm=6.81 qp_fails=0 fb=[14900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580732.779502776] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.286 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580733.015615413] [cbf_safety_filter]: tick=15000 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[15000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580733.348932278] [cbf_safety_filter]: tick=15100 n_c=0 solve=0.01ms qddot_nom_norm=8.22 qp_fails=0 fb=[15100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580733.396064409] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580733.685758001] [cbf_safety_filter]: tick=15200 n_c=0 solve=0.01ms qddot_nom_norm=8.27 qp_fails=0 fb=[15200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580733.779740963] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.302 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580734.018980968] [cbf_safety_filter]: tick=15300 n_c=0 solve=0.01ms qddot_nom_norm=7.30 qp_fails=0 fb=[15300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580734.352272181] [cbf_safety_filter]: tick=15400 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[15400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580734.685676402] [cbf_safety_filter]: tick=15500 n_c=0 solve=0.01ms qddot_nom_norm=7.99 qp_fails=0 fb=[15500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580734.789655293] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.286 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580735.020332282] [cbf_safety_filter]: tick=15600 n_c=0 solve=0.01ms qddot_nom_norm=7.67 qp_fails=0 fb=[15600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580735.352464469] [cbf_safety_filter]: tick=15700 n_c=0 solve=0.01ms qddot_nom_norm=7.12 qp_fails=0 fb=[15700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580735.685752281] [cbf_safety_filter]: tick=15800 n_c=0 solve=0.07ms qddot_nom_norm=6.84 qp_fails=0 fb=[15800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580735.789628951] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.251 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580736.020518392] [cbf_safety_filter]: tick=15900 n_c=0 solve=0.19ms qddot_nom_norm=6.95 qp_fails=0 fb=[15900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580736.352247541] [cbf_safety_filter]: tick=16000 n_c=0 solve=0.01ms qddot_nom_norm=7.48 qp_fails=0 fb=[16000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580736.685595360] [cbf_safety_filter]: tick=16100 n_c=0 solve=0.01ms qddot_nom_norm=8.11 qp_fails=0 fb=[16100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580736.789644110] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580737.020131706] [cbf_safety_filter]: tick=16200 n_c=0 solve=0.04ms qddot_nom_norm=7.93 qp_fails=0 fb=[16200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580737.352460527] [cbf_safety_filter]: tick=16300 n_c=0 solve=0.01ms qddot_nom_norm=7.57 qp_fails=0 fb=[16300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580737.685796755] [cbf_safety_filter]: tick=16400 n_c=0 solve=0.01ms qddot_nom_norm=8.31 qp_fails=0 fb=[16400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580737.799584416] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.252 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580738.020911900] [cbf_safety_filter]: tick=16500 n_c=0 solve=0.07ms qddot_nom_norm=8.66 qp_fails=0 fb=[16500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580738.352333372] [cbf_safety_filter]: tick=16600 n_c=0 solve=0.05ms qddot_nom_norm=7.41 qp_fails=0 fb=[16600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580738.396090532] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580738.685789328] [cbf_safety_filter]: tick=16700 n_c=0 solve=0.01ms qddot_nom_norm=6.81 qp_fails=0 fb=[16700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580738.809712585] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.287 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580739.018937976] [cbf_safety_filter]: tick=16800 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[16800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580739.352317909] [cbf_safety_filter]: tick=16900 n_c=0 solve=0.01ms qddot_nom_norm=8.26 qp_fails=0 fb=[16900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580739.685720393] [cbf_safety_filter]: tick=17000 n_c=0 solve=0.01ms qddot_nom_norm=8.27 qp_fails=0 fb=[17000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580739.809879425] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.302 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580740.019010706] [cbf_safety_filter]: tick=17100 n_c=0 solve=0.01ms qddot_nom_norm=7.30 qp_fails=0 fb=[17100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580740.352366977] [cbf_safety_filter]: tick=17200 n_c=0 solve=0.06ms qddot_nom_norm=7.20 qp_fails=0 fb=[17200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580740.685587500] [cbf_safety_filter]: tick=17300 n_c=0 solve=0.01ms qddot_nom_norm=7.99 qp_fails=0 fb=[17300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580740.819542615] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.285 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580741.020377200] [cbf_safety_filter]: tick=17400 n_c=0 solve=0.01ms qddot_nom_norm=7.67 qp_fails=0 fb=[17400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580741.352351780] [cbf_safety_filter]: tick=17500 n_c=0 solve=0.01ms qddot_nom_norm=7.12 qp_fails=0 fb=[17500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580741.685576174] [cbf_safety_filter]: tick=17600 n_c=0 solve=0.01ms qddot_nom_norm=6.84 qp_fails=0 fb=[17600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580741.819696769] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.250 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580742.019790321] [cbf_safety_filter]: tick=17700 n_c=0 solve=0.17ms qddot_nom_norm=6.95 qp_fails=0 fb=[17700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580742.352330014] [cbf_safety_filter]: tick=17800 n_c=0 solve=0.01ms qddot_nom_norm=7.48 qp_fails=0 fb=[17800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580742.685708096] [cbf_safety_filter]: tick=17900 n_c=0 solve=0.01ms qddot_nom_norm=8.11 qp_fails=0 fb=[17900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580742.829602934] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580743.019673758] [cbf_safety_filter]: tick=18000 n_c=0 solve=0.05ms qddot_nom_norm=7.93 qp_fails=0 fb=[18000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580743.352305910] [cbf_safety_filter]: tick=18100 n_c=0 solve=0.01ms qddot_nom_norm=7.57 qp_fails=0 fb=[18100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580743.396180040] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580743.685769851] [cbf_safety_filter]: tick=18200 n_c=0 solve=0.01ms qddot_nom_norm=8.31 qp_fails=0 fb=[18200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580743.829911166] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.253 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580744.019376016] [cbf_safety_filter]: tick=18300 n_c=0 solve=0.16ms qddot_nom_norm=8.66 qp_fails=0 fb=[18300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580744.352353821] [cbf_safety_filter]: tick=18400 n_c=0 solve=0.05ms qddot_nom_norm=7.41 qp_fails=0 fb=[18400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580744.685771325] [cbf_safety_filter]: tick=18500 n_c=0 solve=0.08ms qddot_nom_norm=6.81 qp_fails=0 fb=[18500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580744.839759244] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.287 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580745.019797423] [cbf_safety_filter]: tick=18600 n_c=0 solve=0.05ms qddot_nom_norm=7.20 qp_fails=0 fb=[18600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580745.352292004] [cbf_safety_filter]: tick=18700 n_c=0 solve=0.01ms qddot_nom_norm=8.26 qp_fails=0 fb=[18700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580745.685851488] [cbf_safety_filter]: tick=18800 n_c=0 solve=0.05ms qddot_nom_norm=8.27 qp_fails=0 fb=[18800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580745.849797635] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.302 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580746.020770427] [cbf_safety_filter]: tick=18900 n_c=0 solve=0.37ms qddot_nom_norm=7.30 qp_fails=0 fb=[18900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580746.352294173] [cbf_safety_filter]: tick=19000 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[19000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580746.685734816] [cbf_safety_filter]: tick=19100 n_c=0 solve=0.06ms qddot_nom_norm=7.99 qp_fails=0 fb=[19100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580746.859879507] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.284 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580747.019156024] [cbf_safety_filter]: tick=19200 n_c=0 solve=0.01ms qddot_nom_norm=7.67 qp_fails=0 fb=[19200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580747.353100312] [cbf_safety_filter]: tick=19300 n_c=0 solve=0.01ms qddot_nom_norm=7.12 qp_fails=0 fb=[19300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580747.685867687] [cbf_safety_filter]: tick=19400 n_c=0 solve=0.01ms qddot_nom_norm=6.84 qp_fails=0 fb=[19400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580747.869550131] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.249 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580748.019750615] [cbf_safety_filter]: tick=19500 n_c=0 solve=0.06ms qddot_nom_norm=6.95 qp_fails=0 fb=[19500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580748.352421818] [cbf_safety_filter]: tick=19600 n_c=0 solve=0.01ms qddot_nom_norm=7.48 qp_fails=0 fb=[19600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580748.396964885] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580748.686757150] [cbf_safety_filter]: tick=19700 n_c=0 solve=0.06ms qddot_nom_norm=8.11 qp_fails=0 fb=[19700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580748.869628282] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580749.019204793] [cbf_safety_filter]: tick=19800 n_c=0 solve=0.01ms qddot_nom_norm=7.93 qp_fails=0 fb=[19800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580749.352366677] [cbf_safety_filter]: tick=19900 n_c=0 solve=0.07ms qddot_nom_norm=7.57 qp_fails=0 fb=[19900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580749.685780827] [cbf_safety_filter]: tick=20000 n_c=0 solve=0.07ms qddot_nom_norm=8.31 qp_fails=0 fb=[20000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580749.879858703] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.255 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580750.019325448] [cbf_safety_filter]: tick=20100 n_c=0 solve=0.07ms qddot_nom_norm=8.66 qp_fails=0 fb=[20100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580750.353502996] [cbf_safety_filter]: tick=20200 n_c=0 solve=0.18ms qddot_nom_norm=7.41 qp_fails=0 fb=[20200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580750.685801374] [cbf_safety_filter]: tick=20300 n_c=0 solve=0.05ms qddot_nom_norm=6.81 qp_fails=0 fb=[20300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580750.889483338] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.289 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580751.019370830] [cbf_safety_filter]: tick=20400 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[20400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580751.352416263] [cbf_safety_filter]: tick=20500 n_c=0 solve=0.01ms qddot_nom_norm=8.26 qp_fails=0 fb=[20500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580751.685738979] [cbf_safety_filter]: tick=20600 n_c=0 solve=0.01ms qddot_nom_norm=8.27 qp_fails=0 fb=[20600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580751.889594232] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580752.019278616] [cbf_safety_filter]: tick=20700 n_c=0 solve=0.16ms qddot_nom_norm=7.30 qp_fails=0 fb=[20700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580752.352231479] [cbf_safety_filter]: tick=20800 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[20800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580752.685725905] [cbf_safety_filter]: tick=20900 n_c=0 solve=0.01ms qddot_nom_norm=7.99 qp_fails=0 fb=[20900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580752.889690554] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.283 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580753.019056459] [cbf_safety_filter]: tick=21000 n_c=0 solve=0.01ms qddot_nom_norm=7.67 qp_fails=0 fb=[21000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580753.352482662] [cbf_safety_filter]: tick=21100 n_c=0 solve=0.08ms qddot_nom_norm=7.12 qp_fails=0 fb=[21100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580753.396210200] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580753.685751003] [cbf_safety_filter]: tick=21200 n_c=0 solve=0.07ms qddot_nom_norm=6.84 qp_fails=0 fb=[21200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580753.899753024] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.248 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580754.019350773] [cbf_safety_filter]: tick=21300 n_c=0 solve=0.07ms qddot_nom_norm=6.95 qp_fails=0 fb=[21300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580754.352499065] [cbf_safety_filter]: tick=21400 n_c=0 solve=0.05ms qddot_nom_norm=7.48 qp_fails=0 fb=[21400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580754.685737436] [cbf_safety_filter]: tick=21500 n_c=0 solve=0.01ms qddot_nom_norm=8.11 qp_fails=0 fb=[21500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580754.909533138] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580755.019055936] [cbf_safety_filter]: tick=21600 n_c=0 solve=0.01ms qddot_nom_norm=7.93 qp_fails=0 fb=[21600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580755.352319120] [cbf_safety_filter]: tick=21700 n_c=0 solve=0.01ms qddot_nom_norm=7.57 qp_fails=0 fb=[21700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580755.685862492] [cbf_safety_filter]: tick=21800 n_c=0 solve=0.01ms qddot_nom_norm=8.31 qp_fails=0 fb=[21800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580755.919682026] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.256 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580756.020073117] [cbf_safety_filter]: tick=21900 n_c=0 solve=0.04ms qddot_nom_norm=8.66 qp_fails=0 fb=[21900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580756.352466419] [cbf_safety_filter]: tick=22000 n_c=0 solve=0.05ms qddot_nom_norm=7.41 qp_fails=0 fb=[22000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580756.685649721] [cbf_safety_filter]: tick=22100 n_c=0 solve=0.01ms qddot_nom_norm=6.81 qp_fails=0 fb=[22100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580756.929554398] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.290 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580757.019062430] [cbf_safety_filter]: tick=22200 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[22200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580757.355725426] [cbf_safety_filter]: tick=22300 n_c=0 solve=0.01ms qddot_nom_norm=8.26 qp_fails=0 fb=[22300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580757.689633491] [cbf_safety_filter]: tick=22400 n_c=0 solve=0.01ms qddot_nom_norm=8.27 qp_fails=0 fb=[22400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580757.939768249] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580758.022401475] [cbf_safety_filter]: tick=22500 n_c=0 solve=0.01ms qddot_nom_norm=7.28 qp_fails=0 fb=[22500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580758.355708671] [cbf_safety_filter]: tick=22600 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[22600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580758.396329834] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580758.689413311] [cbf_safety_filter]: tick=22700 n_c=0 solve=0.05ms qddot_nom_norm=7.99 qp_fails=0 fb=[22700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580758.940627640] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.281 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580759.025003524] [cbf_safety_filter]: tick=22800 n_c=0 solve=0.01ms qddot_nom_norm=7.65 qp_fails=0 fb=[22800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580759.366415047] [cbf_safety_filter]: tick=22900 n_c=0 solve=0.02ms qddot_nom_norm=7.11 qp_fails=0 fb=[22900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580759.703921021] [cbf_safety_filter]: tick=23000 n_c=0 solve=0.02ms qddot_nom_norm=6.83 qp_fails=0 fb=[23000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580759.949793341] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.246 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580760.053115971] [cbf_safety_filter]: tick=23100 n_c=0 solve=0.12ms qddot_nom_norm=6.99 qp_fails=0 fb=[23100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580760.389881430] [cbf_safety_filter]: tick=23200 n_c=0 solve=0.02ms qddot_nom_norm=7.54 qp_fails=0 fb=[23200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580760.703451163] [cbf_safety_filter]: _qp_tick gap: 13.8 ms
+[cbf_safety_filter-9] [INFO] [1792580760.733212228] [cbf_safety_filter]: tick=23300 n_c=0 solve=0.02ms qddot_nom_norm=8.16 qp_fails=0 fb=[23300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580760.912915659] [cbf_safety_filter]: _qp_tick gap: 13.5 ms
+[pentagon_qddot_commander-15] [WARN] [1792580760.961789719] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [WARN] [1792580761.023206563] [cbf_safety_filter]: _qp_tick gap: 13.7 ms
+[cbf_safety_filter-9] [INFO] [1792580761.091887120] [cbf_safety_filter]: tick=23400 n_c=0 solve=0.02ms qddot_nom_norm=7.76 qp_fails=0 fb=[23400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580761.426387013] [cbf_safety_filter]: tick=23500 n_c=0 solve=0.02ms qddot_nom_norm=7.64 qp_fails=0 fb=[23500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580761.670981822] [cbf_safety_filter]: _qp_tick gap: 11.5 ms
+[cbf_safety_filter-9] [INFO] [1792580761.776677241] [cbf_safety_filter]: tick=23600 n_c=0 solve=0.01ms qddot_nom_norm=8.64 qp_fails=0 fb=[23600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580761.960111147] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.258 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [WARN] [1792580762.084715653] [cbf_safety_filter]: _qp_tick gap: 14.6 ms
+[cbf_safety_filter-9] [INFO] [1792580762.126420098] [cbf_safety_filter]: tick=23700 n_c=0 solve=0.02ms qddot_nom_norm=8.23 qp_fails=0 fb=[23700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580762.143626922] [cbf_safety_filter]: _qp_tick gap: 13.8 ms
+[cbf_safety_filter-9] [WARN] [1792580762.370146089] [cbf_safety_filter]: _qp_tick gap: 11.0 ms
+[cbf_safety_filter-9] [WARN] [1792580762.491326899] [cbf_safety_filter]: _qp_tick gap: 30.6 ms
+[cbf_safety_filter-9] [INFO] [1792580762.516342763] [cbf_safety_filter]: tick=23800 n_c=0 solve=0.02ms qddot_nom_norm=7.00 qp_fails=0 fb=[23800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580762.850031555] [cbf_safety_filter]: tick=23900 n_c=0 solve=0.02ms qddot_nom_norm=6.88 qp_fails=0 fb=[23900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [WARN] [1792580762.970233630] [cbf_safety_filter]: _qp_tick gap: 11.0 ms
+[pentagon_qddot_commander-15] [WARN] [1792580762.970240011] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.291 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580763.189574034] [cbf_safety_filter]: tick=24000 n_c=0 solve=0.02ms qddot_nom_norm=7.69 qp_fails=0 fb=[24000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580763.396200882] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580763.525643578] [cbf_safety_filter]: tick=24100 n_c=0 solve=0.01ms qddot_nom_norm=8.50 qp_fails=0 fb=[24100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580763.861029765] [cbf_safety_filter]: tick=24200 n_c=0 solve=0.06ms qddot_nom_norm=7.69 qp_fails=0 fb=[24200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580763.970172429] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580764.192569987] [cbf_safety_filter]: tick=24300 n_c=0 solve=0.06ms qddot_nom_norm=7.11 qp_fails=0 fb=[24300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580764.525643143] [cbf_safety_filter]: tick=24400 n_c=0 solve=0.01ms qddot_nom_norm=7.53 qp_fails=0 fb=[24400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580764.859024033] [cbf_safety_filter]: tick=24500 n_c=0 solve=0.01ms qddot_nom_norm=7.95 qp_fails=0 fb=[24500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580764.979446245] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.280 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580765.192251267] [cbf_safety_filter]: tick=24600 n_c=0 solve=0.01ms qddot_nom_norm=7.36 qp_fails=0 fb=[24600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580765.525586466] [cbf_safety_filter]: tick=24700 n_c=0 solve=0.01ms qddot_nom_norm=6.93 qp_fails=0 fb=[24700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580765.858955932] [cbf_safety_filter]: tick=24800 n_c=0 solve=0.01ms qddot_nom_norm=6.84 qp_fails=0 fb=[24800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580765.979857734] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.245 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580766.192385259] [cbf_safety_filter]: tick=24900 n_c=0 solve=0.02ms qddot_nom_norm=7.19 qp_fails=0 fb=[24900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580766.525835539] [cbf_safety_filter]: tick=25000 n_c=0 solve=0.01ms qddot_nom_norm=7.84 qp_fails=0 fb=[25000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580766.860440680] [cbf_safety_filter]: tick=25100 n_c=0 solve=0.01ms qddot_nom_norm=8.28 qp_fails=0 fb=[25100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580766.979751747] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.233 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580767.192314731] [cbf_safety_filter]: tick=25200 n_c=0 solve=0.05ms qddot_nom_norm=7.59 qp_fails=0 fb=[25200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580767.525681909] [cbf_safety_filter]: tick=25300 n_c=0 solve=0.02ms qddot_nom_norm=7.84 qp_fails=0 fb=[25300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580767.859518394] [cbf_safety_filter]: tick=25400 n_c=0 solve=0.07ms qddot_nom_norm=8.83 qp_fails=0 fb=[25400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580767.979727675] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.258 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580768.192222989] [cbf_safety_filter]: tick=25500 n_c=0 solve=0.01ms qddot_nom_norm=7.96 qp_fails=0 fb=[25500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580768.396098428] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580768.525545459] [cbf_safety_filter]: tick=25600 n_c=0 solve=0.01ms qddot_nom_norm=6.99 qp_fails=0 fb=[25600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580768.859605222] [cbf_safety_filter]: tick=25700 n_c=0 solve=0.07ms qddot_nom_norm=6.89 qp_fails=0 fb=[25700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580768.989635959] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.291 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [WARN] [1792580769.162579285] [cbf_safety_filter]: _qp_tick gap: 10.7 ms
+[cbf_safety_filter-9] [INFO] [1792580769.200730838] [cbf_safety_filter]: tick=25800 n_c=0 solve=0.07ms qddot_nom_norm=7.72 qp_fails=0 fb=[25800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580769.532217385] [cbf_safety_filter]: tick=25900 n_c=0 solve=0.01ms qddot_nom_norm=8.51 qp_fails=0 fb=[25900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580769.869115160] [cbf_safety_filter]: tick=26000 n_c=0 solve=0.01ms qddot_nom_norm=7.66 qp_fails=0 fb=[26000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580769.999885153] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580770.202440641] [cbf_safety_filter]: tick=26100 n_c=0 solve=0.01ms qddot_nom_norm=7.11 qp_fails=0 fb=[26100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580770.535640991] [cbf_safety_filter]: tick=26200 n_c=0 solve=0.01ms qddot_nom_norm=7.55 qp_fails=0 fb=[26200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580770.870042065] [cbf_safety_filter]: tick=26300 n_c=0 solve=0.06ms qddot_nom_norm=7.94 qp_fails=0 fb=[26300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580770.999667441] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.279 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580771.202248780] [cbf_safety_filter]: tick=26400 n_c=0 solve=0.01ms qddot_nom_norm=7.35 qp_fails=0 fb=[26400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580771.535719606] [cbf_safety_filter]: tick=26500 n_c=0 solve=0.05ms qddot_nom_norm=6.92 qp_fails=0 fb=[26500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580771.868915381] [cbf_safety_filter]: tick=26600 n_c=0 solve=0.01ms qddot_nom_norm=6.84 qp_fails=0 fb=[26600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580771.999564913] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.245 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580772.202270860] [cbf_safety_filter]: tick=26700 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[26700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580772.535740882] [cbf_safety_filter]: tick=26800 n_c=0 solve=0.01ms qddot_nom_norm=7.86 qp_fails=0 fb=[26800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580772.868939633] [cbf_safety_filter]: tick=26900 n_c=0 solve=0.01ms qddot_nom_norm=8.29 qp_fails=0 fb=[26900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580773.009516388] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.234 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580773.202453903] [cbf_safety_filter]: tick=27000 n_c=0 solve=0.01ms qddot_nom_norm=7.58 qp_fails=0 fb=[27000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580773.396034583] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580773.535707756] [cbf_safety_filter]: tick=27100 n_c=0 solve=0.01ms qddot_nom_norm=7.86 qp_fails=0 fb=[27100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580773.869408265] [cbf_safety_filter]: tick=27200 n_c=0 solve=0.01ms qddot_nom_norm=8.84 qp_fails=0 fb=[27200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580774.009906596] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.259 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580774.202356701] [cbf_safety_filter]: tick=27300 n_c=0 solve=0.06ms qddot_nom_norm=7.93 qp_fails=0 fb=[27300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580774.535711784] [cbf_safety_filter]: tick=27400 n_c=0 solve=0.01ms qddot_nom_norm=6.97 qp_fails=0 fb=[27400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580774.869313789] [cbf_safety_filter]: tick=27500 n_c=0 solve=0.05ms qddot_nom_norm=6.91 qp_fails=0 fb=[27500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580775.019526379] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.292 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580775.202306307] [cbf_safety_filter]: tick=27600 n_c=0 solve=0.01ms qddot_nom_norm=7.75 qp_fails=0 fb=[27600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580775.535783462] [cbf_safety_filter]: tick=27700 n_c=0 solve=0.01ms qddot_nom_norm=8.51 qp_fails=0 fb=[27700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580775.868990841] [cbf_safety_filter]: tick=27800 n_c=0 solve=0.05ms qddot_nom_norm=7.66 qp_fails=0 fb=[27800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580776.019923102] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.301 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580776.202409516] [cbf_safety_filter]: tick=27900 n_c=0 solve=0.01ms qddot_nom_norm=7.11 qp_fails=0 fb=[27900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580776.535575400] [cbf_safety_filter]: tick=28000 n_c=0 solve=0.01ms qddot_nom_norm=7.55 qp_fails=0 fb=[28000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580776.869120755] [cbf_safety_filter]: tick=28100 n_c=0 solve=0.10ms qddot_nom_norm=7.94 qp_fails=0 fb=[28100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580777.029812172] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.278 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580777.202364731] [cbf_safety_filter]: tick=28200 n_c=0 solve=0.05ms qddot_nom_norm=7.35 qp_fails=0 fb=[28200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580777.535837344] [cbf_safety_filter]: tick=28300 n_c=0 solve=0.06ms qddot_nom_norm=6.92 qp_fails=0 fb=[28300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580777.870708084] [cbf_safety_filter]: tick=28400 n_c=0 solve=0.22ms qddot_nom_norm=6.84 qp_fails=0 fb=[28400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580778.039598531] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.244 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580778.202485717] [cbf_safety_filter]: tick=28500 n_c=0 solve=0.06ms qddot_nom_norm=7.20 qp_fails=0 fb=[28500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580778.396172394] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580778.535641227] [cbf_safety_filter]: tick=28600 n_c=0 solve=0.01ms qddot_nom_norm=7.86 qp_fails=0 fb=[28600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580778.868870399] [cbf_safety_filter]: tick=28700 n_c=0 solve=0.01ms qddot_nom_norm=8.29 qp_fails=0 fb=[28700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580779.039764084] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.234 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580779.202411205] [cbf_safety_filter]: tick=28800 n_c=0 solve=0.01ms qddot_nom_norm=7.58 qp_fails=0 fb=[28800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580779.535759270] [cbf_safety_filter]: tick=28900 n_c=0 solve=0.01ms qddot_nom_norm=7.86 qp_fails=0 fb=[28900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580779.868923800] [cbf_safety_filter]: tick=29000 n_c=0 solve=0.01ms qddot_nom_norm=8.84 qp_fails=0 fb=[29000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580780.049589378] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.261 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580780.202203927] [cbf_safety_filter]: tick=29100 n_c=0 solve=0.01ms qddot_nom_norm=7.93 qp_fails=0 fb=[29100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580780.535580634] [cbf_safety_filter]: tick=29200 n_c=0 solve=0.01ms qddot_nom_norm=6.97 qp_fails=0 fb=[29200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580780.868992721] [cbf_safety_filter]: tick=29300 n_c=0 solve=0.01ms qddot_nom_norm=6.91 qp_fails=0 fb=[29300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580781.049971173] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.293 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580781.202301934] [cbf_safety_filter]: tick=29400 n_c=0 solve=0.01ms qddot_nom_norm=7.75 qp_fails=0 fb=[29400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580781.535626275] [cbf_safety_filter]: tick=29500 n_c=0 solve=0.01ms qddot_nom_norm=8.51 qp_fails=0 fb=[29500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580781.869466761] [cbf_safety_filter]: tick=29600 n_c=0 solve=0.35ms qddot_nom_norm=7.66 qp_fails=0 fb=[29600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580782.059544456] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.300 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580782.202521799] [cbf_safety_filter]: tick=29700 n_c=0 solve=0.01ms qddot_nom_norm=7.11 qp_fails=0 fb=[29700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580782.535927658] [cbf_safety_filter]: tick=29800 n_c=0 solve=0.07ms qddot_nom_norm=7.55 qp_fails=0 fb=[29800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580782.870828259] [cbf_safety_filter]: tick=29900 n_c=0 solve=0.19ms qddot_nom_norm=7.94 qp_fails=0 fb=[29900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580783.069732405] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.277 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580783.202458849] [cbf_safety_filter]: tick=30000 n_c=0 solve=0.01ms qddot_nom_norm=7.35 qp_fails=0 fb=[30000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580783.396149542] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[cbf_safety_filter-9] [INFO] [1792580783.535784915] [cbf_safety_filter]: tick=30100 n_c=0 solve=0.01ms qddot_nom_norm=6.92 qp_fails=0 fb=[30100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580783.869757961] [cbf_safety_filter]: tick=30200 n_c=0 solve=0.16ms qddot_nom_norm=6.84 qp_fails=0 fb=[30200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580784.069918051] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.243 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580784.202288717] [cbf_safety_filter]: tick=30300 n_c=0 solve=0.01ms qddot_nom_norm=7.20 qp_fails=0 fb=[30300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580784.535715381] [cbf_safety_filter]: tick=30400 n_c=0 solve=0.05ms qddot_nom_norm=7.86 qp_fails=0 fb=[30400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580784.869437287] [cbf_safety_filter]: tick=30500 n_c=0 solve=0.23ms qddot_nom_norm=8.29 qp_fails=0 fb=[30500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580785.079726383] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.234 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580785.202571431] [cbf_safety_filter]: tick=30600 n_c=0 solve=0.01ms qddot_nom_norm=7.58 qp_fails=0 fb=[30600, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580785.535769400] [cbf_safety_filter]: tick=30700 n_c=0 solve=0.01ms qddot_nom_norm=7.86 qp_fails=0 fb=[30700, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580785.869748558] [cbf_safety_filter]: tick=30800 n_c=0 solve=0.01ms qddot_nom_norm=8.84 qp_fails=0 fb=[30800, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580786.089544372] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.262 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580786.202395631] [cbf_safety_filter]: tick=30900 n_c=0 solve=0.05ms qddot_nom_norm=7.93 qp_fails=0 fb=[30900, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580786.535690798] [cbf_safety_filter]: tick=31000 n_c=0 solve=0.01ms qddot_nom_norm=6.97 qp_fails=0 fb=[31000, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580786.868955268] [cbf_safety_filter]: tick=31100 n_c=0 solve=0.01ms qddot_nom_norm=6.91 qp_fails=0 fb=[31100, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580787.099681943] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.294 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580787.202429007] [cbf_safety_filter]: tick=31200 n_c=0 solve=0.05ms qddot_nom_norm=7.75 qp_fails=0 fb=[31200, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580787.535722347] [cbf_safety_filter]: tick=31300 n_c=0 solve=0.01ms qddot_nom_norm=8.51 qp_fails=0 fb=[31300, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[cbf_safety_filter-9] [INFO] [1792580787.870003094] [cbf_safety_filter]: tick=31400 n_c=0 solve=0.01ms qddot_nom_norm=7.66 qp_fails=0 fb=[31400, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[pentagon_qddot_commander-15] [WARN] [1792580788.099609937] [NS_1.pentagon_qddot_commander]: HARD reset: EE error 0.300 m > 0.05 m with no obstacle nearby
+[cbf_safety_filter-9] [INFO] [1792580788.202263204] [cbf_safety_filter]: tick=31500 n_c=0 solve=0.01ms qddot_nom_norm=7.11 qp_fails=0 fb=[31500, 0, 0] lock=0.00 iter=- status=- h_norm=-
+[trajectory_overlay_node-12] [WARN] [1792580788.396265107] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[ros2_control_node-2] [INFO] [1792580788.517583802] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[ros2_control_node-2] [INFO] [1792580788.517675649] [NS_1.controller_manager]: Shutdown request received....
+[ros2_control_node-2] [INFO] [1792580788.517710612] [NS_1.controller_manager]: Shutting down all controllers in the controller manager.
+[ros2_control_node-2] [INFO] [1792580788.517721590] [NS_1.controller_manager]: Deactivating controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1792580788.517743751] [NS_1.controller_manager]: Shutting down controller 'joint_state_broadcaster'
+[ros2_control_node-2] [INFO] [1792580788.517757291] [NS_1.controller_manager]: Deactivating controller 'rt_torque_controller'
+[ros2_control_node-2] [INFO] [1792580788.517765851] [NS_1.rt_torque_controller]: RtTorqueController DEACTIVATED → zero effort.
+[ros2_control_node-2] [INFO] [1792580788.517778393] [NS_1.controller_manager]: Shutting down controller 'rt_torque_controller'
+[ros2_control_node-2] [INFO] [1792580788.517791152] [resource_manager]: 'deactivate' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1792580788.517794914] [resource_manager]: Successful 'deactivate' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1792580788.517796865] [resource_manager]: 'shutdown' hardware 'FrankaHardwareInterface' 
+[ros2_control_node-2] [INFO] [1792580788.517799038] [resource_manager]: Successful 'shutdown' of hardware 'FrankaHardwareInterface'
+[ros2_control_node-2] [INFO] [1792580788.517800707] [NS_1.controller_manager]: Shutting down the controller manager.
+[move_group-5] [INFO] [1792580788.517590928] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[robot_state_publisher-1] [INFO] [1792580788.517620868] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[static_transform_publisher-6] [INFO] [1792580788.517602346] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[real_time_distance-8] Traceback (most recent call last):
+[real_time_distance-8]   File "/ros2_ws/install/franka_experiments/lib/franka_experiments/real_time_distance", line 33, in <module>
+[real_time_distance-8]     sys.exit(load_entry_point('franka-experiments', 'console_scripts', 'real_time_distance')())
+[real_time_distance-8]   File "/ros2_ws/build/franka_experiments/franka_experiments/nodes/real_time_distance.py", line 1127, in main
+[real_time_distance-8]     rclpy.spin(node)
+[real_time_distance-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+[joint_state_publisher-3] Traceback (most recent call last):
+[joint_state_publisher-3]   File "/opt/ros/humble/lib/joint_state_publisher/joint_state_publisher", line 33, in <module>
+[joint_state_publisher-3]     sys.exit(load_entry_point('joint-state-publisher==2.4.0', 'console_scripts', 'joint_state_publisher')())
+[joint_state_publisher-3]   File "/opt/ros/humble/lib/python3.10/site-packages/joint_state_publisher/joint_state_publisher.py", line 466, in main
+[joint_state_publisher-3]     rclpy.spin(jsp)
+[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+[joint_state_publisher-3]     executor.spin_once()
+[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 812, in spin_once
+[joint_state_publisher-3]     self._spin_once_impl(timeout_sec)
+[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 801, in _spin_once_impl
+[real_time_distance-8]     executor.spin_once()
+[real_time_distance-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 812, in spin_once
+[real_time_distance-8]     self._spin_once_impl(timeout_sec)
+[real_time_distance-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 801, in _spin_once_impl
+[joint_state_publisher-3]     handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 784, in wait_for_ready_callbacks
+[joint_state_publisher-3]     return next(self._cb_iter)
+[joint_state_publisher-3]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 657, in _wait_for_ready_callbacks
+[joint_state_publisher-3]     wait_set = _rclpy.WaitSet(
+[joint_state_publisher-3] rclpy._rclpy_pybind11.RCLError: failed to initialize wait set: the given context is not valid, either rcl_init() was not called or rcl_shutdown() was called., at ./src/rcl/wait.c:130
+[real_time_distance-8]     handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+[real_time_distance-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 784, in wait_for_ready_callbacks
+[real_time_distance-8]     return next(self._cb_iter)
+[real_time_distance-8]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 657, in _wait_for_ready_callbacks
+[real_time_distance-8]     wait_set = _rclpy.WaitSet(
+[real_time_distance-8] rclpy._rclpy_pybind11.RCLError: failed to initialize wait set: the given context is not valid, either rcl_init() was not called or rcl_shutdown() was called., at ./src/rcl/wait.c:130
+[cbf_safety_filter-9] Traceback (most recent call last):
+[cbf_safety_filter-9]   File "/ros2_ws/install/franka_experiments/lib/franka_experiments/cbf_safety_filter", line 33, in <module>
+[cbf_safety_filter-9]     sys.exit(load_entry_point('franka-experiments', 'console_scripts', 'cbf_safety_filter')())
+[cbf_safety_filter-9]   File "/ros2_ws/build/franka_experiments/franka_experiments/nodes/cbf_safety_filter.py", line 1650, in main
+[cbf_safety_filter-9]     rclpy.shutdown()
+[cbf_safety_filter-9]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 130, in shutdown
+[cbf_safety_filter-9]     _shutdown(context=context)
+[cbf_safety_filter-9]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/utilities.py", line 58, in shutdown
+[cbf_safety_filter-9]     return context.shutdown()
+[cbf_safety_filter-9]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/context.py", line 102, in shutdown
+[cbf_safety_filter-9]     self.__context.shutdown()
+[cbf_safety_filter-9] rclpy._rclpy_pybind11.RCLError: failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
+[experiment_logger-11] [INFO] [1792580788.530770594] [experiment_logger]: Generating plots in /tmp/contract_capture_logs/20261021_110442_bag_02_dynamic_test
+[experiment_logger-11] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[move_group-5] [INFO] [1792580788.533512189] [moveit.ros_planning_interface.moveit_cpp]: Deleting MoveItCpp
+[move_group-5] [INFO] [1792580788.533921324] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Stopped publishing maintained planning scene.
+[move_group-5] [INFO] [1792580788.534352905] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Stopping world geometry monitor
+[move_group-5] [INFO] [1792580788.534543725] [moveit_ros.planning_scene_monitor.planning_scene_monitor]: Stopping planning scene monitor
+[move_group-5] Warning: class_loader.ClassLoader: SEVERE WARNING!!! Attempting to unload library while objects created by this loader exist in the heap! You should delete your objects before attempting to unload the library or destroying the ClassLoader. The library will NOT be unloaded.
+[move_group-5]          at line 127 in ./src/class_loader.cpp
+[move_group-5] Stack trace (most recent call last):
+[move_group-5] #11   Object "", at 0xffffffffffffffff, in 
+[move_group-5] #10   Object "/opt/ros/humble/lib/moveit_ros_move_group/move_group", at 0x5eeaa9eb5704, in 
+[move_group-5] #9    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x719f7dab7e3f, in __libc_start_main
+[move_group-5] #8    Object "/usr/lib/x86_64-linux-gnu/libc.so.6", at 0x719f7dab7d8f, in 
+[move_group-5] #7    Object "/opt/ros/humble/lib/moveit_ros_move_group/move_group", at 0x5eeaa9eb4681, in 
+[move_group-5] #6    Object "/opt/ros/humble/lib/moveit_ros_move_group/move_group", at 0x5eeaa9eb66e9, in 
+[move_group-5] #5    Object "/opt/ros/humble/lib/librclcpp.so", at 0x719f7e0818fe, in rclcpp::Node::~Node()
+[move_group-5] #4    Object "/opt/ros/humble/lib/librclcpp.so", at 0x719f7e05be19, in 
+[move_group-5] #3    Object "/opt/ros/humble/lib/librclcpp.so", at 0x719f7e08aef9, in 
+[move_group-5] #2    Object "/opt/ros/humble/lib/librclcpp.so", at 0x719f7e08ae40, in rclcpp::node_interfaces::NodeBase::~NodeBase()
+[move_group-5] #1    Object "/opt/ros/humble/lib/librclcpp.so", at 0x719f7e05be19, in 
+[move_group-5] #0    Object "/opt/ros/humble/lib/librclcpp.so", at 0x719f7e060d51, in rclcpp::CallbackGroup::~CallbackGroup()
+[move_group-5] Segmentation fault (Address not mapped to object [0x719f74340410])
+[INFO] [robot_state_publisher-1]: process has finished cleanly [pid 294846]
+[INFO] [static_transform_publisher-6]: process has finished cleanly [pid 294996]
+[ERROR] [move_group-5]: process has died [pid 294854, exit code -11, cmd '/opt/ros/humble/lib/moveit_ros_move_group/move_group --ros-args -r __ns:=/NS_1 --params-file /tmp/launch_params_5z_u1hfs --params-file /tmp/launch_params_g6bldrr8 --params-file /tmp/launch_params_abc947is'].
+[ERROR] [joint_state_publisher-3]: process has died [pid 294850, exit code 1, cmd '/opt/ros/humble/lib/joint_state_publisher/joint_state_publisher --ros-args -r __node:=joint_state_publisher -r __ns:=/NS_1 --params-file /tmp/launch_params_g9kbwddb'].
+[ERROR] [cbf_safety_filter-9]: process has died [pid 295010, exit code 1, cmd '/ros2_ws/install/franka_experiments/lib/franka_experiments/cbf_safety_filter --ros-args -r __node:=cbf_safety_filter --params-file /tmp/launch_params_tt5bj14g --params-file /tmp/launch_params_bxzhf0eo'].
+[ERROR] [finger_state_publisher-7]: process has died [pid 295006, exit code 15, cmd 'ros2 topic pub /NS_1/joint_states sensor_msgs/msg/JointState {name: [fr3_finger_joint1, fr3_finger_joint2], position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]} --rate 10.0'].
+[INFO] [ros2_control_node-2]: process has finished cleanly [pid 294848]
+[INFO] [launch]: process[ros2_control_node-2] was required: shutting down launched system
+[INFO] [pentagon_qddot_commander-15]: sending signal 'SIGINT' to process[pentagon_qddot_commander-15]
+[INFO] [trajectory_overlay_node-12]: sending signal 'SIGINT' to process[trajectory_overlay_node-12]
+[INFO] [experiment_logger-11]: sending signal 'SIGINT' to process[experiment_logger-11]
+[INFO] [qddot_to_torque-10]: sending signal 'SIGINT' to process[qddot_to_torque-10]
+[INFO] [real_time_distance-8]: sending signal 'SIGINT' to process[real_time_distance-8]
+[ERROR] [real_time_distance-8]: process has died [pid 295008, exit code 1, cmd '/ros2_ws/install/franka_experiments/lib/franka_experiments/real_time_distance --ros-args -r __node:=real_time_distance --params-file /tmp/launch_params_dd5_hvqa'].
+[pentagon_qddot_commander-15] [WARN] [1792580789.099863374] [NS_1.pentagon_qddot_commander]: JS stale 0.591s
+[experiment_logger-11] [INFO] [1792580789.473046280] [experiment_logger]: Done. CSV and plots saved in: /tmp/contract_capture_logs/20261021_110442_bag_02_dynamic_test
+[experiment_logger-11] Failed to publish log message to rosout: publisher's context is invalid, at ./src/rcl/publisher.c:389
+[experiment_logger-11] Traceback (most recent call last):
+[experiment_logger-11]   File "/ros2_ws/install/franka_experiments/lib/franka_experiments/experiment_logger", line 33, in <module>
+[experiment_logger-11]     sys.exit(load_entry_point('franka-experiments', 'console_scripts', 'experiment_logger')())
+[experiment_logger-11]   File "/ros2_ws/build/franka_experiments/franka_experiments/nodes/experiment_logger.py", line 1071, in main
+[experiment_logger-11]     rclpy.spin(node)
+[experiment_logger-11]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py", line 229, in spin
+[experiment_logger-11]     executor.spin_once()
+[experiment_logger-11]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 812, in spin_once
+[experiment_logger-11]     self._spin_once_impl(timeout_sec)
+[experiment_logger-11]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 801, in _spin_once_impl
+[experiment_logger-11]     handler, entity, node = self.wait_for_ready_callbacks(timeout_sec=timeout_sec)
+[experiment_logger-11]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 784, in wait_for_ready_callbacks
+[experiment_logger-11]     return next(self._cb_iter)
+[experiment_logger-11]   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 685, in _wait_for_ready_callbacks
+[experiment_logger-11]     raise ExternalShutdownException()
+[experiment_logger-11] rclpy.executors.ExternalShutdownException
+[ERROR] [experiment_logger-11]: process has died [pid 295014, exit code 1, cmd '/ros2_ws/install/franka_experiments/lib/franka_experiments/experiment_logger --ros-args -r __node:=experiment_logger'].
+[pentagon_qddot_commander-15] [WARN] [1792580790.109403306] [NS_1.pentagon_qddot_commander]: JS stale 1.601s
+[pentagon_qddot_commander-15] [WARN] [1792580791.109464591] [NS_1.pentagon_qddot_commander]: JS stale 2.601s
+[pentagon_qddot_commander-15] [WARN] [1792580792.109513982] [NS_1.pentagon_qddot_commander]: JS stale 3.601s
+[pentagon_qddot_commander-15] [WARN] [1792580793.119480760] [NS_1.pentagon_qddot_commander]: JS stale 4.611s
+[trajectory_overlay_node-12] [WARN] [1792580793.396178356] [trajectory_overlay]: no frames on /camera/camera/color/image_raw — the camera is not running, or image_topic points at the wrong stream
+[ERROR] [pentagon_qddot_commander-15]: process[pentagon_qddot_commander-15] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
+[ERROR] [trajectory_overlay_node-12]: process[trajectory_overlay_node-12] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
+[ERROR] [qddot_to_torque-10]: process[qddot_to_torque-10] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
+[INFO] [pentagon_qddot_commander-15]: sending signal 'SIGTERM' to process[pentagon_qddot_commander-15]
+[INFO] [trajectory_overlay_node-12]: sending signal 'SIGTERM' to process[trajectory_overlay_node-12]
+[INFO] [qddot_to_torque-10]: sending signal 'SIGTERM' to process[qddot_to_torque-10]
+[ERROR] [pentagon_qddot_commander-15]: process has died [pid 295188, exit code -15, cmd '/ros2_ws/install/franka_experiments/lib/franka_experiments/pentagon_qddot_commander --ros-args -r __node:=pentagon_qddot_commander -r __ns:=/NS_1 --params-file /tmp/launch_params_wd75fshd'].
+[ERROR] [qddot_to_torque-10]: process has died [pid 295012, exit code -15, cmd '/ros2_ws/install/franka_experiments/lib/franka_experiments/qddot_to_torque --ros-args -r __node:=qddot_to_torque'].
+[ERROR] [trajectory_overlay_node-12]: process has died [pid 295136, exit code -15, cmd '/ros2_ws/install/franka_experiments/lib/franka_experiments/trajectory_overlay_node --ros-args -r __node:=trajectory_overlay --params-file /tmp/launch_params_0_zbyhvx'].

@@ -1,0 +1,174 @@
+# SIM. Scenario catalog of the Gazebo CBF experiments (spec Phase 4, plan §5.3-§5.4).
+#
+# Frame: base = fr3_link0 = the Gazebo world origin, the same frame cbf_scenarios
+# works in. Obstacle positions are OFFSETS from the flange (the fr3_link8 origin)
+# at Q0, exactly as cbf_scenarios.scenarios() writes them (`flange + offset`).
+# test_scenario_catalog.py imports the Python definitions and checks this file
+# against them, number for number. Do not edit one without the other.
+#
+# Per obstacle: radius [m], law (static | linear | ballistic | pursuit) and its
+# parameters: v0 [m/s] (linear, ballistic), speed [m/s] (pursuit: homes on the
+# TRUE flange), gravity (ballistic). Obstacles are visual-only. Before the episode
+# they are parked out of view; at the start they appear at p0. That is a birth,
+# not a teleport (cbf_scenarios: every track is born at t = 0).
+#
+# `emulation:` holds the perception-emulation arguments cbf_scenarios passes to
+# run_scenario. They have no meaning for a real perception chain, so each one
+# maps to its Gazebo counterpart (`gazebo:`):
+#   cam_noise: true  -> depth_sim_adapter range noise ON (H11; the camera, not
+#                       the tracker, is what the sim can make noisy)
+#   max_thresh: 1.5  -> real_time_distance distance.thresholds.max_thresh 1.5
+#   fps: 30          -> not mapped: the simulated D455 runs at 90 Hz, as on the rig
+
+q0: [0.0, -0.70, 0.0, -2.35, 0.0, 1.57, 0.70]
+flange_q0: [0.328018, 0.0, 0.566007]
+
+# ── 1:1 port of franka_experiments/scripts/cbf_scenarios.py::scenarios() ──────
+catalog:
+  static:
+    T: 4.0
+    nominal: {law: joint_pd, goal_q: [0.8, -0.70, 0.0, -2.35, 0.0, 1.57, 0.70]}
+    obstacles: [{offset: [0.0, 0.18, 0.40], radius: 0.08, law: static}]
+    emulation: {fps: 30.0}
+  around:
+    T: 10.0
+    nominal: {law: joint_pd, goal_q: [1.6, -0.70, 0.0, -2.35, 0.0, 1.57, 0.70]}
+    # cbf_scenarios: (rad cos 0.8, rad sin 0.8, flange_z), rad = |flange_xy|
+    obstacles: [{offset: [-0.099489, 0.235301, 0.0], radius: 0.04, law: static}]
+    emulation: {fps: 30.0}
+  static_noisy:
+    T: 6.0
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 0.36, 0.0], radius: 0.06, law: static}]
+    emulation: {fps: 30.0, cam_noise: true}
+    gazebo: {depth_adapter: {range_noise: true}}
+  approach_hold:
+    T: 6.0
+    nominal: {law: cartesian, cart_ref: [0.12, 0.0, 0.0]}
+    obstacles: [{offset: [0.40, 0.0, 0.0], radius: 0.06, law: static}]
+    emulation: {fps: 30.0}
+  slow:
+    T: 3.0
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 0.55, 0.0], radius: 0.05, law: pursuit, speed: 0.3}]
+    emulation: {fps: 30.0}
+  slow_noisy:
+    T: 3.0
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 0.55, 0.0], radius: 0.05, law: pursuit, speed: 0.3}]
+    emulation: {fps: 30.0, cam_noise: true}
+    gazebo: {depth_adapter: {range_noise: true}}
+  fast:
+    T: 0.9
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 1.5, 0.0], radius: 0.08, law: linear, v0: [0.0, -3.0, 0.0]}]
+    emulation: {fps: 30.0}
+  fast_seen_early:
+    T: 0.9
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 1.5, 0.0], radius: 0.08, law: linear, v0: [0.0, -3.0, 0.0]}]
+    emulation: {fps: 30.0, max_thresh: 1.5}
+    gazebo: {perception: {distance: {thresholds: {max_thresh: 1.5}}}}
+  ball:
+    T: 0.9
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 2.0, 0.0], radius: 0.05, law: linear, v0: [0.0, -4.0, 0.0]}]
+    emulation: {fps: 30.0}
+  ball_slow:
+    T: 1.8
+    nominal: {law: joint_pd}
+    obstacles: [{offset: [0.0, 2.0, 0.0], radius: 0.05, law: linear, v0: [0.0, -1.5, 0.0]}]
+    emulation: {fps: 30.0}
+  wedge:
+    T: 7.0
+    nominal: {law: joint_pd, goal_q: [0.0, -0.25, 0.0, -1.80, 0.0, 1.57, 0.70]}
+    obstacles:
+      - {offset: [0.22, 0.12, 0.0], radius: 0.06, law: static}
+      - {offset: [0.22, -0.12, 0.0], radius: 0.06, law: static}
+    emulation: {fps: 30.0}
+
+# ── The pentagon task (motion:=pentagon) with obstacles placed on its path ────
+# The commander's path, from fr3_control.yaml (path_center_xyz, path_radius,
+# path_cycle_time; path_type circle in the y-z plane, measured in the Phase 2
+# run). Positions here are ABSOLUTE (base frame), relative to that path.
+# test_scenario_catalog.py pins the path numbers to fr3_control.yaml.
+pentagon:
+  path: {center: [0.4, 0.0, 0.45], radius: 0.25, cycle_time: 6.0, plane: yz}
+  scenarios:
+    pentagon_clear:                      # no obstacle: the Phase 2 reference
+      T: 30.0
+      obstacles: []
+    pentagon_on_path:                    # static sphere ON the circle (its -y point)
+      T: 30.0
+      obstacles: [{p0: [0.4, -0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_beside_path:                # 0.15 m in front of the circle (toward the camera)
+      T: 30.0
+      obstacles: [{p0: [0.55, 0.25, 0.45], radius: 0.06, law: static}]
+    pentagon_crossing:                   # crosses the path plane at 0.3 m/s, through the centre
+      T: 12.0
+      obstacles: [{p0: [1.0, 0.0, 0.45], radius: 0.06, law: linear, v0: [-0.3, 0.0, 0.0]}]
+    pentagon_pursuer:                    # a hand following the flange at 0.3 m/s
+      T: 12.0
+      obstacles: [{p0: [0.4, 0.75, 0.45], radius: 0.05, law: pursuit, speed: 0.3}]
+
+# ── Ball-throw speed sweep, as approach_envelope.py builds its cells ──────────
+# A ball of R_BALL aimed at the flange centre along +y, constant velocity:
+#   kind a  tracked from afar          d0 = 2.5 m
+#   kind b  first seen at the gate     d0 = 0.7 + R_BALL + R_CAP
+#   kind c  thrown from L, visible t_sep after release   d0 = max(L - v t_sep, 0.3)
+#   T = min(d0 / v + 0.5, 6.0)
+# test_scenario_catalog.py re-runs approach_envelope.cell with run_scenario
+# captured, and checks every expanded cell against it.
+throw_sweep:
+  radius: 0.036
+  speeds: [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0]
+  t_sep: 0.15
+  gate: 0.7
+  r_cap: 0.05
+  kinds: {a: {d0: 2.5}, b: {d0: gate}, c: {L: [1.5, 2.0, 3.0, 4.0]}}
+
+# ── Ballistic throws (gravity): released 2 m from the flange, aimed to hit it ──
+# Not in approach_envelope (which flies straight). v0 = Δp/T − ½ g T with
+# T = d / v, so the ball reaches the flange centre at T: the throw a real
+# thrower aims.
+ballistic_throws:
+  radius: 0.036
+  release_distance: 2.0
+  direction: [0.0, 1.0, 0.0]
+  speeds: [2.0, 3.0, 4.0, 5.0, 6.0]
+  gravity: [0.0, 0.0, -9.81]
+
+# ── Phase 3 perception test scenes (not experiments) ──────────────────────────
+tests:
+  p3_robot_only:                         # H9: nothing but the robot in view
+    T: 12.0
+    nominal: {law: joint_pd}
+    scene: bare
+    obstacles: []
+  # Per-CP gap vs truth. Placed (truth_geometry, at Q0) so that the sphere point
+  # nearest to its control point faces the camera and the camera ray to it
+  # clears the arm by >= 7 cm. True gaps 0.44-0.45 m; the reported gaps
+  # (minus the engine's dilation margin, 12 px = ~0.05 m at these depths) stay
+  # well above d_safe, so the filter leaves the arm still.
+  p3_static:
+    T: 12.0
+    nominal: {law: joint_pd}
+    scene: bare
+    obstacles:
+      - {p0: [0.000, 0.550, 0.662], radius: 0.06, law: static, park: false}
+      - {p0: [0.200, -0.550, 0.466], radius: 0.06, law: static, park: false}
+      - {p0: [-0.300, 0.550, 0.592], radius: 0.06, law: static, park: false}
+  p3_moving:                             # constant velocity in front of the arm
+    T: 6.0
+    nominal: {law: joint_pd}
+    scene: bare
+    obstacles: [{p0: [0.95, 0.90, 0.60], radius: 0.08, law: linear, v0: [0.0, -0.30, 0.0]}]
+  p4_laws:                               # truth vs law, every law at once, away from the arm
+    T: 3.0
+    nominal: {law: joint_pd}
+    scene: bare
+    obstacles:
+      - {p0: [0.90, 0.60, 0.90], radius: 0.05, law: static}
+      - {p0: [1.00, -0.80, 0.60], radius: 0.05, law: linear, v0: [0.0, 0.30, 0.05]}
+      - {p0: [1.20, 0.80, 1.20], radius: 0.05, law: ballistic, v0: [-0.20, -0.10, 1.50]}
+      - {p0: [0.40, 1.10, 0.60], radius: 0.05, law: pursuit, speed: 0.10}

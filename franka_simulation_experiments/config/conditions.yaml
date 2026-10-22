@@ -1,0 +1,58 @@
+# SIM. Experiment conditions of the Gazebo runs (spec Phase 5, ground rule 3).
+#
+# The defaults disagree with each other (plan H12):
+#   fr3_complete.yaml  tracking.enabled false, imm_enabled true ("TEMPORARY"),
+#                      prediction.enabled false
+#   fr3_control.yaml   obstacle_velocity_source residual, most enable_* false
+#   launch_defaults    turns tracking + tracker + most enable_* ON
+# So no run reads any of them implicitly. Every toggle below is passed to
+# torque_control_stack.launch.py as a launch argument (cbf:) or merged into the
+# run's perception config (perception:), and recorded in run_manifest.json.
+#
+# `cbf:` mirrors launch_defaults.yaml (test_conditions.py pins it), so the
+# Gazebo stack runs with the flags a bare hardware launch would use. A run
+# that wants a different value says so (run_gz_scenarios.py --set key=value).
+
+cbf:
+  lateral_evasion: true
+  outrun_evasion: false
+  livelock_escape: true
+  latency_compensation: true
+  zone_ladder: true
+  uncertainty_margin: true
+  vobs_in_hdot: true
+  velocity_standoff: true
+  obstacle_velocity_normal_guard: true
+  obstacle_identity_guard: true
+  multi_obstacle_k: 2
+  iso_enabled: false
+  iso_mode: automatic
+  iso_ssm_speed_rows: false
+  iso_monitor_enabled: false
+
+# Not launch arguments, therefore NOT settable per run without editing
+# fr3_control.yaml (out of scope). Recorded in the manifest as read.
+cbf_yaml_only:
+  - enable_sensor_range_uncertainty
+
+conditions:
+  residual:
+    description: tracking off; v_obs from the scalar residual a^T qdot - ddot
+    obstacle_tracking: false
+    obstacle_velocity_source: residual
+    perception: {tracking: {enabled: false, imm_enabled: false, prediction: {enabled: false}}}
+  kf:
+    description: cluster + Kalman track (constant-velocity KalmanTrack), source tracker
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+  imm:
+    description: as kf, with the IMM (generic + ballistic) track
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: true, prediction: {enabled: false}}}
+  imm+pred:
+    description: as imm, with ballistic prediction rows
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: true, prediction: {enabled: true}}}

@@ -1,0 +1,32 @@
+/experiment_logger:
+  ros__parameters:
+    accel_lpf_alpha: 0.35
+    cbf_status_topic: /NS_1/cbf_status
+    d_safe: 0.15
+    experiment_name: bag_02_dynamic_test
+    iso_safety_topic: /NS_1/iso_safety
+    joint_names:
+    - fr3_joint1
+    - fr3_joint2
+    - fr3_joint3
+    - fr3_joint4
+    - fr3_joint5
+    - fr3_joint6
+    - fr3_joint7
+    joint_state_topic: /NS_1/joint_states
+    max_cbf_entries: 12
+    multi_distance_topic: /human_robot/multi_distance
+    output_dir: /tmp/contract_capture_logs
+    per_link_distances_topic: /cbf/per_link_distances
+    qddot_nom_topic: /NS_1/qddot_nom
+    qddot_safe_topic: /NS_1/qddot_safe
+    qdot_cmd_topic: /NS_1/qdot_cmd
+    qdot_nom_topic: /NS_1/tracking_qdot
+    robot_state_topic: /NS_1/franka_robot_state_broadcaster/robot_state
+    run_dir_override: ''
+    sample_rate_hz: 100.0
+    tcp_link: fr3_link8
+    torque_cmd_topic: /NS_1/torque_cmd
+    torque_saturation_topic: /NS_1/torque_saturation
+    use_sim_time: false
+
