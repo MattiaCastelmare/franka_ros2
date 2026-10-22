@@ -100,6 +100,8 @@ class GroundTruth(Node):
         if self._last is None:
             return
         t, gaps, p, v = self._last
+        if self.n and not np.isfinite(gaps).all():
+            return  # no obstacle pose yet: the inf gaps are a placeholder, not truth
         gmin = gaps.min(axis=1)
         self.pub_gap.publish(Float64MultiArray(data=[
             t, float(len(gmin)), *[float(x) for x in gmin], float(gmin.min()),
