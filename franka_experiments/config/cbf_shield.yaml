@@ -1,0 +1,34 @@
+# cbf_safety_filter as the shield of the MPC (easy_torque commander:=mpc control_mode:=cbf).
+# Overrides on top of fr3_control.yaml, which stays the configuration of the CBF alone.
+#
+# Alone, the CBF is all that stands between a commander blind to people and the person:
+# besides its barriers it SHAPES the motion near them (a bias to go around, retreat caps
+# that keep the escape proportional to the approach, speed caps on the links). Behind the
+# MPC the motion is already planned around the person (forecast, uncertainty margin,
+# d_safe + δ), and those layers fight it: the retreat caps hold back the escape the MPC
+# planned, the arm stays close for longer. The shield keeps what catches what the MPC
+# misses: the human barrier at d_safe (latency compensated, reactive), self-collision,
+# joint limits, singularity, the q̇/q̈ box and the slew limit.
+#
+# Paired closed-loop replay (scripts/mpc_human_replay.py, prediction MPC, the people of
+# cbf_final, cbf_human and cbf_new moved 15 cm toward the robot, 68 approaches):
+#                       time < 0.20 m   time < d_safe   min gap   per approach vs no shield
+#   no shield               4.36 s          0.10 s      13.0 cm   –
+#   fr3_control.yaml        5.92 s          0.34 s      12.6 cm   worse in 8, better in 14
+#   this file               4.72 s          0.10 s      12.9 cm   worse in 2, better in 15
+# The shield then changes the MPC's q̈ (> 0.5 rad/s²) 91 s instead of 245 s over the three
+# bags, and ~10 s instead of 119 s with the people where they were (they kept clear).
+# Without the slew limit too: 4.18 s, 0.10 s, 13.1 cm, worse in 1. It stays: it was added
+# for steps of the command the real arm could not follow (fr3_control.yaml, max_qddot_delta).
+cbf_safety_filter:
+  ros__parameters:
+    # The forecast lives in the MPC (easy_torque human_prediction:=true still overrides)
+    enable_human_prediction: false
+    # Retreat caps: the largest cause. Alone they take time < 0.20 m from 4.94 to 5.92 s
+    retreat_cap_enabled: false
+    # Link speed rows slow the escape too: 4.70 -> 3.64 s without them (no slew, caps off).
+    # Their anti-tunnelling bound is the MPC's job here: q̇ ≤ 0.7 q̇_max, d_safe + δ + margin
+    link_speed_rows_enabled: false
+    # A bias on the QP's target, so it changes the MPC's q̈ with no row binding: 245 -> 67 s
+    # of shield activity, TCP error 2.43 -> 2.19 cm, 0.5 s more below 0.20 m (no slew, caps off)
+    cbf_tangential_gain: 0.0

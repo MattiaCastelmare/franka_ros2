@@ -18,7 +18,8 @@ real:=true  (default)  franka bringup (driver + broadcasters) + RT pinning + RVi
 real:=false            Gazebo + robot_state_publisher + joint_state_publisher +
                        clock bridge + RViz, all under the same namespace as the
                        real robot so every node sees the same topics.
-                       (+ camera topics of human_bag replayed on Gazebo's clock)
+                       (+ with human:=true, camera topics of human_bag replayed on
+                        Gazebo's clock; default /bags/cbf_final, human_bag:='' = none)
 
 Examples
     ros2 launch franka_experiments easy_torque.launch.py              # real robot
@@ -30,7 +31,11 @@ Examples
 commander:=mpc replaces the pick & place controller with mpc_commander: the pick & place
 node keeps running as the task only (reference_only: publishes /task/trajectory, no q̈)
 and the MPC publishes /NS_1/qddot_nom. With control_mode:=cbf the CBF filters it
-(shielded MPC). Logs go to experiment_logs/<nominal|cbf|mpc|mpc_cbf>/<run_name>.
+(shielded MPC) with config/cbf_shield.yaml on top of fr3_control.yaml: the barriers only,
+reactive (the forecast lives in the MPC), without the layers that shape the motion of the
+CBF alone. mpc_human_mode:=static freezes the arm in the MPC's rows (ablation;
+scripts/mpc_prediction_ablation.sh, scripts/mpc_human_replay.py).
+Logs go to experiment_logs/<nominal|cbf|mpc|mpc_cbf>/<run_name>.
 """
 
 import os
@@ -335,13 +340,16 @@ def _filter_and_dynamics_nodes(p, use_sim_time):
         # filter takes max(tracker, residual), so it is never less cautious than
         # 'residual'); vobs_in_hdot puts its signed component along the normal into ḣ.
         # human_prediction(_s) / human_k*_cbf act on the human rows only ('' = the yaml).
+        # Behind the MPC, cbf_shield.yaml first: the shield profile (the arguments still win).
+        shield = [os.path.join(get_package_share_directory('franka_experiments'), 'config',
+                               'cbf_shield.yaml')] if p['commander'] == 'mpc' else []
         nodes.append(Node(
             package='franka_experiments',
             executable='cbf_safety_filter',
             name='cbf_safety_filter',
             output='both',
             additional_env=_SINGLE_THREAD_BLAS,
-            parameters=[{
+            parameters=shield + [{
                 'use_sim_time': use_sim_time,
                 'obstacle_velocity_source': p['obstacle_velocity_source'],
                 'enable_vobs_in_hdot': _as_bool(p['vobs_in_hdot']),
@@ -459,7 +467,8 @@ def _commander_nodes(p, use_sim_time):
             namespace=p['namespace'],
             output='screen',
             additional_env=_SINGLE_THREAD_BLAS,
-            parameters=[{'use_sim_time': use_sim_time}],
+            parameters=[{'use_sim_time': use_sim_time,
+                         **({'human_mode': p['mpc_human_mode']} if p['mpc_human_mode'] else {})}],
         ))
     return nodes
 
@@ -531,6 +540,7 @@ def _launch_all(context):
         'human_k1_cbf': LaunchConfiguration('human_k1_cbf').perform(context).strip(),
         'run_name': LaunchConfiguration('run_name').perform(context),
         'commander': LaunchConfiguration('commander').perform(context).strip().lower(),
+        'mpc_human_mode': LaunchConfiguration('mpc_human_mode').perform(context).strip().lower(),
     }
     if p['control_mode'] not in _CONTROL_MODES:
         raise RuntimeError(f"control_mode must be one of {_CONTROL_MODES}, got '{p['control_mode']}'")
@@ -604,14 +614,21 @@ def generate_launch_description():
                             'its task preview (the pick & place node runs with reference_only)'
             ),
             DeclareLaunchArgument(
+                'mpc_human_mode',
+                default_value='',
+                description="mpc_commander human_mode: prediction (CV forecast in the human rows) | "
+                            "static (arm frozen, ablation); '' = mpc.yaml"
+            ),
+            DeclareLaunchArgument(
                 'human',
                 default_value='false',
                 description='true = human-arm perception (tracker, distance, visualizer, logger)'
             ),
             DeclareLaunchArgument(
                 'human_bag',
-                default_value='',
-                description='real:=false only: bag whose camera topics are replayed for the tracker'
+                default_value='/bags/cbf_final',
+                description="real:=false with human:=true: bag whose camera topics are replayed "
+                            "for the tracker; '' = no replay"
             ),
             DeclareLaunchArgument(
                 'obstacle_velocity_source',
@@ -630,7 +647,7 @@ def generate_launch_description():
                 default_value='',
                 description='cbf_safety_filter: soft prediction rows of the human rows (where the limb '
                             'will be along its Kalman velocity, own cheap slack; enable_human_prediction). '
-                            "true | false, '' = fr3_control.yaml (on)"
+                            "true | false, '' = fr3_control.yaml (on), cbf_shield.yaml (off) with commander:=mpc"
             ),
             DeclareLaunchArgument(
                 'human_prediction_s',
