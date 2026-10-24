@@ -1,0 +1,582 @@
+# ── RUN B2 (sac_b2, 2026-09-27): END-TO-END AVOIDANCE ABLATION, reward v2 ──
+# Same as sac_b1 (config_no_obs_cbf.yaml) except the two reward fixes below.
+# sac_b1 FAILED: 30/40 collisions at steps 25-45 (seeds 1000-1039). Its
+# per-step w_obs_margin penalty raised the living cost until a full episode
+# (≈−260 discounted) was within ~15 % of an early crash (≈−304) — the
+# early-termination hack came back through the shaping term.
+#   1. obs_shaping: potential    — same ramp, no net living cost.
+#   2. collision_step_cost: 2.0  — the crash also pays every skipped tick.
+#      Measured worst base per-step reward: −1.45 (random), −1.38 (sac_b1).
+#
+# (header of the sac_b1 config follows)
+# ── RUN B (sac_b1, 2026-09-25): END-TO-END AVOIDANCE ABLATION ──────────────
+# Identical to sac_v9's frozen config EXCEPT:
+#   env.cbf_obstacle_enabled: false  -> no obstacle rows in the QP; joint
+#     pos/vel/slew/q̈ boxes and the sim-only workspace box stay ON, so the RL
+#     policy alone owns obstacle avoidance AND reaching.
+#   reward.collision_penalty 10 -> 300, w_obs_margin/obs_soft_margin (new dense
+#     proximity ramp), terminate_on_collision explicit.
+# Question: "does the CBF actually matter?" — CBF-shielded (sac_v9) vs
+# end-to-end RL on the same task, same seeds. SIM-ONLY: never deploy this
+# policy on the FR3 (it was trained with no obstacle barrier).
+# cbf.d_safe stays 0.15: with the obstacle rows off it only drives the reset
+# clearance and the blocking-episode sampling, kept equal to v9 so both runs
+# see the same task distribution.
+# ============================================================================
+# franka_sim — central configuration (Safe RL + CBF, Sim-to-Real)
+#
+# One file for the whole training experiment so runs are reproducible for the
+# paper. The `cbf:` and `joint_limits:` blocks MIRROR the on-robot
+# franka_experiments/config/fr3_control.yaml — keep them in sync so the policy
+# is trained under exactly the safety filter it meets on hardware.
+# ============================================================================
+
+# ── Simulation / episode ─────────────────────────────────────────────────────
+env:
+  scene_xml: assets/franka_fr3/scene_cbf.xml   # relative to franka_sim/
+  # The point the policy observes and drives. `hand_tcp_site` is the Franka Hand
+  # grasp centre ≡ URDF `fr3_hand_tcp` (link7 + 0.107 → hand, then + 0.1034 z);
+  # verified equal to the real URDF's FK to 7e-16 m. It MUST match the
+  # `ee_frame` parameter of rl_policy_commander — that node builds its URDF with
+  # `hand:=true`, so the frame resolves there too.
+  # Use `attachment_site` (the bare flange ≡ fr3_link8) only for a hand-less
+  # robot, and then set ee_frame:=fr3_link8 to match.
+  ee_site: hand_tcp_site          # Franka Hand TCP ≡ fr3_hand_tcp
+  control_rate_hz: 100.0          # policy + CBF tick rate (matches real qp_rate)
+  sim_timestep: 0.002             # MuJoCo integration step (→ 5 substeps/tick)
+  max_episode_steps: 500          # 5 s episodes at 100 Hz
+  cbf_obstacle_enabled: false     # RUN B: obstacle avoidance left entirely to RL
+  # Viewer playback rate (--render only; ignored while training and headless).
+  # 1.0 = wall-clock real time. Lower it to inspect a motion in slow motion.
+  render_speed: 1.0
+
+# ── Reaching task ─────────────────────────────────────────────────────────────
+task:
+  target_box_min: [0.30, -0.35, 0.25]   # [m] target sampled uniformly in this box
+  target_box_max: [0.60,  0.35, 0.65]
+  target_tol: 0.05                # [m] EE within this of target ⇒ success
+  q_init_noise: 0.05              # [rad] uniform joint noise around `home`
+
+  # ── Reset-time feasibility (rejection sampling) ─────────────────────────────
+  # [m] surface distance the START state must clear. null = cbf.d_safe, i.e.
+  # every episode begins with h = d − d_safe ≥ 0. That is the precondition the
+  # HOCBF's forward-invariance guarantee is stated under — a trajectory that
+  # starts outside the safe set is not certified by the barrier at all.
+  #
+  # Before this existed, 9 of 50 episodes started already penetrating, the
+  # median episode started at d_min = 0.063 m, and every collision in the
+  # benchmark happened at step 1 — so the collision rate measured the reset
+  # distribution rather than the controller. See FrankaCBFEnv._sample_episode.
+  reset_min_clearance: null
+  # Bounded retries. On exhaustion the best draw is used and
+  # `env.reset_fallbacks` counts it; a non-zero count means the target/obstacle
+  # boxes are over-constrained and the safety numbers should not be trusted.
+  reset_max_tries: 100
+
+  # ── Obstacle ON the path (difficulty) ───────────────────────────────────────
+  # Fraction of episodes whose obstacle sweep must pass within `blocking_margin`
+  # of the straight EE→target line. 0.0 = uniform sampling, as sac_v4 trained.
+  #
+  # WHY THIS EXISTS. Measured over the 50-episode benchmark under uniform
+  # sampling: the obstacle NEVER came within r_obs + d_safe of the direct path
+  # in 25 of 50 episodes, and actually intersected it in 1. Half the benchmark
+  # was solvable by ignoring the obstacle entirely — so a "success rate" there
+  # is mostly a reaching score, and a "collision rate" is mostly a measure of
+  # how often the obstacle wandered into an arm that was busy elsewhere.
+  #
+  # Raising this makes the benchmark measure AVOIDANCE. Use 1.0 for a hard
+  # evaluation; for TRAINING prefer a mix (0.5-0.7) so the policy still sees
+  # unobstructed reaches, which is also what the robot mostly meets in practice.
+  # Changing it for training is an experimental change: retrain and re-report.
+  #
+  # Restored to sac_v7's value for sac_v8 (2026-09-22): this line was dropped
+  # to 0.0 by e337aec, committed 12:34 mid-training on 2026-09-21 for an
+  # unrelated smoke test of the new obs layout, while sac_v7 itself kept
+  # training from its own frozen 0.6 snapshot unaffected. 0.0 = no forced
+  # obstacle blocking at all, which would train v8 on a strictly easier task
+  # than the one the whole post-mortem above is about.
+  blocking_fraction: 0.6
+  # [m] null = r_obs + d_safe (0.23), i.e. "the barrier would engage on the
+  # direct route" — precisely the condition that forces a detour.
+  blocking_margin: null
+
+# ── Human-proxy obstacle (moving sphere) ─────────────────────────────────────
+obstacle:
+  radius: 0.08                    # [m] sphere radius — MUST match obstacle_geom
+                                  # in scene_cbf.xml (the env asserts it). Read
+                                  # on the robot by rl_policy_commander to
+                                  # rebuild the observation's obstacle slot from
+                                  # the point-cloud surface distance.
+  mode: sinusoidal                # static | linear | sinusoidal | random_walk
+  box_min: [0.30, -0.40, 0.30]    # [m] obstacle base sampled + motion clipped here
+  box_max: [0.65,  0.40, 0.70]
+  # Peak obstacle speed is 2π·speed·amplitude. At the previous 0.6 Hz / 0.30 m
+  # that was ~1.13 m/s: the sphere swept INTO an arm that could not clear it, so
+  # a share of every collision rate was structural — identical (−0.1323 m worst
+  # penetration) for the trained policy, a random policy and an arm that never
+  # moved. The barrier can only bound the ROBOT's motion, so no controller and
+  # no CBF can fix that; it only added reward noise and slowed learning.
+  # 0.30 Hz / 0.20 m → ~0.38 m/s, where avoidance is genuinely possible and the
+  # collision metric measures the controller. Raise both back to 0.6 / 0.30 to
+  # reproduce the harder (partly unavoidable) benchmark.
+  # 0.20 Hz x 0.20 m -> ~0.25 m/s, which is also roughly the reduced-speed
+  # figure used for collaborative operation in ISO/TS 15066 — a defensible
+  # number to quote rather than an arbitrary one. The amplitude is deliberately
+  # NOT reduced further: it sets how much of the workspace the obstacle sweeps,
+  # i.e. the diversity of situations the policy sees, and that is worth keeping.
+  amplitude: 0.20                 # [m] oscillation amplitude along a random axis
+  speed: 0.20                     # oscillation frequency [Hz]
+  random_walk_std: 0.01           # [m/tick] step size for random_walk mode
+
+# ── Observation layout (what the policy sees) ────────────────────────────────
+#
+# Both blocks are PREFIX EXTENSIONS: entries 0..23 keep the meaning and the
+# offsets they had for sac_v3/sac_v4, so a config WITHOUT this block still
+# produces the exact 24-dim vector those models were trained on and they keep
+# deploying unchanged. rl_policy_commander reads the config frozen next to the
+# model, so the layout travels with the artifact rather than with this file.
+# See franka_sim/envs/obs_layout.py for the slot table.
+#
+# Turning either on changes the observation, hence the network input width:
+# retrain, re-export the ONNX, re-benchmark.
+obs:
+  # The obstacle MOVES and the base layout carried only its position. From one
+  # frame "approaching" and "receding" are the same observation with opposite
+  # optimal actions — the task was a POMDP dressed as an MDP, and no RL
+  # algorithm recovers from a state defect. v_obs is a finite difference of the
+  # OBSERVED centre, so latency/noise/LPF propagate into it exactly as they do
+  # on the robot, which differentiates the same estimate it receives.
+  obstacle_velocity: true
+
+  # Per control point: surface distance dᵢ and obstacle→robot normal n̂ᵢ, in
+  # `cbf.control_points` order — the same numbers _build_obstacles already
+  # computes for the CBF rows, at zero extra cost.
+  #
+  # WHY. Without it the shield reasons over 6×(dᵢ, n̂ᵢ) while the policy gets
+  # min(dᵢ) and a sphere centre: the policy was strictly LESS informed than the
+  # filter whose intervention it is supposed to pre-empt. It could not tell
+  # WHICH link is threatened, nor which way it is about to be pushed — which is
+  # exactly what "go around on this side" needs. Choosing a side is a global
+  # decision; the QP is a one-step local projection along n̂ and cannot make it.
+  #
+  # It also changes what the observation can DESCRIBE. `obstacle(3)` presumes
+  # one sphere of a radius fixed at training time; (dᵢ, n̂ᵢ) per link is "how
+  # far is matter from this link, and in which direction", which is agnostic to
+  # obstacle count and shape and is what the robot's point-cloud pipeline
+  # natively produces. This is the block that makes the policy scene-agnostic.
+  control_point_geometry: true
+
+  # [m] Distances are clipped here, in ONE place, so sim and robot cannot
+  # disagree about what "far away" looks like. null → cbf.cbf_obstacle_horizon.
+  # Unclipped, a link with nothing near it contributes an unbounded number next
+  # to features of order 0.2 m and quietly dominates the input scaling.
+  clip_distance: null
+
+# ── Actuation law (mirror of rt_torque_controller) ───────────────────────────
+#
+# OFF BY DEFAULT, and that is deliberate: with `enabled: false` the env applies
+# pure feedforward inverse dynamics — the path every number in
+# franka_sim_to_real_implementation_status.md was measured with, and the one
+# sac_v4 was trained on. Turning this on changes the PLANT, so it invalidates
+# trained policies and reported results alike: retrain and re-benchmark.
+#
+# What it adds. The robot does NOT execute q̈_safe open-loop. qddot_to_torque
+# publishes τ_ff = M q̈ + C q̇ (no gravity), the firmware adds g(q), and
+# rt_torque_controller closes a 1 kHz loop on top:
+#
+#   q̇_des += q̈_safe·dt                            (integrates the CBF output)
+#   q̇_des  = clamp(q̇_des, qdotFloor, qdotCeiling)  (the firmware envelope)
+#   e       = clamp(q̇_des − q̇, ±e_max)             (anti-windup, no leak)
+#   q_des  += q̇_des·dt ; p = clamp(q_des − q, ±p_max)
+#   τ       = ffScale(τ_ff)·τ_ff + Kp·p + Kd·e + g(q)
+#
+# ffScale is a DIRECTIONAL smoothstep on the residual velocity margin: it fades
+# only a τ_ff that pushes further into the envelope, never one that brakes, and
+# it never touches g(q) — a gate that scaled gravity would drop the arm exactly
+# when it engaged.
+#
+# Known residual: MuJoCo substeps at `env.sim_timestep` = 2 ms (500 Hz) against
+# the controller's 1 kHz. Set sim_timestep: 0.001 to match exactly, at 2x the
+# compute per episode.
+#
+# Gains are rt_torque_controller.cpp's own declared defaults — a FIFTH copy of
+# numbers that also live in C++ (see LEGACY.md §4). They are marked there as
+# initial values to be validated on hardware; p_gains especially, which are the
+# only ones not from a vendor table.
+actuation:
+  enabled: false
+  d_gains: [30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0]      # [N·m/(rad/s)]
+  p_gains: [120.0, 120.0, 120.0, 100.0, 40.0, 40.0, 20.0] # [N·m/rad]
+  e_max: 1.0            # [rad/s] hard clamp on the velocity error
+  p_max: 0.15           # [rad] hard clamp on the position error
+  qdot_margin: 0.95     # fraction of the firmware envelope the reference may use
+  ff_fade_band: 0.25    # [rad/s] band over which τ_ff fades to zero
+
+# ── Domain randomisation + observation noise (backlog P1.4 / P1.5) ───────────
+#
+# OFF BY DEFAULT. With `enabled: false` the env is bit-identical to the one
+# sac_v4 trained on. Turning any of this on changes the training distribution:
+# retrain, re-benchmark, and say which setting a number came from.
+#
+# Applied to the OBSERVATION only — never to the CBF rows, which keep MuJoCo's
+# true geometry. The robot's perception is noisy but its filter still treats
+# what it receives as truth, so corrupting the shield's inputs would simulate a
+# worse safety filter than the one actually deployed. It is the POLICY that has
+# to become robust to a noisy estimate.
+#
+# `enabled: true` is the master switch; each block also has its own, so you can
+# turn on latency alone (the roadmap's top-ranked gap) without the rest.
+randomization:
+  enabled: false
+
+  # 1. LATENCY — the largest unmodelled gap (§10 P1). The sim observes the
+  # obstacle where it is NOW; the robot observes where it was one camera hop
+  # (~13 ms at the pinned 30 fps), one distance-engine pass and one CBF tick
+  # ago. A pure delay is the one plant change a barrier cannot absorb: it
+  # certifies a state that is already stale. One draw per EPISODE — a delay
+  # redrawn every tick would reorder samples, which is a different and
+  # unphysical corruption. Measure the real budget with
+  # franka_experiments/scripts/latency_budget.py.
+  latency:
+    enabled: false
+    mean_s: 0.04          # [s] total blind time (~4 ticks at 100 Hz)
+    jitter_s: 0.01        # [s] per-episode spread
+
+  # 2. OBSERVATION NOISE — the sim feeds an exact centre and an exact d_min;
+  # the robot feeds an LPF'd, occasionally-dropped estimate from a point cloud.
+  # `clamp_d_min_at_zero` reproduces distance_engine's np.maximum(·, 0): the
+  # robot NEVER reports penetration, which is the documented sim/real asymmetry
+  # (§2, §7 item 2). A dropped frame HOLDS the last good value, as the pipeline
+  # does — it does not teleport the obstacle.
+  obs_noise:
+    enabled: false
+    obstacle_pos_std: 0.01      # [m] per-axis noise on the reconstructed centre
+    d_min_std: 0.005            # [m] noise on the surface distance
+    lpf_alpha: 0.5              # matches fr3_complete.yaml's distance LPF
+    clamp_d_min_at_zero: true
+    dropout_prob: 0.0           # per-tick probability of a held frame
+
+  # 3. JOINT SENSOR NOISE — the FR3's encoders are good, so this is the
+  # smallest of the four gaps, but it costs nothing to model.
+  joint_noise:
+    enabled: false
+    q_std: 0.0005         # [rad]
+    qdot_std: 0.005       # [rad/s]
+
+  # 4. DYNAMICS — link masses, joint damping, friction. Ranked last: the
+  # roadmap argues the CBF absorbs much of the dynamics gap, and the torque
+  # chain already re-solves inverse dynamics against the perturbed model.
+  dynamics:
+    enabled: false
+    mass_scale: [0.95, 1.05]
+    damping_scale: [0.8, 1.2]
+    friction_scale: [0.8, 1.2]
+
+# ── Reward weights (task reward + safety/effort penalties) ───────────────────
+#
+# sac_v7 POST-MORTEM (2026-09-22, 40-episode diagnostic on final_model.zip,
+# seeds 1000-1039, independent of the eval-callback seed). Success plateaus at
+# ~20-40% with ZERO collisions — the CBF shield holds — but FAILURES are all
+# timeouts, and they split into two patterns, both traced by comparing the
+# SUCCESS vs FAIL per-episode CBF intervention (‖q̈_safe − q̈_nom‖):
+#   SUCCESS: mean_interv ~5.6-6.0        FAIL: mean_interv ~7.2-9.2, max ~23-27
+# i.e. failing episodes are the ones where the shield fights the policy
+# hardest and most often — the policy proposes q̈_nom the QP has to bend a lot,
+# which both wastes the episode's time budget AND (per seed 1000's logged
+# trajectory) can drive the arm into the sim-only workspace-box corner after
+# an avoidance detour, where it then sits pinned against 3 walls at once,
+# ~20 rad/s² of sustained intervention, never re-orienting toward the target.
+# Extending max_episode_steps 500->800 on the same 40 seeds made the FAIL
+# group WORSE (mean_interv 7.2->9.2, final_dist 0.375->0.507 m) — ruling out
+# "just needs more time" and confirming a genuine stuck state, not a slow one.
+#
+# w_intervention 0.02->0.06 and the new w_ws_margin term below were v8's
+# response: raise the cost of the exact signal (heavy/sustained CBF
+# correction) diagnosed as failure-predictive, and add an ANTICIPATORY
+# penalty for approaching the workspace walls — before the hard CBF box
+# engages — so the policy learns to give the walls a wider berth instead of
+# only being punished after the fact.
+#
+# sac_v8 RESULT (2026-09-22, same 40-episode/seeds-1000-1039 diagnostic):
+# MIXED. w_ws_margin worked exactly as intended — seed 1000 no longer pins in
+# the workspace corner (final dist 1.11->0.30 m, 0/40 collisions, same as
+# v7) — but overall success DROPPED 17.5%->10.0%, and the FAIL group's mean
+# intervention got WORSE (7.2->8.2), not better. Two variables were changed
+# in one experiment, which is the likely reason: raising w_intervention
+# punishes ANY CBF correction, including the ones that are the correct
+# avoidance behaviour near the obstacle (unlike the workspace wall, which the
+# task never has a legitimate reason to approach) — so it plausibly made the
+# policy more hesitant to commit to necessary detours, feeding pattern 2
+# (hovering at the d_safe boundary) rather than fixing it.
+#
+# sac_v9 isolates the two changes: w_intervention reverted to sac_v7's 0.02,
+# w_ws_margin kept. If success recovers toward/above v7's ~17.5% AND the
+# corner-pin stays fixed, w_ws_margin alone is the real fix and pattern 2
+# needs a different lever (e.g. mirror w_ws_margin's anticipatory-ramp idea
+# onto d_min against the OBSTACLE instead of raising w_intervention globally
+# — still untried). This is an experimental change: retrain and re-run the
+# same diagnostic before trusting the numbers.
+reward:
+  w_dist: 1.0                     # dense: −‖ee − target‖
+  w_success: 5.0                  # bonus when within target_tol
+  w_action: 0.001                 # effort penalty ‖a‖²  (normalized action)
+  w_intervention: 0.02            # penalize how hard the CBF bends q̈_nom (reverted to sac_v7's value; see sac_v8 result above)
+  w_slack: 0.5                    # penalize CBF slack (infeasibility / relaxation)
+  w_smooth: 0.001                 # jerk penalty ‖q̈ − q̈_prev‖
+  w_qdot: 0.001                   # joint-velocity penalty ‖q̇‖²
+  # [m] Anticipatory soft penalty on EE proximity to the Cartesian workspace
+  # box (cbf.ws_min/ws_max), independent of and well outside the hard
+  # cbf.ws_margin (0.02 m). Linear ramp: 0 at ws_soft_margin from the nearest
+  # wall, rising to w_ws_margin at the wall itself. Added for the sac_v7
+  # corner-pin failure (seed 1000): the hard box already stops penetration,
+  # this term is what should stop the policy from steering toward it at all.
+  w_ws_margin: 1.0
+  ws_soft_margin: 0.15            # [m] matches d_safe's order of magnitude
+  collision_dist: 0.0             # [m] surface distance below this ⇒ collision
+  # RUN B: must dominate the cost of a whole episode (~-210 undiscounted,
+  # ~-100 discounted at gamma 0.997), else crashing early to end the episode
+  # beats doing the task.
+  # RUN B2: collision cost = collision_penalty + collision_step_cost × the
+  # ticks the crash skips. 2.0 > the measured worst base per-step cost
+  # (−1.45), so a crash at ANY step costs more than living the episode out:
+  # step 30 → 50 + 470·2 = 990, step 490 → 70 (vs ≤ ~15 for 10 more ticks).
+  collision_penalty: 50.0
+  collision_step_cost: 2.0
+  terminate_on_collision: true
+  # Proximity ramp on the closest control-point surface distance (0 at
+  # obs_soft_margin, 1 at contact), entered as POTENTIAL-BASED shaping
+  # F = γΦ(s') − Φ(s), Φ = −w_obs_margin·ramp (γ = rl.gamma). Same weight and
+  # margin as sac_b1: only the form changes, so b1 vs b2 isolates it.
+  w_obs_margin: 2.0
+  obs_soft_margin: 0.10           # [m]
+  obs_shaping: potential
+  terminate_on_success: true
+
+# ── CBF safety filter (MIRROR of fr3_control.yaml `params`) ──────────────────
+cbf:
+  # NOTE: every key down to `control_points` mirrors `params:` in
+  # franka_experiments/config/fr3_control.yaml, and test_real_configs_are_in_sync
+  # enforces it. Change a value HERE only together with the robot, or the policy
+  # trains against a shield the robot will not reproduce. The exceptions are
+  # marked SIM-ONLY below.
+  d_safe: 0.15                    # [m] minimum safe surface distance
+  k0_cbf: 25.0                    # HOCBF position gain (class-K α₀)
+  k1_cbf: 10.5                    # HOCBF velocity gain (class-K α₁)
+  rho_slack: 1000.0               # quadratic slack penalty ½ρs²
+  cbf_obstacle_horizon: 1.2       # [m] computational cutoff (not a safety gate)
+  cbf_min_leverage: 0.05          # [m/rad] min ‖a‖=‖n̂ᵀJp‖ to keep a row
+  k_brake: 3.0                    # QP-fail fallback: q̈ = −k_brake·q̇
+  osqp_max_iter: 20000
+  include_jdot: true              # add ċ = n̂ᵀ(J̇p q̇) via finite-diff Jacobian
+
+  # Hard state-limit shielding (velocity/position braking + slew continuity).
+  # Key names follow fr3_control.yaml; they were hard_v_margin / hard_q_margin /
+  # hard_brake_eta until the robot-side rename, and cbf_filter.py still accepts
+  # the old spellings so configs frozen next to older models keep loading.
+  velocity_box_margin: 0.9        # fraction of qdot_max the box allows
+  position_margin_rad: 0.05       # [rad] barrier kept inside the mechanical stop
+  position_brake_eta: 0.6         # fraction of decel authority the curve assumes
+  max_qddot_delta: 5.0            # [rad/s² per tick] slew-continuity bound
+
+  # [rad/s²] Ceiling on the per-joint acceleration authority the QP may use.
+  #
+  # BOX ONLY — this does NOT rescale the action. `joint_limits` below keeps
+  # q̈_max = 17 on joints 5 and 7 (the action is q̈_nom = a·q̈_max), and the box
+  # then clips to 10. That is exactly the robot's arrangement:
+  # rl_policy_commander scales by fr3_control.yaml's joint_limits and
+  # cbf_safety_filter's box caps at qddot_max_abs. Capping both would change
+  # what a = 1 means and would stop mirroring hardware.
+  #
+  # Why 10: `deceleration_limit` is the only q̈ scale franka_description
+  # publishes, and used symmetrically it claims 17 rad/s² on joints 5 and 7 —
+  # 70 % above libfranka's kMaxJointAcceleration of 10 on every joint. The
+  # barrier's ḧ ≥ −k1·ḣ − k0·h is written in the q̈ the QP CHOOSES and holds
+  # only as far as the joints produce it. Robot commit 4606e39.
+  qddot_max_abs: 10.0
+
+  # [s] Approach horizon for the state box. Below a cap the allowed q̈ is
+  # (v_bound − q̇)/state_box_relax_s, so the bound bites early and gently
+  # instead of only in the final q̈_max·dt sliver (0.17 rad/s on joint5 at
+  # dt = 10 ms — small enough that hardware ramped to 70 % of the limit with
+  # the box never once engaging). Past the cap the one-step dt is used again,
+  # so braking authority is never softened when it is needed.
+  state_box_relax_s: 0.10
+
+  # Clip the box into the physical acceleration limits AFTER the feasibility
+  # guard, so the QP is never handed a box demanding more than the joint has
+  # (measured on the robot at 189 rad/s² on joint 7 against a 17 limit).
+  accel_box_clip_to_limits: true
+
+  # Obey the FR3's position-based velocity envelope (libfranka rate_limiting.h)
+  # and the EFFECTIVE position wall it implies, instead of a flat q̇_max and the
+  # mechanical stops. The firmware's curve reaches zero INSIDE the mechanical
+  # range, so the last ~0.03–0.10 rad of travel admit no motion at all; a
+  # barrier anchored at the mechanical limit sits behind the real wall. Robot
+  # commit f5a59f8, after five logged hardware aborts, none of which was near
+  # its flat q̇_max. false reproduces the pre-fix arithmetic.
+  firmware_envelope: true
+
+  # Workspace box on the EE (hard HOCBF rows; slack cannot relax them).
+  #
+  # SIM-ONLY — the robot has NO Cartesian workspace rows: `workspace_face_rows`
+  # in utils/cbf_hard_limits.py has no live importer since commit 4d4d450 (see
+  # franka_experiments/LEGACY.md). Keeping the box here is deliberate and
+  # conservative in the right direction: the policy learns to stay inside a
+  # region SMALLER than anything the robot enforces, so deployment relaxes the
+  # constraint rather than tightening it. On hardware the only Cartesian bound
+  # is whatever the joint-limit / self-collision / singularity rows imply —
+  # do not read this box as a guarantee that survives sim-to-real.
+  ws_enable: true
+  ws_min: [0.05, -0.60, 0.05]
+  ws_max: [0.75,  0.60, 0.95]
+  ws_margin: 0.02
+  ws_horizon: 0.25
+
+  # Control points (robot body + capsule-approx radius) for per-link distance.
+  #
+  # `fr3_hand` mirrors the robot's `fr3_link8`: on hardware `fr3_complete.yaml`
+  # maps fr3_link8 to the Franka Hand collision mesh and segment 7 carries 3
+  # control points, so the gripper IS covered by the real perception pipeline —
+  # leaving it out here would have trained a policy blind to its own EE.
+  # The MuJoCo body origin of fr3_hand sits exactly on fr3_link8 (both are
+  # link7 + 0.107 z; the hand is only rotated -45° about z).
+  #
+  # radius 0.13 is the measured bounding sphere of hand + both fingers from that
+  # origin (0.1283 m), rounded up. One coarse sphere instead of three rows: the
+  # fingers reach 0.119 m from the same origin, so a separate row would buy
+  # almost nothing. The robot samples the actual mesh, so its gap is tighter
+  # than this sphere — the sim shield is the more restrictive of the two, which
+  # is the safe direction for sim-to-real.
+  control_points:
+    # fr3_link3 mirrors the robot's segment 3 (fr3_link3 → fr3_link4), which
+    # carries 2 control points in fr3_complete.yaml. Without it the sim was
+    # blind to a forearm approach the real perception pipeline reports, i.e.
+    # OPTIMISTIC relative to hardware — the one direction a sim-to-real gap
+    # must never point. The robot samples 11 points along the segment axes at
+    # radius 0.05; these 6 sit at body origins with fatter spheres, so the sim
+    # gap stays the more restrictive of the two.
+    - {body: fr3_link3, radius: 0.09}
+    - {body: fr3_link4, radius: 0.09}
+    - {body: fr3_link5, radius: 0.09}
+    - {body: fr3_link6, radius: 0.08}
+    - {body: fr3_link7, radius: 0.07}
+    # `robot_link` is the name the robot's MultiLinkDistance reports for this
+    # body; it defaults to `body` and only the hand differs. It is read by
+    # rl_policy_commander to fill this control point's observation slot.
+    - {body: fr3_hand,  radius: 0.13, robot_link: fr3_link8}  # hand + fingers
+
+# ── Sim↔robot shield parity register ─────────────────────────────────────────
+#
+# READ THIS BEFORE QUOTING A SAFETY CLAIM.
+#
+# The robot's cbf_safety_filter has grown far past the shield in
+# envs/cbf_filter.py: six row families, a zone ladder, a state governor and
+# three objective biases. Mirroring all of it here would mean maintaining a
+# second copy of a ~6900-line subsystem that is still changing, so the
+# asymmetry is DELIBERATE — but it must be declared, not discovered.
+#
+# What the policy trains under is therefore a SUBSET of the deployed shield.
+# Everything under `robot_only_active` can bend, attenuate or veto the
+# policy's q̈_nom on hardware in a way it never met in training. The honest
+# claim is "trained under a subset of the deployed shield", never "trained
+# under the deployed shield"; the CBF remains the certificate either way.
+#
+# CONTRACT: every `enable_*` / `*_enabled` key in fr3_control.yaml `params:`
+# must appear in exactly one list below, and its value there must match what
+# the list asserts. `test_shield_families_are_declared` enforces both, so a new
+# robot flag — or a flipped one — fails the suite until it is classified here.
+# The gap is allowed to widen; it is not allowed to widen silently.
+shield_parity:
+
+  # Present in BOTH shields, same math, same parameter.
+  mirrored:
+    - slew_box_enabled            # apply_slew_limit() / max_qddot_delta
+
+  # ON when the robot is launched (torque_control_stack.launch.py, whose
+  # arguments override the `false` defaults in fr3_control.yaml for several of
+  # these). Absent from the sim shield. THIS LIST IS THE SIM-TO-REAL GAP.
+  robot_only_active:
+    - joint_limit_rows_enabled    # sim enforces joint limits by BOX, not rows
+    - self_collision_rows_enabled
+    - singularity_rows_enabled    # σ_min(J) barrier
+    - retreat_cap_enabled
+    - link_speed_rows_enabled
+    - state_governor_enabled      # SCALES q̈_nom before the QP sees it
+    - obstacle_velocity_enabled
+    - enable_zone_ladder          # schedules k0/k1; can suspend the task
+    - enable_velocity_standoff    # d_safe_eff = d_safe + 0.20 s × closing speed
+    - enable_uncertainty_margin
+    - enable_lateral_evasion      # biases the QP target
+    - enable_outrun_evasion       # biases the QP target
+    - enable_livelock_escape      # biases the QP target
+    - enable_vobs_in_hdot
+
+  # Shipped OFF on the robot as well, so they are not part of today's gap.
+  # Turning one on WIDENS the gap and fails the test until it is moved up.
+  robot_only_inactive:
+    - enable_velocity_feedforward
+    - enable_weighted_slack
+    - enable_latency_compensation
+    - iso_enabled                 # also gates iso_ssm_speed_rows / the SSM rows
+    - iso_monitor_enabled
+
+  # In the SIM shield and not on the robot. Conservative direction: the policy
+  # learns inside a region smaller than hardware enforces, so deployment
+  # relaxes the constraint rather than tightening it. Pinned separately by
+  # test_workspace_box_is_sim_only.
+  sim_only:
+    - ws_enable                   # Cartesian workspace box on the EE
+
+# ── Per-joint limits [q_min, q_max, qdot_max, qddot_max, tau_max] ─────────────
+# Copied verbatim from fr3_control.yaml so sim and robot clamp identically.
+joint_limits:
+  joint1: [-2.9007,  2.9007, 2.62,  6.0,   500.0]
+  joint2: [-1.8361,  1.8361, 2.62,  2.585, 500.0]
+  joint3: [-2.9007,  2.9007, 2.62,  3.5,   500.0]
+  joint4: [-3.0770, -0.1169, 2.62,  4.0,   500.0]
+  joint5: [-2.8763,  2.8763, 5.26, 17.0,   500.0]
+  joint6: [ 0.4398,  4.6216, 4.18,  5.5,   500.0]
+  joint7: [-3.0508,  3.0508, 5.26, 17.0,   500.0]
+
+# ── RL hyperparameters (SAC, tuned for an 8 GB RTX 4070 Laptop) ──────────────
+rl:
+  algo: SAC                       # continuous-control off-policy (safe-exploration)
+  total_timesteps: 2_000_000
+  # Restored to sac_v7's value for sac_v8 (2026-09-22) — see blocking_fraction
+  # comment above; e337aec dropped this to 1 for an unrelated single-env smoke
+  # test, which would make a full run ~8x slower wall-clock for no benefit.
+  n_envs: 8
+  seed: 0
+  policy: MlpPolicy
+  learning_rate: 0.0003
+  buffer_size: 1_000_000          # ~fits in RAM; lower to 500_000 if tight
+  batch_size: 512
+  # Discount. At `env.control_rate_hz` = 100 Hz, 1/(1−γ) is a horizon in TICKS,
+  # not in seconds: 0.99 buys 100 ticks = **1.0 s**, against 5 s episodes and
+  # obstructed ones that ran 2.7 s. An avoidance detour is by construction "pay
+  # now, collect later" — the extra path length lands inside a 1 s horizon and
+  # the arrival does not — so the value function could not see the payoff of
+  # going around at all, and the myopia was in the discount rather than in the
+  # policy. 0.997 ≈ 3.3 s, which covers the median obstructed episode.
+  #
+  # Changing γ changes the objective: retrain, and do not compare returns
+  # across this line (a longer horizon sums more of the same per-step costs).
+  # Compare success rate, collision rate and mean CBF intervention instead.
+  gamma: 0.997
+  tau: 0.005
+  train_freq: 1
+  gradient_steps: 8                # == n_envs, keeps updates/transition ratio fixed (see n_envs comment)
+  learning_starts: 10_000
+  ent_coef: auto
+  net_arch: [256, 256]
+  device: cuda
+  # Logging / checkpointing (train.py).
+  tensorboard_log: runs/
+  checkpoint_freq: 50_000         # [steps] SB3 CheckpointCallback
+  # [episodes] snapshot + ONNX export on the episode axis, which is the one
+  # worth comparing along: episodes end early on success and on collision, so
+  # step-spaced snapshots hold very different amounts of task experience.
+  # 0 disables. Feeds scripts/compare_checkpoints.py.
+  checkpoint_freq_episodes: 200
+  eval_freq: 25_000
+  save_path: models/

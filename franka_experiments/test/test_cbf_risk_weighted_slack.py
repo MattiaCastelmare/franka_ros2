@@ -319,8 +319,12 @@ def test_qlim_weighting_is_gated_on_rho():
     orchestrator and owns no row formula.
     """
     import pathlib
-    src = pathlib.Path('franka_experiments/franka_experiments/utils/'
-                       'cbf_state_rows.py').read_text()
+    # Anchored on THIS file, not on the working directory: the same test run
+    # from the package directory and from the workspace root must read the
+    # same source. It used to resolve only from the workspace root and failed
+    # with FileNotFoundError everywhere else.
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / 'franka_experiments' / 'utils' / 'cbf_state_rows.py').read_text()
     assert ('self._P.enable_weighted_slack\n'
             '                        and self._P.slack_weight_rho_qlim > 0.0') in src \
         or 'self._P.enable_weighted_slack and self._P.slack_weight_rho_qlim > 0.0' in src

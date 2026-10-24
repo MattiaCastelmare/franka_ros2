@@ -7,11 +7,27 @@ training and deployment lives in ONE place.
 ``franka_sim/envs/franka_cbf_env.py`` builds, every 100 Hz control tick::
 
     obs(24) = [ q(7), q̇(7), ee_pos(3), target(3), obstacle(3), d_min(1) ]
+    + v_obs(3)                        if `obs.obstacle_velocity`
+    + [dᵢ, n̂ᵢ] × n_cp                 if `obs.control_point_geometry`
     action(7) ∈ [−1, 1]   →   q̈_nom = action · q̈_max   →   CBF filter
 
 :func:`build_observation` rebuilds exactly that vector from robot topics and
 :func:`action_to_qddot` applies exactly that scaling, so a policy trained in
 ``franka_sim`` sees the same numbers on hardware.
+
+The optional blocks are PREFIX EXTENSIONS: slots 0..23 keep their meaning and
+their offsets, so a model frozen before they existed deploys unchanged.  Which
+blocks a given policy wants is a property of the POLICY, not of this file:
+``train.py`` freezes ``config.yaml`` next to the model and
+:func:`resolve_sim_config_path` reads that copy back, so
+:class:`ObsSpec` travels with the artifact.
+
+:class:`ObsSpec` mirrors ``franka_sim/envs/obs_layout.py``.  ``franka_sim`` is
+deliberately not a ROS package (it must stay importable without ROS, for
+training), so the node cannot import it at runtime and the layout is written
+out twice on purpose — exactly as the ``cbf:`` / ``joint_limits:`` config
+blocks are.  ``test_observation_layout_mirrors_franka_sim`` loads the sim
+module straight off disk and fails the suite on any drift.
 
 Obstacle mapping (sim ↔ real)
 -----------------------------
@@ -41,7 +57,9 @@ reported" state), and the CBF filter downstream is the actual guarantee.
 
 from __future__ import annotations
 
+import glob
 import os
+from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -50,7 +68,100 @@ import yaml
 from .constants import NUM_JOINTS
 
 OBS_DIM: int = 2 * NUM_JOINTS + 10
-"""Observation width: q(7) + q̇(7) + ee(3) + target(3) + obstacle(3) + d_min(1)."""
+"""Legacy observation width: q(7)+q̇(7)+ee(3)+target(3)+obstacle(3)+d_min(1).
+
+Kept as a module constant because it is the width of every model up to
+``sac_v4`` and the base of every longer layout.  For anything that depends on
+what a SPECIFIC policy was trained with, use ``ObsSpec.dim``.
+"""
+
+CP_WIDTH: int = 4
+"""Width of one control-point geometry block: dᵢ + n̂ᵢ."""
+
+#: Fallback control points — mirror of
+#: ``franka_sim.envs.obs_layout.DEFAULT_CONTROL_POINTS``.  Only reached by a
+#: config that asks for the geometry block without listing `cbf.control_points`;
+#: both sides must then invent the SAME list or the widths disagree.
+DEFAULT_CONTROL_POINTS: Tuple[dict, ...] = (
+    {'body': 'fr3_link3', 'radius': 0.09, 'robot_link': 'fr3_link3'},
+    {'body': 'fr3_link4', 'radius': 0.09, 'robot_link': 'fr3_link4'},
+    {'body': 'fr3_link5', 'radius': 0.09, 'robot_link': 'fr3_link5'},
+    {'body': 'fr3_link6', 'radius': 0.08, 'robot_link': 'fr3_link6'},
+    {'body': 'fr3_link7', 'radius': 0.07, 'robot_link': 'fr3_link7'},
+    {'body': 'fr3_hand',  'radius': 0.13, 'robot_link': 'fr3_link8'},
+)
+
+
+@dataclass(frozen=True)
+class ObsSpec:
+    """Which optional observation blocks a policy carries — see module docstring.
+
+    Mirror of ``franka_sim.envs.obs_layout.ObsSpec``.
+    """
+
+    n_joints: int = NUM_JOINTS
+    obstacle_velocity: bool = False
+    #: Robot link names, in `cbf.control_points` order.  Empty = block absent.
+    control_points: Tuple[str, ...] = ()
+    clip_distance: float = 1.2
+
+    @property
+    def n_cp(self) -> int:
+        return len(self.control_points)
+
+    @property
+    def dim(self) -> int:
+        return (2 * self.n_joints + 10
+                + (3 if self.obstacle_velocity else 0)
+                + CP_WIDTH * self.n_cp)
+
+    @property
+    def slots(self) -> List[Tuple[str, int, int]]:
+        """``[(name, start, width), …]`` — the layout, in order."""
+        n = self.n_joints
+        out: List[Tuple[str, int, int]] = [
+            ('q', 0, n), ('qdot', n, n), ('ee_pos', 2 * n, 3),
+            ('target', 2 * n + 3, 3), ('obstacle', 2 * n + 6, 3),
+            ('d_min', 2 * n + 9, 1),
+        ]
+        i = 2 * n + 10
+        if self.obstacle_velocity:
+            out.append(('v_obs', i, 3))
+            i += 3
+        for name in self.control_points:
+            out.append((f'cp:{name}', i, CP_WIDTH))
+            i += CP_WIDTH
+        return out
+
+    def describe(self) -> str:
+        """One-line layout summary — log it wherever a policy is loaded."""
+        return (f'obs({self.dim}) = ' +
+                ' + '.join(f'{k}({w})' for k, _, w in self.slots))
+
+
+#: The 24-dim layout every model up to ``sac_v4`` was trained on, and what a
+#: config carrying no ``obs:`` block resolves to.
+LEGACY_OBS_SPEC = ObsSpec()
+
+
+def obs_spec_from_config(cfg: Optional[dict]) -> ObsSpec:
+    """Training ``config.yaml`` → :class:`ObsSpec` (mirror of the sim helper).
+
+    Pass the config frozen NEXT TO THE MODEL, not the repository default: the
+    layout is a property of the artifact about to drive the arm.
+    """
+    cfg = cfg or {}
+    o = cfg.get('obs') or {}
+    cbf = cfg.get('cbf') or {}
+    cps: Tuple[str, ...] = ()
+    if bool(o.get('control_point_geometry', False)):
+        entries = cbf.get('control_points') or DEFAULT_CONTROL_POINTS
+        cps = tuple(str(c.get('robot_link', c['body'])) for c in entries)
+    clip = o.get('clip_distance')
+    clip = (float(clip) if clip is not None
+            else float(cbf.get('cbf_obstacle_horizon', 1.2)))
+    return ObsSpec(obstacle_velocity=bool(o.get('obstacle_velocity', False)),
+                   control_points=cps, clip_distance=clip)
 
 ACT_DIM: int = NUM_JOINTS
 """Action width: one normalised nominal acceleration per arm joint."""
@@ -67,30 +178,119 @@ def build_observation(
     target: np.ndarray,
     obstacle: np.ndarray,
     d_min: float,
+    v_obs: Optional[np.ndarray] = None,
+    cp_geometry: Optional[np.ndarray] = None,
+    spec: ObsSpec = LEGACY_OBS_SPEC,
     out: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Assemble the 24-dim observation exactly as ``FrankaCBFEnv._get_obs``.
+    """Assemble the observation exactly as ``FrankaCBFEnv._get_obs``.
 
-    *out* — when given a preallocated ``(OBS_DIM,)`` or ``(1, OBS_DIM)``
+    *spec* defaults to the legacy 24-dim layout, so existing callers and every
+    model up to ``sac_v4`` are unaffected.
+
+    *cp_geometry* is ``(n_cp, 4)`` — ``[dᵢ, n̂ᵢ]`` per row, in
+    ``spec.control_points`` order, as :func:`control_point_geometry` builds it.
+
+    *out* — when given a preallocated ``(spec.dim,)`` or ``(1, spec.dim)``
     float32 buffer — is filled in place and returned, so the control loop
     allocates nothing per tick.  Non-finite entries are zeroed (a NaN reaching
     the network would poison the whole action vector).
     """
     if out is None:
-        out = np.zeros(OBS_DIM, dtype=np.float32)
+        out = np.zeros(spec.dim, dtype=np.float32)
     flat = out.reshape(-1)
-    if flat.size != OBS_DIM:
-        raise ValueError(f'out must hold {OBS_DIM} values, got {flat.size}')
+    if flat.size != spec.dim:
+        raise ValueError(f'out must hold {spec.dim} values, got {flat.size}')
 
-    n = NUM_JOINTS
+    n = spec.n_joints
     flat[0:n]         = q
     flat[n:2 * n]     = qdot
     flat[2 * n:2 * n + 3] = ee_pos
     flat[2 * n + 3:2 * n + 6] = target
     flat[2 * n + 6:2 * n + 9] = obstacle
-    flat[2 * n + 9]   = d_min
+    flat[2 * n + 9]   = min(float(d_min), spec.clip_distance)
+    i = 2 * n + 10
+
+    if spec.obstacle_velocity:
+        if v_obs is None:
+            raise ValueError('spec requires obstacle_velocity but v_obs is None')
+        flat[i:i + 3] = v_obs
+        i += 3
+
+    if spec.n_cp:
+        if cp_geometry is None:
+            raise ValueError('spec requires control-point geometry but '
+                             'cp_geometry is None')
+        g = np.asarray(cp_geometry, dtype=np.float64).reshape(-1, CP_WIDTH)
+        if g.shape[0] != spec.n_cp:
+            raise ValueError(f'cp_geometry must have {spec.n_cp} rows, '
+                             f'got {g.shape[0]}')
+        g = g.copy()
+        g[:, 0] = np.minimum(g[:, 0], spec.clip_distance)
+        flat[i:i + CP_WIDTH * spec.n_cp] = g.reshape(-1)
+
     np.nan_to_num(flat, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return out
+
+
+def control_point_geometry(
+    entries: Iterable[Tuple[str, float, np.ndarray, np.ndarray]],
+    spec: ObsSpec,
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """``MultiLinkDistance`` entries → ``(n_cp, 4)`` ``[dᵢ, n̂ᵢ]`` block.
+
+    *entries* are ``(link_name, d, n̂, p_human)`` as decoded by
+    ``rl_policy_commander._obs_cb``.  The robot reports SEVERAL control points
+    per link (``fr3_complete.yaml`` samples 11 points along the segment axes)
+    while the sim carries one sphere at the body origin, so the NEAREST entry
+    per link is the one that maps onto the sim's row — and it is the
+    conservative pick either way.
+
+    A link with nothing reported near it gets ``(clip_distance, 0, 0, 0)``: a
+    zero normal is a distinguishable "no direction known" token, never a
+    direction.  That is also what the sim emits for a degenerate row, so the
+    two agree on the absence of information as well as on its presence.
+    """
+    if out is None:
+        out = np.zeros((spec.n_cp, CP_WIDTH), dtype=np.float64)
+    if out.shape != (spec.n_cp, CP_WIDTH):
+        raise ValueError(f'out must be {(spec.n_cp, CP_WIDTH)}, got {out.shape}')
+    out[:, 0] = spec.clip_distance
+    out[:, 1:] = 0.0
+    if not spec.n_cp:
+        return out
+
+    index = {name: i for i, name in enumerate(spec.control_points)}
+    best: List[Optional[float]] = [None] * spec.n_cp
+    for name, d, n_hat, _p_human in entries:
+        i = index.get(name)
+        if i is None or not np.isfinite(d):
+            continue
+        if best[i] is None or d < best[i]:
+            best[i] = float(d)
+            out[i, 0] = float(d)
+            out[i, 1:] = n_hat
+    return out
+
+
+def obstacle_velocity(centre: np.ndarray, prev_centre: Optional[np.ndarray],
+                      dt: float) -> np.ndarray:
+    """Finite-difference obstacle velocity, mirroring ``_get_obs``.
+
+    Deliberately a plain difference of the ESTIMATED centres with no extra
+    smoothing: the sim differentiates its post-randomizer position and nothing
+    else, so any filtering added here would be a block the policy never trained
+    against.  The engine's own LPF is already upstream of both.
+
+    Returns zeros on the first tick and on a non-positive *dt* — an unusable
+    timestamp must not become an unbounded velocity.
+    """
+    if prev_centre is None or not np.isfinite(dt) or dt <= 0.0:
+        return np.zeros(3)
+    v = (np.asarray(centre, dtype=np.float64)
+         - np.asarray(prev_centre, dtype=np.float64)) / float(dt)
+    return np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def action_to_qddot(
@@ -245,6 +445,37 @@ def resolve_model_path(model: str, sim_root: str = '') -> str:
             return os.path.abspath(cand)
     raise FileNotFoundError(
         'ONNX policy not found. Tried: ' + ', '.join(tried))
+
+
+def find_latest_model(sim_root: str) -> str:
+    """Newest exported ``.onnx`` under ``<sim_root>/models``, or ``''``.
+
+    Backs the documented ``rl_onnx_model:=""`` default ("empty = newest model
+    under franka_sim/models", ``config/launch_defaults.yaml``).  Ordered by
+    MTIME, not by filename, for the same reason
+    :func:`~franka_sim.scripts.evaluate_policy.latest_checkpoint` is:
+    ``best_model.onnx`` is rewritten whenever eval improves, so "the newest
+    file" and "the highest episode number" are different questions, and the
+    newest file is the one that was just trained.
+
+    Only ``.onnx`` is considered.  A ``.zip`` is a stable-baselines3 training
+    artifact that ``rl_policy_commander`` cannot load at all (the robot carries
+    onnxruntime, not torch), so silently selecting one would trade a clear
+    "nothing to run" error for an obscure load failure.
+
+    The CALLER must log the path it gets back.  Choosing an artifact implicitly
+    is a convenience for tests and demos; on hardware the operator has to be
+    able to read back which policy is about to move the arm.
+    """
+    if not sim_root:
+        return ''
+    models = os.path.join(sim_root, 'models')
+    if not os.path.isdir(models):
+        return ''
+    hits = glob.glob(os.path.join(models, '**', '*.onnx'), recursive=True)
+    if not hits:
+        return ''
+    return os.path.abspath(max(hits, key=os.path.getmtime))
 
 
 def resolve_sim_config_path(explicit: str, model_path: str,

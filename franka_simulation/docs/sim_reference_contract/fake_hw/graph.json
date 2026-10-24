@@ -1,0 +1,2073 @@
+{
+ "nodes": {
+  "/NS_1/controller_manager": {
+   "publishers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/controller_manager/configure_controller",
+    "/NS_1/controller_manager/describe_parameters",
+    "/NS_1/controller_manager/get_parameter_types",
+    "/NS_1/controller_manager/get_parameters",
+    "/NS_1/controller_manager/list_controller_types",
+    "/NS_1/controller_manager/list_controllers",
+    "/NS_1/controller_manager/list_hardware_components",
+    "/NS_1/controller_manager/list_hardware_interfaces",
+    "/NS_1/controller_manager/list_parameters",
+    "/NS_1/controller_manager/load_controller",
+    "/NS_1/controller_manager/reload_controller_libraries",
+    "/NS_1/controller_manager/set_hardware_component_state",
+    "/NS_1/controller_manager/set_parameters",
+    "/NS_1/controller_manager/set_parameters_atomically",
+    "/NS_1/controller_manager/switch_controller",
+    "/NS_1/controller_manager/unload_controller"
+   ],
+   "subscribers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/joint_state_broadcaster": {
+   "publishers": {
+    "/NS_1/dynamic_joint_states": [
+     "control_msgs/msg/DynamicJointState"
+    ],
+    "/NS_1/franka/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/joint_state_broadcaster/transition_event": [
+     "lifecycle_msgs/msg/TransitionEvent"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/joint_state_broadcaster/describe_parameters",
+    "/NS_1/joint_state_broadcaster/get_parameter_types",
+    "/NS_1/joint_state_broadcaster/get_parameters",
+    "/NS_1/joint_state_broadcaster/list_parameters",
+    "/NS_1/joint_state_broadcaster/set_parameters",
+    "/NS_1/joint_state_broadcaster/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/joint_state_publisher": {
+   "publishers": {
+    "/NS_1/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/joint_state_publisher/describe_parameters",
+    "/NS_1/joint_state_publisher/get_parameter_types",
+    "/NS_1/joint_state_publisher/get_parameters",
+    "/NS_1/joint_state_publisher/list_parameters",
+    "/NS_1/joint_state_publisher/set_parameters",
+    "/NS_1/joint_state_publisher/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/franka/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/franka_gripper/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/robot_description": [
+     "std_msgs/msg/String"
+    ]
+   }
+  },
+  "/NS_1/move_group": {
+   "publishers": {
+    "/NS_1/display_contacts": [
+     "visualization_msgs/msg/MarkerArray"
+    ],
+    "/NS_1/display_planned_path": [
+     "moveit_msgs/msg/DisplayTrajectory"
+    ],
+    "/NS_1/execute_trajectory/_action/feedback": [
+     "moveit_msgs/action/ExecuteTrajectory_FeedbackMessage"
+    ],
+    "/NS_1/execute_trajectory/_action/status": [
+     "action_msgs/msg/GoalStatusArray"
+    ],
+    "/NS_1/motion_plan_request": [
+     "moveit_msgs/msg/MotionPlanRequest"
+    ],
+    "/NS_1/move_action/_action/feedback": [
+     "moveit_msgs/action/MoveGroup_FeedbackMessage"
+    ],
+    "/NS_1/move_action/_action/status": [
+     "action_msgs/msg/GoalStatusArray"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/apply_planning_scene",
+    "/NS_1/check_state_validity",
+    "/NS_1/clear_octomap",
+    "/NS_1/compute_cartesian_path",
+    "/NS_1/compute_fk",
+    "/NS_1/compute_ik",
+    "/NS_1/execute_trajectory/_action/cancel_goal",
+    "/NS_1/execute_trajectory/_action/get_result",
+    "/NS_1/execute_trajectory/_action/send_goal",
+    "/NS_1/get_planner_params",
+    "/NS_1/load_map",
+    "/NS_1/move_action/_action/cancel_goal",
+    "/NS_1/move_action/_action/get_result",
+    "/NS_1/move_action/_action/send_goal",
+    "/NS_1/move_group/describe_parameters",
+    "/NS_1/move_group/get_parameter_types",
+    "/NS_1/move_group/get_parameters",
+    "/NS_1/move_group/list_parameters",
+    "/NS_1/move_group/set_parameters",
+    "/NS_1/move_group/set_parameters_atomically",
+    "/NS_1/plan_kinematic_path",
+    "/NS_1/query_planner_interface",
+    "/NS_1/save_map",
+    "/NS_1/set_planner_params"
+   ],
+   "subscribers": {
+    "/NS_1/trajectory_execution_event": [
+     "std_msgs/msg/String"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/move_group_private_104362302338624": {
+   "publishers": {
+    "/NS_1/monitored_planning_scene": [
+     "moveit_msgs/msg/PlanningScene"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/get_planning_scene",
+    "/NS_1/move_group_private_104362302338624/describe_parameters",
+    "/NS_1/move_group_private_104362302338624/get_parameter_types",
+    "/NS_1/move_group_private_104362302338624/get_parameters",
+    "/NS_1/move_group_private_104362302338624/list_parameters",
+    "/NS_1/move_group_private_104362302338624/set_parameters",
+    "/NS_1/move_group_private_104362302338624/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/attached_collision_object": [
+     "moveit_msgs/msg/AttachedCollisionObject"
+    ],
+    "/NS_1/collision_object": [
+     "moveit_msgs/msg/CollisionObject"
+    ],
+    "/NS_1/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/planning_scene": [
+     "moveit_msgs/msg/PlanningScene"
+    ],
+    "/NS_1/planning_scene_world": [
+     "moveit_msgs/msg/PlanningSceneWorld"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/moveit_simple_controller_manager": {
+   "publishers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/moveit_simple_controller_manager/describe_parameters",
+    "/NS_1/moveit_simple_controller_manager/get_parameter_types",
+    "/NS_1/moveit_simple_controller_manager/get_parameters",
+    "/NS_1/moveit_simple_controller_manager/list_parameters",
+    "/NS_1/moveit_simple_controller_manager/set_parameters",
+    "/NS_1/moveit_simple_controller_manager/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/pentagon_qddot_commander": {
+   "publishers": {
+    "/NS_1/ee_actual": [
+     "geometry_msgs/msg/PointStamped"
+    ],
+    "/NS_1/ee_desired": [
+     "geometry_msgs/msg/PointStamped"
+    ],
+    "/NS_1/q_des_state": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/qddot_nom": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/pentagon_qddot_commander/describe_parameters",
+    "/NS_1/pentagon_qddot_commander/get_parameter_types",
+    "/NS_1/pentagon_qddot_commander/get_parameters",
+    "/NS_1/pentagon_qddot_commander/list_parameters",
+    "/NS_1/pentagon_qddot_commander/set_parameters",
+    "/NS_1/pentagon_qddot_commander/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/cbf_status": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/franka/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/iso_safety": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ]
+   }
+  },
+  "/NS_1/robot_state_publisher": {
+   "publishers": {
+    "/NS_1/robot_description": [
+     "std_msgs/msg/String"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ],
+    "/tf": [
+     "tf2_msgs/msg/TFMessage"
+    ],
+    "/tf_static": [
+     "tf2_msgs/msg/TFMessage"
+    ]
+   },
+   "services": [
+    "/NS_1/robot_state_publisher/describe_parameters",
+    "/NS_1/robot_state_publisher/get_parameter_types",
+    "/NS_1/robot_state_publisher/get_parameters",
+    "/NS_1/robot_state_publisher/list_parameters",
+    "/NS_1/robot_state_publisher/set_parameters",
+    "/NS_1/robot_state_publisher/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/rt_torque_controller": {
+   "publishers": {
+    "/NS_1/rt_torque_controller/transition_event": [
+     "lifecycle_msgs/msg/TransitionEvent"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/NS_1/rt_torque_controller/describe_parameters",
+    "/NS_1/rt_torque_controller/get_parameter_types",
+    "/NS_1/rt_torque_controller/get_parameters",
+    "/NS_1/rt_torque_controller/list_parameters",
+    "/NS_1/rt_torque_controller/set_parameters",
+    "/NS_1/rt_torque_controller/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/qddot_safe": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/torque_cmd": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  },
+  "/NS_1/transform_listener_impl_5eeabdf58310": {
+   "publishers": {
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [],
+   "subscribers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/tf": [
+     "tf2_msgs/msg/TFMessage"
+    ],
+    "/tf_static": [
+     "tf2_msgs/msg/TFMessage"
+    ]
+   }
+  },
+  "/_ros2cli_295006": {
+   "publishers": {
+    "/NS_1/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [],
+   "subscribers": {}
+  },
+  "/cbf_safety_filter": {
+   "publishers": {
+    "/NS_1/cbf_status": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/qddot_safe": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/cbf_safety_filter/describe_parameters",
+    "/cbf_safety_filter/get_parameter_types",
+    "/cbf_safety_filter/get_parameters",
+    "/cbf_safety_filter/list_parameters",
+    "/cbf_safety_filter/set_parameters",
+    "/cbf_safety_filter/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/franka/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/iso_safety": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/qddot_nom": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/cbf/per_link_distances": [
+     "franka_msgs/msg/MultiLinkDistance"
+    ]
+   }
+  },
+  "/experiment_logger": {
+   "publishers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/experiment_logger/describe_parameters",
+    "/experiment_logger/get_parameter_types",
+    "/experiment_logger/get_parameters",
+    "/experiment_logger/list_parameters",
+    "/experiment_logger/set_parameters",
+    "/experiment_logger/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/cbf_status": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/franka_robot_state_broadcaster/robot_state": [
+     "franka_msgs/msg/FrankaRobotState"
+    ],
+    "/NS_1/iso_safety": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/qddot_nom": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/qddot_safe": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/qdot_cmd": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/torque_cmd": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/torque_saturation": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/tracking_qdot": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/cbf/per_link_distances": [
+     "franka_msgs/msg/MultiLinkDistance"
+    ],
+    "/human_robot/multi_distance": [
+     "franka_msgs/msg/MultiDistance"
+    ]
+   }
+  },
+  "/qddot_to_torque": {
+   "publishers": {
+    "/NS_1/torque_cmd": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/NS_1/torque_saturation": [
+     "std_msgs/msg/Float64MultiArray"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/qddot_to_torque/describe_parameters",
+    "/qddot_to_torque/get_parameter_types",
+    "/qddot_to_torque/get_parameters",
+    "/qddot_to_torque/list_parameters",
+    "/qddot_to_torque/set_parameters",
+    "/qddot_to_torque/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/franka/joint_states": [
+     "sensor_msgs/msg/JointState"
+    ],
+    "/NS_1/qddot_safe": [
+     "std_msgs/msg/Float64MultiArray"
+    ]
+   }
+  },
+  "/real_time_distance": {
+   "publishers": {
+    "/cbf/per_link_distances": [
+     "franka_msgs/msg/MultiLinkDistance"
+    ],
+    "/human_robot/distance": [
+     "franka_msgs/msg/HumanRobotDistance"
+    ],
+    "/human_robot/multi_distance": [
+     "franka_msgs/msg/MultiDistance"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/real_time_distance/overlay_image": [
+     "sensor_msgs/msg/Image"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/real_time_distance/describe_parameters",
+    "/real_time_distance/get_parameter_types",
+    "/real_time_distance/get_parameters",
+    "/real_time_distance/list_parameters",
+    "/real_time_distance/set_parameters",
+    "/real_time_distance/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/camera/camera/depth/camera_info": [
+     "sensor_msgs/msg/CameraInfo"
+    ],
+    "/camera/camera/depth/image_rect_raw": [
+     "sensor_msgs/msg/Image"
+    ],
+    "/tf": [
+     "tf2_msgs/msg/TFMessage"
+    ],
+    "/tf_static": [
+     "tf2_msgs/msg/TFMessage"
+    ]
+   }
+  },
+  "/trajectory_overlay": {
+   "publishers": {
+    "/NS_1/trajectory_overlay": [
+     "sensor_msgs/msg/Image"
+    ],
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ]
+   },
+   "services": [
+    "/trajectory_overlay/describe_parameters",
+    "/trajectory_overlay/get_parameter_types",
+    "/trajectory_overlay/get_parameters",
+    "/trajectory_overlay/list_parameters",
+    "/trajectory_overlay/set_parameters",
+    "/trajectory_overlay/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/NS_1/ee_actual": [
+     "geometry_msgs/msg/PointStamped"
+    ],
+    "/NS_1/ee_desired": [
+     "geometry_msgs/msg/PointStamped"
+    ],
+    "/camera/camera/color/camera_info": [
+     "sensor_msgs/msg/CameraInfo"
+    ],
+    "/camera/camera/color/image_raw": [
+     "sensor_msgs/msg/Image"
+    ]
+   }
+  },
+  "/world_to_robot_base_tf": {
+   "publishers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ],
+    "/rosout": [
+     "rcl_interfaces/msg/Log"
+    ],
+    "/tf_static": [
+     "tf2_msgs/msg/TFMessage"
+    ]
+   },
+   "services": [
+    "/world_to_robot_base_tf/describe_parameters",
+    "/world_to_robot_base_tf/get_parameter_types",
+    "/world_to_robot_base_tf/get_parameters",
+    "/world_to_robot_base_tf/list_parameters",
+    "/world_to_robot_base_tf/set_parameters",
+    "/world_to_robot_base_tf/set_parameters_atomically"
+   ],
+   "subscribers": {
+    "/parameter_events": [
+     "rcl_interfaces/msg/ParameterEvent"
+    ]
+   }
+  }
+ },
+ "topics": {
+  "/NS_1/attached_collision_object": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "moveit_msgs/msg/AttachedCollisionObject"
+   ]
+  },
+  "/NS_1/cbf_status": {
+   "publishers": [
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/collision_object": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "moveit_msgs/msg/CollisionObject"
+   ]
+  },
+  "/NS_1/display_contacts": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "visualization_msgs/msg/MarkerArray"
+   ]
+  },
+  "/NS_1/display_planned_path": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "moveit_msgs/msg/DisplayTrajectory"
+   ]
+  },
+  "/NS_1/dynamic_joint_states": {
+   "publishers": [
+    {
+     "node": "/NS_1/joint_state_broadcaster",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "control_msgs/msg/DynamicJointState"
+   ]
+  },
+  "/NS_1/ee_actual": {
+   "publishers": [
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "geometry_msgs/msg/PointStamped"
+   ]
+  },
+  "/NS_1/ee_desired": {
+   "publishers": [
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "geometry_msgs/msg/PointStamped"
+   ]
+  },
+  "/NS_1/execute_trajectory/_action/feedback": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "moveit_msgs/action/ExecuteTrajectory_FeedbackMessage"
+   ]
+  },
+  "/NS_1/execute_trajectory/_action/status": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "action_msgs/msg/GoalStatusArray"
+   ]
+  },
+  "/NS_1/franka/joint_states": {
+   "publishers": [
+    {
+     "node": "/NS_1/joint_state_broadcaster",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/joint_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/qddot_to_torque",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/JointState"
+   ]
+  },
+  "/NS_1/franka_gripper/joint_states": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/joint_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/JointState"
+   ]
+  },
+  "/NS_1/franka_robot_state_broadcaster/robot_state": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    }
+   ],
+   "types": [
+    "franka_msgs/msg/FrankaRobotState"
+   ]
+  },
+  "/NS_1/iso_safety": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/joint_state_broadcaster/transition_event": {
+   "publishers": [
+    {
+     "node": "/NS_1/joint_state_broadcaster",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "lifecycle_msgs/msg/TransitionEvent"
+   ]
+  },
+  "/NS_1/joint_states": {
+   "publishers": [
+    {
+     "node": "/NS_1/joint_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/_ros2cli_295006",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    },
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/JointState"
+   ]
+  },
+  "/NS_1/monitored_planning_scene": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "moveit_msgs/msg/PlanningScene"
+   ]
+  },
+  "/NS_1/motion_plan_request": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "moveit_msgs/msg/MotionPlanRequest"
+   ]
+  },
+  "/NS_1/move_action/_action/feedback": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "moveit_msgs/action/MoveGroup_FeedbackMessage"
+   ]
+  },
+  "/NS_1/move_action/_action/status": {
+   "publishers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "action_msgs/msg/GoalStatusArray"
+   ]
+  },
+  "/NS_1/planning_scene": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "moveit_msgs/msg/PlanningScene"
+   ]
+  },
+  "/NS_1/planning_scene_world": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "moveit_msgs/msg/PlanningSceneWorld"
+   ]
+  },
+  "/NS_1/q_des_state": {
+   "publishers": [
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "sensor_msgs/msg/JointState"
+   ]
+  },
+  "/NS_1/qddot_nom": {
+   "publishers": [
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/qddot_safe": {
+   "publishers": [
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/rt_torque_controller",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/qddot_to_torque",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/qdot_cmd": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/robot_description": {
+   "publishers": [
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/joint_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/String"
+   ]
+  },
+  "/NS_1/rt_torque_controller/transition_event": {
+   "publishers": [
+    {
+     "node": "/NS_1/rt_torque_controller",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "lifecycle_msgs/msg/TransitionEvent"
+   ]
+  },
+  "/NS_1/torque_cmd": {
+   "publishers": [
+    {
+     "node": "/qddot_to_torque",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/rt_torque_controller",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/torque_saturation": {
+   "publishers": [
+    {
+     "node": "/qddot_to_torque",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/tracking_qdot": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/Float64MultiArray"
+   ]
+  },
+  "/NS_1/trajectory_execution_event": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "std_msgs/msg/String"
+   ]
+  },
+  "/NS_1/trajectory_overlay": {
+   "publishers": [
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "sensor_msgs/msg/Image"
+   ]
+  },
+  "/camera/camera/color/camera_info": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/CameraInfo"
+   ]
+  },
+  "/camera/camera/color/image_raw": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/Image"
+   ]
+  },
+  "/camera/camera/depth/camera_info": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/CameraInfo"
+   ]
+  },
+  "/camera/camera/depth/image_rect_raw": {
+   "publishers": [],
+   "subscribers": [
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "sensor_msgs/msg/Image"
+   ]
+  },
+  "/cbf/per_link_distances": {
+   "publishers": [
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "BEST_EFFORT"
+     }
+    }
+   ],
+   "types": [
+    "franka_msgs/msg/MultiLinkDistance"
+   ]
+  },
+  "/human_robot/distance": {
+   "publishers": [
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "franka_msgs/msg/HumanRobotDistance"
+   ]
+  },
+  "/human_robot/multi_distance": {
+   "publishers": [
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "franka_msgs/msg/MultiDistance"
+   ]
+  },
+  "/parameter_events": {
+   "publishers": [
+    {
+     "node": "/NS_1/controller_manager",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/joint_state_broadcaster",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/joint_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/moveit_simple_controller_manager",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/rt_torque_controller",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/_contract_capture",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/_ros2cli_295006",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/qddot_to_torque",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/world_to_robot_base_tf",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/controller_manager",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/joint_state_broadcaster",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/moveit_simple_controller_manager",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/rt_torque_controller",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/transform_listener_impl_5eeabdf58310",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/world_to_robot_base_tf",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "rcl_interfaces/msg/ParameterEvent"
+   ]
+  },
+  "/real_time_distance/overlay_image": {
+   "publishers": [
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "sensor_msgs/msg/Image"
+   ]
+  },
+  "/rosout": {
+   "publishers": [
+    {
+     "node": "/NS_1/controller_manager",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/joint_state_broadcaster",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/joint_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/move_group_private_104362302338624",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/moveit_simple_controller_manager",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/pentagon_qddot_commander",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/rt_torque_controller",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/NS_1/transform_listener_impl_5eeabdf58310",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/_contract_capture",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/_ros2cli_295006",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/cbf_safety_filter",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/experiment_logger",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/qddot_to_torque",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/trajectory_overlay",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/world_to_robot_base_tf",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [],
+   "types": [
+    "rcl_interfaces/msg/Log"
+   ]
+  },
+  "/tf": {
+   "publishers": [
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/transform_listener_impl_5eeabdf58310",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "VOLATILE",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "tf2_msgs/msg/TFMessage"
+   ]
+  },
+  "/tf_static": {
+   "publishers": [
+    {
+     "node": "/NS_1/robot_state_publisher",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/world_to_robot_base_tf",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "subscribers": [
+    {
+     "node": "/NS_1/transform_listener_impl_5eeabdf58310",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    },
+    {
+     "node": "/real_time_distance",
+     "qos": {
+      "depth": 0,
+      "durability": "TRANSIENT_LOCAL",
+      "history": "UNKNOWN",
+      "reliability": "RELIABLE"
+     }
+    }
+   ],
+   "types": [
+    "tf2_msgs/msg/TFMessage"
+   ]
+  }
+ }
+}

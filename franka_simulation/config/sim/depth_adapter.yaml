@@ -1,0 +1,17 @@
+# SIM. depth_sim_adapter parameters (plan H2, H11). Ground rule 2: what is
+# physically different in sim, one comment per key.
+/**:
+  ros__parameters:
+    in_image: /sim/d455/depth/image            # bridged Gazebo depth (32FC1 m)
+    in_info: /sim/d455/depth/camera_info       # bridged Gazebo camera_info
+    out_image: /camera/camera/depth/image_rect_raw   # what real_time_distance reads on the rig
+    out_info: /camera/camera/depth/camera_info
+    frame_id: camera_depth_optical_frame       # the RealSense driver's frame id
+    # ── H11 fidelity stages: all OFF (Gazebo depth is exact and instantaneous) ──
+    delay_s: 0.0       # [s] capture -> publish; the rig's camera hop was 25.6 ms median (approach_speed_envelope.md H3)
+    dropout_p: 0.0     # per-frame loss; the live node dropped 16 % of distinct frames (same doc)
+    range_noise: false # sigma_z(z) = z^2/(f b) sigma_d per pixel (range_noise_calibration.py)
+    baseline_m: 0.095  # = fr3_control.yaml sensor_range_baseline_m (test-pinned)
+    sigma_d_px: 0.20   # = fr3_control.yaml sensor_range_sigma_d_px (test-pinned)
+    seed: 0            # noise / dropout RNG; the launch sets it from the episode seed
+    wait_for_tf: [base, fr3_link8]   # hold frames until the arm TF exists: Gazebo renders before the robot is spawned

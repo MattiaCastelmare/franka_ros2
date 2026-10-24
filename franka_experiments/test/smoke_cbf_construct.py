@@ -38,7 +38,14 @@ mod('sensor_msgs'); mod('sensor_msgs.msg', JointState=object)
 class FMA:
     def __init__(self): self.data = []
 mod('std_msgs'); mod('std_msgs.msg', Float64MultiArray=FMA)
-mod('franka_msgs'); mod('franka_msgs.msg', MultiLinkDistance=object)
+mod('franka_msgs')
+# Every name utils.perception_msgs imports, not just the one the filter
+# itself touches: the stub is imported in its place, so a name added there
+# and not here fails the whole construction with a misleading ImportError.
+mod('franka_msgs.msg', MultiLinkDistance=object, LinkDistance=object,
+    MultiDistance=object, HumanRobotDistance=object)
+mod('geometry_msgs')
+mod('geometry_msgs.msg', Point=object, Vector3=object)
 
 class OSQPProb:
     def setup(self, **k): pass

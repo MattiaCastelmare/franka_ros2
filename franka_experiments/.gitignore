@@ -1,6 +1,5 @@
 # Experiment data — never commit
 franka_experiments/nodes/experiment_logs/
-~/ros2_experiments/
 
 # Python bytecode
 __pycache__/

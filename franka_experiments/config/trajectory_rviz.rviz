@@ -1,0 +1,120 @@
+# RViz layout for the EE trajectory overlay (trajectory_visualization_node).
+#
+# Displays: the robot, the TF tree, and the MarkerArray carrying the two traces
+# — red for the commanded path P(s), blue for where the end effector really is.
+#
+# NAMESPACE. The topics below are written for namespace:=NS_1, matching the
+# topics: block in config/fr3_control.yaml, which is absolute throughout.
+# torque_control_stack.launch.py does NOT use this file as-is: it substitutes
+# the launch's actual namespace and writes a temp copy, the same treatment the
+# controller YAML gets. Opening this file directly in rviz2 assumes NS_1.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /TrajectoryMarkers1
+      Splitter Ratio: 0.5
+    Tree Height: 700
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 0.25
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 12
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Alpha: 0.8
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /NS_1/robot_description
+      Enabled: true
+      Name: RobotModel
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: false
+      Frame Timeout: 15
+      Marker Scale: 0.2
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: false
+      Update Interval: 0
+      Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: TrajectoryMarkers
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /NS_1/trajectory_markers
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: fr3_link0
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.2
+      Focal Point:
+        X: 0.4
+        Y: 0
+        Z: 0.4
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 0.35
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 0.9
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Width: 1400
+  X: 60
+  Y: 60

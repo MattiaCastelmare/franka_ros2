@@ -1,0 +1,2756 @@
+{
+ "snapshots": {
+  "defaults": [
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] accel-space pipeline  arm=fr3  ip=192.168.2.10  fake=false"
+   },
+   {
+    "__type__": "IncludeLaunchDescription",
+    "launch_arguments": [
+     [
+      "arm_id",
+      "fr3"
+     ],
+     [
+      "robot_ip",
+      "192.168.2.10"
+     ],
+     [
+      "namespace",
+      "NS_1"
+     ],
+     [
+      "use_fake_hardware",
+      "false"
+     ],
+     [
+      "fake_sensor_commands",
+      "false"
+     ],
+     [
+      "load_gripper",
+      "false"
+     ],
+     [
+      "controllers_yaml",
+      "<tmp:954e257ea5400c09>"
+     ]
+    ],
+    "launch_description_source": {
+     "__type__": "PythonLaunchDescriptionSource",
+     "expanded_location": null,
+     "location": "<install>/franka_bringup/share/franka_bringup/launch/franka.launch.py",
+     "method": "interpreted python launch file"
+    }
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "--x",
+       "0",
+       "--y",
+       "0",
+       "--z",
+       "0",
+       "--qx",
+       "0",
+       "--qy",
+       "0",
+       "--qz",
+       "0",
+       "--qw",
+       "1",
+       "--frame-id",
+       "world",
+       "--child-frame-id",
+       "base"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "static_transform_publisher",
+      "node_name": "world_to_robot_base_tf",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "tf2_ros",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/tf2_ros/static_transform_publisher",
+        "--x",
+        "0",
+        "--y",
+        "0",
+        "--z",
+        "0",
+        "--qx",
+        "0",
+        "--qy",
+        "0",
+        "--qz",
+        "0",
+        "--qw",
+        "1",
+        "--frame-id",
+        "world",
+        "--child-frame-id",
+        "base",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 1.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "rt_torque_controller",
+       "--controller-manager",
+       "/NS_1/controller_manager",
+       "--controller-manager-timeout",
+       "30"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "spawner",
+      "node_name": null,
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "controller_manager",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/controller_manager/spawner",
+        "rt_torque_controller",
+        "--controller-manager",
+        "/NS_1/controller_manager",
+        "--controller-manager-timeout",
+        "30",
+        "--ros-args"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 10.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "ExecuteProcess",
+      "cached_output": false,
+      "executed": false,
+      "log_cmd": false,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "bash",
+        "<install>/franka_experiments/share/franka_experiments/scripts/pin_rt_thread.sh",
+        "3",
+        "60"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "respawn": false,
+      "respawn_delay": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 10.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [RT pinning]     ros2_control_node FF thread -> CPU3"
+   },
+   {
+    "__type__": "IncludeLaunchDescription",
+    "launch_arguments": [
+     [
+      "robot_ip",
+      "192.168.2.10"
+     ],
+     [
+      "namespace",
+      "NS_1"
+     ],
+     [
+      "use_fake_hardware",
+      "false"
+     ],
+     [
+      "fake_sensor_commands",
+      "false"
+     ],
+     [
+      "load_gripper",
+      "true"
+     ]
+    ],
+    "launch_description_source": {
+     "__type__": "PythonLaunchDescriptionSource",
+     "expanded_location": null,
+     "location": "<install>/franka_fr3_moveit_config/share/franka_fr3_moveit_config/launch/move_group.launch.py",
+     "method": "interpreted python launch file"
+    }
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          move_group ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "ExecuteProcess",
+      "cached_output": false,
+      "executed": false,
+      "log_cmd": false,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "ros2",
+        "topic",
+        "pub",
+        "/NS_1/joint_states",
+        "sensor_msgs/msg/JointState",
+        "{name: [fr3_finger_joint1, fr3_finger_joint2], position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]}",
+        "--rate",
+        "10.0"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": "finger_state_publisher",
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "respawn": false,
+      "respawn_delay": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          finger_state_publisher ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "IncludeLaunchDescription",
+      "launch_arguments": [
+       [
+        "depth_module.depth_profile",
+        "848x480x90"
+       ],
+       [
+        "align_depth.enable",
+        "true"
+       ]
+      ],
+      "launch_description_source": {
+       "__type__": "PythonLaunchDescriptionSource",
+       "expanded_location": null,
+       "location": "/opt/ros/humble/share/realsense2_camera/launch/rs_launch.py",
+       "method": "interpreted python launch file"
+      }
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 0.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Perception]      RealSense depth profile: 848x480x90, align_depth=True"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "image_publisher",
+      "node_name": "image_republisher",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_simulation",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_simulation/lib/franka_simulation/image_publisher",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 3.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "--x",
+       "1.993009",
+       "--y",
+       "0.032024",
+       "--z",
+       "1.080394",
+       "--qx",
+       "-0.157767",
+       "--qy",
+       "-0.007306",
+       "--qz",
+       "0.98732",
+       "--qw",
+       "0.016008",
+       "--frame-id",
+       "base",
+       "--child-frame-id",
+       "camera_link"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "static_transform_publisher",
+      "node_name": "camera_extrinsics_tf",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "tf2_ros",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/tf2_ros/static_transform_publisher",
+        "--x",
+        "1.993009",
+        "--y",
+        "0.032024",
+        "--z",
+        "1.080394",
+        "--qx",
+        "-0.157767",
+        "--qy",
+        "-0.007306",
+        "--qz",
+        "0.98732",
+        "--qw",
+        "0.016008",
+        "--frame-id",
+        "base",
+        "--child-frame-id",
+        "camera_link",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 1.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Perception]      camera ENABLED (delay=0.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "real_time_distance",
+      "node_name": "real_time_distance",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "camera_extrinsics_path": "<install>/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml\n...\n",
+        "multi_obstacle_k": 2,
+        "publish_overlay_image": true,
+        "robot_config_path": "<tmp:df2a01c32d756c6b>\n...\n"
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/real_time_distance",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Distance est.]   real_time_distance ENABLED (delay=2.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "cbf_safety_filter",
+      "node_name": "cbf_safety_filter",
+      "node_namespace": null,
+      "output": "both",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "enable_latency_compensation": true,
+        "enable_lateral_evasion": true,
+        "enable_livelock_escape": true,
+        "enable_outrun_evasion": false,
+        "enable_uncertainty_margin": true,
+        "enable_velocity_standoff": true,
+        "enable_vobs_in_hdot": true,
+        "enable_zone_ladder": true,
+        "iso_enabled": false,
+        "iso_mode": "automatic\n...\n",
+        "iso_monitor_enabled": false,
+        "iso_ssm_speed_rows": false,
+        "obstacle_input_rate_hz": 90.0,
+        "obstacle_velocity_source": "tracker\n...\n"
+       },
+       {
+        "obstacle_velocity_identity_jump": 0.1,
+        "obstacle_velocity_normal_rot_max": 0.15
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/cbf_safety_filter",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     },
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "qddot_to_torque",
+      "node_name": "qddot_to_torque",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/qddot_to_torque",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque (delay=2.0s)"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [ISO layer]      iso_safety_monitor DISABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "pentagon_qddot_commander",
+      "node_name": "pentagon_qddot_commander",
+      "node_namespace": "NS_1",
+      "output": "both",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "isolation_test": false
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/pentagon_qddot_commander",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 12.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Motion gen.]     pentagon_qddot_commander (delay=12.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "experiment_logger",
+      "node_name": "experiment_logger",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/experiment_logger",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Logging]         experiment_logger ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "trajectory_overlay_node",
+      "node_name": "trajectory_overlay",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "camera_extrinsics_path": "<install>/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml\n...\n",
+        "show_window": true,
+        "trail_seconds": 2.0,
+        "window_height": 480,
+        "window_width": 848
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/trajectory_overlay_node",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 3.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Viz]             trajectory_overlay ENABLED (red = commanded P(s), blue = measured EE, 2.0 s trail, window ON)"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Viz]             trajectory_visualization DISABLED"
+   }
+  ],
+  "fake_hardware": [
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] accel-space pipeline  arm=fr3  ip=192.168.2.10  fake=true"
+   },
+   {
+    "__type__": "IncludeLaunchDescription",
+    "launch_arguments": [
+     [
+      "arm_id",
+      "fr3"
+     ],
+     [
+      "robot_ip",
+      "192.168.2.10"
+     ],
+     [
+      "namespace",
+      "NS_1"
+     ],
+     [
+      "use_fake_hardware",
+      "true"
+     ],
+     [
+      "fake_sensor_commands",
+      "false"
+     ],
+     [
+      "load_gripper",
+      "false"
+     ],
+     [
+      "controllers_yaml",
+      "<tmp:2b948307d6785abd>"
+     ]
+    ],
+    "launch_description_source": {
+     "__type__": "PythonLaunchDescriptionSource",
+     "expanded_location": null,
+     "location": "<install>/franka_bringup/share/franka_bringup/launch/franka.launch.py",
+     "method": "interpreted python launch file"
+    }
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "--x",
+       "0",
+       "--y",
+       "0",
+       "--z",
+       "0",
+       "--qx",
+       "0",
+       "--qy",
+       "0",
+       "--qz",
+       "0",
+       "--qw",
+       "1",
+       "--frame-id",
+       "world",
+       "--child-frame-id",
+       "base"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "static_transform_publisher",
+      "node_name": "world_to_robot_base_tf",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "tf2_ros",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/tf2_ros/static_transform_publisher",
+        "--x",
+        "0",
+        "--y",
+        "0",
+        "--z",
+        "0",
+        "--qx",
+        "0",
+        "--qy",
+        "0",
+        "--qz",
+        "0",
+        "--qw",
+        "1",
+        "--frame-id",
+        "world",
+        "--child-frame-id",
+        "base",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 1.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "rt_torque_controller",
+       "--controller-manager",
+       "/NS_1/controller_manager",
+       "--controller-manager-timeout",
+       "30"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "spawner",
+      "node_name": null,
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "controller_manager",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/controller_manager/spawner",
+        "rt_torque_controller",
+        "--controller-manager",
+        "/NS_1/controller_manager",
+        "--controller-manager-timeout",
+        "30",
+        "--ros-args"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 10.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "ExecuteProcess",
+      "cached_output": false,
+      "executed": false,
+      "log_cmd": false,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "bash",
+        "<install>/franka_experiments/share/franka_experiments/scripts/pin_rt_thread.sh",
+        "3",
+        "60"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "respawn": false,
+      "respawn_delay": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 10.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [RT pinning]     ros2_control_node FF thread -> CPU3"
+   },
+   {
+    "__type__": "IncludeLaunchDescription",
+    "launch_arguments": [
+     [
+      "robot_ip",
+      "192.168.2.10"
+     ],
+     [
+      "namespace",
+      "NS_1"
+     ],
+     [
+      "use_fake_hardware",
+      "true"
+     ],
+     [
+      "fake_sensor_commands",
+      "false"
+     ],
+     [
+      "load_gripper",
+      "true"
+     ]
+    ],
+    "launch_description_source": {
+     "__type__": "PythonLaunchDescriptionSource",
+     "expanded_location": null,
+     "location": "<install>/franka_fr3_moveit_config/share/franka_fr3_moveit_config/launch/move_group.launch.py",
+     "method": "interpreted python launch file"
+    }
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          move_group ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "ExecuteProcess",
+      "cached_output": false,
+      "executed": false,
+      "log_cmd": false,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "ros2",
+        "topic",
+        "pub",
+        "/NS_1/joint_states",
+        "sensor_msgs/msg/JointState",
+        "{name: [fr3_finger_joint1, fr3_finger_joint2], position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]}",
+        "--rate",
+        "10.0"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": "finger_state_publisher",
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "respawn": false,
+      "respawn_delay": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          finger_state_publisher ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "IncludeLaunchDescription",
+      "launch_arguments": [
+       [
+        "depth_module.depth_profile",
+        "848x480x90"
+       ],
+       [
+        "align_depth.enable",
+        "true"
+       ]
+      ],
+      "launch_description_source": {
+       "__type__": "PythonLaunchDescriptionSource",
+       "expanded_location": null,
+       "location": "/opt/ros/humble/share/realsense2_camera/launch/rs_launch.py",
+       "method": "interpreted python launch file"
+      }
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 0.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Perception]      RealSense depth profile: 848x480x90, align_depth=True"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "image_publisher",
+      "node_name": "image_republisher",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_simulation",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_simulation/lib/franka_simulation/image_publisher",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 3.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "--x",
+       "1.993009",
+       "--y",
+       "0.032024",
+       "--z",
+       "1.080394",
+       "--qx",
+       "-0.157767",
+       "--qy",
+       "-0.007306",
+       "--qz",
+       "0.98732",
+       "--qw",
+       "0.016008",
+       "--frame-id",
+       "base",
+       "--child-frame-id",
+       "camera_link"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "static_transform_publisher",
+      "node_name": "camera_extrinsics_tf",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "tf2_ros",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/tf2_ros/static_transform_publisher",
+        "--x",
+        "1.993009",
+        "--y",
+        "0.032024",
+        "--z",
+        "1.080394",
+        "--qx",
+        "-0.157767",
+        "--qy",
+        "-0.007306",
+        "--qz",
+        "0.98732",
+        "--qw",
+        "0.016008",
+        "--frame-id",
+        "base",
+        "--child-frame-id",
+        "camera_link",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 1.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Perception]      camera ENABLED (delay=0.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "real_time_distance",
+      "node_name": "real_time_distance",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "camera_extrinsics_path": "<install>/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml\n...\n",
+        "multi_obstacle_k": 2,
+        "publish_overlay_image": true,
+        "robot_config_path": "<tmp:df2a01c32d756c6b>\n...\n"
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/real_time_distance",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Distance est.]   real_time_distance ENABLED (delay=2.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "cbf_safety_filter",
+      "node_name": "cbf_safety_filter",
+      "node_namespace": null,
+      "output": "both",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "enable_latency_compensation": true,
+        "enable_lateral_evasion": true,
+        "enable_livelock_escape": true,
+        "enable_outrun_evasion": false,
+        "enable_uncertainty_margin": true,
+        "enable_velocity_standoff": true,
+        "enable_vobs_in_hdot": true,
+        "enable_zone_ladder": true,
+        "iso_enabled": false,
+        "iso_mode": "automatic\n...\n",
+        "iso_monitor_enabled": false,
+        "iso_ssm_speed_rows": false,
+        "obstacle_input_rate_hz": 90.0,
+        "obstacle_velocity_source": "tracker\n...\n"
+       },
+       {
+        "obstacle_velocity_identity_jump": 0.1,
+        "obstacle_velocity_normal_rot_max": 0.15
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/cbf_safety_filter",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     },
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "qddot_to_torque",
+      "node_name": "qddot_to_torque",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/qddot_to_torque",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque (delay=2.0s)"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [ISO layer]      iso_safety_monitor DISABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "pentagon_qddot_commander",
+      "node_name": "pentagon_qddot_commander",
+      "node_namespace": "NS_1",
+      "output": "both",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "isolation_test": false
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/pentagon_qddot_commander",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 12.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Motion gen.]     pentagon_qddot_commander (delay=12.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "experiment_logger",
+      "node_name": "experiment_logger",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/experiment_logger",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Logging]         experiment_logger ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "trajectory_overlay_node",
+      "node_name": "trajectory_overlay",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "camera_extrinsics_path": "<install>/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml\n...\n",
+        "show_window": true,
+        "trail_seconds": 2.0,
+        "window_height": 480,
+        "window_width": 848
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/trajectory_overlay_node",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 3.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Viz]             trajectory_overlay ENABLED (red = commanded P(s), blue = measured EE, 2.0 s trail, window ON)"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Viz]             trajectory_visualization DISABLED"
+   }
+  ],
+  "rl": [
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] accel-space pipeline  arm=fr3  ip=192.168.2.10  fake=false"
+   },
+   {
+    "__type__": "IncludeLaunchDescription",
+    "launch_arguments": [
+     [
+      "arm_id",
+      "fr3"
+     ],
+     [
+      "robot_ip",
+      "192.168.2.10"
+     ],
+     [
+      "namespace",
+      "NS_1"
+     ],
+     [
+      "use_fake_hardware",
+      "false"
+     ],
+     [
+      "fake_sensor_commands",
+      "false"
+     ],
+     [
+      "load_gripper",
+      "false"
+     ],
+     [
+      "controllers_yaml",
+      "<tmp:954e257ea5400c09>"
+     ]
+    ],
+    "launch_description_source": {
+     "__type__": "PythonLaunchDescriptionSource",
+     "expanded_location": null,
+     "location": "<install>/franka_bringup/share/franka_bringup/launch/franka.launch.py",
+     "method": "interpreted python launch file"
+    }
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "--x",
+       "0",
+       "--y",
+       "0",
+       "--z",
+       "0",
+       "--qx",
+       "0",
+       "--qy",
+       "0",
+       "--qz",
+       "0",
+       "--qw",
+       "1",
+       "--frame-id",
+       "world",
+       "--child-frame-id",
+       "base"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "static_transform_publisher",
+      "node_name": "world_to_robot_base_tf",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "tf2_ros",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/tf2_ros/static_transform_publisher",
+        "--x",
+        "0",
+        "--y",
+        "0",
+        "--z",
+        "0",
+        "--qx",
+        "0",
+        "--qy",
+        "0",
+        "--qz",
+        "0",
+        "--qw",
+        "1",
+        "--frame-id",
+        "world",
+        "--child-frame-id",
+        "base",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 1.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "rt_torque_controller",
+       "--controller-manager",
+       "/NS_1/controller_manager",
+       "--controller-manager-timeout",
+       "30"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "spawner",
+      "node_name": null,
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "controller_manager",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/controller_manager/spawner",
+        "rt_torque_controller",
+        "--controller-manager",
+        "/NS_1/controller_manager",
+        "--controller-manager-timeout",
+        "30",
+        "--ros-args"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 10.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "ExecuteProcess",
+      "cached_output": false,
+      "executed": false,
+      "log_cmd": false,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "bash",
+        "<install>/franka_experiments/share/franka_experiments/scripts/pin_rt_thread.sh",
+        "3",
+        "60"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "respawn": false,
+      "respawn_delay": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 10.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [RT pinning]     ros2_control_node FF thread -> CPU3"
+   },
+   {
+    "__type__": "IncludeLaunchDescription",
+    "launch_arguments": [
+     [
+      "robot_ip",
+      "192.168.2.10"
+     ],
+     [
+      "namespace",
+      "NS_1"
+     ],
+     [
+      "use_fake_hardware",
+      "false"
+     ],
+     [
+      "fake_sensor_commands",
+      "false"
+     ],
+     [
+      "load_gripper",
+      "true"
+     ]
+    ],
+    "launch_description_source": {
+     "__type__": "PythonLaunchDescriptionSource",
+     "expanded_location": null,
+     "location": "<install>/franka_fr3_moveit_config/share/franka_fr3_moveit_config/launch/move_group.launch.py",
+     "method": "interpreted python launch file"
+    }
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          move_group ENABLED"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          NOTE: motion_source:=rl does not use move_group \u2014 pass start_move_group:=false to save the startup cost"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "ExecuteProcess",
+      "cached_output": false,
+      "executed": false,
+      "log_cmd": false,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "ros2",
+        "topic",
+        "pub",
+        "/NS_1/joint_states",
+        "sensor_msgs/msg/JointState",
+        "{name: [fr3_finger_joint1, fr3_finger_joint2], position: [0.0, 0.0], velocity: [0.0, 0.0], effort: [0.0, 0.0]}",
+        "--rate",
+        "10.0"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": "finger_state_publisher",
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "respawn": false,
+      "respawn_delay": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [MoveIt]          finger_state_publisher ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "IncludeLaunchDescription",
+      "launch_arguments": [
+       [
+        "depth_module.depth_profile",
+        "848x480x90"
+       ],
+       [
+        "align_depth.enable",
+        "true"
+       ]
+      ],
+      "launch_description_source": {
+       "__type__": "PythonLaunchDescriptionSource",
+       "expanded_location": null,
+       "location": "/opt/ros/humble/share/realsense2_camera/launch/rs_launch.py",
+       "method": "interpreted python launch file"
+      }
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 0.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Perception]      RealSense depth profile: 848x480x90, align_depth=True"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "image_publisher",
+      "node_name": "image_republisher",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_simulation",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_simulation/lib/franka_simulation/image_publisher",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 3.0
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": [
+       "--x",
+       "1.993009",
+       "--y",
+       "0.032024",
+       "--z",
+       "1.080394",
+       "--qx",
+       "-0.157767",
+       "--qy",
+       "-0.007306",
+       "--qz",
+       "0.98732",
+       "--qw",
+       "0.016008",
+       "--frame-id",
+       "base",
+       "--child-frame-id",
+       "camera_link"
+      ],
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "static_transform_publisher",
+      "node_name": "camera_extrinsics_tf",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "tf2_ros",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "/opt/ros/humble/lib/tf2_ros/static_transform_publisher",
+        "--x",
+        "1.993009",
+        "--y",
+        "0.032024",
+        "--z",
+        "1.080394",
+        "--qx",
+        "-0.157767",
+        "--qy",
+        "-0.007306",
+        "--qz",
+        "0.98732",
+        "--qw",
+        "0.016008",
+        "--frame-id",
+        "base",
+        "--child-frame-id",
+        "camera_link",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 1.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Perception]      camera ENABLED (delay=0.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "real_time_distance",
+      "node_name": "real_time_distance",
+      "node_namespace": null,
+      "output": "log",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "camera_extrinsics_path": "<install>/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml\n...\n",
+        "multi_obstacle_k": 2,
+        "publish_overlay_image": true,
+        "robot_config_path": "<tmp:df2a01c32d756c6b>\n...\n"
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/real_time_distance",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Distance est.]   real_time_distance ENABLED (delay=2.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "cbf_safety_filter",
+      "node_name": "cbf_safety_filter",
+      "node_namespace": null,
+      "output": "both",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "enable_latency_compensation": true,
+        "enable_lateral_evasion": true,
+        "enable_livelock_escape": true,
+        "enable_outrun_evasion": false,
+        "enable_uncertainty_margin": true,
+        "enable_velocity_standoff": true,
+        "enable_vobs_in_hdot": true,
+        "enable_zone_ladder": true,
+        "iso_enabled": false,
+        "iso_mode": "automatic\n...\n",
+        "iso_monitor_enabled": false,
+        "iso_ssm_speed_rows": false,
+        "obstacle_input_rate_hz": 90.0,
+        "obstacle_velocity_source": "tracker\n...\n"
+       },
+       {
+        "obstacle_velocity_identity_jump": 0.1,
+        "obstacle_velocity_normal_rot_max": 0.15
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/cbf_safety_filter",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     },
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "qddot_to_torque",
+      "node_name": "qddot_to_torque",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/qddot_to_torque",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [CBF filter]      cbf_safety_filter + qddot_to_torque (delay=2.0s)"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [ISO layer]      iso_safety_monitor DISABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "rl_policy_commander",
+      "node_name": "rl_policy_commander",
+      "node_namespace": "NS_1",
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "action_scale": 1.0,
+        "target_xyz": [
+         0.45,
+         0.0,
+         0.45
+        ]
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/rl_policy_commander",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 12.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Motion gen.]     rl_policy_commander (ONNX Safe-RL policy) (delay=12.0s)"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "experiment_logger",
+      "node_name": "experiment_logger",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": null,
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/experiment_logger",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 2.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Logging]         experiment_logger ENABLED"
+   },
+   {
+    "__type__": "TimerAction",
+    "actions": [
+     {
+      "__type__": "Node",
+      "arguments": null,
+      "cached_output": false,
+      "executed": false,
+      "expanded_node_name": "<node_name_unspecified>",
+      "extensions": {},
+      "log_cmd": false,
+      "node_executable": "trajectory_overlay_node",
+      "node_name": "trajectory_overlay",
+      "node_namespace": null,
+      "output": "screen",
+      "output_format": "[{this.process_description.final_name}] {line}",
+      "package": "franka_experiments",
+      "parameters": [
+       {
+        "camera_extrinsics_path": "<install>/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml\n...\n",
+        "show_window": true,
+        "trail_seconds": 2.0,
+        "window_height": 480,
+        "window_width": 848
+       }
+      ],
+      "process_description": {
+       "__type__": "Executable",
+       "additional_env": [
+        [
+         "OPENBLAS_NUM_THREADS",
+         "1"
+        ],
+        [
+         "OMP_NUM_THREADS",
+         "1"
+        ],
+        [
+         "MKL_NUM_THREADS",
+         "1"
+        ],
+        [
+         "NUMEXPR_NUM_THREADS",
+         "1"
+        ]
+       ],
+       "arguments": null,
+       "cmd": [
+        "<install>/franka_experiments/lib/franka_experiments/trajectory_overlay_node",
+        "--ros-args",
+        "-r",
+        "<LocalVar('node name')>"
+       ],
+       "cwd": null,
+       "env": null,
+       "name": null,
+       "prefix": "",
+       "prefix_filter": ""
+      },
+      "remappings": [],
+      "respawn": false,
+      "respawn_delay": null,
+      "ros_arguments": null,
+      "shell": false,
+      "sigkill_timeout": "5",
+      "sigterm_timeout": "5"
+     }
+    ],
+    "cancel_on_shutdown": true,
+    "canceled": false,
+    "context_locals": {},
+    "period": 3.0
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Viz]             trajectory_overlay ENABLED (red = commanded P(s), blue = measured EE, 2.0 s trail, window ON)"
+   },
+   {
+    "__type__": "LogInfo",
+    "msg": "[torque_stack] [Viz]             trajectory_visualization DISABLED"
+   }
+  ]
+ },
+ "source": "franka_experiments/launch/torque_control_stack.launch.py @ 94cd7b0",
+ "variants": {
+  "defaults": {},
+  "fake_hardware": {
+   "use_fake_hardware": "true"
+  },
+  "rl": {
+   "motion_source": "rl"
+  }
+ }
+}

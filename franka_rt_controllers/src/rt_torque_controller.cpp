@@ -205,27 +205,43 @@ controller_interface::return_type RtTorqueController::update(
 //  qdotCeiling / qdotFloor  (RT thread) — inviluppo di velocità del firmware
 // ═══════════════════════════════════════════════════════════════════════════
 //  Il firmware FR3 non ammette |q̇| ≤ q̇_max costante: vicino a un fine corsa
-//  il limite si stringe secondo (franka_description, position_based_velocity_
-//  limits)
-//      q̇_max(q) = min( q̇_lim ,  v_off + sqrt(2·a_dec·h) ) ,   h = dist. dal
-//  limite di posizione in quella direzione. Riprodurlo qui — invece del solo
-//  q̇_lim piatto — fa sì che il tetto copra ENTRAMBI i reflex di velocità, non
-//  solo quello sul limite assoluto.
+//  il limite si stringe secondo
+//
+//      q̇_max,i(q) = min( q̇_lim,i , max(0, −v_off,i + sqrt(2·a_i·(q_ref,i − q))) )
+//
+//  I coefficienti sono quelli di libfranka
+//  (rate_limiting.h::computeUpper/LowerLimitsJointVelocity), che è la curva che
+//  il reflex `joint_velocity_violation` applica davvero.
+//
+//  CORREZIONE. Questa funzione usava la parametrizzazione di
+//  franka_description/robots/fr3/joint_limits.yaml: v_off SOMMATO invece che
+//  sottratto, e q_ref preso uguale al limite di posizione. I 2·a_i coincidono
+//  esattamente, gli altri due no, e sbagliano entrambi nella stessa direzione —
+//  permissiva. A q4 = −3.024 rad la vecchia forma concedeva −1.005 rad/s dove il
+//  firmware concede −0.138: un fattore 7.3. Il tetto quindi NON mordeva mai
+//  vicino a un fine corsa, che è esattamente dove il reflex scatta. Ogni abort
+//  registrato in franka_logs/2026091[45]_* è un giunto fermo fra le due curve
+//  (j4 −0.721 vs −0.700 ammessi, j2 −0.842 vs −0.841, j6 +0.489 vs +0.435).
+//
+//  Nota: la curva va a ZERO prima del limite di posizione (q_ref è più interno
+//  del fine corsa: −3.0481 contro −3.0770 su j4, 4.5205 contro 4.6216 su j6), e
+//  max(0, ·) la tiene lì. È voluto: in quella banda il firmware non ammette
+//  moto, e un tetto nullo è la richiesta corretta.
 //
 //  qdot_margin_ (< 1) sposta il tetto sotto la soglia del firmware, così a
 //  mordere è questo controller e non il reflex. Nessuna allocazione, una sola
 //  sqrt per giunto per tick: RT-safe.
 
 double RtTorqueController::qdotCeiling(size_t i, double q) const {
-  const double h = std::max(0.0, q_max_[i] - q);
-  return qdot_margin_ * std::min(qdot_max_[i],
-                                 v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+  const double s = 2.0 * decel_[i] * (q_ref_hi_[i] - q);
+  const double v = -v_offset_[i] + (s > 0.0 ? std::sqrt(s) : 0.0);
+  return qdot_margin_ * std::min(qdot_max_[i], std::max(0.0, v));
 }
 
 double RtTorqueController::qdotFloor(size_t i, double q) const {
-  const double h = std::max(0.0, q - q_min_[i]);
-  return -qdot_margin_ * std::min(qdot_max_[i],
-                                  v_offset_[i] + std::sqrt(2.0 * decel_[i] * h));
+  const double s = 2.0 * decel_[i] * (q - q_ref_lo_[i]);
+  const double v = -v_offset_[i] + (s > 0.0 ? std::sqrt(s) : 0.0);
+  return -qdot_margin_ * std::min(qdot_max_[i], std::max(0.0, v));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -284,9 +300,10 @@ CallbackReturn RtTorqueController::on_init() {
     auto_declare<double>("e_max", 1.0);
     auto_declare<double>("accel_timeout", 0.1);
     // ── Tetto di velocità sul riferimento integrato ───────────────────────
-    // Default = franka_description/robots/fr3/joint_limits.yaml (stessa fonte
-    // che legge il box di stato del cbf_safety_filter). qdot_margin = 0
-    // disattiva il tetto e ripristina il comportamento precedente.
+    // Default = libfranka rate_limiting.h (computeUpper/LowerLimitsJointVelocity),
+    // la stessa curva che il reflex applica — NON la parametrizzazione di
+    // franka_description, che è più permissiva vicino ai fine corsa e non
+    // descrive il limite realmente imposto. qdot_margin = 0 disattiva il tetto.
     auto_declare<std::vector<double>>(
         "qdot_max", std::vector<double>{2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26});
     auto_declare<std::vector<double>>(
@@ -295,9 +312,21 @@ CallbackReturn RtTorqueController::on_init() {
     auto_declare<std::vector<double>>(
         "q_max", std::vector<double>{2.9007, 1.8361, 2.9007, -0.1169,
                                      2.8763, 4.6216, 3.0508});
+    // v_offset è SOTTRATTO dalla radice (vedi qdotCeiling): è una penalità,
+    // non un bonus. Valori da libfranka.
     auto_declare<std::vector<double>>(
-        "velocity_offset", std::vector<double>{0.6520, 0.2500, 0.2005, 0.3542,
-                                               0.5738, 0.4885, 0.4592});
+        "velocity_offset", std::vector<double>{0.30, 0.20, 0.20, 0.30,
+                                               0.35, 0.35, 0.35});
+    // Posizioni di riferimento dell'inviluppo di velocità: più INTERNE dei
+    // fine corsa, così la curva tocca lo zero prima del limite meccanico.
+    auto_declare<std::vector<double>>(
+        "velocity_q_ref_upper", std::vector<double>{2.75010, 1.79180, 2.90650,
+                                                    -0.14580, 2.81010, 4.52050,
+                                                    3.01960});
+    auto_declare<std::vector<double>>(
+        "velocity_q_ref_lower", std::vector<double>{-2.75010, -1.79180, -2.90650,
+                                                    -3.04810, -2.81010, 0.54092,
+                                                    -3.01960});
     auto_declare<std::vector<double>>(
         "deceleration_limit", std::vector<double>{6.0, 2.585, 3.5, 4.0,
                                                   17.0, 5.5, 17.0});
@@ -364,12 +393,14 @@ CallbackReturn RtTorqueController::on_configure(
 
   qdot_margin_ = get_node()->get_parameter("qdot_margin").as_double();
   ff_fade_band_ = get_node()->get_parameter("ff_fade_band").as_double();
-  const std::array<std::pair<const char*, std::array<double, kNumJoints>*>, 5> limit_params{{
+  const std::array<std::pair<const char*, std::array<double, kNumJoints>*>, 7> limit_params{{
       {"qdot_max", &qdot_max_},
       {"q_min", &q_min_},
       {"q_max", &q_max_},
       {"velocity_offset", &v_offset_},
       {"deceleration_limit", &decel_},
+      {"velocity_q_ref_upper", &q_ref_hi_},
+      {"velocity_q_ref_lower", &q_ref_lo_},
   }};
   for (const auto& [name, dest] : limit_params) {
     const auto v = get_node()->get_parameter(name).as_double_array();

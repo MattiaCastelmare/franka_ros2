@@ -4,10 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - USER_UID=${USER_UID}
-        - USER_GID=${USER_GID}
+        - USER_UID=${USER_UID:-1000}
+        - USER_GID=${USER_GID:-1000}
 
-    container_name: franka_ros2
+    container_name: ${FRANKA_CONTAINER:-franka_ros2}
     network_mode: "host"
     privileged: true
     gpus: all

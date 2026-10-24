@@ -2,6 +2,7 @@
 .idea
 .vscode
 *.pyc
+.pytest_cache/
 COLCON_IGNORE
 AMENT_IGNORE
 cmake-build-*/
@@ -15,6 +16,8 @@ datasets/
 datasets.zip
 franka_experiments/franka_experiments/nodes/experiment_logs/
 franka_experiments/franka_logs/
+franka_experiments/Videos/
+franka_experiments/docs/paper_draft/
 
 # MuJoCo runtime log (rigenerato a ogni run)
 MUJOCO_LOG.TXT
@@ -27,3 +30,6 @@ franka_experiments/log/
 
 # Hands23 weights (Dockerfile links them, not in git)
 franka_experiments/models/
+
+# Claude Code local settings
+.claude/

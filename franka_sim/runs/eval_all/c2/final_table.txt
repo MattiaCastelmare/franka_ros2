@@ -1,0 +1,35 @@
+model                     set      sh  scen           held % [95% CI] chunk sd coll  <ds dmin mm   tot err mm   len
+ens_soup9 (prev deploy)   held-out ON  dynamic   97.5 [ 95.5, 98.6] (390)      3.4    0  161     161  0.88   22.3   500
+ens_soup9 (prev deploy)   held-out ON  static    89.5 [ 86.1, 92.1] (358)      5.8    0  100     154  0.75   24.4   500
+ens_soup9 (prev deploy)   held-out OFF dynamic   97.0 [ 94.8, 98.3] (388)      4.4    8  170     158  0.89   22.3   495
+ens_soup9 (prev deploy)   held-out OFF static    82.8 [ 78.7, 86.1] (331)      4.8   55  264     105  0.74   24.2   441
+ens_soup9 (prev deploy)   fresh    ON  dynamic   98.8 [ 97.1, 99.5] (395)      1.9    0  150     161  0.88   21.9   500
+ens_soup9 (prev deploy)   fresh    ON  static    90.2 [ 86.9, 92.8] (361)      3.7    0  104     156  0.76   23.1   500
+ens_soup9 (prev deploy)   fresh    OFF dynamic   96.5 [ 94.2, 97.9] (386)      2.4   11  164     159  0.89   21.9   490
+ens_soup9 (prev deploy)   fresh    OFF static    80.2 [ 76.1, 83.9] (321)      5.0   61  265     106  0.73   23.3   434
+ens_off_big11 (new)       held-out ON  dynamic   98.0 [ 96.1, 99.0] (392)      3.5    0  161     158  0.87   22.1   500
+ens_off_big11 (new)       held-out ON  static    89.0 [ 85.6, 91.7] (356)      5.7    0  113     154  0.75   21.7   500
+ens_off_big11 (new)       held-out OFF dynamic   98.0 [ 96.1, 99.0] (392)      3.5    5  170     157  0.89   21.7   497
+ens_off_big11 (new)       held-out OFF static    98.2 [ 96.4, 99.1] (393)      2.4    0  263     122  0.85   21.7   500
+ens_off_big11 (new)       fresh    ON  dynamic   98.8 [ 97.1, 99.5] (395)      1.9    0  159     161  0.87   21.4   500
+ens_off_big11 (new)       fresh    ON  static    88.2 [ 84.7, 91.0] (353)      4.8    0  108     156  0.74   22.2   500
+ens_off_big11 (new)       fresh    OFF dynamic   98.5 [ 96.8, 99.3] (394)      1.9    4  166     160  0.90   20.9   497
+ens_off_big11 (new)       fresh    OFF static    97.8 [ 95.8, 98.8] (391)      2.4    1  258     123  0.84   22.5   500
+ens_off_mix6 (new, P0)    held-out ON  dynamic   98.2 [ 96.4, 99.1] (393)      2.8    0  159     159  0.86   23.1   500
+ens_off_mix6 (new, P0)    held-out ON  static    87.8 [ 84.2, 90.6] (351)      5.6    0  104     155  0.74   23.0   500
+ens_off_mix6 (new, P0)    held-out OFF dynamic   98.0 [ 96.1, 99.0] (392)      3.2    4  171     158  0.89   22.9   497
+ens_off_mix6 (new, P0)    held-out OFF static    96.0 [ 93.6, 97.5] (384)      4.2    0  263     124  0.84   22.6   500
+ens_off_mix6 (new, P0)    fresh    ON  dynamic   98.2 [ 96.4, 99.1] (393)      2.4    0  159     159  0.86   22.6   500
+ens_off_mix6 (new, P0)    fresh    ON  static    88.2 [ 84.7, 91.0] (353)      4.6    0  107     156  0.73   23.0   500
+ens_off_mix6 (new, P0)    fresh    OFF dynamic   98.0 [ 96.1, 99.0] (392)      2.0    5  169     158  0.90   22.5   496
+ens_off_mix6 (new, P0)    fresh    OFF static    95.8 [ 93.3, 97.3] (383)      3.6    2  257     126  0.84   23.1   499
+ft_prec 3.75M (single)    held-out ON  dynamic   83.8 [ 79.8, 87.0] (335)      8.4    0  168     155  0.77   25.3   500
+ft_prec 3.75M (single)    held-out ON  static    75.5 [ 71.1, 79.5] (302)      5.8    0  128     153  0.65   24.2   500
+ft_prec 3.75M (single)    held-out OFF dynamic   81.8 [ 77.7, 85.2] (327)      7.3   29  182     154  0.78   25.2   477
+ft_prec 3.75M (single)    held-out OFF static    66.2 [ 61.5, 70.7] (265)      9.7   87  275      84  0.62   23.1   411
+ft_prec 3.75M (single)    fresh    ON  dynamic   85.5 [ 81.7, 88.6] (342)      8.0    0  173     156  0.78   25.8   500
+ft_prec 3.75M (single)    fresh    ON  static    75.0 [ 70.5, 79.0] (300)      7.3    0  126     153  0.64   24.1   500
+ft_v10c 4.0M (single)     held-out ON  dynamic   77.0 [ 72.6, 80.9] (308)     10.1    0  184     153  0.71   29.3   500
+ft_v10c 4.0M (single)     held-out ON  static    67.2 [ 62.5, 71.7] (269)      7.5    0  121     155  0.57   29.1   500
+ft_v10c 4.0M (single)     held-out OFF dynamic   78.0 [ 73.7, 81.8] (312)     10.3   12  197     150  0.76   28.8   490
+ft_v10c 4.0M (single)     held-out OFF static    82.8 [ 78.7, 86.1] (331)      3.9    4  269     107  0.73   29.7   498

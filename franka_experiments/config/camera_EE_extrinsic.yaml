@@ -1,0 +1,51 @@
+# Eye-in-hand extrinsic of the D405: flange (fr3_link8) → camera.
+# Written by handeye_eye_in_hand_node — do not edit by hand.
+parent_frame: fr3_link8
+child_frame: d405_color_optical_frame
+translation:
+  x: 0.034203
+  y: -0.049547
+  z: 0.061205
+rotation:
+  x: 0.000446
+  y: -0.003273
+  z: 0.370363
+  w: 0.928881
+camera_link:
+  parent_frame: fr3_link8
+  child_frame: d405_link
+  translation:
+    x: 0.034245
+    y: -0.04955
+    z: 0.061251
+  rotation:
+    x: 0.647378
+    y: -0.283658
+    z: 0.651689
+    w: 0.275211
+calibration:
+  stamp: '2026-09-15T13:36:49'
+  method: "eye-in-hand, T_BE\xB7X\xB7T_CT = Y (handeye_eye_in_hand_node)"
+  samples_collected: 27
+  samples_used: 27
+  error_source: test
+  translation_error_mm: 0.565
+  rotation_error_deg: 0.2243
+  train_translation_error_mm: 0.504
+  train_rotation_error_deg: 0.191
+  rotation_axis_sigmas:
+  - 0.777
+  - 0.488
+  - 0.398
+  tag_in_base:
+    parent_frame: fr3_link0
+    child_frame: tag36h11:0
+    translation:
+      x: 0.359737
+      y: -0.006008
+      z: 0.025268
+    rotation:
+      x: 0.002563
+      y: 0.016722
+      z: -0.703393
+      w: 0.7106

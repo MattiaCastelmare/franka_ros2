@@ -38,6 +38,8 @@ The goal of this fork is to provide a **reproducible robotics research environme
 - [Setup](#setup)
   - [Local Machine Installation](#local-machine-installation)
   - [Docker Container Installation](#docker-container-installation)
+    - [Shared workstation: several accounts on one PC](#shared-workstation-several-accounts-on-one-pc)
+      - [First-time setup on a new account](#first-time-setup-on-a-new-account)
 - [Test the Setup](#test-the-setup)
 - [franka_experiments](#franka_experiments)
 - [franka_rt_controllers](#franka_rt_controllers)
@@ -46,6 +48,8 @@ The goal of this fork is to provide a **reproducible robotics research environme
 - [Documentation map](#documentation-map)
 - [Troubleshooting](#troubleshooting)
   - [libfranka: UDP receive: Timeout error](#libfranka-udp-receive-timeout-error)
+  - [colcon build fails in libfranka with a permission error](#colcon-build-fails-in-libfranka-with-a-permission-error)
+  - [GUI windows never appear](#gui-windows-never-appear)
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
@@ -191,9 +195,13 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
 1. **Clone the Repositories:**
 
     ```bash
-    git clone -b humble-mattia --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git
+    git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git
     cd franka_ros2
     ```
+    `libfranka` and `franka_description` are **not** part of this repository — they are
+    listed in `franka.repos` and pulled in later with `vcs import` (step 6 below), which
+    is why a fresh clone does not contain them. This repo registers no git submodules, so
+    `--recurse-submodules` has no effect here.
     We provide separate instructions for using Docker with Visual Studio Code or the command line. Choose one of the following options:
 
     Option A: Set up and use Docker from the command line (without Visual Studio Code).
@@ -202,11 +210,24 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
 
 ### Option A: using Docker Compose
 
-  2. **Save the current user id into a file:**
+  2. **Declare your user id and your own Compose project:**
       ```bash
-      echo -e "USER_UID=$(id -u $USER)\nUSER_GID=$(id -g $USER)" > .env
+      export COMPOSE_PROJECT_NAME=franka_$USER
+      export USER_UID=$(id -u)
+      export USER_GID=$(id -g)
       ```
-      It is needed to mount the folder from inside the Docker container.
+      Add those lines to your `~/.bashrc` so every new shell has them.
+
+      `USER_UID`/`USER_GID` are baked into the image at build time
+      (`Dockerfile:127-128`) and must match the owner of your clone: bind mounts hand
+      the kernel raw numeric uids, with no translation. `COMPOSE_PROJECT_NAME` gives you
+      your own image tag, so that several accounts on one PC do not overwrite each
+      other's image — see
+      [Shared workstation](#shared-workstation-several-accounts-on-one-pc).
+
+      A `.env` file holding the same two variables also works, but only on a
+      single-user machine: shell variables take precedence over `.env`, and a clone
+      shared between accounts would share its `.env` too.
 
   3. **Build the container:**
       ```bash
@@ -270,6 +291,108 @@ For detailed instructions, on preparing VSCode to use the `.devcontainer` follow
       source install/setup.bash
       ```
 
+
+### Shared workstation: several accounts on one PC
+
+A machine runs **one Docker daemon**, and images plus container names live in a single
+namespace shared by every account on it. Three facts turn that into a conflict here:
+
+1. The container user's uid is fixed at build time — `Dockerfile:127-128` runs
+   `useradd --uid ${USER_UID}` — so an image built by one account carries that account's
+   uid forever.
+2. Bind mounts do not translate uids. `./:/ros2_ws/src` hands the kernel raw numbers, so
+   the uid inside the container must *numerically equal* the owner of the files on the
+   host.
+3. The Compose project name defaults to the directory name — `franka_ros2` for everybody
+   — so without the variables below every account targets the same image tag and the same
+   container.
+
+The result is a tug-of-war: whoever runs `docker compose build` last wins, and everyone
+else's `colcon build` then fails with permission errors inside `src/`.
+
+**Rule: one clone per account, one Compose project per account.**
+
+#### First-time setup on a new account
+
+Run these once, in order, from a terminal **on your own graphical session** (the last
+point matters for GUI windows — see
+[GUI windows never appear](#gui-windows-never-appear)).
+
+**1. Declare your identity and your own Compose project** — append to `~/.bashrc`, then
+open a new terminal:
+
+```bash
+cat >> ~/.bashrc <<'EOF'
+export COMPOSE_PROJECT_NAME=franka_$USER   # your own image tag
+export FRANKA_CONTAINER=franka_$USER       # your own container name
+export USER_UID=$(id -u)
+export USER_GID=$(id -g)
+EOF
+```
+
+`FRANKA_CONTAINER` defaults to `franka_ros2`, the name every other command in this README
+uses. Exactly one account on the machine may leave it unset; every other account has to
+set it, or `docker compose up` fails with *container name already in use*.
+
+**2. Clone into your own home directory:**
+
+```bash
+git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git \
+  ~/Git/franka_ros2
+cd ~/Git/franka_ros2
+```
+
+**3. Build and start your container:**
+
+```bash
+docker compose up -d --build
+```
+
+The first build takes a while; later ones reuse the cached apt layer.
+
+**4. Open a shell inside it:**
+
+```bash
+docker exec -it "$FRANKA_CONTAINER" /bin/bash
+```
+
+**5. Pull the out-of-tree packages and build the workspace** — from inside the container:
+
+```bash
+vcs import src < src/franka.repos --recursive --skip-existing
+colcon build --symlink-install --executor parallel --parallel-workers 24 \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+`--recursive` is what fetches libfranka's own submodules. `vcs import` writes into
+`/ros2_ws/src`, which *is* your clone on the host — one more reason the uid inside the
+container has to match its owner. MoveIt and pymoveit2 come from apt inside the image, so
+`extras.repos` is not needed for this flow.
+
+Afterwards, a normal working session is just:
+
+```bash
+docker start "$FRANKA_CONTAINER"
+docker exec -it "$FRANKA_CONTAINER" /bin/bash
+source install/setup.bash
+```
+
+The clone has to live in your own home directory. Separate Compose projects stop the
+accounts from overwriting each other's image and container, but they do not change file
+ownership: mounting somebody else's clone still leaves your container unable to write
+into `src/`.
+
+To see what belongs to whom:
+
+```bash
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+docker exec <container> id     # the uid inside must equal the clone owner's uid
+stat -c '%u %n' .              # owner of your clone
+```
+
+Do not delete another account's image (`franka_<user>-franka_ros2`) to reclaim disk
+space: it is the only image matching their uid.
 
 # Test the build
    ```bash
@@ -542,7 +665,7 @@ ros2 launch franka_simulation move_group.launch.py spawn_obstacles:=false enable
 
 `franka_sim` is a **standalone MuJoCo training module with no ROS 2 dependency**. It trains a **Safe Reinforcement Learning** policy (SAC, Stable-Baselines3) shielded by the *same* acceleration-level CBF filter that runs on the real robot in `franka_experiments/nodes/cbf_safety_filter.py` — safe exploration in simulation, safe execution on hardware.
 
-Full guide: [`franka_sim/README.md`](./franka_sim/README.md) · roadmap: [`franka_sim_to_real_roadmap.md`](./franka_sim_to_real_roadmap.md) · validation status: [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md).
+Full guide: [`franka_sim/README.md`](./franka_sim/README.md) · architecture, validation status, gotchas and backlog: [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md).
 
 ```
 franka_sim/
@@ -594,10 +717,8 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 | [`franka_experiments/test/README.md`](./franka_experiments/test/README.md) | Test suite: what is checked and how to run it |
 | [`franka_simulation/README.md`](./franka_simulation/README.md) | The four simulation pipelines, controllers, kinematics library |
 | [`franka_sim/README.md`](./franka_sim/README.md) | Training, evaluation, the MuJoCo viewer, sim↔robot sync, gotchas |
-| [`franka_sim_to_real_roadmap.md`](./franka_sim_to_real_roadmap.md) | Sim-to-real architecture and plan |
-| [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md) | What is built and how it was validated |
-| [`CBF_PIPELINE_AUDIT.md`](./CBF_PIPELINE_AUDIT.md) | Audit of the CBF pipeline |
-| [`SAFE_RL_CBF_HANDOVER.md`](./SAFE_RL_CBF_HANDOVER.md) | Safe-RL + CBF handover notes |
+| [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md) | Safe-RL + CBF sim-to-real: the three-step specification, what is built, how it was validated, gotchas and the prioritised backlog |
+| [`franka_experiments/LEGACY.md`](./franka_experiments/LEGACY.md) | Inventory of everything unreachable from the torque stack, with the deletion units |
 
 ---
 
@@ -607,6 +728,67 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 If you encounter a UDP receive timeout error while communicating with the robot, avoid using Docker Desktop. It may not provide the necessary real-time capabilities required for reliable communication with the robot. Instead, using Docker Engine is sufficient for this purpose.
 
 A real-time kernel is essential to ensure proper communication and to prevent timeout issues. For guidance on setting up a real-time kernel, please refer to the [Franka installation documentation](https://frankarobotics.github.io/docs/installation_linux.html#setting-up-the-real-time-kernel).
+
+### `colcon build` fails in libfranka with a permission error
+
+```
+CMake Error at .../extract-googletest.cmake:21 (file):
+  file problem creating directory: /ros2_ws/src/libfranka/3rdparty/../ex-googletest1234
+```
+
+The container user cannot write into the mounted source tree, because its uid differs
+from the owner of your clone. libfranka downloads Google Test *into* `src/`
+(`cmake/SetupGoogleTest.cmake`), and `franka_experiments` is an `ament_python` package,
+so `--symlink-install` writes `*.egg-info` there as well — read-only access is not
+enough. Confirm the mismatch:
+
+```bash
+docker exec <container> id     # uid inside the container
+stat -c '%u %n' .              # owner of the clone on the host
+```
+
+Then rebuild the image with your own uid:
+
+```bash
+export COMPOSE_PROJECT_NAME=franka_$USER USER_UID=$(id -u) USER_GID=$(id -g)
+docker rm -f "${FRANKA_CONTAINER:-franka_ros2}"
+docker compose up -d --build
+```
+
+`docker compose down` only removes containers of the *current* project, so a container
+created before you set `COMPOSE_PROJECT_NAME` must be removed by name with
+`docker rm -f`. Recreating the container also wipes `/ros2_ws/build` and
+`/ros2_ws/install`, which live inside the container and not in the mount, so the next
+`colcon build` starts from scratch. See
+[Shared workstation](#shared-workstation-several-accounts-on-one-pc).
+
+### GUI windows never appear
+
+RViz or `rqt_image_view` start without any error, yet no window shows up.
+`docker-compose.yml` captures `DISPLAY` when the container is **created**. On a machine
+with several graphical sessions the stored value can point at another user's screen, and
+the window then opens there. Compare the two:
+
+```bash
+echo $DISPLAY                             # your session, on the host
+docker exec <container> printenv DISPLAY
+```
+
+If they differ, recreate the container from your active session with
+`docker compose up -d --force-recreate`, or override per command. Overriding also needs
+an X cookie, because a display owned by another session refuses unauthorized clients
+(`Authorization required, but no authorization protocol specified`):
+
+```bash
+: > /tmp/docker.xauth
+xauth nlist "$DISPLAY" | sed -e 's/^..../ffff/' | xauth -f /tmp/docker.xauth nmerge -
+docker cp /tmp/docker.xauth <container>:/tmp/docker.xauth
+docker exec -it -e DISPLAY="$DISPLAY" -e XAUTHORITY=/tmp/docker.xauth <container> /bin/bash
+```
+
+Prefer this to `xhost +local:`, which opens your display to every account on the machine.
+Note also that rqt plugin executables are not on `PATH`: start them with
+`ros2 run rqt_image_view rqt_image_view`, not with the bare command name.
 
 ## Contributing
 

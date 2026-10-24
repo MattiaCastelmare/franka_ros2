@@ -41,3 +41,87 @@ float32 confidence
 
 # Safety-zone label from the `zones` section of the robot config.
 string zone
+
+# ── Obstacle track (obstacle_tracker_node) ───────────────────────────────────
+# Filled by the cluster/track/Kalman pipeline when this control point's
+# closest_point_human falls inside a CONFIRMED track's cluster. All four fields
+# are defaults (0 / zero vector) when there is no track, which is the state a
+# publisher that knows nothing about tracking produces — so an unmodified
+# real_time_distance and an unmodified consumer keep working unchanged.
+#
+# DEFAULTS MUST BE SAFE, and they are: the consumer gates on
+# frames_seen >= 3 and then uses max(dot(direction, obstacle_velocity), 0.0),
+# so a zero velocity contributes exactly nothing and the barrier falls back to
+# the residual estimator's behaviour. There is no value of these fields that
+# can LOOSEN a constraint.
+
+# Stable identity of the obstacle track this control point was matched to.
+# 0 means NO TRACK — either nothing was tracked, or this control point's nearest
+# obstacle point did not fall inside any confirmed track's cluster. Ids are
+# never reused after a track dies.
+uint32 track_id
+
+# Perception frames the track has been UPDATED on (not predicted). Counts
+# measurements only, so a track that has been coasting through an occlusion does
+# not accumulate evidence it does not have. 0 when track_id is 0.
+uint32 frames_seen
+
+# Obstacle velocity in the BASE frame [m/s], from the track's Kalman state.
+# A full 3D vector, unlike the scalar residual it replaces: the component the
+# barrier needs is dot(direction, obstacle_velocity), and `direction` turns
+# continuously as the arm moves, so a scalar would have to be re-estimated from
+# scratch every time it did.
+geometry_msgs/Vector3 obstacle_velocity
+
+# Row-major 3x3 covariance of obstacle_velocity [m^2/s^2], in the same BASE
+# frame — the velocity block of the track's state covariance, rotated. All
+# zeros means "no estimate", not "perfectly certain": consumers must gate on
+# frames_seen, never on this being non-zero.
+#
+# Consumed by the uncertainty margin (enable_uncertainty_margin): the variance
+# of the speed the barrier actually sees is dot(n, P_vv * n), and its square
+# root times a latency is a distance the barrier can be tightened by. An EMA'd
+# scalar cannot report this at all, which is why it is on the wire.
+float64[9] velocity_covariance
+
+# ── Latency compensation (cbf_safety_filter, enable_latency_compensation) ────
+# The three quantities the filter needs to move the obstacle FORWARD by its own
+# measured blind time and to price the uncertainty of doing so. All defaults
+# (zero vectors) are the "no track" state and contribute exactly nothing; like
+# the fields above there is no value of these that can LOOSEN a constraint —
+# the consumer only ever tightens with them.
+
+# Obstacle acceleration in the BASE frame [m/s^2], the acceleration block of the
+# track's constant-acceleration Kalman state.
+geometry_msgs/Vector3 obstacle_acceleration
+
+# Row-major 3x3 covariance of closest_point_human's TRACK position [m^2], BASE
+# frame (the position block of the track's state covariance).
+float64[9] position_covariance
+
+# Row-major 3x3 position-velocity cross-covariance [m^2/s], BASE frame. With
+# velocity_covariance it lets the consumer propagate the position covariance
+# forward: P_pp(t) = P_pp + t (P_pv + P_pv^T) + t^2 P_vv.
+float64[9] position_velocity_covariance
+
+# ── Sensor range uncertainty (cbf_safety_filter, enable_sensor_range_uncertainty) ──
+# RAW range from the camera to the winning obstacle pixel, in METRES, camera
+# frame — the depth-space Z of closest_point_human's source pixel BEFORE it is
+# converted to the surface gap `distance` (radius and dilation margin
+# subtracted) or transformed to base frame. This is NOT `distance` and NOT
+# derivable from closest_point_human + the camera extrinsic: that round trip
+# would reintroduce the extrinsic's own several-centimetre calibration bias
+# into a term that is supposed to be about the sensor alone.
+#
+# Independent of the obstacle-track fields above: a structured-light / stereo
+# sensor's per-pixel range noise is a property of THIS frame's reading, present
+# on the very first sighting of an obstacle, before any track — let alone a
+# track's covariance — exists.
+#
+# DEFAULT (0.0) IS SAFE: 0.0 is not a plausible real range (the camera cannot
+# read zero metres), so the consumer treats `range_m <= 0.0` as "not carried"
+# and evaluates the term to exactly 0.0 — the same "missing field degrades to
+# off" contract every other field on this message keeps. A publisher that
+# knows nothing about this term emits the message-default 0.0 and every
+# consumer keeps working unchanged.
+float64 range_m

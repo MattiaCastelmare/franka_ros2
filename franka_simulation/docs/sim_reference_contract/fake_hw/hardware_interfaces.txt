@@ -1,0 +1,68 @@
+command interfaces
+	[96m0/cartesian_pose_command [available] [unclaimed][0m
+	[96m1/cartesian_pose_command [available] [unclaimed][0m
+	[96m10/cartesian_pose_command [available] [unclaimed][0m
+	[96m11/cartesian_pose_command [available] [unclaimed][0m
+	[96m12/cartesian_pose_command [available] [unclaimed][0m
+	[96m13/cartesian_pose_command [available] [unclaimed][0m
+	[96m14/cartesian_pose_command [available] [unclaimed][0m
+	[96m15/cartesian_pose_command [available] [unclaimed][0m
+	[96m2/cartesian_pose_command [available] [unclaimed][0m
+	[96m3/cartesian_pose_command [available] [unclaimed][0m
+	[96m4/cartesian_pose_command [available] [unclaimed][0m
+	[96m5/cartesian_pose_command [available] [unclaimed][0m
+	[96m6/cartesian_pose_command [available] [unclaimed][0m
+	[96m7/cartesian_pose_command [available] [unclaimed][0m
+	[96m8/cartesian_pose_command [available] [unclaimed][0m
+	[96m9/cartesian_pose_command [available] [unclaimed][0m
+	[94mfr3_joint1/effort [available] [claimed][0m
+	[96mfr3_joint1/position [available] [unclaimed][0m
+	[96mfr3_joint1/velocity [available] [unclaimed][0m
+	[94mfr3_joint2/effort [available] [claimed][0m
+	[96mfr3_joint2/position [available] [unclaimed][0m
+	[96mfr3_joint2/velocity [available] [unclaimed][0m
+	[94mfr3_joint3/effort [available] [claimed][0m
+	[96mfr3_joint3/position [available] [unclaimed][0m
+	[96mfr3_joint3/velocity [available] [unclaimed][0m
+	[94mfr3_joint4/effort [available] [claimed][0m
+	[96mfr3_joint4/position [available] [unclaimed][0m
+	[96mfr3_joint4/velocity [available] [unclaimed][0m
+	[94mfr3_joint5/effort [available] [claimed][0m
+	[96mfr3_joint5/position [available] [unclaimed][0m
+	[96mfr3_joint5/velocity [available] [unclaimed][0m
+	[94mfr3_joint6/effort [available] [claimed][0m
+	[96mfr3_joint6/position [available] [unclaimed][0m
+	[96mfr3_joint6/velocity [available] [unclaimed][0m
+	[94mfr3_joint7/effort [available] [claimed][0m
+	[96mfr3_joint7/position [available] [unclaimed][0m
+	[96mfr3_joint7/velocity [available] [unclaimed][0m
+	[96mjoint_3_position/elbow_command [available] [unclaimed][0m
+	[96mjoint_4_sign/elbow_command [available] [unclaimed][0m
+	[96mvx/cartesian_velocity [available] [unclaimed][0m
+	[96mvy/cartesian_velocity [available] [unclaimed][0m
+	[96mvz/cartesian_velocity [available] [unclaimed][0m
+	[96mwx/cartesian_velocity [available] [unclaimed][0m
+	[96mwy/cartesian_velocity [available] [unclaimed][0m
+	[96mwz/cartesian_velocity [available] [unclaimed][0m
+state interfaces
+	fr3_joint1/effort
+	fr3_joint1/position
+	fr3_joint1/velocity
+	fr3_joint2/effort
+	fr3_joint2/position
+	fr3_joint2/velocity
+	fr3_joint3/effort
+	fr3_joint3/position
+	fr3_joint3/velocity
+	fr3_joint4/effort
+	fr3_joint4/position
+	fr3_joint4/velocity
+	fr3_joint5/effort
+	fr3_joint5/position
+	fr3_joint5/velocity
+	fr3_joint6/effort
+	fr3_joint6/position
+	fr3_joint6/velocity
+	fr3_joint7/effort
+	fr3_joint7/position
+	fr3_joint7/velocity

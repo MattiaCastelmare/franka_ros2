@@ -1,0 +1,26 @@
+/trajectory_overlay:
+  ros__parameters:
+    camera_extrinsics_path: /ros2_ws/install/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml
+    camera_info_topic: /camera/camera/color/camera_info
+    draw_deviation: true
+    draw_hud: true
+    ee_actual_topic: /NS_1/ee_actual
+    ee_desired_topic: /NS_1/ee_desired
+    fade_levels: 8
+    image_topic: /camera/camera/color/image_raw
+    jump_reset_m: 0.1
+    label_min_error_m: 0.002
+    line_width_px: 4
+    max_points: 2000
+    min_point_spacing_m: 0.002
+    output_topic: /NS_1/trajectory_overlay
+    publish_overlay: true
+    show_window: false
+    tip_radius_px: 11
+    trail_head_hold: 0.4
+    trail_seconds: 2.0
+    use_sim_time: false
+    window_height: 480
+    window_name: EE trajectory overlay
+    window_width: 848
+

@@ -152,7 +152,7 @@ case "$PIPELINE" in
 
   rl)
     # Same accel pipeline, but the q̈_nom source is the ONNX Safe-RL policy
-    # (motion_source:=rl). See franka_sim_to_real_roadmap.md Step 3.
+    # (motion_source:=rl). See franka_sim_to_real_implementation_status.md Step 3.
     _check_node_exists "rl_policy_commander" || true
     _check_node_exists "cbf_safety_filter" || true
     _check_node_exists "qddot_to_torque" || true

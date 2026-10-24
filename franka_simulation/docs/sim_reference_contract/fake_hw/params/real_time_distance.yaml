@@ -1,0 +1,12 @@
+/real_time_distance:
+  ros__parameters:
+    camera_extrinsics_path: /ros2_ws/install/franka_experiments/share/franka_experiments/config/camera_extrinsics.yaml
+    control_config_path: ''
+    frame_queue_depth: 2
+    multi_obstacle_k: 2
+    publish_contact_regime: true
+    publish_empty_per_link: true
+    publish_overlay_image: true
+    robot_config_path: /tmp/fr3_complete_launch_294795.yaml
+    use_sim_time: false
+

@@ -126,6 +126,7 @@ ENV GZ_VERSION=fortress \
 # ============================================================================
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
  && useradd  --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} \
+ && usermod -aG video,plugdev ${USERNAME} \
  && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
  && chmod 0440 /etc/sudoers.d/${USERNAME} \
  && echo "source /opt/ros/${ROS_DISTRO}/setup.bash"                          >> /home/${USERNAME}/.bashrc \

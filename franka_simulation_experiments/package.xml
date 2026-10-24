@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>franka_simulation_experiments</name>
+  <version>0.1.0</version>
+  <description>
+    SIM. Closed-loop Gazebo replica of the franka_experiments CBF + Kalman-tracker
+    experiments: runs pipeline A (franka_experiments, unchanged) against the
+    franka_simulation Gazebo plant, with ground truth, reflex emulation and scoring.
+    A separate package so that neither franka_experiments nor franka_simulation
+    gains a dependency on the other (docs/gz_cbf_experiments_plan.md §6, option B).
+  </description>
+  <maintainer email="mattia.castelmare@uniroma1.it">Mattia Castelmare</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>franka_experiments</exec_depend>
+  <exec_depend>franka_simulation</exec_depend>
+  <exec_depend>franka_description</exec_depend>
+  <exec_depend>franka_msgs</exec_depend>
+  <exec_depend>franka_rt_controllers</exec_depend>
+  <exec_depend>franka_ign_ros2_control</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>launch_testing</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

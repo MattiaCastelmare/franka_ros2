@@ -41,10 +41,27 @@ Approach-spike outlier rejection (rate-limit + 1-frame confirmation):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+
+from franka_experiments.utils.obstacle_clusters import label_points
+from franka_experiments.utils.rate_scaling import ema_alpha_for
+
+
+class ObstacleHit(NamedTuple):
+    """One obstacle point seen by one control point (one future HOCBF row)."""
+    distance:   float                 # surface gap [m]
+    point:      Optional[np.ndarray]  # obstacle point, BASE frame
+    direction:  Optional[np.ndarray]  # unit n_hat, obstacle -> control point
+    cluster_id: int                   # label of the connected component; -1 = none
+    # RAW range from the camera to this obstacle point, camera frame [m] — the
+    # depth-space Z of the winning pixel, before the radius/margin subtraction
+    # that makes `distance` a surface gap. None when unavailable (mirrors
+    # `point`/`direction`). See sensor_range_uncertainty's docstring for why
+    # this must be the camera-frame Z and not a base-frame Euclidean distance.
+    range_m: Optional[float] = None
 
 
 @dataclass
@@ -60,6 +77,72 @@ class ControlPointResult:
     direction: Optional[np.ndarray] = None
     closest_obstacle_point: Optional[np.ndarray] = None
     closest_pixel: Optional[Tuple[int, int]] = None
+    # Cluster of the global-argmin point above; -1 unless multi_obstacle_k > 1.
+    cluster_id: int = -1
+    # Nearest point of each OTHER cluster, ascending distance, at most k-1.
+    # Always empty with multi_obstacle_k = 1.
+    extras: List[ObstacleHit] = field(default_factory=list)
+    # RAW range to closest_obstacle_point, camera frame [m]. See ObstacleHit.
+    range_m: Optional[float] = None
+
+    @property
+    def obstacles(self) -> List[ObstacleHit]:
+        """Every obstacle entry of this CP, nearest first, length <= k.
+
+        Rank 0 is built from the fields above, so it is whatever the LPF made
+        of the global argmin — with k = 1 this list is exactly today's result.
+        """
+        if not np.isfinite(self.distance):
+            return []
+        return [ObstacleHit(self.distance, self.closest_obstacle_point,
+                            self.direction, self.cluster_id, self.range_m)
+               ] + list(self.extras)
+
+
+@dataclass
+class ObstacleCloud:
+    """The obstacle pixels of ONE frame, exactly as the distance pass selected them.
+
+    Not used by the distance computation at all — this is a read-only export so
+    a second consumer (``utils.obstacle_clusters``, and through it the obstacle
+    tracker) can group the SAME pixels into objects without re-reading the depth
+    image, re-applying the exclusion mask or re-running the depth-range filter.
+    Sharing the selection is the point: a tracker built on a slightly different
+    pixel set would report velocities for obstacles the barrier never saw.
+
+    ``p_cam`` / ``u`` / ``v`` are index-aligned views of the engine's own
+    arrays, so populating this costs three reference assignments and no copy.
+
+    Attributes:
+        p_cam: (N, 3) float32 obstacle points in CAMERA frame [m].
+        u: (N,) int32 full-resolution pixel column of each point.
+        v: (N,) int32 full-resolution pixel row of each point.
+        step: ROI subsampling stride the pixels were drawn with. Consecutive
+            samples are ``step`` apart in full-resolution coordinates, which any
+            connectivity analysis downstream has to know about.
+        stamp: [s] capture time of the depth frame, or None when the caller did
+            not supply one. A tracker differentiates positions, so it needs the
+            CAPTURE clock, not the receipt clock.
+        labels: (N,) int64 connected-component label of each point, or None.
+            Set only with multi_obstacle_k > 1, where the engine labels the
+            pixels itself; ``cluster_obstacles`` then reuses them instead of
+            labelling again, so a row's cluster_id and the tracker's cluster
+            name the same object.
+    """
+
+    p_cam: np.ndarray
+    u:     np.ndarray
+    v:     np.ndarray
+    step:  int
+    stamp: Optional[float] = None
+    labels: Optional[np.ndarray] = None
+
+
+#: Depth images on this stack are uint16 MILLIMETRES. One constant, used by
+#: both the projection and the depth gate: the two comparing depths on
+#: different scales would make the gate silently classify every pixel as "in
+#: front", i.e. disable the robot mask entirely.
+_DEPTH_TO_M = np.float32(0.001)
 
 
 class DistanceEngine:
@@ -72,6 +155,27 @@ class DistanceEngine:
         self.min_depth  = float(distance_cfg['min_depth_m'])
         self.max_depth  = float(distance_cfg['max_depth_m'])
         self._lpf_alpha = float(distance_cfg.get('lpf_alpha', 0.5))
+        # The rate-independent form of the same filter. lpf_alpha is a weight
+        # PER FRAME, so its bandwidth is whatever the depth profile happens to
+        # be: 0.5 at 30 Hz is a 48 ms lag and the same 0.5 at 90 Hz is 16 ms —
+        # three times less smoothing on the distance the CBF consumes, for a
+        # change nobody made to this file. With lpf_tau_s set, alpha is
+        # recomputed from the REAL inter-frame interval every frame and the lag
+        # is the number written here. Absent (or 0) keeps the legacy per-frame
+        # alpha bit for bit.
+        self._lpf_tau_s = float(distance_cfg.get('lpf_tau_s', 0.0) or 0.0)
+        # Fallback alpha for the frames that carry no usable dt (the first one,
+        # a duplicate stamp, a stall). Zero would not do: alpha <= 0 disables
+        # the whole smoothing pass, approach rate-limit included, and one
+        # unstamped frame must not open that door.
+        self._lpf_alpha_nominal = ema_alpha_for(
+            self._lpf_tau_s,
+            1.0 / float(distance_cfg.get('lpf_nominal_rate_hz', 30.0) or 30.0))
+        if self._lpf_tau_s > 0.0 and self._log is not None:
+            self._log.info(
+                f'distance EMA: tau={self._lpf_tau_s * 1e3:.0f} ms '
+                f'(rate-independent); legacy lpf_alpha={self._lpf_alpha:.2f} '
+                f'ignored, fallback alpha={self._lpf_alpha_nominal:.2f}')
 
         # Approach-spike outlier rejection (rate-limit + 1-frame confirmation).
         # v_max_approach: implied approach speed [m/s] above which a closer
@@ -85,6 +189,21 @@ class DistanceEngine:
         self._outlier_recover_frac = float(distance_cfg.get('lpf_outlier_recover_frac', 0.10))
         self._outlier_recover_abs  = float(distance_cfg.get('lpf_outlier_recover_abs', 0.03))
 
+        # ── Depth-gated exclusion (mask.depth_gate_*) ───────────────────
+        # 0 disables the gate and restores the pure 2D silhouette exactly, which
+        # is the pre-change behaviour and the fallback when no depth buffer is
+        # supplied.
+        self._depth_gate_tol = float(distance_cfg.get('depth_gate_tol_m', 0.0))
+        # Systematic model-minus-measurement offset of the robot's own surface,
+        # SUBTRACTED from the model depth before the gate compares. See the long
+        # note at the comparison: with a biased model the tolerance alone cannot
+        # separate "the arm" from "in front of the arm", and widening the
+        # tolerance to cover the bias blinds the pipeline by the same amount.
+        self._depth_gate_bias = float(distance_cfg.get('depth_gate_bias_m', 0.0))
+        #: Pixels kept as obstacle candidates that sit at the robot's own
+        #: surface — the arm read as an obstacle. DIAGNOSTIC, see the gate.
+        self.last_self_leak_px: int = 0
+
         self._grid_roi: Optional[tuple] = None
         self._grid_ug:  Optional[np.ndarray] = None
         self._grid_vg:  Optional[np.ndarray] = None
@@ -94,8 +213,46 @@ class DistanceEngine:
         # Pending suspicious-jump state: (seg_idx, cp_idx) → (d_pre, d_susp).
         # Presence of a key ⇒ that CP is awaiting 1-frame confirmation.
         self._pending: Dict[Tuple[int, int], Tuple[float, float]] = {}
+
+        # ── Bounded hold (roadmap Step 7) ────────────────────────────────
+        # When a control point has no finite measurement the LPF holds its last
+        # smoothed value. That hold used to be UNBOUNDED: a CP whose obstacle
+        # left the depth image, or that fell permanently into a mask hole, kept
+        # reporting a distance from an arbitrarily old frame, and the barrier
+        # kept building a row on it. A stale row is worse than no row — it looks
+        # like knowledge.
+        #
+        # Age is accumulated in SECONDS from the real inter-frame dt; with no
+        # stamp (dt is None) it falls back to counting frames at the configured
+        # rate, so the bound still bites. Past iso_distance_hold_max_s the result
+        # is emitted with direction = None, which build_cp_messages already turns
+        # into valid = False — a path that exists and is tested.
+        #
+        # 0 or negative disables the bound, which is the pre-Step-7 behaviour
+        # exactly.
+        self._hold_max_s = float(distance_cfg.get('iso_distance_hold_max_s', 0.0))
+        self._hold_age: Dict[Tuple[int, int], float] = {}
+        self._hold_dt_fallback = 1.0 / max(
+            float(distance_cfg.get('assumed_frame_rate_hz', 30.0)), 1e-6)
         # Timestamp [s] of the previous processed frame, for the REAL dt.
         self._prev_stamp: Optional[float] = None
+
+        # Obstacle point-cloud export for the tracker pipeline. OFF by default:
+        # with the flag off nothing is stored and this class behaves exactly as
+        # before, which is what keeps the CBF rows bit-identical.
+        self._export_cloud = bool(distance_cfg.get('export_obstacle_cloud', False))
+        self.last_obstacle_cloud: Optional[ObstacleCloud] = None
+
+        # Top-k obstacle points per CP, one per connected cluster
+        # (perception.multi_obstacle_k). 1 = today's single global argmin: no
+        # labelling, no extras, output bit-identical. The horizon and the row
+        # cap prune only the EXTRA rows (rank >= 1); a CP's own nearest point is
+        # never dropped, so k > 1 can add rows but never remove one k = 1 had.
+        self._multi_k        = max(1, int(distance_cfg.get('multi_obstacle_k', 1)))
+        self._multi_max_rows = int(distance_cfg.get('multi_obstacle_max_rows', 24))
+        self._multi_horizon  = float(distance_cfg.get('multi_obstacle_horizon', np.inf))
+        self._multi_connectivity = int(distance_cfg.get('multi_obstacle_connectivity', 8))
+        self._multi_depth_jump   = float(distance_cfg.get('multi_obstacle_depth_jump_m', 0.10))
 
     def compute(
         self,
@@ -115,6 +272,7 @@ class DistanceEngine:
         ee_source_mask: Optional[np.ndarray] = None,            # bool (H, W)
         dilation_margins_px: Optional[Tuple[int, int]] = None,  # (margin_body_px, margin_ee_px)
         frame_stamp: Optional[float] = None,                    # frame time [s] for REAL dt
+        robot_depth: Optional[np.ndarray] = None,               # (H, W) float, +inf off-robot
     ) -> Tuple[Optional[List[ControlPointResult]], int]:
         """Depth-space CP distance pipeline with LPF smoothing.
 
@@ -151,7 +309,88 @@ class DistanceEngine:
 
         # ── Step 2: search exclusion mask ────────────────────────────────
         if search_exclusion_mask is not None:
-            keep   = ~search_exclusion_mask[vg, ug]
+            excluded = search_exclusion_mask[vg, ug]
+            if robot_depth is not None and self._depth_gate_tol > 0.0:
+                # ── Depth-gated exclusion ───────────────────────────────────
+                # The silhouette says WHERE the robot is on the sensor; it says
+                # nothing about how far away it is, so a 2D mask discards a
+                # hand held in front of the arm exactly as readily as the arm
+                # itself. That is not a corner case: it is the approach
+                # direction the camera exists to cover, and the halo applies at
+                # EVERY depth — a hand a metre in front of the arm is as
+                # invisible as one touching it. (12 px body / 24 px EE at the
+                # shipped radii, about 4 cm / 8 cm at 1.5 m.)
+                #
+                # With the robot's own depth per pixel the two separate
+                # cleanly. A pixel is only the robot if it is AT the robot's
+                # surface; anything clearly IN FRONT of it is an obstacle and
+                # is kept:
+                #
+                #     keep if   depth  <  robot_depth − tol
+                #
+                # Note the asymmetry. Only what is in front survives; a pixel
+                # at the surface or BEHIND it stays excluded. Behind is
+                # unobservable anyway (the robot is opaque), and treating it as
+                # an obstacle would turn every hole in the sparse depth buffer
+                # into a phantom at the arm's own position — which is the
+                # failure this is meant to remove, not reintroduce.
+                #
+                # tol is sized by the CALIBRATION residual, not by sensor
+                # noise: the extrinsic on this cell measures ~4 cm of
+                # disagreement between the projected model and the depth, and a
+                # tolerance under that would classify the arm as an obstacle
+                # wherever the calibration is worst.
+                # ── The model surface, corrected ────────────────────────────
+                # `robot_depth` is where the MODEL puts the arm, and the model
+                # is biased: the front surface at a pixel is the nearest of
+                # however many mesh samples happened to land on it, which sits
+                # FARTHER than the true surface by an amount that depends on
+                # the sampling density (utils/calibration_check documents the
+                # measured swing: -0.9 cm at 300 samples/link, +6.0 cm at
+                # 20000, on one unchanged extrinsic). Any real extrinsic error
+                # adds to that.
+                #
+                # MEASURED on the rig 2026-09-21: the calibration check read
+                # `measured - model = -6.1 cm (spread 5.0 cm)` for a whole run,
+                # against a gate tolerance of 6.0 cm. So the arm's own pixels
+                # sat exactly ON the threshold and half the distribution
+                # crossed it: `depth < z_rob - tol` was TRUE for the arm's own
+                # surface, the gate un-excluded it, and the arm became its own
+                # obstacle.
+                #
+                # ONLY THE SUM `bias + tol` CHANGES ANY BEHAVIOUR. Splitting it
+                # is not arithmetic, it is bookkeeping, and the bookkeeping is
+                # the point: `tol` is the SPREAD of the residual (sensor noise,
+                # the mask's pose lag) and `bias` is its MEDIAN, which moves
+                # when `sample_points_per_link` moves — several centimetres of
+                # it, with no calibration having changed. Folded into one
+                # number, densifying the mesh silently inflates the blind
+                # shell and nobody can tell which part of it was which.
+                #
+                # The shell that matters is measured from the arm's TRUE
+                # surface, and it is `tol` once the median is corrected. Read
+                # the median off the calibration_check line and put it in
+                # mask.depth_gate_bias_m, positive when the residual is
+                # negative.
+                z_rob = robot_depth[vg, ug] - self._depth_gate_bias
+                depth_here = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
+                in_front = (depth_here > 0) & (depth_here < z_rob - self._depth_gate_tol)
+                excluded = excluded & ~in_front
+                # ── DIAGNOSTIC: self pixels that leaked past the mask ───────
+                # A pixel the mask did NOT exclude, sitting AT the robot's own
+                # surface (within the same tolerance the gate uses), is the
+                # robot being read as an obstacle. The z-buffer is the ground
+                # truth here and it is already in hand, so the count is two
+                # ufuncs on a grid that is decimated by pixel_step.
+                #
+                # It counts what the SILHOUETTE missed, which is the only way
+                # the leak can happen: the gate above can un-exclude a pixel,
+                # never exclude one, so everything outside the mask is kept
+                # whatever its depth.
+                self.last_self_leak_px = int(np.count_nonzero(
+                    (~excluded) & np.isfinite(z_rob)
+                    & (np.abs(depth_here - z_rob) <= self._depth_gate_tol)))
+            keep   = ~excluded
             ug, vg = ug[keep], vg[keep]
 
         # Sample the EE-vs-body provenance with the SAME (vg, ug) indices used
@@ -159,13 +398,21 @@ class DistanceEngine:
         ee_src = ee_source_mask[vg, ug] if ee_source_mask is not None else None
 
         # ── Step 3: depth filter ──────────────────────────────────────────
-        Z     = depth[vg, ug].astype(np.float32) * np.float32(0.001)
+        Z     = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
         valid = (Z >= self.min_depth) & (Z <= self.max_depth)
         ug, vg, Z = ug[valid], vg[valid], Z[valid]
         if ee_src is not None:
             ee_src = ee_src[valid]   # same boolean filter as Z/ug/vg
 
         if ug.size == 0:
+            # No obstacle pixel survived: publish an EMPTY cloud rather than
+            # leaving the previous frame's in place. A stale cloud would let the
+            # tracker keep feeding a vanished obstacle to its filters.
+            if self._export_cloud:
+                self.last_obstacle_cloud = ObstacleCloud(
+                    p_cam=np.empty((0, 3), dtype=np.float32),
+                    u=np.empty(0, dtype=np.int32), v=np.empty(0, dtype=np.int32),
+                    step=int(step), stamp=frame_stamp)
             return self._lpf_pass(self._empty_results(control_points), dt), 0
 
         # ── Step 4: unproject obstacle pixels to CAMERA frame ─────────────
@@ -174,6 +421,34 @@ class DistanceEngine:
         p_cam[:, 0] = (ug.astype(np.float32) - cx_f32) * (Z * fx_inv_f32)
         p_cam[:, 1] = (vg.astype(np.float32) - cy_f32) * (Z * fy_inv_f32)
         p_cam[:, 2] = Z
+
+        # ── Step 4 (multi-obstacle only): connected-component labels ──────
+        # The labelling the tracker clusters with (obstacle_clusters.
+        # label_points, same u/v/z/step), computed ONCE per frame here because
+        # the distances need it first; exported on the cloud below and reused
+        # by cluster_obstacles. k = 1 skips this entirely.
+        labels = order = starts = ends = None
+        if self._multi_k > 1:
+            _, labels = label_points(ug, vg, Z, step=step,
+                                     connectivity=self._multi_connectivity,
+                                     depth_jump=self._multi_depth_jump)
+            labels = np.asarray(labels, dtype=np.int64)
+            # Sorted once; per CP the per-cluster minimum is then one reduceat.
+            # connected_components labels are dense (0..n-1, none empty), so
+            # sorted segment i IS label i.
+            order  = np.argsort(labels, kind='stable')
+            starts = np.flatnonzero(np.r_[True, np.diff(labels[order]) != 0])
+            ends   = np.r_[starts[1:], labels.size]
+
+        # ── Step 4a: export the selection (opt-in, no copy) ───────────────
+        # p_cam/ug/vg here are the obstacle mask in its sparse form: every pixel
+        # that survived the exclusion mask AND the depth-range filter, already
+        # unprojected. Handed to the tracker as-is so both pipelines reason
+        # about the identical pixel set.
+        if self._export_cloud:
+            self.last_obstacle_cloud = ObstacleCloud(
+                p_cam=p_cam, u=ug, v=vg, step=int(step), stamp=frame_stamp,
+                labels=labels)
 
         # ── Step 4b: dilation-margin → metres, per obstacle pixel ─────────
         # Convert the pixel-space exclusion-mask dilation back to metres at the
@@ -221,10 +496,23 @@ class DistanceEngine:
                 direction = (vec / norm).astype(np.float32) if norm > 1e-9 \
                             else np.zeros(3, np.float32)
                 obs_pix = (int(ug[best]), int(vg[best]))
+                # RAW camera-frame depth of the winning pixel, i.e. Z as read
+                # by the sensor before the radius/margin subtraction that
+                # makes `distance` a surface gap. Exactly the quantity
+                # sensor_range_uncertainty's noise model is derived against.
+                range_m = float(obs_pt_cam[2])
             else:
                 obs_pt_base = None
                 direction   = None
                 obs_pix     = None
+                range_m     = None
+
+            cid, extras = -1, []
+            if labels is not None and np.isfinite(min_dist):
+                cid    = int(labels[best])
+                extras = self._cluster_extras(
+                    surface, cid, order, starts, ends, p_cam,
+                    R_base_f32, t_base_f32, cp['point'])
 
             results.append(ControlPointResult(
                 point=cp['point'],
@@ -237,10 +525,63 @@ class DistanceEngine:
                 direction=direction,
                 closest_obstacle_point=obs_pt_base,
                 closest_pixel=obs_pix,
+                cluster_id=cid,
+                extras=extras,
+                range_m=range_m,
             ))
+
+        if self._multi_k > 1:
+            self._cap_extra_rows(results)
 
         # ── Step 7: apply conservative low-pass filter ────────────────────
         return self._lpf_pass(results, dt), int(ug.size)
+
+    # ── Multi-obstacle rows ───────────────────────────────────────────────
+
+    def _cluster_extras(self, surface, cid0, order, starts, ends, p_cam,
+                        R_base_f32, t_base_f32, cp_point) -> List[ObstacleHit]:
+        """Nearest point of each cluster other than ``cid0``, best k-1.
+
+        One entry per cluster by construction (the per-cluster minimum), so two
+        points of the same object can never become two rows. Entries past the
+        obstacle horizon are dropped here; the global row cap is applied later
+        in :meth:`_cap_extra_rows`, once every CP is known.
+        """
+        mins = np.minimum.reduceat(surface[order], starts)   # (n_labels,)
+        mins[cid0] = np.inf                                   # rank 0's cluster
+        n_take = min(self._multi_k - 1, int(mins.size))
+        out: List[ObstacleHit] = []
+        for lb in np.argsort(mins, kind='stable')[:n_take]:
+            d = float(mins[lb])
+            if not np.isfinite(d) or d > self._multi_horizon:
+                break                                         # ascending: done
+            sl = order[starts[lb]:ends[lb]]
+            j  = int(sl[int(surface[sl].argmin())])
+            obs_pt_base = R_base_f32 @ p_cam[j] + t_base_f32
+            vec  = cp_point.astype(np.float64) - obs_pt_base.astype(np.float64)
+            norm = float(np.linalg.norm(vec))
+            direction = (vec / norm).astype(np.float32) if norm > 1e-9 \
+                        else np.zeros(3, np.float32)
+            out.append(ObstacleHit(d, obs_pt_base, direction, int(lb),
+                                   float(p_cam[j][2])))
+        return out
+
+    def _cap_extra_rows(self, results: List[ControlPointResult]) -> None:
+        """Keep at most ``multi_obstacle_max_rows`` rows in total, nearest first.
+
+        Only extras compete for the budget: every CP's own nearest point is a
+        row k = 1 already had, and trading it for another CP's second-nearest
+        would delete a barrier. Ties break on (seg_idx, cp_idx, rank), so the
+        surviving set — and the n_c OSQP sees — is deterministic.
+        """
+        n_primary = sum(1 for r in results if np.isfinite(r.distance))
+        budget = max(self._multi_max_rows - n_primary, 0)
+        ranked = sorted((h.distance, r.seg_idx, r.cp_idx, rank, i)
+                        for i, r in enumerate(results)
+                        for rank, h in enumerate(r.extras))
+        keep = {(i, rank) for _, _, _, rank, i in ranked[:budget]}
+        for i, r in enumerate(results):
+            r.extras = [h for rank, h in enumerate(r.extras) if (i, rank) in keep]
 
     # ── Low-pass filter ───────────────────────────────────────────────────
 
@@ -257,11 +598,10 @@ class DistanceEngine:
         dt is the REAL inter-frame interval [s]; when None/≤0 the rate-limit is
         skipped and every branch is bit-for-bit the legacy behaviour.
         """
-        alpha = self._lpf_alpha
+        dt_valid = dt is not None and dt > 1e-4   # guard div-by-0 / dup stamps
+        alpha = self._alpha_for(dt if dt_valid else None)
         if alpha <= 0.0:
             return results
-
-        dt_valid = dt is not None and dt > 1e-4   # guard div-by-0 / dup stamps
 
         smoothed: List[ControlPointResult] = []
         for r in results:
@@ -279,13 +619,30 @@ class DistanceEngine:
             if not np.isfinite(r.distance):
                 # No valid measurement: hold last smoothed value (pending left
                 # intact — it resolves when a finite measurement next arrives).
+                # The hold is BOUNDED: past _hold_max_s the direction is dropped
+                # so the entry is published invalid instead of carrying a stale
+                # distance forward forever. See the note in __init__.
+                age = self._hold_age.get(key, 0.0) + (
+                    dt if dt_valid else self._hold_dt_fallback)
+                self._hold_age[key] = age
+                expired = 0.0 < self._hold_max_s < age
+                if expired and dir_prev is not None:
+                    self._log_hold_expired(r, d_prev, age)
                 smoothed.append(ControlPointResult(
                     point=r.point, seg_idx=r.seg_idx, cp_idx=r.cp_idx,
                     radius=r.radius, start_link=r.start_link, end_link=r.end_link,
-                    distance=d_prev, direction=dir_prev,
+                    distance=d_prev,
+                    direction=None if expired else dir_prev,
                     closest_obstacle_point=None, closest_pixel=None,
+                    # No fresh pixel this frame, so no fresh raw range either —
+                    # same treatment as closest_obstacle_point/closest_pixel
+                    # above. A held range_m would misrepresent THIS frame's
+                    # sensor noise as if it had actually been re-measured.
+                    range_m=None,
                 ))
                 continue
+            # A finite measurement clears the hold clock for this CP.
+            self._hold_age.pop(key, None)
 
             # Direction: always EMA-smoothed to avoid flip discontinuities
             dir_new = self._smooth_direction(dir_prev, r.direction, alpha)
@@ -336,6 +693,19 @@ class DistanceEngine:
 
         return smoothed
 
+    def _alpha_for(self, dt: Optional[float]) -> float:
+        """The EMA weight on history for this frame.
+
+        With ``lpf_tau_s`` unset this is the legacy constant. With it set the
+        weight comes from the measured interval, so the lag stays put when the
+        depth profile changes; a frame with no usable interval falls back to the
+        weight the nominal rate implies rather than to no smoothing at all.
+        """
+        if self._lpf_tau_s <= 0.0:
+            return self._lpf_alpha
+        a = ema_alpha_for(self._lpf_tau_s, dt) if dt is not None else 0.0
+        return a if a > 0.0 else self._lpf_alpha_nominal
+
     @staticmethod
     def _smooth_direction(dir_prev, dir_raw, alpha):
         """EMA-smooth + renormalise a unit direction (unchanged legacy math)."""
@@ -353,7 +723,22 @@ class DistanceEngine:
             distance=distance, direction=direction,
             closest_obstacle_point=r.closest_obstacle_point,
             closest_pixel=r.closest_pixel,
+            cluster_id=r.cluster_id, extras=r.extras,
+            range_m=r.range_m,
         )
+
+    def _log_hold_expired(self, r, d_prev, age):
+        """Fires once per CP per expiry (the flag is edge-triggered by dir_prev
+        going None on the next hold), so it is not throttled: an expiry is a
+        perception dropout long enough to matter and every one is worth a line.
+        """
+        if self._log is None:
+            return
+        self._log.warning(
+            f'RTDDIAG hold expired CP=({r.seg_idx},{r.cp_idx}) held '
+            f'd={d_prev:.3f} m for {age * 1e3:.0f} ms > '
+            f'{self._hold_max_s * 1e3:.0f} ms -> published INVALID. The '
+            f'obstacle left the image, or this CP fell into a mask hole.')
 
     def _log_jump(self, outcome, r, d_prev, d_raw, dt, d_new, v_impl=None):
         """Diagnostic for suspicious-approach events (RTDDIAG, analog to CBFDIAG).
@@ -379,6 +764,7 @@ class DistanceEngine:
         """Clear all LPF state (call on camera resolution change)."""
         self._lpf.clear()
         self._pending.clear()
+        self._hold_age.clear()
         self._prev_stamp = None
 
     @staticmethod

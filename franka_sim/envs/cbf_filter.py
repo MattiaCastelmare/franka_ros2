@@ -65,20 +65,95 @@ class CBFInfo:
     intervention: float = 0.0  # ‖q̈_safe − q̈_nom‖ how hard the shield bent nominal
 
 
+# ── FR3 firmware velocity envelope ───────────────────────────────────────────
+#
+# COPIED, not imported, from franka_experiments/utils/cbf_hard_limits.py:
+# franka_sim must stay importable with no ROS installed. Keep the two in step —
+# test_real_configs_are_in_sync checks the parameters, and the constants below
+# are libfranka's own (rate_limiting.h, computeUpper/LowerLimitsJointVelocity).
+#
+# The firmware does NOT enforce a flat |q̇| ≤ q̇_max. Near a position limit the
+# admissible speed collapses along
+#
+#     q̇_max,i(q) = min( q̇_lim,i , max(0, −v_off,i + sqrt(2·a_i·(q_ref,i − q))) )
+#
+# and it is THIS curve that the `joint_velocity_violation` reflex applies. The
+# robot adopted it in commit f5a59f8 after five logged hardware aborts, none of
+# which was anywhere near its flat q̇_max (worst case 0.85 of it). Training
+# without it lets the policy explore joint states the firmware simply refuses.
+
+FR3_VEL_LIMIT  = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
+FR3_VEL_OFFSET = np.array([0.30, 0.20, 0.20, 0.30, 0.35, 0.35, 0.35])
+FR3_VEL_SLOPE  = np.array([12.0, 5.17, 7.00, 8.00, 34.0, 11.0, 34.0])
+FR3_VEL_Q_REF_UPPER = np.array(
+    [2.75010, 1.79180, 2.90650, -0.14580, 2.81010, 4.52050, 3.01960])
+FR3_VEL_Q_REF_LOWER = np.array(
+    [-2.75010, -1.79180, -2.90650, -3.04810, -2.81010, 0.54092, -3.01960])
+"""q_ref lies INSIDE the mechanical stop, so the last ~0.03–0.10 rad of travel
+admit no motion at all. That is why the robot also clamps its effective
+position limits to these values (cbf_safety_filter, commit f5a59f8): anchoring
+a barrier at the mechanical limit puts it behind the wall."""
+
+
+def fr3_velocity_envelope(q, margin: float = 1.0):
+    """Firmware-admissible ``(q̇_upper, q̇_lower)`` at configuration *q*."""
+    up = np.minimum(FR3_VEL_LIMIT, np.maximum(
+        0.0, -FR3_VEL_OFFSET + np.sqrt(np.maximum(
+            0.0, FR3_VEL_SLOPE * (FR3_VEL_Q_REF_UPPER - q)))))
+    lo = np.maximum(-FR3_VEL_LIMIT, np.minimum(
+        0.0, FR3_VEL_OFFSET - np.sqrt(np.maximum(
+            0.0, FR3_VEL_SLOPE * (q - FR3_VEL_Q_REF_LOWER)))))
+    return margin * up, margin * lo
+
+
 # ── Ported hard state-limit helpers (see utils/cbf_hard_limits.py) ───────────
 
 def hard_accel_box(q, qdot, *, acc_lb, acc_ub, qdot_max, v_margin,
-                   q_min, q_max, q_margin, brake_eta, dt):
-    """Per-joint q̈ box enforcing joint velocity AND position limits. (lb, ub)."""
+                   q_min, q_max, q_margin, brake_eta, dt,
+                   relax_dt=None, clip_to_limits=False,
+                   firmware_envelope=True):
+    """Per-joint q̈ box enforcing joint velocity AND position limits. (lb, ub).
+
+    Mirrors ``cbf_hard_limits.hard_accel_box`` term for term, including the
+    three arguments the robot gained in f5a59f8 / 4606e39:
+
+    * ``firmware_envelope`` intersects the velocity bound with
+      :func:`fr3_velocity_envelope`. NOT a duplicate of the braking curve
+      below: that one is built from ``q_min``/``q_max`` and ``brake_eta``, i.e.
+      from what WE think the joint needs to stop, and on joint6 it comes out
+      1.9x looser than the firmware's.
+    * ``relax_dt`` decouples APPROACHING a cap from being over it — below the
+      cap the horizon is ``relax_dt`` (the bound bites early and gently), past
+      it the one-step ``dt`` (braking authority is never softened when it is
+      actually needed). ``None`` reproduces the legacy one-step behaviour.
+    * ``clip_to_limits`` keeps the box inside the physical acceleration limits
+      after the feasibility guard, so the QP is never handed a box demanding
+      more than the joint can produce.
+    """
     h_up = np.maximum(q_max - q_margin - q, 0.0)
     h_lo = np.maximum(q - q_margin - q_min, 0.0)
     a_auth = brake_eta * np.minimum(np.abs(acc_lb), np.abs(acc_ub))
     v_cap = v_margin * qdot_max
     v_ub = np.minimum(v_cap, np.sqrt(2.0 * a_auth * h_up))
     v_lb = np.maximum(-v_cap, -np.sqrt(2.0 * a_auth * h_lo))
-    ub = np.minimum(acc_ub, (v_ub - qdot) / dt)
-    lb = np.maximum(acc_lb, (v_lb - qdot) / dt)
+
+    # The firmware's own envelope, on top of ours and under the same margin.
+    if firmware_envelope:
+        env_up, env_lo = fr3_velocity_envelope(q, margin=v_margin)
+        v_ub = np.minimum(v_ub, env_up)
+        v_lb = np.maximum(v_lb, env_lo)
+
+    rdt = dt if relax_dt is None else float(relax_dt)
+    dt_ub = np.where(v_ub >= qdot, rdt, dt)
+    dt_lb = np.where(v_lb <= qdot, rdt, dt)
+
+    ub = np.minimum(acc_ub, (v_ub - qdot) / dt_ub)
+    lb = np.maximum(acc_lb, (v_lb - qdot) / dt_lb)
     ub = np.maximum(ub, lb)          # feasibility guard (priority to lb)
+    if clip_to_limits:
+        lb = np.minimum(lb, acc_ub)  # never ask for more than the joint has
+        ub = np.minimum(ub, acc_ub)
+        ub = np.maximum(ub, lb)      # keep the (possibly degenerate) box ordered
     return lb, ub
 
 
@@ -141,6 +216,14 @@ class AccelCBFFilter:
         self.slew_delta     = float(p.get('max_qddot_delta', 5.0))
         self.dt = float(dt)
 
+        # Box shape knobs the robot gained in f5a59f8 / 4606e39. Defaults are
+        # the robot's shipped values, so a config.yaml frozen next to an older
+        # model still reproduces the shield it was trained under only if it
+        # carries them explicitly — which is why they are in the sync test.
+        self.relax_dt        = p.get('state_box_relax_s', 0.10)
+        self.clip_to_limits  = bool(p.get('accel_box_clip_to_limits', True))
+        self.fw_envelope     = bool(p.get('firmware_envelope', True))
+
         # Workspace box (hard rows on the EE point).
         self.ws_enable  = bool(p.get('ws_enable', True))
         self.ws_min     = np.asarray(p.get('ws_min', [0.05, -0.60, 0.05]), float)
@@ -148,12 +231,70 @@ class AccelCBFFilter:
         self.ws_margin  = float(p.get('ws_margin', 0.02))
         self.ws_horizon = float(p.get('ws_horizon', 0.25))
 
+        # Floor (hard rows on EVERY control point, sim-only like the ws box).
+        # The ws box only holds the EE point, so links 6/7 and the fingers
+        # could still be driven into the floor. h = z_cp − r_cp − floor_z − margin.
+        self.floor_enable  = bool(p.get('floor_enable', False))
+        self.floor_z       = float(p.get('floor_z', 0.0))
+        self.floor_margin  = float(p.get('floor_margin', 0.03))
+        self.floor_horizon = float(p.get('floor_horizon', 0.30))
+        # Gentler gains than the obstacle rows (k0 25 / k1 10.5): those let the
+        # arm close on the floor fast and then demand more deceleration than the
+        # accel/slew box allows, so the QP went infeasible right above it.
+        self.floor_k0      = float(p.get('floor_k0', 4.0))
+        self.floor_k1      = float(p.get('floor_k1', 4.0))
+
+        # Base keep-out (sim stand-in for the robot's self-collision rows):
+        # a vertical cylinder around the base axis that the forearm, wrist and
+        # hand may not enter below base_height. Without it the policy folded
+        # link5 onto link0/link1, the arm jammed, the QP went infeasible and the
+        # hand slid onto the floor. Same gentle gains as the floor rows.
+        self.base_keepout_enable = bool(p.get('base_keepout_enable', False))
+        self.base_radius  = float(p.get('base_radius', 0.11))
+        self.base_height  = float(p.get('base_height', 0.45))
+        self.base_margin  = float(p.get('base_margin', 0.02))
+        # QP infeasible → re-solve with EVERY row soft before falling back to
+        # the blind −k·q̇ brake. Measured: all floor hits with floor rows on
+        # happened on infeasible ticks, where the brake ignores the floor.
+        self.soft_fallback = bool(p.get('soft_fallback', False))
+
         self.qddot_max = np.asarray(qddot_max, float)
         self.qdot_max  = np.asarray(qdot_max, float)
-        self.q_min     = np.asarray(q_min, float)
-        self.q_max     = np.asarray(q_max, float)
-        self._acc_lb   = -self.qddot_max
-        self._acc_ub   =  self.qddot_max
+
+        # EFFECTIVE position limits, not the mechanical ones (robot: commit
+        # f5a59f8, cbf_safety_filter.__init__). The firmware's velocity
+        # envelope reaches zero at a reference position INSIDE the mechanical
+        # stop — 4.5205 rad on joint6 against a 4.6216 limit — so a barrier
+        # anchored at the mechanical limit sits behind the wall the robot
+        # actually has.
+        if self.fw_envelope:
+            self.q_min = np.maximum(np.asarray(q_min, float), FR3_VEL_Q_REF_LOWER)
+            self.q_max = np.minimum(np.asarray(q_max, float), FR3_VEL_Q_REF_UPPER)
+        else:
+            self.q_min = np.asarray(q_min, float)
+            self.q_max = np.asarray(q_max, float)
+
+        # ACCELERATION AUTHORITY, capped at what the arm can actually produce.
+        #
+        # The robot builds its box from franka_description's `deceleration_limit`
+        # — the only q̈ scale the vendor publishes — which reads 17 rad/s² on
+        # joints 5 and 7, 70 % above libfranka's kMaxJointAcceleration of 10.
+        # Commit 4606e39 capped it at `qddot_max_abs: 10.0` after measuring
+        # q̈_safe saturating at ±17 on the wrist while the realised acceleration
+        # lagged by up to 18 rad/s².
+        #
+        # NOTE the asymmetry, and that it is deliberate: the cap applies to the
+        # BOX only. `qddot_max` (the action scale, q̈_nom = a·q̈_max) keeps the
+        # uncapped 17, exactly as on the robot, where rl_policy_commander scales
+        # by fr3_control.yaml's joint_limits and cbf_safety_filter's box then
+        # clips. Capping both would change what a = 1 means and would NOT
+        # mirror hardware.
+        cap = p.get('qddot_max_abs')
+        qdd_box = (np.minimum(self.qddot_max, float(cap)) if cap is not None
+                   else self.qddot_max.copy())
+        self._acc_lb   = -qdd_box
+        self._acc_ub   =  qdd_box
+        self.qddot_box = qdd_box
 
         # Constant QP cost P = diag(I_7, ρ); box bounds get the slack tail.
         self._P = np.eye(NV + 1)
@@ -202,8 +343,36 @@ class AccelCBFFilter:
         prob = self._probs.get(n_c)
         if prob is None:
             prob = osqp.OSQP()
+            # adaptive_rho_interval PINNED, and this is a reproducibility fix,
+            # not a tuning choice.
+            #
+            # OSQP's default is 0, which means "re-adapt rho on a schedule
+            # derived from the measured SETUP TIME" (verified against the
+            # installed osqp 0.6.7: adaptive_rho=1, adaptive_rho_interval=0,
+            # adaptive_rho_fraction=0.4). The solver's iteration path is then
+            # a function of wall-clock timing, not only of its inputs — so two
+            # runs of the same seed on the same machine can return different
+            # q̈_safe, and `--seed` stops guaranteeing a reproducible run.
+            #
+            # Measured: with the default, a no-op regression test comparing two
+            # identical 40-step rollouts failed about 2 runs in 5 under pytest
+            # (max divergence 1.6e-4, amplified from ~5e-6 by the closed loop),
+            # while never failing in a plain script — pytest's capture and
+            # import work perturb exactly the timing OSQP samples. With the
+            # interval pinned it passes bit-exactly, repeatedly.
+            #
+            # 25 is OSQP's own `check_termination` default, i.e. the cadence it
+            # already evaluates residuals on. This changes the iteration
+            # SCHEDULE, never the problem: the solution still satisfies the same
+            # eps_abs/eps_rel = 1e-3 tolerance.
+            #
+            # NOTE: cbf_safety_filter.py on the robot still uses the default.
+            # The QP it solves is therefore reproducible only up to solver
+            # tolerance — worth knowing when a CBFDIAG line is compared across
+            # runs, though it is well below every safety margin here.
             prob.setup(P=self._P_csc, q=self._qvec, A=A, l=l, u=u,
-                       warm_start=True, max_iter=self.max_iter, verbose=False)
+                       warm_start=True, max_iter=self.max_iter, verbose=False,
+                       adaptive_rho_interval=25)
             self._probs[n_c] = prob
         elif n_c > 0:
             prob.update(q=self._qvec, l=l, u=u, Ax=A.data)
@@ -214,12 +383,17 @@ class AccelCBFFilter:
     # ── Main entry point ─────────────────────────────────────────────────────
 
     def filter(self, q, qdot, qddot_nom, obstacles: List[Obstacle],
-               ee_pos=None, ee_Jp=None, ee_jd_qd=None) -> tuple:
+               ee_pos=None, ee_Jp=None, ee_jd_qd=None, floor_pts=None,
+               base_pts=None) -> tuple:
         """Shield q̈_nom into q̈_safe. Returns (q̈_safe (NV,), CBFInfo).
 
         obstacles : soft HOCBF rows (built by the env from MuJoCo geometry).
         ee_pos/ee_Jp/ee_jd_qd : EE point + its (3,NV) Jacobian + J̇q̇ drift, used
             for the hard workspace-box rows (skip if ws disabled or None).
+        floor_pts : ``[(z, radius, Jz (NV,), J̇z q̇)]`` per control point for the
+            hard floor rows (skip if floor disabled or None).
+        base_pts : ``[(p (3,), radius, Jp (3,NV), J̇p q̇ (3,))]`` for the hard
+            base keep-out rows (skip if disabled or None).
         """
         q = np.asarray(q, float)
         qdot = np.asarray(qdot, float)
@@ -231,7 +405,9 @@ class AccelCBFFilter:
             q, qdot, acc_lb=self._acc_lb, acc_ub=self._acc_ub,
             qdot_max=self.qdot_max, v_margin=self.hard_v_margin,
             q_min=self.q_min, q_max=self.q_max, q_margin=self.hard_q_margin,
-            brake_eta=self.hard_brake_eta, dt=self.dt)
+            brake_eta=self.hard_brake_eta, dt=self.dt,
+            relax_dt=self.relax_dt, clip_to_limits=self.clip_to_limits,
+            firmware_envelope=self.fw_envelope)
         box_lo, box_hi = apply_slew_limit(h_lb, h_ub, self._qddot_prev,
                                           self.slew_delta)
         self._box_lb[:NV] = box_lo
@@ -261,6 +437,38 @@ class AccelCBFFilter:
                 if np.all(np.isfinite(a_row)) and np.isfinite(b):
                     rows_a.append(a_row); rows_b.append(b)
                     rows_soft.append(0.0); rows_h.append(h_ws)
+
+        if self.floor_enable and floor_pts:
+            for z, r, a_row, jdq in floor_pts:
+                h_fl = float(z - r - self.floor_z - self.floor_margin)
+                if h_fl >= self.floor_horizon:
+                    continue
+                a_row = np.asarray(a_row, float)
+                b = (-self.floor_k1 * float(a_row @ qdot) - self.floor_k0 * h_fl
+                     - float(jdq))
+                if np.all(np.isfinite(a_row)) and np.isfinite(b):
+                    rows_a.append(a_row); rows_b.append(b)
+                    rows_soft.append(0.0); rows_h.append(h_fl)
+
+        if self.base_keepout_enable and base_pts:
+            for p_pt, r, Jp, jdq in base_pts:
+                if p_pt[2] > self.base_height:
+                    continue
+                rho = float(np.hypot(p_pt[0], p_pt[1]))
+                if rho < 1e-6:
+                    continue
+                u_xy = np.asarray(p_pt[:2], float) / rho     # radial direction
+                h_b = rho - r - self.base_radius - self.base_margin
+                if h_b >= self.floor_horizon:
+                    continue
+                # ρ̈ = û·(J q̈ + J̇ q̇) + ‖ṗ⊥‖²/ρ; dropping the last (≥ 0) term
+                # is conservative.
+                a_row = u_xy @ np.asarray(Jp, float)[:2]
+                b = (-self.floor_k1 * float(a_row @ qdot) - self.floor_k0 * h_b
+                     - float(u_xy @ np.asarray(jdq, float)[:2]))
+                if np.all(np.isfinite(a_row)) and np.isfinite(b):
+                    rows_a.append(a_row); rows_b.append(b)
+                    rows_soft.append(0.0); rows_h.append(h_b)
 
         n_c = len(rows_a)
         info.n_c = n_c
@@ -295,6 +503,20 @@ class AccelCBFFilter:
             qddot_safe = -self.k_brake * qdot
             info.solved = False
             info.braking = True
+            if self.soft_fallback and G is not None:
+                G_soft = G.copy()
+                G_soft[:, -1] = -1.0
+                l, u = self._osqp_lu(G_soft, h_qp)
+                prob = osqp.OSQP()
+                prob.setup(P=self._P_csc, q=self._qvec, A=self._osqp_A(G_soft),
+                           l=l, u=u, max_iter=self.max_iter, verbose=False,
+                           adaptive_rho_interval=25)
+                r2 = prob.solve()
+                if (r2.info.status_val == osqp.constant('OSQP_SOLVED')
+                        and r2.x is not None and np.all(np.isfinite(r2.x))):
+                    qddot_safe = np.asarray(r2.x[:NV], float)
+                    info.slack = float(r2.x[-1])
+                    info.braking = False
 
         # Every path passes through the hard box+slew clip (as the real node's
         # _finalize_and_publish) so velocity/position/continuity always hold.

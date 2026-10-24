@@ -1,0 +1,1048 @@
+"""Cluster centroids → tracked 3D obstacle velocity with a covariance.
+
+WHY THIS EXISTS
+---------------
+``ConstraintBuilder._obstacle_speed`` estimates the obstacle's contribution to
+the closing rate as a SCALAR RESIDUAL,
+
+    v_obs = aᵀq̇ − ḋ_measured ,
+
+then EMA-filters it at α = 0.7 and clamps it. Every property of that estimator
+is a consequence of having no object identity:
+
+* **it is scalar.** Only the component along the current n̂ is ever recovered,
+  so the estimate has to be rebuilt from scratch the moment n̂ turns — which it
+  does continuously as the arm moves. The obstacle's actual velocity vector is
+  the same in every frame and would not need rebuilding.
+* **it is per control point.** Eleven control points looking at ONE person
+  produce eleven independent estimates of that person's motion, each from its
+  own noisy distance channel, none of them pooling evidence.
+* **it differences an argmin.** ``d`` is the distance to the closest pixel, and
+  the closest pixel jumps between surface patches — and between OBJECTS. A jump
+  from one object to another is a discontinuity, not a velocity, and nothing in
+  the residual can tell the two apart.
+* **it lags.** The α = 0.7 EMA at 30 Hz is a ~75 ms time constant, and it is
+  there precisely because the raw residual cannot be trusted. 75 ms of lag on a
+  1 m/s approach is 7.5 cm of barrier, against ``d_safe`` = 0.15 m.
+
+A Kalman filter fixes the last two structurally rather than by tuning. It
+smooths AND differentiates in one step, with a gain derived from the ratio of
+process to measurement noise instead of a hand-set α, and it reports how
+uncertain it is — which is what makes step 8's uncertainty-derived tightening
+possible at all. An EMA cannot report that.
+
+THE MOTION MODEL: CONSTANT ACCELERATION, WHITE-NOISE JERK
+---------------------------------------------------------
+State ``x = [p(3), v(3), a(3)]``, ordered as three blocks of three so that
+``F = kron(F_1d, I₃)`` and every axis is independent.
+
+Constant VELOCITY was the obvious alternative and is the wrong one here. The
+obstacles this filter exists for are human limbs, which spend most of their
+time accelerating: a reach starts and stops inside ~0.5 s. Under a CV model an
+acceleration is unmodelled error, and the filter answers it the only way it
+can — by lagging, then by inflating its own covariance until it catches up.
+That lag is the exact quantity this whole pipeline is trying to remove.
+Carrying ``a`` in the state means an accelerating approach is EXTRAPOLATED
+rather than chased, which shows up as ``v`` leading a finite difference instead
+of trailing it.
+
+The price is one extra state per axis and slightly more noise on ``v`` when the
+target really is moving at constant velocity. That is the right trade for a
+safety filter: an over-eager ``v`` tightens a barrier, an under-eager one does
+not tighten it in time. Same conservative asymmetry as the rest of the module.
+
+Process noise is the standard WHITE-NOISE-JERK discretisation — jerk is modelled
+as a continuous white process of PSD ``q_jerk``, so per axis
+
+    Q = q_jerk · [[dt⁵/20, dt⁴/8, dt³/6],
+                  [dt⁴/8,  dt³/3, dt²/2],
+                  [dt³/6,  dt²/2, dt  ]]
+
+which is the exact integral ``∫₀^dt F(τ) G Gᵀ F(τ)ᵀ dτ`` with ``G = [0,0,1]ᵀ``,
+not the piecewise-constant approximation. It matters because the off-diagonal
+``p``–``v`` and ``v``–``a`` correlations are what let a position measurement
+correct the velocity at all, and the crude form gets their scale wrong at the
+30 Hz dt this runs at.
+
+Measurement is the cluster centroid: ``H`` selects ``p``, ``R = σ_meas²·I₃``.
+``σ_meas`` is NOT the depth sensor's per-pixel noise. The measurement is a
+centroid over hundreds of pixels, so pixel noise averages down to nothing; what
+is left is the CENTROID's own wander — the observed surface changing shape as
+the object rotates, an arm entering the blob, the exclusion mask clipping an
+edge. That is centimetres, not millimetres, and setting σ_meas from the sensor
+datasheet instead would make the filter trust a wandering centroid and manufacture
+velocity out of it.
+
+No ROS here; pure numpy, so it is unit-testable headless.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import numpy as np
+
+# State layout. Three blocks of three: [px py pz | vx vy vz | ax ay az].
+NP = 3
+NX = 9
+IP = slice(0, 3)
+IV = slice(3, 6)
+IA = slice(6, 9)
+
+#: Measurement matrix: the centroid observes POSITION only. Built once — it is
+#: a constant, and rebuilding it per update was measurable at 30 Hz × N tracks.
+H = np.zeros((NP, NX))
+H[:, IP] = np.eye(3)
+
+
+def transition(dt: float) -> np.ndarray:
+    """(9, 9) constant-acceleration state transition over ``dt``."""
+    f = np.array([[1.0, dt, 0.5 * dt * dt],
+                  [0.0, 1.0, dt],
+                  [0.0, 0.0, 1.0]])
+    return np.kron(f, np.eye(3))
+
+
+def process_noise(dt: float, q_jerk: float) -> np.ndarray:
+    """(9, 9) white-noise-jerk process covariance over ``dt``.
+
+    The exact ``∫₀^dt F(τ)GGᵀF(τ)ᵀ dτ`` for ``G = [0, 0, 1]ᵀ`` — see the module
+    docstring for why the exact form rather than the piecewise-constant one.
+    """
+    dt2 = dt * dt
+    dt3 = dt2 * dt
+    dt4 = dt3 * dt
+    dt5 = dt4 * dt
+    qc = np.array([[dt5 / 20.0, dt4 / 8.0, dt3 / 6.0],
+                   [dt4 / 8.0,  dt3 / 3.0, dt2 / 2.0],
+                   [dt3 / 6.0,  dt2 / 2.0, dt]])
+    return float(q_jerk) * np.kron(qc, np.eye(3))
+
+
+class KalmanTrack:
+    """One tracked obstacle: constant-acceleration 3D KF over a centroid.
+
+    Args:
+        p0: (3,) initial position [m] — the centroid that spawned the track.
+        q_jerk: [m²/s⁵] jerk PSD. Together with ``sigma_meas`` this is THE
+            tuning knob — only their RATIO matters, and it sets the filter's
+            bandwidth. Measured on the synthetic reach in
+            ``test_obstacle_kalman`` (rest → 1 m/s in 0.2 s, sampled at 30 Hz
+            with 1 cm noise), sweeping q_jerk over three decades:
+
+                q_jerk   spurious speed on a STATIC target   lag to 90 % of a
+                         (mean / peak, m/s)                  reach onset
+                  0.2         0.059 / 0.122                      153 ms
+                  2.0         0.098 / 0.241                       87 ms
+                 20.0         0.165 / 0.423                       53 ms
+
+            2.0 is the chosen compromise, and it is deliberately on the
+            RESPONSIVE side of the knee. The asymmetry is the reason: the
+            consumer uses ``max(n̂ᵀv, 0)``, so noise can only ever TIGHTEN a
+            barrier (and its mean contribution is only σ/√(2π) ≈ 0.4σ of the
+            projected noise, because the negative half is discarded), whereas
+            lag UNDER-estimates a real approach — 150 ms of lag at 1 m/s is
+            15 cm of barrier against a d_safe of 0.15 m. Same conservative
+            asymmetry as the rest of the filter.
+        sigma_meas: [m] centroid measurement noise, one axis. See the module
+            docstring: this is the CENTROID's wander, not the depth sensor's
+            per-pixel noise. 1 cm.
+        sigma_v0: [m/s] initial velocity uncertainty. Large on purpose — a new
+            track knows nothing about its velocity, and a small value here would
+            make the first few updates barely move ``v`` at all, which is the
+            slow-start the residual estimator already suffers from.
+        sigma_a0: [m/s²] initial acceleration uncertainty, same reasoning.
+        track_id: stable integer identity, assigned by :class:`TrackManager`.
+    """
+
+    def __init__(
+        self,
+        p0: np.ndarray,
+        *,
+        q_jerk: float = 2.0,
+        sigma_meas: float = 0.01,
+        sigma_v0: float = 1.0,
+        sigma_a0: float = 5.0,
+        track_id: int = 0,
+    ) -> None:
+        self.track_id = int(track_id)
+        self.q_jerk = float(q_jerk)
+        self.sigma_meas = float(sigma_meas)
+        self.R = (self.sigma_meas ** 2) * np.eye(3)
+
+        self.x = np.zeros(NX)
+        self.x[IP] = np.asarray(p0, dtype=np.float64).ravel()
+        self.P = np.zeros((NX, NX))
+        # The position block starts at the measurement noise, not at zero: the
+        # centroid that spawned the track is itself a measurement.
+        self.P[IP, IP] = (self.sigma_meas ** 2) * np.eye(3)
+        self.P[IV, IV] = (float(sigma_v0) ** 2) * np.eye(3)
+        self.P[IA, IA] = (float(sigma_a0) ** 2) * np.eye(3)
+
+        #: Frames this track has been UPDATED on (not predicted). The consumer
+        #: gates on it — a one-frame-old velocity estimate is noise.
+        self.frames_seen = 1
+        #: Consecutive predicts without an update. The manager kills on it.
+        self.missed = 0
+        #: Total predicts, for diagnostics.
+        self.age = 1
+
+    # ── Estimates ───────────────────────────────────────────────────────────
+
+    @property
+    def position(self) -> np.ndarray:
+        return self.x[IP].copy()
+
+    @property
+    def velocity(self) -> np.ndarray:
+        return self.x[IV].copy()
+
+    @property
+    def acceleration(self) -> np.ndarray:
+        return self.x[IA].copy()
+
+    @property
+    def velocity_cov(self) -> np.ndarray:
+        """(3, 3) ``P_vv``, the velocity block of the state covariance.
+
+        This is what step 8 turns into a barrier margin: ``n̂ᵀP_vv n̂`` is the
+        variance of the velocity component the barrier actually consumes, so
+        the tightening is derived from the filter's own admitted uncertainty
+        rather than from a fixed guess. Returned as a copy — the caller must not
+        be able to reach into the filter's state.
+        """
+        return self.P[IV, IV].copy()
+
+    @property
+    def position_cov(self) -> np.ndarray:
+        """(3, 3) ``P_pp``, the position block. What the latency compensation
+        propagates forward: the obstacle is moved by ``v·t + ½a·t²`` and this,
+        propagated the same way, says how far off that prediction can be."""
+        return self.P[IP, IP].copy()
+
+    @property
+    def pos_vel_cov(self) -> np.ndarray:
+        """(3, 3) ``P_pv``, the position-velocity cross block. Needed for the
+        propagation ``P_pp(t) = P_pp + t(P_pv + P_pvᵀ) + t²P_vv`` — dropping
+        the cross term would under-state the propagated uncertainty of a
+        track whose position and velocity errors are correlated, which after a
+        Kalman update they always are."""
+        return self.P[IP, IV].copy()
+
+    def speed_variance_along(self, n_hat: np.ndarray) -> float:
+        """``n̂ᵀ P_vv n̂`` [m²/s²], the variance of the projected speed.
+
+        Clamped at ≥ 0: ``P`` is symmetric positive semi-definite in exact
+        arithmetic, but the Joseph-form update below can still leave a quadratic
+        form at −1e−20, and a negative variance would produce a NaN margin the
+        moment step 8 takes its square root.
+        """
+        n = np.asarray(n_hat, dtype=np.float64).ravel()
+        return max(float(n @ self.P[IV, IV] @ n), 0.0)
+
+    # ── Filter ──────────────────────────────────────────────────────────────
+
+    def predict(self, dt: float) -> None:
+        """Advance the state by ``dt`` seconds.
+
+        A non-positive or implausibly large ``dt`` is IGNORED rather than
+        applied. Perception timestamps arrive from a camera and are occasionally
+        duplicated or reordered; a negative dt would run the model backwards and
+        a 2 s gap would blow ``P`` up by ``dt⁵`` (a factor of 10⁷ against the
+        nominal 33 ms), after which the next measurement is accepted
+        unconditionally by a gate that has become infinitely wide.
+        """
+        dt = float(dt)
+        if not (1e-6 < dt < 1.0):
+            return
+        F = transition(dt)
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + process_noise(dt, self.q_jerk)
+        self.missed += 1
+        self.age += 1
+
+    def update(self, z: np.ndarray) -> None:
+        """Correct with a measured centroid ``z`` (3,) in the filter's frame.
+
+        A ROBUST (innovation-gated) update was tried here and removed: on the
+        real centroid sequences of rosbag/arm_complex and
+        rosbag/handratacker_object, down-weighting a measurement whose
+        innovation exceeded 2, 3 or 5 standard deviations changed the
+        fabricated velocity by less than a millimetre per second at every
+        percentile. The wander this filter suffers from is not a few large
+        outliers a gate can catch; it is the centroid moving a little, all the
+        time. It is handled where it is consumed — see
+        ``ConstraintBuilder._obstacle_speed_tracked``.
+        """
+        z = np.asarray(z, dtype=np.float64).ravel()
+        S = self.innovation_cov()
+        K = self.P @ H.T @ np.linalg.inv(S)
+        y = z - self.x[IP]
+        self.x = self.x + K @ y
+        # Joseph form, not (I − KH)P. The short form is only valid for the exact
+        # optimal gain and loses symmetry as soon as round-off creeps in; over
+        # minutes of 30 Hz operation that drift is what turns P asymmetric and
+        # then indefinite, at which point speed_variance_along() starts
+        # returning negative numbers and step 8's sqrt returns NaN.
+        IKH = np.eye(NX) - K @ H
+        self.P = IKH @ self.P @ IKH.T + K @ self.R @ K.T
+        self.P = 0.5 * (self.P + self.P.T)      # kill residual asymmetry
+        self.missed = 0
+        self.frames_seen += 1
+
+    # ── Association support ─────────────────────────────────────────────────
+
+    def predicted_measurement(self) -> np.ndarray:
+        """(3,) where this track expects the next centroid to be."""
+        return self.x[IP].copy()
+
+    def innovation_cov(self) -> np.ndarray:
+        """(3, 3) ``S = H P Hᵀ + R``, the covariance of the innovation."""
+        return self.P[IP, IP] + self.R
+
+    def mahalanobis(self, z: np.ndarray) -> float:
+        """Mahalanobis distance from this track's prediction to ``z``.
+
+        The gating metric, and it has to be Mahalanobis rather than Euclidean:
+        a coasting track's ``P`` grows every frame it is not updated, so its
+        gate widens on its own and a re-appearing obstacle is re-associated
+        instead of spawning a duplicate id. A fixed Euclidean radius cannot do
+        that — sized for the occlusion case it would swap ids between two close
+        obstacles on every frame.
+        """
+        y = np.asarray(z, dtype=np.float64).ravel() - self.x[IP]
+        try:
+            return float(np.sqrt(max(y @ np.linalg.solve(self.innovation_cov(), y), 0.0)))
+        except np.linalg.LinAlgError:
+            return float('inf')
+
+    def __repr__(self) -> str:      # pragma: no cover - diagnostic only
+        return (f'KalmanTrack(id={self.track_id} seen={self.frames_seen} '
+                f'missed={self.missed} p={np.round(self.x[IP], 3).tolist()} '
+                f'v={np.round(self.x[IV], 3).tolist()})')
+
+
+class IMMTrack:
+    """Two constant-acceleration models run in parallel: a generic one (the
+    exact filter :class:`KalmanTrack` runs) and a BALLISTIC one, whose
+    acceleration is expected to sit near gravity and to barely change frame to
+    frame. Everything a consumer reads — ``position``/``velocity``/
+    ``acceleration``/``velocity_cov``/``position_cov``/``pos_vel_cov`` — is the
+    probability-weighted BLEND of the two, so this is a drop-in replacement for
+    :class:`KalmanTrack` wherever one is constructed: same public surface
+    (``predict``, ``update``, ``predicted_measurement``, ``mahalanobis``,
+    ``speed_variance_along``, ``track_id``/``frames_seen``/``missed``/``age``).
+
+    WHY TWO MODELS RATHER THAN ONE MODEL WITH A GRAVITY-BIASED PRIOR
+    ------------------------------------------------------------------
+    A reaching hand and a thrown ball are close to the same physical size, so
+    no size-based heuristic reliably tells them apart before the fact — and
+    this tracker exists because a previous version fabricated motion on a
+    superficially similar signal (the centroid-wander regression fixed by the
+    residual floor and the velocity deadband). Hard-biasing every track's
+    acceleration toward "always falling" would reproduce exactly that
+    failure on a reaching arm. Running both hypotheses and weighting them by
+    which one actually explains the measurements — the standard Interacting
+    Multiple Model (IMM) construction — lets the ballistic hypothesis win
+    fast on a real projectile while a hand-shaped acceleration series (any
+    direction, decelerating at the end of the reach) keeps the mode
+    probability on the generic model, the same way :class:`KalmanTrack`
+    already behaves today.
+
+    THE MECHANICS, IN THE SAME predict()/update() SHAPE AS KalmanTrack
+    --------------------------------------------------------------------
+    ``predict(dt)`` does the IMM MIXING step first: each model's initial
+    condition for this step is a probability-weighted blend of BOTH models'
+    previous estimates (not just its own), weighted by the mode-transition
+    matrix ``Pi`` applied to the current mode probabilities. That mixed state
+    is what each model then predicts forward with its OWN process noise. The
+    mode probabilities themselves are advanced to their PREDICTED values
+    (``Pi.T @ mu``) here — correct whether or not ``update()`` follows: a
+    coasting track (no measurement this frame) keeps exactly this predicted
+    distribution, chaining correctly over consecutive missed frames.
+
+    ``update(z)`` runs an ordinary Joseph-form Kalman update per model against
+    the SAME measurement `z`, then re-weights the mode probabilities by each
+    model's Gaussian innovation likelihood (Bayes' rule, in the log domain for
+    numerical safety). The combined state/covariance exposed afterward is the
+    probability-weighted mixture, with the standard IMM "spread of means" term
+    added to the covariance: when the two models actively disagree, the
+    reported uncertainty is WIDER than either model's own, which only ever
+    tightens a downstream barrier — the same conservative-when-unsure
+    convention as every other estimate in this pipeline.
+
+    WHY BOTH MODELS SHARE THE SAME q_jerk (measured, not assumed)
+    ----------------------------------------------------------------
+    The obvious design is to also give the ballistic model much LOWER process
+    noise (a projectile's acceleration barely changes, unlike a limb's).
+    Measured on synthetic data and rejected: the early-frame discrimination
+    that actually matters comes almost entirely from the DIFFERING ACCELERATION
+    MEAN the two models start from (0 vs ``gravity``), not from their process
+    noise — sweeping ``ballistic_q_jerk`` from 2.0 down to 0.01 left the
+    mode probability at a ballistic frame 15 unchanged to three digits
+    (0.722–0.724). What a much lower ``ballistic_q_jerk`` DOES do is make the
+    ballistic model persistently more confident (a smaller steady-state P)
+    than the generic one, for as long as a track lives — and on a scene where
+    both eventually converge to the same, correct, near-zero acceleration
+    (a person standing still, a hand held steady), the tighter model then wins
+    the likelihood ratio purely by being more confident, not more correct: a
+    static scene's mean ballistic-mode probability drifted from 0.50 at
+    ``ballistic_q_jerk = q_jerk`` up to 0.61 at ``ballistic_q_jerk = 0.01``,
+    entirely as an artefact of the mismatched confidence, over several
+    seconds of drift with nothing in the scene to justify it. Keeping the same
+    ``q_jerk`` for both means their steady-state covariances converge to the
+    same value, so this bias vanishes (measured back to 0.50) while the
+    useful early-frame transient — the SIGMA_A0 asymmetry below, which fades
+    naturally as both models converge to the same steady state instead of
+    persisting — is untouched. ``ballistic_q_jerk`` stays a separate,
+    independently tunable argument in case future hardware measurement finds
+    a good reason to diverge it; the DEFAULT is intentionally "no reason
+    found yet".
+
+    Both models share ``sigma_meas`` (the same physical sensor/centroid noise)
+    and ``sigma_v0`` (an initial velocity guess is not what distinguishes the
+    two hypotheses). They differ in the ACCELERATION prior only — mean and
+    ``sigma_a0``: generic starts at zero with a wide prior exactly like
+    :class:`KalmanTrack`; ballistic starts at ``gravity`` with a moderate, not
+    tiny, prior — soft enough that a genuine mismatch (a static object, a
+    caught ball) still corrects out through the ordinary Kalman gain, not a
+    belief the filter cannot escape.
+
+    Args:
+        p0 / q_jerk / sigma_meas / sigma_v0 / sigma_a0 / track_id: exactly
+            :class:`KalmanTrack`'s own arguments, forwarded to model 0
+            (generic) unchanged.
+        ballistic_q_jerk: jerk PSD for model 1. ``None`` (default) means
+            "same as ``q_jerk``" — see the section above for why a smaller
+            number here measurably does NOT help and measurably does hurt.
+        ballistic_sigma_a0: [m/s²] model 1's initial acceleration
+            uncertainty. Moderate on purpose (2.0, tighter than the generic
+            model's 5.0 but not tiny): a soft prior around ``gravity``, not
+            a belief the filter cannot correct out of.
+        gravity: [m/s²] model 1's initial acceleration MEAN, in the same
+            base/world frame the tracker already runs in.
+        mode_transition_stay_prob: [-] the 2×2 Markov transition matrix is
+            ``[[p, 1-p], [1-p, p]]``. Measured trade-off (synthetic throw +
+            static-scene + catch-recovery sweeps): 0.97 lets real evidence
+            get diluted by the mixing step before it can separate the modes
+            at all; 0.999 barely lets go of a wrong mode within any
+            practical window. 0.99 is the middle ground shipped here —
+            confident (>0.8) within ~165 ms of a real throw and staying
+            there through a realistic flight, while still decaying
+            noticeably within about a second of the object stopping being
+            ballistic. Erring toward "stays cautious a bit longer than
+            strictly necessary" is the safe direction for a term that only
+            ever tightens a barrier.
+        initial_mode_prob: [-] starting ``[generic, ballistic]`` prior.
+            Deliberately ``(0.5, 0.5)`` — no size- or shape-based
+            classification, the data decides.
+    """
+
+    def __init__(
+        self,
+        p0: np.ndarray,
+        *,
+        q_jerk: float = 2.0,
+        sigma_meas: float = 0.01,
+        sigma_v0: float = 1.0,
+        sigma_a0: float = 5.0,
+        track_id: int = 0,
+        ballistic_q_jerk: Optional[float] = None,
+        ballistic_sigma_a0: float = 2.0,
+        gravity: np.ndarray = (0.0, 0.0, -9.81),
+        mode_transition_stay_prob: float = 0.99,
+        initial_mode_prob: np.ndarray = (0.5, 0.5),
+    ) -> None:
+        self.track_id = int(track_id)
+        # Model 0 = generic/"reach" (KalmanTrack's own numbers). Model 1 =
+        # ballistic. Kept as a 2-vector of jerk PSDs so every per-model loop
+        # below is a plain `for j in (0, 1)` over the same two arrays.
+        # None (the default) means "same as q_jerk" -- see the class
+        # docstring for why that, not a smaller number, is the measured
+        # right answer.
+        bqj = q_jerk if ballistic_q_jerk is None else ballistic_q_jerk
+        self.q_jerk = np.array([float(q_jerk), float(bqj)])
+        self.sigma_meas = float(sigma_meas)
+        self.R = (self.sigma_meas ** 2) * np.eye(3)
+        self.gravity = np.asarray(gravity, dtype=np.float64).ravel()
+
+        p0 = np.asarray(p0, dtype=np.float64).ravel()
+        self._x = np.zeros((2, NX))
+        self._P = np.zeros((2, NX, NX))
+        for j, a0, sa0 in ((0, np.zeros(3), sigma_a0),
+                           (1, self.gravity, ballistic_sigma_a0)):
+            self._x[j, IP] = p0
+            self._x[j, IA] = a0
+            self._P[j, IP, IP] = (self.sigma_meas ** 2) * np.eye(3)
+            self._P[j, IV, IV] = (float(sigma_v0) ** 2) * np.eye(3)
+            self._P[j, IA, IA] = (float(sa0) ** 2) * np.eye(3)
+
+        p = float(mode_transition_stay_prob)
+        assert 0.0 < p <= 1.0, 'mode_transition_stay_prob must be in (0, 1]'
+        self._Pi = np.array([[p, 1.0 - p], [1.0 - p, p]])
+        mu0 = np.asarray(initial_mode_prob, dtype=np.float64).ravel()
+        self._mu = mu0 / mu0.sum()
+
+        self.frames_seen = 1
+        self.missed = 0
+        self.age = 1
+        self._x_comb = np.zeros(NX)
+        self._P_comb = np.zeros((NX, NX))
+        self._combine()
+
+    # ── Estimates (the blend — every property mirrors KalmanTrack's) ────────
+
+    @property
+    def position(self) -> np.ndarray:
+        return self._x_comb[IP].copy()
+
+    @property
+    def velocity(self) -> np.ndarray:
+        return self._x_comb[IV].copy()
+
+    @property
+    def acceleration(self) -> np.ndarray:
+        return self._x_comb[IA].copy()
+
+    @property
+    def velocity_cov(self) -> np.ndarray:
+        return self._P_comb[IV, IV].copy()
+
+    @property
+    def position_cov(self) -> np.ndarray:
+        return self._P_comb[IP, IP].copy()
+
+    @property
+    def pos_vel_cov(self) -> np.ndarray:
+        return self._P_comb[IP, IV].copy()
+
+    @property
+    def mode_prob(self) -> np.ndarray:
+        """(2,) ``[generic, ballistic]`` mode probability. Diagnostic — nothing
+        downstream of the tracker reads this, but it is what makes the IMM
+        inspectable rather than a black box: measured on a synthetic throw,
+        ``mode_prob[1]`` passes 0.8 by ~15 frames (~165 ms at 90 Hz) and stays
+        there through the flight; on a scene with no discriminating
+        acceleration (a level reach, a static object) it settles near neutral
+        (~0.5) rather than confidently either way — see IMMTrack's own class
+        docstring for why that is the correct and safe behaviour, not a
+        symptom to tune away."""
+        return self._mu.copy()
+
+    def speed_variance_along(self, n_hat: np.ndarray) -> float:
+        n = np.asarray(n_hat, dtype=np.float64).ravel()
+        return max(float(n @ self._P_comb[IV, IV] @ n), 0.0)
+
+    # ── Combination ───────────────────────────────────────────────────────────
+
+    def _combine(self) -> None:
+        """Probability-weighted blend of the two models, IMM "spread of
+        means" form: disagreement between the models WIDENS the reported
+        covariance rather than averaging it away."""
+        x = self._mu[0] * self._x[0] + self._mu[1] * self._x[1]
+        P = np.zeros((NX, NX))
+        for j in (0, 1):
+            d = self._x[j] - x
+            P += self._mu[j] * (self._P[j] + np.outer(d, d))
+        self._x_comb = x
+        self._P_comb = 0.5 * (P + P.T)
+
+    # ── Filter ──────────────────────────────────────────────────────────────
+
+    def predict(self, dt: float) -> None:
+        """Mixing, then a per-model predict. See the class docstring — the
+        same non-positive/absurd ``dt`` guard as :class:`KalmanTrack`, for the
+        same reason (a duplicated or reordered camera stamp)."""
+        dt = float(dt)
+        if not (1e-6 < dt < 1.0):
+            return
+        # Mixing: c[j] = predicted mode prob of model j; mix_w[i, j] = P(was i
+        # | now j), used to blend model i's PREVIOUS estimate into model j's
+        # starting point for this step.
+        c = self._Pi.T @ self._mu
+        c = np.maximum(c, 1e-12)
+        mix_w = (self._Pi * self._mu[:, None]) / c[None, :]
+        x0 = np.zeros((2, NX))
+        P0 = np.zeros((2, NX, NX))
+        for j in (0, 1):
+            x0[j] = mix_w[0, j] * self._x[0] + mix_w[1, j] * self._x[1]
+            for i in (0, 1):
+                d = self._x[i] - x0[j]
+                P0[j] += mix_w[i, j] * (self._P[i] + np.outer(d, d))
+        F = transition(dt)
+        for j in (0, 1):
+            self._x[j] = F @ x0[j]
+            self._P[j] = F @ P0[j] @ F.T + process_noise(dt, self.q_jerk[j])
+        self._mu = c
+        self.missed += 1
+        self.age += 1
+        self._combine()
+
+    def update(self, z: np.ndarray) -> None:
+        """Per-model Joseph-form update against the same measurement, then a
+        Bayes update of the mode probabilities from each model's innovation
+        likelihood. Log-domain, and shifted by the best model's log-likelihood
+        before exponentiating: a large innovation on either model can still
+        drive its raw likelihood to underflow, and the ratio between the two
+        must survive that even when neither is near it — cheap insurance,
+        not a response to a specific measured failure."""
+        z = np.asarray(z, dtype=np.float64).ravel()
+        log_l = np.zeros(2)
+        for j in (0, 1):
+            S = self._P[j][IP, IP] + self.R
+            y = z - self._x[j][IP]
+            Sinv = np.linalg.inv(S)
+            K = self._P[j] @ H.T @ Sinv
+            self._x[j] = self._x[j] + K @ y
+            IKH = np.eye(NX) - K @ H
+            self._P[j] = IKH @ self._P[j] @ IKH.T + K @ self.R @ K.T
+            self._P[j] = 0.5 * (self._P[j] + self._P[j].T)
+            sign, logdet = np.linalg.slogdet(S)
+            log_l[j] = -0.5 * float(y @ Sinv @ y) - 0.5 * logdet
+        log_l -= log_l.max()
+        num = self._mu * np.exp(log_l)
+        denom = num.sum()
+        if denom > 1e-300:
+            self._mu = num / denom
+        # else: a degenerate step (both likelihoods underflowed together) —
+        # keep the previous mode probabilities rather than divide by ~0.
+        self.missed = 0
+        self.frames_seen += 1
+        self._combine()
+
+    # ── Association support (against the COMBINED predicted state, so an
+    # IMMTrack gates exactly like a single KalmanTrack from the association
+    # algorithm's point of view) ─────────────────────────────────────────────
+
+    def predicted_measurement(self) -> np.ndarray:
+        return self._x_comb[IP].copy()
+
+    def innovation_cov(self) -> np.ndarray:
+        return self._P_comb[IP, IP] + self.R
+
+    def mahalanobis(self, z: np.ndarray) -> float:
+        y = np.asarray(z, dtype=np.float64).ravel() - self._x_comb[IP]
+        try:
+            return float(np.sqrt(max(y @ np.linalg.solve(self.innovation_cov(), y), 0.0)))
+        except np.linalg.LinAlgError:
+            return float('inf')
+
+    def __repr__(self) -> str:      # pragma: no cover - diagnostic only
+        return (f'IMMTrack(id={self.track_id} seen={self.frames_seen} '
+                f'missed={self.missed} mu={np.round(self._mu, 2).tolist()} '
+                f'p={np.round(self._x_comb[IP], 3).tolist()} '
+                f'v={np.round(self._x_comb[IV], 3).tolist()})')
+
+
+# ── Track management ─────────────────────────────────────────────────────────
+#
+# WHY A LIFECYCLE AT ALL
+#
+# A Kalman filter answers "given that these measurements are of the same thing,
+# what is its velocity". Something has to decide which measurements are of the
+# same thing, and that decision is where a tracker earns or loses its keep:
+#
+# * associate too eagerly and two obstacles passing each other SWAP identities.
+#   The velocity attached to each then reverses in one frame, which is the
+#   largest possible error the estimator can make — and it makes it exactly when
+#   two people are close to the robot, i.e. at the worst moment.
+# * associate too reluctantly and every occlusion — a hand passing behind the
+#   arm, the exclusion mask briefly swallowing a blob — kills the track and
+#   spawns a new one. The new track's velocity starts at zero and takes ~5
+#   frames to recover, so a continuously approaching obstacle is reported as
+#   stationary for 150 ms every time it is briefly hidden.
+# * confirm too eagerly and a single-frame depth artefact becomes a track with
+#   a velocity, which the consumer then uses to tighten a barrier.
+#
+# The three defences are, in order: a Mahalanobis GATE (not a Euclidean radius —
+# a coasting track's covariance grows, so its gate opens by itself and the
+# occlusion case is re-associated without also widening the gate of a
+# well-observed track), M-of-N CONFIRMATION before a track is visible to any
+# consumer, and COASTING for K frames before death.
+#
+# ASSOCIATION IS GREEDY NEAREST-NEIGHBOUR, GLOBALLY ORDERED
+#
+# Every (track, cluster) pair inside the gate is scored, the whole set is sorted
+# by Mahalanobis distance, and pairs are consumed best-first with each track and
+# cluster used at most once. That is not optimal in the Hungarian sense, but it
+# is deterministic, O(T·C log(T·C)), dependency-free, and it differs from the
+# optimal assignment only when two gates overlap AND the cost matrix is nearly
+# degenerate — which is precisely the case where the prediction is what
+# disambiguates, not the assignment algorithm. Scoring against the PREDICTED
+# measurement is what makes two crossing obstacles keep their ids: at the moment
+# they overlap the positions are identical but the predictions are not.
+
+
+def _measurement(c) -> np.ndarray:
+    """(3,) measurement from a Cluster, a centroid-carrying object, or a point."""
+    p = getattr(c, 'centroid_cam', c)
+    return np.asarray(p, dtype=np.float64).ravel()
+
+
+class TrackManager:
+    """Nearest-neighbour tracker over :class:`KalmanTrack` instances.
+
+    Args:
+        q_jerk / sigma_meas / sigma_v0 / sigma_a0: forwarded to every new
+            :class:`KalmanTrack`.
+        gate_mahalanobis: association gate. A Mahalanobis distance, so it is in
+            units of the filter's OWN uncertainty: 3.0 admits ~97 % of true
+            associations for a 3-DoF innovation (χ²₃ at 9.0). Raising it trades
+            lost tracks for identity swaps.
+        gate_max_m: [m] hard Euclidean ceiling applied on top of the gate. The
+            Mahalanobis gate widens without bound while a track coasts, and
+            after enough missed frames it would accept a cluster anywhere in
+            the room. This is the backstop that keeps a resurrected track
+            physically plausible — 0.5 m is what a human limb can cover in the
+            ~0.17 s a 5-frame coast lasts.
+        confirm_hits / confirm_window: M-of-N birth rule. A track becomes
+            visible to consumers after ``confirm_hits`` updates within the last
+            ``confirm_window`` frames of its life. M-of-N rather than M
+            CONSECUTIVE: a real obstacle at the edge of the depth range flickers,
+            and demanding consecutive hits would keep restarting a track that is
+            genuinely there, while a one-frame artefact fails both rules anyway.
+        max_missed: frames a track may coast before it is deleted.
+        max_tracks: hard ceiling on live tracks. A degenerate frame (the
+            exclusion mask failing, the whole scene reading as obstacle) can
+            otherwise produce hundreds of clusters and hence hundreds of tracks,
+            and the association cost is O(T·C).
+        evict_stale_tentative: when the table is full, a new cluster may take
+            the slot of the UNCONFIRMED track that has gone longest without a
+            measurement (at least one missed frame). Confirmed tracks and
+            tentative tracks still being hit are never evicted. OFF = the old
+            "refuse the birth" behaviour, bit-identical.
+        imm_enabled: births an :class:`IMMTrack` (generic + ballistic model,
+            blended) instead of a plain :class:`KalmanTrack`. OFF by default —
+            with it off every track built here is bit-identical to before this
+            class existed. The five ``imm_*`` args below are forwarded only
+            when it is on.
+    """
+
+    def __init__(
+        self,
+        *,
+        q_jerk: float = 2.0,
+        sigma_meas: float = 0.01,
+        sigma_v0: float = 1.0,
+        sigma_a0: float = 5.0,
+        gate_mahalanobis: float = 3.0,
+        gate_max_m: float = 0.5,
+        confirm_hits: int = 3,
+        confirm_window: int = 5,
+        max_missed: int = 5,
+        max_tracks: int = 12,
+        evict_stale_tentative: bool = False,
+        imm_enabled: bool = False,
+        imm_ballistic_q_jerk: Optional[float] = None,
+        imm_ballistic_sigma_a0: float = 2.0,
+        imm_gravity: np.ndarray = (0.0, 0.0, -9.81),
+        imm_mode_transition_stay_prob: float = 0.99,
+        imm_initial_mode_prob: np.ndarray = (0.5, 0.5),
+    ) -> None:
+        self.q_jerk = float(q_jerk)
+        self.sigma_meas = float(sigma_meas)
+        self.sigma_v0 = float(sigma_v0)
+        self.sigma_a0 = float(sigma_a0)
+        self.gate_mahalanobis = float(gate_mahalanobis)
+        self.gate_max_m = float(gate_max_m)
+        self.confirm_hits = int(confirm_hits)
+        self.confirm_window = int(confirm_window)
+        self.max_missed = int(max_missed)
+        self.max_tracks = int(max_tracks)
+        self.evict_stale_tentative = bool(evict_stale_tentative)
+        self.imm_enabled = bool(imm_enabled)
+        # None (IMMTrack's own default) means "same as q_jerk" -- see
+        # IMMTrack's docstring for the measurement behind that default.
+        self.imm_ballistic_q_jerk = (None if imm_ballistic_q_jerk is None
+                                     else float(imm_ballistic_q_jerk))
+        self.imm_ballistic_sigma_a0 = float(imm_ballistic_sigma_a0)
+        self.imm_gravity = imm_gravity
+        self.imm_mode_transition_stay_prob = float(imm_mode_transition_stay_prob)
+        self.imm_initial_mode_prob = imm_initial_mode_prob
+
+        self.tracks: list = []
+        self._next_id = 1        # ids start at 1: 0 is the message's "no track"
+        self._hits: dict = {}    # track_id → recent hit/miss history (deque-ish)
+        self._confirmed: set = set()
+        #: cluster index (of the LAST :meth:`step` call) → the track it fed.
+        #: Published so a consumer can go from a POINT to a track: it finds the
+        #: cluster the point falls in, then this map names the track. Without it
+        #: the only route back is "nearest track position", which is wrong
+        #: exactly when it matters — one large cluster's far edge can be nearer
+        #: to a different track's centre than to its own.
+        self.last_assoc: dict = {}
+
+        # ── Why tracks die (Sep 2026) ───────────────────────────────────────
+        # Raising obstacle_velocity_min_frames stops a two-frame track from
+        # being believed, but it does not stop tracks from being two frames
+        # long — and on hardware they are: 1727 births in 91 s, a MEDIAN life
+        # of 70 ms behind the closest control point. A threshold on the symptom
+        # is a stopgap; these counters are how the disease gets named.
+        #
+        # Three candidates, and they are not distinguishable by watching the
+        # track count alone:
+        #   * max_missed too tight  → tracks reaped while merely occluded, and
+        #     `reaped_young` is then large next to `reaped_mature`;
+        #   * gate_max_m / gate_mahalanobis too tight → clusters land outside
+        #     every gate and start NEW tracks instead of updating one, which
+        #     shows up as `unassociated_clusters` tracking `births`;
+        #   * cluster_min_points too high → the cluster itself flickers in and
+        #     out of existence, which shows up as both at once.
+        #
+        # Cumulative since construction, never reset: a rate matters more than
+        # an instantaneous value, and a consumer can difference them.
+        self.n_births = 0
+        self.n_reaped = 0            # died having been UPDATED >= confirm_hits
+        self.n_reaped_young = 0      # died before it was ever confirmed
+        self.n_unassociated = 0      # clusters that matched no existing track
+        self.n_over_capacity = 0     # clusters dropped because max_tracks was hit
+        self.n_evicted = 0           # stale tentative tracks evicted to make room
+        self.life_sum = 0            # summed age, in perception frames
+        self.life_n = 0
+
+    # ── Retuning ────────────────────────────────────────────────────────────
+
+    def retune(self, *, confirm_hits: int, confirm_window: int,
+               max_missed: int) -> bool:
+        """Resize the lifecycle counters in place. True when anything changed.
+
+        The counters are FRAME counts, and the durations they are meant to
+        express only hold at one frame rate (see ``utils/rate_scaling``). The
+        node re-derives them when the depth stream turns out not to be running
+        at the configured rate, and this is where they land.
+
+        Live tracks are KEPT. Reaping every track because the coast budget grew
+        would throw away exactly the identities the budget exists to preserve,
+        and the alternative — a fleet of tracks whose ``missed`` counters are
+        measured against the old number — is harmless: the next :meth:`step`
+        compares each one against the new ``max_missed`` and the histories are
+        trimmed to the new window on their next hit. The one visible effect is
+        that a track already over the NEW budget dies one frame later.
+        """
+        hits = max(1, int(confirm_hits))
+        window = max(hits, int(confirm_window))
+        missed = max(1, int(max_missed))
+        if (hits, window, missed) == (self.confirm_hits, self.confirm_window,
+                                      self.max_missed):
+            return False
+        self.confirm_hits = hits
+        self.confirm_window = window
+        self.max_missed = missed
+        # Only the OVER-LONG histories need touching: a shorter one is already a
+        # valid window, and padding it would fabricate hits or misses.
+        for h in self._hits.values():
+            if len(h) > window:
+                del h[:-window]
+        return True
+
+    # ── Query ───────────────────────────────────────────────────────────────
+
+    def confirmed_tracks(self) -> list:
+        """Tracks a consumer may act on, newest evidence first.
+
+        A TENTATIVE track is deliberately invisible here. It still runs — it has
+        to, or it could never accumulate the hits to be confirmed — but nothing
+        downstream sees a velocity from it, so a speckle that survives two frames
+        cannot reach the barrier.
+        """
+        return [t for t in self.tracks if t.track_id in self._confirmed]
+
+    def is_confirmed(self, track: KalmanTrack) -> bool:
+        return track.track_id in self._confirmed
+
+    # ── Step ────────────────────────────────────────────────────────────────
+
+    def step(self, clusters, dt: float) -> list:
+        """Advance every track by ``dt``, associate ``clusters``, return the
+        CONFIRMED tracks.
+
+        Args:
+            clusters: this frame's measurements — a sequence of
+                :class:`~franka_experiments.utils.obstacle_clusters.Cluster`,
+                of anything exposing ``centroid_cam``, or of bare (3,) points.
+                The bare-point form is what ``ObstacleTrackPipeline`` uses: it
+                transforms the centroids into the BASE frame before handing them
+                over, because a Kalman filter differentiates its input and a
+                velocity only rotates cleanly between frames whose transform is
+                constant. May be empty — every track then coasts, which is the
+                correct response to a frame where perception saw nothing.
+            dt: [s] since the previous frame, from the CAPTURE clock.
+
+        Returns:
+            The confirmed tracks, i.e. exactly :meth:`confirmed_tracks`.
+        """
+        for t in self.tracks:
+            t.predict(dt)
+
+        z = [_measurement(c) for c in clusters]
+        pairs = self._associate(z)
+
+        self.last_assoc = {}
+        used_c = set()
+        for ti, ci in pairs:
+            self.tracks[ti].update(z[ci])
+            self.last_assoc[ci] = self.tracks[ti]
+            used_c.add(ci)
+        hit_t = {ti for ti, _ in pairs}
+
+        for i, t in enumerate(self.tracks):
+            self._record(t.track_id, i in hit_t)
+
+        # Births from every cluster that matched nothing. Done AFTER the update
+        # pass so a newborn is never itself an association candidate this frame
+        # — otherwise two clusters from one split blob would spawn a track and
+        # then immediately feed it, confirming a fragment.
+        for ci, zc in enumerate(z):
+            if ci in used_c:
+                continue
+            # Counted BEFORE the capacity test, so `unassociated` measures how
+            # often the gate rejected everything and `over_capacity` measures
+            # how often max_tracks was the thing that bit. Conflating the two
+            # would hide a saturated tracker behind a tight gate.
+            self.n_unassociated += 1
+            if len(self.tracks) >= self.max_tracks and not self._evict_one():
+                self.n_over_capacity += 1
+                continue
+            self.n_births += 1
+            if self.imm_enabled:
+                born = IMMTrack(
+                    zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
+                    sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
+                    track_id=self._next_id,
+                    ballistic_q_jerk=self.imm_ballistic_q_jerk,
+                    ballistic_sigma_a0=self.imm_ballistic_sigma_a0,
+                    gravity=self.imm_gravity,
+                    mode_transition_stay_prob=self.imm_mode_transition_stay_prob,
+                    initial_mode_prob=self.imm_initial_mode_prob)
+            else:
+                born = KalmanTrack(
+                    zc, q_jerk=self.q_jerk, sigma_meas=self.sigma_meas,
+                    sigma_v0=self.sigma_v0, sigma_a0=self.sigma_a0,
+                    track_id=self._next_id)
+            self.tracks.append(born)
+            self.last_assoc[ci] = born
+            self._record(self._next_id, True)
+            self._next_id += 1
+
+        self._reap()
+        return self.confirmed_tracks()
+
+    # ── Association ─────────────────────────────────────────────────────────
+
+    def _associate(self, z) -> list:
+        """[(track_index, cluster_index)], greedy best-first inside the gate."""
+        if not self.tracks or not z:
+            return []
+        cand = []
+        for ti, t in enumerate(self.tracks):
+            p_pred = t.predicted_measurement()
+            for ci, zc in enumerate(z):
+                if float(np.linalg.norm(zc - p_pred)) > self.gate_max_m:
+                    continue
+                d = t.mahalanobis(zc)
+                if d <= self.gate_mahalanobis:
+                    cand.append((d, ti, ci))
+        # Sorted by distance, then by (track, cluster) index: the tie-break is
+        # what makes the result independent of the order Python happened to
+        # build `cand` in, and hence reproducible frame to frame.
+        cand.sort(key=lambda r: (r[0], r[1], r[2]))
+        taken_t, taken_c, out = set(), set(), []
+        for _, ti, ci in cand:
+            if ti in taken_t or ci in taken_c:
+                continue
+            taken_t.add(ti)
+            taken_c.add(ci)
+            out.append((ti, ci))
+        return out
+
+    # ── Lifecycle ───────────────────────────────────────────────────────────
+
+    def _record(self, track_id: int, hit: bool) -> None:
+        h = self._hits.setdefault(track_id, [])
+        h.append(bool(hit))
+        if len(h) > self.confirm_window:
+            del h[:-self.confirm_window]
+        if track_id not in self._confirmed and sum(h) >= self.confirm_hits:
+            self._confirmed.add(track_id)
+
+    def _evict_one(self) -> bool:
+        """Free one slot for a birth, or return False.
+
+        WHY. On the 2026-09-30 hardware run the table sat at max_tracks for the
+        whole run and 85 % of unmatched clusters were refused a track. The slots
+        were held by tentative tracks of flickering clutter that would be reaped
+        within max_missed frames anyway, while a thrown ball arriving meanwhile
+        got no track. A track that is unconfirmed AND has missed its latest
+        frame(s) is the least informative thing in the table; a new cluster
+        has at least the same claim to the slot.
+
+        Never touches a confirmed track (it may be carrying a velocity the CBF
+        uses) nor a tentative one hit on its last frame (it may be the ball,
+        three frames from confirmation).
+        """
+        if not self.evict_stale_tentative:
+            return False
+        cand = [t for t in self.tracks
+                if t.track_id not in self._confirmed and t.missed >= 1]
+        if not cand:
+            return False
+        victim = max(cand, key=lambda t: (t.missed, -t.track_id))
+        self.tracks.remove(victim)
+        self.n_evicted += 1
+        self.n_reaped_young += 1
+        self.life_sum += int(victim.frames_seen)
+        self.life_n += 1
+        self._hits.pop(victim.track_id, None)
+        return True
+
+    def _reap(self) -> None:
+        keep = []
+        for t in self.tracks:
+            if t.missed > self.max_missed:
+                # Classified on the way out, because after the pop there is
+                # nothing left to ask. A track that dies without ever being
+                # confirmed never contributed a velocity to anything — but it
+                # DID consume an id and an association slot, and a high count
+                # here is what says the segmentation is flickering rather than
+                # the gate being tight.
+                if t.track_id in self._confirmed:
+                    self.n_reaped += 1
+                else:
+                    self.n_reaped_young += 1
+                self.life_sum += int(t.frames_seen)
+                self.life_n += 1
+                self._hits.pop(t.track_id, None)
+                self._confirmed.discard(t.track_id)
+            else:
+                keep.append(t)
+        self.tracks = keep
+
+    def death_stats(self) -> dict:
+        """Cumulative lifecycle counters, for a log line or a bag column.
+
+        ``mean_life`` is in perception FRAMES and counts updates, not wall time:
+        a track coasting through an occlusion ages without accumulating the
+        evidence its velocity is supposed to rest on.
+        """
+        return {
+            'births': self.n_births,
+            'reaped': self.n_reaped,
+            'reaped_young': self.n_reaped_young,
+            'unassociated': self.n_unassociated,
+            'over_capacity': self.n_over_capacity,
+            'evicted': self.n_evicted,
+            'mean_life': (self.life_sum / self.life_n) if self.life_n else 0.0,
+            'alive': len(self.tracks),
+            'confirmed': len(self._confirmed),
+        }
+
+    def reset(self) -> None:
+        """Drop every track and its history (camera restart, resolution change).
+
+        Ids are NOT rewound: a consumer holding an old id must see it disappear,
+        never see it silently refer to a different obstacle.
+        """
+        self.tracks = []
+        self._hits.clear()
+        self._confirmed.clear()
+        self.last_assoc = {}

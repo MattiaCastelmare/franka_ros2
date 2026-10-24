@@ -6,8 +6,28 @@ Architecture
   TFManager      — 3-level TF fallback + critical-link validation
   MaskBuilder    — always-rebuilt robot mask + exclusion mask + contours
   DistanceEngine — depth-space per-CP distances (Flacco) with conservative LPF
+  ObstacleTrackPipeline — cluster → track → 3D obstacle velocity (OPTIONAL)
   VisFrame       — immutable snapshot for lock-free compute/visualize handoff
   draw_overlay() — pure rendering function (no shared state)
+
+Obstacle tracking (``tracking.enabled``, OFF by default)
+--------------------------------------------------------
+When on, the obstacle pixels this node has ALREADY selected are additionally
+clustered and tracked, and each published ``LinkDistance`` carries the 3D
+velocity (with covariance) of the object its nearest obstacle point belongs to.
+
+It lives HERE, rather than in a node of its own, for one reason that is not
+convenience: the clusters must be built from EXACTLY the pixels the distance
+pass selected — same exclusion mask, same depth-range filter, same ROI stride —
+or the tracker would report velocities for obstacles the barrier never saw. A
+separate node has to either re-derive that selection (and drift from it the
+first time either side is touched) or re-run this node's whole pipeline to
+recover it. Here the point cloud is already in hand.
+
+The fields are APPENDED to the existing message on the existing topic. With
+tracking off they are the documented all-zero "no track" state, which every
+consumer already treats as "contribute nothing", so the published topic is
+unchanged for anyone who does not ask for it.
 
 Thread safety
 -------------
@@ -33,6 +53,7 @@ import cv2
 import numpy as np
 import rclpy
 import trimesh
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from franka_msgs.msg import HumanRobotDistance, MultiDistance, MultiLinkDistance
@@ -51,9 +72,20 @@ from franka_experiments.utils.distance_utils import (
 )
 from franka_experiments.utils.logging_utils import ThrottledLogger
 from franka_experiments.utils.mask_builder import MaskBuilder
-from franka_experiments.utils.params import declare_bool, declare_str
+from franka_experiments.utils.params import declare_bool, declare_int, declare_str
 from franka_experiments.utils.logging_utils import PerfTimer
-from franka_experiments.utils.perception_msgs import build_cp_messages
+from franka_experiments.utils.obstacle_sim import InjectedSphere
+from franka_experiments.utils.calibration_check import calibration_residual
+from franka_experiments.utils.ballistic_prediction import (
+    PREDICTED_CLUSTER_ID, PredictionConfig, add_predicted_hits)
+from franka_experiments.utils.rate_scaling import (
+    FrameRateEstimator,
+    frames_for,
+)
+from franka_experiments.utils.self_detection import SelfDetectionMonitor
+from franka_experiments.utils.obstacle_track_pipeline import ObstacleTrackPipeline
+from franka_experiments.utils.perception_msgs import (
+    annotate_track_fields, build_cp_messages)
 from franka_experiments.utils.tf_manager import TFManager
 from franka_experiments.utils.visualization import VisFrame, draw_overlay
 
@@ -100,6 +132,13 @@ class RealTimeDistance(Node):
         self._publish_empty_per_link     = declare_bool(
             self, 'publish_empty_per_link',
             self.distance_cfg.get('publish_empty_per_link', True))
+        # Fail-closed perception (roadmap Step 7): publish the per-link topic
+        # whenever anything is finite and within max_thresh, not only when
+        # something sits inside [min_thresh, max_thresh]. See the long note next
+        # to `publish_contact_regime` in fr3_complete.yaml.
+        self._publish_contact_regime     = declare_bool(
+            self, 'publish_contact_regime',
+            self.distance_cfg.get('publish_contact_regime', True))
 
         # ── Camera intrinsics (populated by camera_info_callback) ────────
         self.bridge    = CvBridge()
@@ -111,7 +150,21 @@ class RealTimeDistance(Node):
         self.fx_inv_f32 = self.fy_inv_f32 = None
 
         # ── Frame queue + visualisation snapshot ─────────────────────────
-        self._frame_queue      = queue.Queue(maxsize=1)
+        # Depth 2, not 1. MEASURED at 848x480x90 (2026-09-21): the compute loop
+        # needs 5.6-8.2 ms per frame against an 11.1 ms budget, so it HAS the
+        # room for every frame — and it was still only processing 53 of the 90.
+        # The reason is that callbacks arrive in bursts (the executor collects
+        # ready work, and the driver's republished copies land ~2 ms apart), and
+        # with a 1-deep queue every frame of a burst but the last was discarded
+        # by the frame after it. ~45 frames/s were thrown away with the CPU idle.
+        #
+        # The cost of the second slot is bounded and small: the loop can now
+        # start a frame one period old, i.e. 11 ms at 90 fps — still fresher
+        # than anything the 30 fps profile could deliver. Set
+        # `frame_queue_depth:=1` to get the strict freshest-only behaviour back.
+        _qdepth = declare_int(self, 'frame_queue_depth', 2, minimum=1,
+                              maximum=8)
+        self._frame_queue      = queue.Queue(maxsize=_qdepth)
         self._last_depth_shape: Optional[tuple] = None
         self._vis_frame: Optional[VisFrame] = None
         self._vis_lock  = threading.Lock()
@@ -149,10 +202,225 @@ class RealTimeDistance(Node):
             mask_cfg=self.mask_cfg,
             logger=self.get_logger(),
         )
+        # ── Obstacle tracking (optional) ──────────────────────────────────
+        # Config lives in the `tracking:` block of the robot config, so every
+        # perception knob is in one file. The export flag is set on the COPY
+        # handed to the engine and only when tracking is on, so with tracking
+        # off the engine stores nothing and costs nothing.
+        trk_cfg = self.config.get('tracking', {}) or {}
+        self.tracking_enabled = bool(trk_cfg.get('enabled', False))
+        self.distance_cfg = dict(self.distance_cfg)
+        self.distance_cfg['export_obstacle_cloud'] = self.tracking_enabled
+
+        # ── Rate-independent tuning (utils/rate_scaling) ──────────────────
+        # The lifecycle thresholds below are FRAME counts; the durations they
+        # stand for are only preserved if the counts follow the depth rate. The
+        # configured rate sizes them before the first frame; the measured one
+        # corrects them, which is what catches a driver that did not give the
+        # profile that was asked for (this rig has seen librealsense pick 15 fps
+        # by itself — see launch_defaults.yaml).
+        self._nominal_hz = float(self.distance_cfg.get('depth_rate_hz', 30.0))
+        self._rate = FrameRateEstimator(nominal_hz=self._nominal_hz)
+        self._prev_rate_stamp: Optional[float] = None
+        #: Last depth capture stamp accepted, in ns, and how many republished
+        #: copies of one were dropped. DIAGNOSTIC: the count belongs in the
+        #: status line because "the camera is at 90 Hz" and "the node sees
+        #: 90 distinct frames" are different claims.
+        self._last_depth_stamp_ns: int = 0
+        self._n_dup_frames: int = 0
+        # The EMA in the distance engine needs the same fallback rate for the
+        # frames that carry no usable interval.
+        self.distance_cfg['lpf_nominal_rate_hz'] = self._nominal_hz
+        # Durations, when the config states them. None means the config is the
+        # older frame-counted kind: the counts are then used verbatim and the
+        # retune never fires, so an unmigrated config behaves exactly as before.
+        self._trk_timing = self._read_track_timing(trk_cfg)
+        self._sd_timing = self._read_self_detect_timing(
+            trk_cfg.get('self_detection', {}) or {})
+
+        # ── Multi-obstacle rows (perception.multi_obstacle_k) ─────────────
+        # The flag and the cbf_obstacle_horizon it prunes against live in the
+        # CONTROL config (fr3_control.yaml), not in robot_config_path, so that
+        # file is read here. Unreadable -> k = 1, i.e. today's output.
+        ctrl_path = (self.declare_parameter('control_config_path', '').value
+                     or os.path.join(get_package_share_directory('franka_experiments'),
+                                     'config', 'fr3_control.yaml'))
+        try:
+            with open(ctrl_path) as f:
+                ctrl_cfg = yaml.safe_load(f) or {}
+        except Exception as exc:
+            self.get_logger().warn(
+                f'control config {ctrl_path!r} not read ({exc}); multi_obstacle_k=1')
+            ctrl_cfg = {}
+        perc_cfg = ctrl_cfg.get('perception', {}) or {}
+        # ROS parameter override (launch arg multi_obstacle_k); 0 = use the YAML.
+        k_param = int(self.declare_parameter('multi_obstacle_k', 0).value)
+        self.multi_k = max(1, k_param if k_param > 0
+                           else int(perc_cfg.get('multi_obstacle_k', 1)))
+        self.distance_cfg['multi_obstacle_k'] = self.multi_k
+        self.distance_cfg['multi_obstacle_max_rows'] = int(
+            perc_cfg.get('multi_obstacle_max_rows', 24))
+        self.distance_cfg['multi_obstacle_horizon'] = float(
+            (ctrl_cfg.get('params', {}) or {}).get('cbf_obstacle_horizon', float('inf')))
+        # Same depth_jump as the tracker: with k > 1 the tracker clusters on
+        # the engine's labels, so there is one labelling, not two.
+        self.distance_cfg['multi_obstacle_depth_jump_m'] = float(
+            trk_cfg.get('cluster_depth_jump_m', 0.10))
+        # ── Fail-closed perception (roadmap Step 7) ───────────────────────
+        # The hold bound is an ISO-layer constant and lives with the rest of
+        # them in fr3_control.yaml's params: block, not in the perception config
+        # — one file owns the iso_* numbers, and CBF_PARAM_SPEC validates them
+        # there. Forwarded onto the engine's config the same way multi_obstacle_k
+        # is. Missing (an older control config) -> 0.0 -> the bound is off and
+        # the hold behaves exactly as it did before.
+        # Depth-gated exclusion: lives in the mask: block because it is a
+        # property of the mask, and is read by the engine because that is where
+        # the pixels are filtered.
+        self.distance_cfg['depth_gate_tol_m'] = float(
+            self.mask_cfg.get('depth_gate_tol_m', 0.0))
+        self.distance_cfg['depth_gate_bias_m'] = float(
+            self.mask_cfg.get('depth_gate_bias_m', 0.0))
+        self.get_logger().info(
+            'robot mask: ' + (
+                f'DEPTH-GATED, an obstacle is SEEN when it is more than '
+                f'{self.distance_cfg["depth_gate_tol_m"]:.3f} m in front of '
+                f'the model surface corrected by '
+                f'{self.distance_cfg["depth_gate_bias_m"]:.3f} m '
+                f'(mask.depth_gate_bias_m — set it to the SYSTEMATIC part of '
+                f'the calibration_check residual, or the arm reads as its own '
+                f'obstacle)'
+                if self.distance_cfg['depth_gate_tol_m'] > 0.0 else
+                '2D silhouette only — anything inside the robot outline is '
+                'invisible whatever its depth (set mask.depth_gate_tol_m)'))
+        self.distance_cfg['iso_distance_hold_max_s'] = float(
+            (ctrl_cfg.get('params', {}) or {}).get('iso_distance_hold_max_s', 0.0))
+        self.get_logger().info(
+            f'distance hold bound: '
+            f'{self.distance_cfg["iso_distance_hold_max_s"] * 1e3:.0f} ms '
+            f'(0 = unbounded, the pre-ISO behaviour)')
+
         self.distance_engine = DistanceEngine(
             distance_cfg=self.distance_cfg,
             logger=self.get_logger(),
         )
+
+        # Self-detection guard. Runs whenever tracking does, because it is the
+        # tracker that makes self-detection dangerous rather than merely
+        # annoying: the arm's own body becomes a cluster with a real velocity,
+        # that velocity is fed back as v_obs, the barrier tightens because the
+        # arm is moving, the arm brakes, v_obs drops, and the filter chases
+        # itself. See utils/self_detection.py.
+        self.self_detect = None
+        self.track_pipeline = None
+        if self.tracking_enabled:
+            sd = trk_cfg.get('self_detection', {}) or {}
+            if sd.get('enabled', True):
+                sd_window, sd_confirm, sd_release = self._self_detect_counts(
+                    self._nominal_hz, sd)
+                self.self_detect = SelfDetectionMonitor(
+                    window=sd_window,
+                    motion_min_m=float(sd.get('motion_min_m', 0.08)),
+                    offset_tol_m=float(sd.get('offset_tol_m', 0.02)),
+                    confirm=sd_confirm,
+                    release=sd_release)
+            trk_hits, trk_window, trk_coast = self._track_counts(
+                self._nominal_hz, trk_cfg)
+            self.track_pipeline = ObstacleTrackPipeline(
+                voxel_m=float(trk_cfg.get('cluster_voxel_m', 0.02)),
+                min_cluster_points=int(trk_cfg.get('cluster_min_points', 10)),
+                max_clusters=int(trk_cfg.get('max_clusters', 16)),
+                max_cluster_radius=(float(trk_cfg['cluster_max_radius_m'])
+                                    if trk_cfg.get('cluster_max_radius_m')
+                                    else None),
+                depth_jump=float(trk_cfg.get('cluster_depth_jump_m', 0.10)),
+                contains_tol=float(trk_cfg.get('cluster_contains_tol_m', 0.05)),
+                q_jerk=float(trk_cfg.get('q_jerk', 2.0)),
+                sigma_meas=float(trk_cfg.get('sigma_meas_m', 0.01)),
+                # Prior on a NEW track's velocity / acceleration. Were fixed at
+                # the TrackManager defaults (1.0 m/s, 5.0 m/s^2); the velocity
+                # prior both biases a young track toward 0 and sets the first
+                # association gate, so a thrown object needs it configurable.
+                sigma_v0=float(trk_cfg.get('sigma_v0', 1.0)),
+                sigma_a0=float(trk_cfg.get('sigma_a0', 5.0)),
+                gate_mahalanobis=float(trk_cfg.get('gate_mahalanobis', 3.0)),
+                gate_max_m=float(trk_cfg.get('gate_max_m', 0.5)),
+                confirm_hits=trk_hits,
+                confirm_window=trk_window,
+                max_missed=trk_coast,
+                max_tracks=int(trk_cfg.get('max_tracks', 12)),
+                evict_stale_tentative=bool(trk_cfg.get('evict_stale_tentative', False)),
+                # A frame with no usable stamp must not be advanced with the dt
+                # of a rate the stream is not running at.
+                default_dt=1.0 / self._nominal_hz,
+                imm_enabled=bool(trk_cfg.get('imm_enabled', False)),
+                imm_ballistic_q_jerk=(float(trk_cfg['imm_ballistic_q_jerk'])
+                                     if trk_cfg.get('imm_ballistic_q_jerk') is not None
+                                     else None),
+                imm_ballistic_sigma_a0=float(trk_cfg.get('imm_ballistic_sigma_a0', 2.0)),
+                imm_gravity=tuple(trk_cfg.get('imm_gravity_mps2', (0.0, 0.0, -9.81))),
+                imm_mode_transition_stay_prob=float(
+                    trk_cfg.get('imm_mode_transition_stay_prob', 0.99)),
+                imm_initial_mode_prob=tuple(
+                    trk_cfg.get('imm_initial_mode_prob', (0.5, 0.5))),
+            )
+            self._pred_cfg = PredictionConfig.from_dict(trk_cfg.get('prediction'))
+            if self._pred_cfg.enabled:
+                self.get_logger().info(
+                    f'impact prediction ON: horizon {self._pred_cfg.horizon_s:.2f} s, '
+                    f'fast tracks >= {self._pred_cfg.min_speed:.1f} m/s '
+                    f'({self._pred_cfg.k_sigma:.1f} sigma), rows when predicted gap < '
+                    f'{self._pred_cfg.publish_gap_m:.2f} m')
+            self.get_logger().info(
+                f'tracker lifecycle at {self._nominal_hz:.0f} Hz nominal: '
+                f'confirm {trk_hits}/{trk_window} frames, coast {trk_coast} '
+                f'frames'
+                + ('' if self._trk_timing is None else
+                   f' (= {self._trk_timing["window_s"] * 1e3:.0f} ms window, '
+                   f'{self._trk_timing["coast_s"] * 1e3:.0f} ms coast)'))
+
+        # ── Calibration drift check (utils/calibration_check) ─────────────
+        # Runs at most once every `period_s`, so it is free. It compares the
+        # projected robot model against the measured depth — the one comparison
+        # this pipeline never makes, and the one whose failure turns the arm
+        # into its own obstacle with no error anywhere.
+        #
+        # It reports a NUMBER, and only judges it when a baseline is configured:
+        # the absolute value carries several centimetres of mesh-sampling bias
+        # (measured, see the module docstring), so judging it against zero would
+        # fire on a good calibration.
+        cal_cfg = (self.config.get('tracking', {}) or {}).get(
+            'calibration_check', {}) or {}
+        self._cal_enabled = bool(cal_cfg.get('enabled', True))
+        self._cal_period = float(cal_cfg.get('period_s', 10.0))
+        self._cal_baseline = cal_cfg.get('baseline_m')
+        self._cal_tol = float(cal_cfg.get('tolerance_m', 0.03))
+        self._cal_next = 0.0
+        self._link_samples = link_mesh_samples
+
+        # ── Simulated obstacle (utils/obstacle_sim) ───────────────────────
+        # Renders a sphere with a known trajectory INTO the depth frame before
+        # anything else sees it, so the full avoidance chain can be exercised
+        # end to end without a person in front of the arm.
+        #
+        # A fake obstacle inside a safety pipeline is exactly the thing that
+        # must never be on by accident — the arm WILL move away from something
+        # that is not there. Hence: off by default, and a loud warning on every
+        # startup where it is on.
+        sim_cfg = self.config.get('sim_obstacle', {}) or {}
+        self.sim_sphere = None
+        if bool(sim_cfg.get('enabled', False)):
+            self.sim_sphere = InjectedSphere(
+                c0=sim_cfg.get('start_cam', [0.0, 0.0, 1.6]),
+                vel=sim_cfg.get('velocity_cam', [0.0, 0.0, -0.5]),
+                radius=float(sim_cfg.get('radius_m', 0.15)),
+                period=float(sim_cfg.get('period_s', 2.0)),
+                amplitude=float(sim_cfg.get('amplitude_m', 0.5)),
+            )
+            self.get_logger().warn(
+                'SIMULATED OBSTACLE ENABLED — a synthetic sphere is being '
+                'rendered into the depth stream. The arm will react to an '
+                'object that is not there. Set sim_obstacle.enabled=false '
+                'before running with a person nearby.')
 
         self.roi_bounds: Optional[tuple] = None
 
@@ -196,7 +464,9 @@ class RealTimeDistance(Node):
         self.get_logger().info(
             f'RealTimeDistance ready — '
             f'mode=control_point  '
-            f'viz={self.enable_visualization}  ee_link={self.ee_link}')
+            f'viz={self.enable_visualization}  ee_link={self.ee_link}  '
+            f'tracking={self.tracking_enabled}  '
+            f'sim_obstacle={self.sim_sphere is not None}')
 
         self._compute_thread = threading.Thread(
             target=self._compute_loop, name='rtd_compute', daemon=True)
@@ -211,10 +481,162 @@ class RealTimeDistance(Node):
 
     # ── Camera callbacks ──────────────────────────────────────────────────────
 
+    # ── Rate-dependent tuning (utils/rate_scaling) ────────────────────────
+
+    def _read_track_timing(self, trk_cfg: dict) -> Optional[dict]:
+        """The tracker's lifecycle as DURATIONS, or None for a legacy config.
+
+        All three keys are required together. Half a migration — a coast in
+        seconds next to a confirmation in frames — is the one state where the
+        two disagree about what the config means, so it is refused in favour of
+        the frame counts, which at least agree with each other.
+        """
+        self._trk_cfg_raw = dict(trk_cfg)
+        window_s = trk_cfg.get('confirm_window_s')
+        coast_s = trk_cfg.get('max_coast_s')
+        frac = trk_cfg.get('confirm_hits_frac')
+        if window_s is None or coast_s is None or frac is None:
+            return None
+        return {'window_s': float(window_s), 'coast_s': float(coast_s),
+                'hits_frac': float(frac)}
+
+    def _read_self_detect_timing(self, sd_cfg: dict) -> Optional[dict]:
+        """The self-detection guard's delays as durations, or None. As above."""
+        self._sd_cfg_raw = dict(sd_cfg)
+        w = sd_cfg.get('window_s')
+        c = sd_cfg.get('confirm_s')
+        r = sd_cfg.get('release_s')
+        if w is None or c is None or r is None:
+            return None
+        return {'window_s': float(w), 'confirm_s': float(c),
+                'release_s': float(r)}
+
+    def _track_counts(self, hz: float, trk_cfg: Optional[dict] = None):
+        """``(confirm_hits, confirm_window, max_missed)`` in frames at *hz*.
+
+        The M-of-N birth rule scales by keeping the FRACTION, not the count: N
+        is a duration (how long a flickering cluster has to prove itself) while
+        M/N is a robustness ratio (how much of that time may be dropout), and
+        the dropout is a per-frame phenomenon. Keeping 3-of-5 at 90 Hz would
+        confirm a 33 ms speckle; keeping 60% of a 167 ms window confirms what
+        3-of-5 confirmed at 30 Hz.
+        """
+        t = self._trk_timing
+        if t is None:
+            cfg = self._trk_cfg_raw if trk_cfg is None else trk_cfg
+            return (int(cfg.get('confirm_hits', 3)),
+                    int(cfg.get('confirm_window', 5)),
+                    int(cfg.get('max_missed', 5)))
+        # The floors are statements about the ALGORITHM, not about the rate: a
+        # 1-frame coast reaps a track the first time a cluster flickers, and a
+        # 1-of-2 birth confirms any speckle that survives two frames — which is
+        # the tentative state existing for nothing. They bind only at rates far
+        # below anything this rig runs (coast 2 frames is 0.167 s at 12 Hz), so
+        # at 30 and 90 Hz the counts are the durations and nothing else.
+        window = frames_for(t['window_s'], hz, minimum=3)
+        hits = max(2, min(window, int(round(window * t['hits_frac']))))
+        return hits, window, frames_for(t['coast_s'], hz, minimum=2)
+
+    def _self_detect_counts(self, hz: float, sd_cfg: Optional[dict] = None):
+        """``(window, confirm, release)`` in frames at *hz*."""
+        t = self._sd_timing
+        if t is None:
+            cfg = self._sd_cfg_raw if sd_cfg is None else sd_cfg
+            return (int(cfg.get('window', 20)), int(cfg.get('confirm', 5)),
+                    int(cfg.get('release', 15)))
+        # Same reasoning: a 1-frame history window cannot measure travel, and a
+        # 1-frame confirm makes the verdict a single-frame coincidence.
+        return (frames_for(t['window_s'], hz, minimum=4),
+                frames_for(t['confirm_s'], hz, minimum=2),
+                frames_for(t['release_s'], hz, minimum=3))
+
+    def _retune_for_rate(self, stamp_s: float) -> None:
+        """Resize the frame-counted thresholds when the depth rate has moved.
+
+        Called once per PROCESSED frame with that frame's CAPTURE time, and the
+        distinction is the whole point: every counter being resized here ticks
+        once per tracker update, not once per camera exposure. When the compute
+        loop cannot keep up, `depth_callback`'s queue drops frames and a
+        5-update coast lasts 5 PROCESSED frames — so the rate that converts a
+        duration into a count is this one, measured between the frames that
+        actually made it through, and never the rate the camera claims.
+
+        Cheap by construction: the estimator returns True only on a material,
+        cooled-down change, so the steady state is one subtraction and one
+        comparison.
+        """
+        dt = (None if self._prev_rate_stamp is None
+              else stamp_s - self._prev_rate_stamp)
+        self._prev_rate_stamp = stamp_s
+        if dt is None or not self._rate.add(dt):
+            return
+
+        hz = self._rate.hz
+        changed = []
+        if self._trk_timing is not None and self.track_pipeline is not None:
+            hits, window, coast = self._track_counts(hz)
+            if self.track_pipeline.tracker.retune(
+                    confirm_hits=hits, confirm_window=window,
+                    max_missed=coast):
+                changed.append(f'tracker confirm {hits}/{window} frames, '
+                               f'coast {coast} frames')
+            self.track_pipeline.default_dt = 1.0 / hz
+        if self._sd_timing is not None and self.self_detect is not None:
+            w, c, r = self._self_detect_counts(hz)
+            if self.self_detect.retune(window=w, confirm=c, release=r):
+                changed.append(f'self-detect window {w}, confirm {c}, '
+                               f'release {r} frames')
+
+        # Throttled as well as cooled down: the cooldown bounds how often the
+        # thresholds MOVE, this bounds how often the log says so, and on a
+        # contended box those are not the same number.
+        if changed:
+            self.get_logger().warn(
+                f'processing {hz:.1f} depth frames/s, not the '
+                f'{self._nominal_hz:.0f} Hz in the config. Rescaled to keep '
+                f'the configured DURATIONS: ' + '; '.join(changed),
+                throttle_duration_sec=10.0)
+        else:
+            self.get_logger().warn(
+                f'processing {hz:.1f} depth frames/s, not the '
+                f'{self._nominal_hz:.0f} Hz in the config, and this config '
+                f'counts its thresholds in FRAMES: every lifecycle duration is '
+                f'now {self._nominal_hz / max(hz, 1e-6):.1f}x what it says. '
+                f'Migrate to confirm_window_s / max_coast_s / window_s.',
+                throttle_duration_sec=10.0)
+
     def depth_callback(self, msg):
+        # ── Drop a frame that has already been seen ──────────────────────
+        # MEASURED on this rig at 848x480x90 (2026-09-21): realsense2_camera
+        # publishes ~2/3 of its depth frames TWICE on the same topic, the two
+        # copies ~2 ms apart with the same capture stamp and byte-identical
+        # pixels (239 of 360 stamps over 4 s; 150 msg/s for 90 real frames/s).
+        # Independent of align_depth.
+        #
+        # A duplicate is not a cheap frame, it is an expensive one: it costs a
+        # full cv_bridge conversion and, if the compute loop happens to be free,
+        # a whole mask/distance/track pass — and that pass advances every Kalman
+        # filter by another dt with no new measurement in it, which is exactly
+        # how a still obstacle acquires a velocity. Dropping it here is the one
+        # place where it costs a comparison instead of a pipeline.
+        #
+        # The test is the CAPTURE stamp, not the content: hashing 814 kB per
+        # frame to discover it is identical would cost more than the work being
+        # avoided. Equal stamps from one camera mean one exposure.
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        if stamp_ns and stamp_ns == self._last_depth_stamp_ns:
+            self._n_dup_frames += 1
+            return
+        self._last_depth_stamp_ns = stamp_ns
         try:
+            _t_cvt = time.perf_counter()
             cv_image = self.bridge.imgmsg_to_cv2(
                 msg, desired_encoding='passthrough')
+            # Paid in the EXECUTOR's thread, once per accepted frame, whether or
+            # not the compute loop ever looks at it: it is the part of the depth
+            # path that competes with camera_info and TF rather than with the
+            # compute.
+            self._perf.set('cvt', (time.perf_counter() - _t_cvt) * 1e3)
             frame = (cv_image, msg)
             try:
                 self._frame_queue.put_nowait(frame)
@@ -259,13 +681,25 @@ class RealTimeDistance(Node):
     def _compute_loop(self):
         """Background daemon thread: blocks on queue for freshest frame."""
         while rclpy.ok():
+            # `wait` is the diagnostic that separates "the loop is too slow" from
+            # "the loop is being starved": it is the time this thread sat on an
+            # EMPTY queue with frames arriving at the camera's rate. Near zero
+            # means the compute is the ceiling; several milliseconds means the
+            # frames were there and this thread was not running.
+            _t_wait = time.perf_counter()
             try:
                 frame = self._frame_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            self._perf.set('wait', (time.perf_counter() - _t_wait) * 1e3)
             try:
                 if self.fx is not None:
-                    self._process_depth_impl(frame)
+                    # `all` is the whole per-frame cost, so the difference
+                    # against tf+mask+dist+track names what the stage timers do
+                    # not cover (message assembly, the vis snapshot, the
+                    # obstacle-cloud export, the publishes).
+                    with self._perf('all'):
+                        self._process_depth_impl(frame)
             except Exception as exc:
                 self._process_skip_count += 1
                 self.get_logger().error(
@@ -276,6 +710,15 @@ class RealTimeDistance(Node):
         depth, depth_msg = frame
         stamp = depth_msg.header.stamp
 
+        # Simulated obstacle FIRST, so every stage below — the exclusion mask,
+        # the depth-range filter, the ROI stride, the distances, the clusters —
+        # sees it exactly as it would see a real one. Copy rather than mutate:
+        # the buffer belongs to cv_bridge and the visualiser reads it later.
+        if self.sim_sphere is not None and self.K is not None:
+            depth = depth.copy()
+            self.sim_sphere.render(
+                depth, stamp.sec + stamp.nanosec * 1e-9, self.K)
+
         # ── Depth resolution guard ────────────────────────────────────────
         if self._last_depth_shape != depth.shape:
             self._last_depth_shape = depth.shape
@@ -283,6 +726,13 @@ class RealTimeDistance(Node):
             self.distance_engine.invalidate_grid_cache()
             self.distance_engine.reset_lpf()
             self.roi_bounds = None
+            if self.self_detect is not None:
+                self.self_detect.reset()
+            if self.track_pipeline is not None:
+                # Every track's position is in metres, but its ASSOCIATION was
+                # built from a pixel grid that just changed shape. Keeping them
+                # would carry one geometry's identities into another's.
+                self.track_pipeline.reset()
 
         H, W   = depth.shape
         step   = int(self.distance_cfg['pixel_step'])
@@ -332,26 +782,118 @@ class RealTimeDistance(Node):
                 ee_source_mask=self.mask_builder.ee_source_mask,
                 dilation_margins_px=self.mask_builder.dilation_margins_px,
                 frame_stamp=stamp.sec + stamp.nanosec * 1e-9,  # REAL dt for approach rate-limit
+                # The robot's own depth per pixel. With it, the exclusion mask
+                # stops being a silhouette that hides whatever is in front of
+                # the arm and starts distinguishing the arm from an obstacle
+                # standing before it. None (or a zero tolerance) falls back to
+                # the pure 2D mask exactly.
+                robot_depth=self.mask_builder.robot_depth,
             )
         if cp_results is None:
             self._publish_per_link_heartbeat(stamp)
             return
 
-        valid = [
+        self._check_calibration(depth, transforms)
+
+        # The frame counts the tracker and the self-detection guard run on are
+        # sized for a frame RATE, and this is the only place that knows what the
+        # rate actually is. Before the tracking block, so a rescale lands on the
+        # same frame that measured it.
+        self._retune_for_rate(stamp.sec + stamp.nanosec * 1e-9)
+
+        # ── Cluster + track the SAME obstacle pixels the distances used ────
+        # Fails soft on purpose: the distances are the primary safety signal and
+        # must go out even if tracking blows up. A consumer that receives
+        # distances with no track falls back to the residual estimator; one that
+        # receives nothing brakes.
+        if self.track_pipeline is not None:
+            try:
+                with self._perf('track'):
+                    self.track_pipeline.update(
+                        self.distance_engine.last_obstacle_cloud,
+                        self.R_base, self.t_base,
+                        stamp=stamp.sec + stamp.nanosec * 1e-9)
+            except Exception as exc:
+                self.get_logger().error(
+                    f'obstacle tracking skipped this frame: {exc}',
+                    throttle_duration_sec=2.0)
+
+        # ── Predicted impact points of fast tracks (utils.ballistic_prediction) ──
+        # Before the publish gate: the whole point is a ball still beyond it.
+        n_pred = 0
+        pred_cfg = getattr(self, '_pred_cfg', None)
+        if self.track_pipeline is not None and pred_cfg is not None and pred_cfg.enabled:
+            try:
+                pl = self.track_pipeline
+
+                def _track_id_of(cid, p):
+                    trk = (pl.track_for_cluster(cid) if cid is not None and cid >= 0
+                           else pl.track_for_point(p))
+                    return int(trk.track_id) if trk is not None else 0
+
+                cp_results, n_pred = add_predicted_hits(
+                    cp_results, pl.tracker.confirmed_tracks(), pred_cfg,
+                    track_id_of=_track_id_of)
+            except Exception as exc:
+                self.get_logger().error(f'impact prediction skipped this frame: {exc}',
+                                        throttle_duration_sec=2.0)
+        self._n_pred_rows = n_pred
+
+        # ── Two different questions, two different lists (roadmap Step 7) ──
+        # `in_band` is the LEGACY one and decides the MultiDistance / fallback /
+        # logging path: "is there an obstacle in the band this node reports on".
+        #
+        # `publishable` decides whether the SAFETY topic goes out, and it drops
+        # the lower bound. The two used to be one list, which put a hole in the
+        # barrier exactly where it matters: in a frame where EVERY control point
+        # is closer than min_thresh (0.08 m) — the contact regime — the single
+        # list was empty, the function returned here, and the only thing on
+        # /cbf/per_link_distances was an empty heartbeat. The CBF then ran with
+        # ZERO obstacle rows at the closest the arm ever gets to something.
+        #
+        # Entries below min_thresh are not dropped now, they are FLAGGED:
+        # build_cp_messages publishes them with confidence = 0.5, which is above
+        # the filter's min_confidence and below anything a clean measurement
+        # scores. The self-detection concern that motivated the lower bound is
+        # answered by the flag rather than by silence.
+        in_band = [
             r for r in cp_results
             if np.isfinite(r.distance)
             and thresholds['min_thresh'] <= r.distance <= thresholds['max_thresh']
         ]
+        publishable = ([r for r in cp_results
+                        if np.isfinite(r.distance)
+                        and r.distance <= thresholds['max_thresh']]
+                       if self._publish_contact_regime else in_band)
         now = time.monotonic()
-        if not valid:
+        if not publishable and n_pred:
+            # Nothing measured inside the band, but a fast object is predicted
+            # to reach a control point: publish, so the CBF gets the rows.
+            self._publish_fallback(fallback_distance, stamp)
+            self._publish_rows(cp_results, n_pts, stamp, thresholds, fallback_distance)
+            return
+        if not publishable:
             if self._tlog_no_obs.due(now):
                 self._tlog_no_obs.debug(
                     f'No near obstacle (CP mode). Fallback={fallback_distance} m')
             self._publish_fallback(fallback_distance, stamp)
             self._publish_per_link_heartbeat(stamp)
             return
+        if not in_band:
+            # Contact regime: nothing in the reporting band, but something
+            # closer than its lower edge. The legacy fallback still goes out
+            # (its consumers expect one per frame), and the per-link topic now
+            # goes out too.
+            self._publish_fallback(fallback_distance, stamp)
+            self.get_logger().warn(
+                f'CONTACT REGIME: every control point is closer than '
+                f'min_thresh={thresholds["min_thresh"]:.3f} m '
+                f'(nearest {min(r.distance for r in publishable):.3f} m) — '
+                f'publishing per-link distances with confidence 0.5 instead of '
+                f'an empty heartbeat',
+                throttle_duration_sec=1.0)
 
-        best_cp          = min(valid, key=lambda r: r.distance)
+        best_cp          = min(in_band or publishable, key=lambda r: r.distance)
         min_dist         = best_cp.distance
         closest_obs_pt   = best_cp.closest_obstacle_point
         closest_robot_pt = best_cp.point
@@ -361,24 +903,28 @@ class RealTimeDistance(Node):
 
         # ── Throttled log ─────────────────────────────────────────────────
         if self._tlog_dist.due(now):
+            trk = (f'  | {self.track_pipeline.describe()}'
+                   if self.track_pipeline is not None else '')
+            if self.self_detect is not None and self.self_detect.flagged:
+                trk += f' SELF={len(self.self_detect.flagged)}'
+            # Republished copies, cumulative. On the line because a rate read
+            # off `ros2 topic hz` counts them and this node does not: the gap
+            # between the two numbers is this counter.
+            dup = f' dup={self._n_dup_frames}' if self._n_dup_frames else ''
+            # leak = robot pixels the silhouette missed (they read as obstacles)
+            # tfage = how stale the poses the mask was drawn from are, relative
+            # to this depth frame. The two together say WHICH kind of mask
+            # failure is happening: holes, or a mask drawn where the arm was.
+            leak = f' leak={self.distance_engine.last_self_leak_px}'
+            tfage = (f' tfage={self.tf_mgr.last_pose_age_s * 1e3:.0f}ms'
+                     f'/L{"".join(str(n) for n in self.tf_mgr.last_levels)}')
             self._tlog_dist.info(
                 f'dist={min_dist:.3f} m  Z={closest_Z:.3f} m  '
-                f'pix={closest_uv_obs}  | {self._perf.summary()}')
+                f'pix={closest_uv_obs}  | {self._perf.summary()}{trk}'
+                f'{leak}{tfage}{dup}')
 
         # ── Publish ───────────────────────────────────────────────────────
-        multi_msg, mld_msg = build_cp_messages(
-            cp_results=cp_results,
-            n_pts=n_pts,
-            stamp=stamp,
-            frame_id=self.robot_cfg['base_frame'],
-            segment_links=self.robot_cfg.get('segment_links', []),
-            thresholds=thresholds,
-            fallback=fallback_distance,
-            zones=self.zones,
-        )
-        self.multi_dist_pub.publish(multi_msg)
-        self.per_link_dist_pub.publish(mld_msg)
-        self._hb_active = False   # re-arm the heartbeat transition log
+        self._publish_rows(cp_results, n_pts, stamp, thresholds, fallback_distance)
 
         # ── Visualisation snapshot ────────────────────────────────────────
         with self._vis_lock:
@@ -398,6 +944,114 @@ class RealTimeDistance(Node):
                 visual_exclusion_mask=self.visual_robot_exclusion_mask,
                 visualize_only_raw_video=self.visualize_only_raw_video,
             )
+
+    def _publish_rows(self, cp_results, n_pts, stamp, thresholds, fallback_distance):
+        """Build, annotate and publish MultiDistance + MultiLinkDistance."""
+        want_cids = self.multi_k > 1 or bool(getattr(self, '_n_pred_rows', 0))
+        msgs = build_cp_messages(
+            cp_results=cp_results,
+            n_pts=n_pts,
+            stamp=stamp,
+            frame_id=self.robot_cfg['base_frame'],
+            segment_links=self.robot_cfg.get('segment_links', []),
+            thresholds=thresholds,
+            fallback=fallback_distance,
+            zones=self.zones,
+            return_cluster_ids=want_cids,
+        )
+        multi_msg, mld_msg = msgs[0], msgs[1]
+        cluster_ids = msgs[2] if want_cids else None
+        if cluster_ids is not None:
+            for ld, cid in zip(mld_msg.links, cluster_ids):
+                if cid == PREDICTED_CLUSTER_ID:
+                    ld.zone = 'predicted'
+        # Track fields onto the message that is about to go out. Same topic,
+        # same entries, same order — only the four appended fields are written,
+        # and only for control points whose nearest obstacle point falls inside
+        # a CONFIRMED track. Everything else keeps the all-zero "no track"
+        # defaults the consumer already treats as "contribute nothing".
+        if self.track_pipeline is not None:
+            try:
+                annotate_track_fields(mld_msg, self.track_pipeline,
+                                      skip_keys=self._self_detected(cp_results),
+                                      cluster_ids=cluster_ids)
+            except Exception as exc:
+                self.get_logger().error(
+                    f'track annotation skipped this frame: {exc}',
+                    throttle_duration_sec=2.0)
+
+        self.multi_dist_pub.publish(multi_msg)
+        self.per_link_dist_pub.publish(mld_msg)
+        self._hb_active = False   # re-arm the heartbeat transition log
+
+    def _check_calibration(self, depth, transforms) -> None:
+        """Throttled model-vs-measurement comparison. Never raises, never blocks.
+
+        The mesh samples are transformed into base frame here rather than being
+        cached, because they move with the arm — but only ``period_s`` apart, so
+        the cost is a few thousand rotations every ten seconds.
+        """
+        if not self._cal_enabled or self.K is None:
+            return
+        now = time.monotonic()
+        if now < self._cal_next:
+            return
+        self._cal_next = now + max(1.0, self._cal_period)
+        try:
+            base_pts = {n: (transforms[n][0] @ p.T).T + transforms[n][1]
+                        for n, p in self._link_samples.items() if n in transforms}
+            if not base_pts:
+                return
+            res = calibration_residual(
+                base_pts, self.R_base, self.t_base, self.K,
+                depth.astype(np.float64) * 0.001,
+                min_depth=self.distance_engine.min_depth,
+                max_depth=self.distance_engine.max_depth,
+                gate_m=(self.distance_cfg['depth_gate_bias_m']
+                        + self.distance_cfg['depth_gate_tol_m'])
+                if self.distance_cfg['depth_gate_tol_m'] > 0.0 else None)
+            txt = res.describe(self._cal_baseline, self._cal_tol)
+            if res.is_suspicious(self._cal_baseline, self._cal_tol):
+                self.get_logger().warn(txt)
+            else:
+                self.get_logger().info(txt)
+        except Exception as exc:
+            self.get_logger().error(f'calibration check skipped: {exc}',
+                                    throttle_duration_sec=30.0)
+
+    def _self_detected(self, cp_results) -> set:
+        """Control-point labels whose "obstacle" is moving with the arm.
+
+        Keyed ``link#k`` with k counting occurrences of that link in ARRIVAL
+        order — the same convention ``build_cp_messages`` publishes in and
+        ``cbf_safety_filter`` labels rows with, so one key names one control
+        point everywhere.
+
+        Fails soft: on any error it returns the empty set, i.e. no suppression,
+        which is the pre-existing behaviour.
+        """
+        if self.self_detect is None:
+            return set()
+        try:
+            seen: dict = {}
+            for r in cp_results:
+                if r.closest_obstacle_point is None or r.point is None:
+                    continue
+                k = seen.get(r.end_link, 0)
+                seen[r.end_link] = k + 1
+                self.self_detect.update(f'{r.end_link}#{k}', r.point,
+                                        r.closest_obstacle_point)
+            msg = self.self_detect.report()
+            if msg:
+                # Throttled but NOT rate-limited to invisibility: this is a
+                # configuration fault, and the run it is silently corrupting can
+                # be hours long.
+                self.get_logger().warn(msg, throttle_duration_sec=10.0)
+            return self.self_detect.flagged
+        except Exception as exc:
+            self.get_logger().error(f'self-detection check skipped: {exc}',
+                                    throttle_duration_sec=5.0)
+            return set()
 
     # ── Visualisation ─────────────────────────────────────────────────────────
 

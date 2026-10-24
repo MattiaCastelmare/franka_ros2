@@ -29,7 +29,13 @@ from gymnasium import spaces
 
 import mujoco
 
-from .cbf_filter import AccelCBFFilter, Obstacle
+from .cbf_filter import AccelCBFFilter, CBFInfo, Obstacle, fr3_velocity_envelope
+from .constraints import ConstraintMonitor
+from .obs_layout import (
+    CP_WIDTH, DEFAULT_CONTROL_POINTS, assemble as assemble_obs,
+    bounds as obs_bounds, spec_from_config,
+)
+from .randomization import Randomizer
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_SCENE = os.path.join(_HERE, '..', 'assets', 'franka_fr3', 'scene_cbf.xml')
@@ -37,6 +43,60 @@ _DEFAULT_CONFIG = os.path.join(_HERE, '..', 'config.yaml')
 
 ARM_JOINTS = [f'fr3_joint{i}' for i in range(1, 8)]
 NV = 7
+
+#: Where an extra obstacle sphere waits when its episode does not use it: far
+#: below the floor, outside every box, excluded from the geometry pass anyway.
+_PARK = np.array([0.0, 0.0, -3.0])
+
+
+def _model_with_extra_obstacles(scene_path: str, n_extra: int) -> mujoco.MjModel:
+    """Compile the scene with ``n_extra`` more mocap spheres ``obstacle_k``.
+
+    Each is a copy of ``obstacle_geom`` (same radius and colour, no contacts),
+    added through ``MjSpec`` so the vendored MJCF is not edited. Everything
+    else — joints, actuators, keyframe, options — compiles identically
+    (tests/test_multi_obstacle.py checks the arm model is unchanged).
+    """
+    base = mujoco.MjModel.from_xml_path(scene_path)
+    og = mujoco.mj_name2id(base, mujoco.mjtObj.mjOBJ_GEOM, 'obstacle_geom')
+    radius, rgba = float(base.geom_size[og, 0]), base.geom_rgba[og].copy()
+    spec = mujoco.MjSpec.from_file(scene_path)
+    for k in range(1, int(n_extra) + 1):
+        body = spec.worldbody.add_body(name=f'obstacle_{k}', mocap=True, pos=_PARK.tolist())
+        body.add_geom(name=f'obstacle_geom_{k}', type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                      size=[radius, 0.0, 0.0], rgba=rgba.tolist(), contype=0, conaffinity=0)
+    return spec.compile()
+
+
+def precision_bonus(rw: dict, dist: float):
+    """reward.w_prec · (1 − tanh(dist / prec_scale)): a steep bonus near the target.
+
+    -w_dist·dist has a slope of 1 /m, so a policy parked 6 cm from the target
+    (just outside target_tol) loses almost nothing against one at 4 cm; this
+    term has slope w_prec/prec_scale there. It depends on dist alone, so
+    train.py can relabel an old replay buffer from next_obs. Works on arrays.
+    """
+    w = float(rw.get('w_prec', 0.0))
+    if w == 0.0:
+        return 0.0
+    return w * (1.0 - np.tanh(dist / float(rw.get('prec_scale', 0.05))))
+
+
+def correction_cost(rw: dict, correction: float):
+    """reward.w_correction · (1 − exp(−(c / correction_sigma)²)): bounded cost of a shield correction.
+
+    The correction term of CBF-RL (Yang, Werner, de Sa, Ames, ICRA 2026): with the
+    filter in the training loop, a cost on how far the filter moved the action teaches
+    the policy to propose actions the filter leaves alone, so it stops parking on the
+    d_safe shell. Bounded in [0, w), so one hard brake cannot dominate the return.
+    c = ‖q̈_safe − clip(q̈_nom, ±qddot_box)‖: box clipping alone is not a correction
+    (policies trained with alone_action: clip saturate on purpose).
+    """
+    w = float(rw.get('w_correction', 0.0))
+    if w == 0.0:
+        return 0.0
+    s = float(rw.get('correction_sigma', 2.0))
+    return w * (1.0 - np.exp(-(correction / s) ** 2))
 
 
 def _load_config(config) -> dict:
@@ -69,9 +129,18 @@ class FrankaCBFEnv(gym.Env):
         self.dt          = 1.0 / self.control_hz
         self.sim_dt      = float(env_c.get('sim_timestep', 0.002))
         self.max_steps   = int(env_c.get('max_episode_steps', 500))
-        # Obstacle-avoidance rows on/off (hard state-limit + workspace box always
-        # stay on). False = ablation baseline: shield without obstacle CBF.
+        # Obstacle-avoidance rows on/off (hard state-limit + workspace box stay
+        # on while env.shield is true). False = ablation baseline: shield
+        # without obstacle CBF. env.shield false removes the whole QP.
         self.cbf_obstacle_enabled = bool(env_c.get('cbf_obstacle_enabled', True))
+        # Shield mixing (b4): when set, each episode draws the obstacle rows ON
+        # with this probability and overrides cbf_obstacle_enabled. A shield-off
+        # fine-tune keeps meeting shielded episodes, where the policy still
+        # practises reaching past obstacles it has not yet learned to avoid.
+        # The policy is not told which kind of episode it is in. None = off
+        # (no extra RNG draw → existing seeds replay bit-identically).
+        _p_on = env_c.get('cbf_obstacle_on_prob')
+        self.cbf_obstacle_on_prob = None if _p_on is None else float(_p_on)
         # Viewer playback rate: 1.0 = wall-clock real time, 0.5 = half speed for
         # a closer look, 2.0 = fast-forward. Visualisation only.
         self.render_speed = float(env_c.get('render_speed', 1.0))
@@ -80,7 +149,22 @@ class FrankaCBFEnv(gym.Env):
         # ── MuJoCo model ─────────────────────────────────────────────────────
         scene = env_c.get('scene_xml')
         scene = os.path.join(_HERE, '..', scene) if scene else _DEFAULT_SCENE
-        self.model = mujoco.MjModel.from_xml_path(os.path.abspath(scene))
+        # Several obstacles (obstacle.count_range: [lo, hi]): the MJCF ships ONE
+        # mocap sphere; the extra ones are added at load time (MjSpec) so the
+        # asset stays untouched and a config without count_range loads exactly
+        # the model every existing policy was trained on. Per episode the count
+        # is drawn uniformly in [lo, hi]; sphere 0 ("obstacle") carries the task
+        # structure (blocking_fraction, IK check), the others are extra hazards
+        # that never block the target (see _sample_extras).
+        _cr = obs_c.get('count_range')
+        self.obs_count_range = None if _cr is None else (int(_cr[0]), int(_cr[1]))
+        if self.obs_count_range is not None and not (1 <= self.obs_count_range[0] <= self.obs_count_range[1]):
+            raise ValueError(f'obstacle.count_range must satisfy 1 <= lo <= hi, got {_cr}')
+        n_extra = 0 if self.obs_count_range is None else self.obs_count_range[1] - 1
+        if n_extra > 0:
+            self.model = _model_with_extra_obstacles(os.path.abspath(scene), n_extra)
+        else:
+            self.model = mujoco.MjModel.from_xml_path(os.path.abspath(scene))
         self.model.opt.timestep = self.sim_dt
         self.data = mujoco.MjData(self.model)
         self.n_substeps = max(1, int(round(self.dt / self.sim_dt)))
@@ -100,9 +184,30 @@ class FrankaCBFEnv(gym.Env):
         self._tgt_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'target')
         self._obs_mocap = int(self.model.body_mocapid[self._obs_body])
         self._tgt_mocap = int(self.model.body_mocapid[self._tgt_body])
+        # Extra spheres (obstacle_1 .. obstacle_n): mocap ids, and the ones
+        # active THIS episode with their own base/direction/phase/mode.
+        self._extra_mocap = [
+            int(self.model.body_mocapid[mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, f'obstacle_{k}')])
+            for k in range(1, n_extra + 1)]
+        self._extra: list = []
+        #: Centre of the sphere closest to the arm after the last geometry pass —
+        #: the observation's single `obstacle` slot, exactly what the robot's
+        #: nearest_obstacle() reconstructs from the closest reported point.
+        self._p_obs_near = None
         # Obstacle sphere radius (geom size) — used for the surface distance.
         og = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'obstacle_geom')
         self.r_obs = float(self.model.geom_size[og, 0])
+        self._floor_geom = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
+        self._floor_pts = []
+        self._base_pts = []
+        # Finger collision geoms: the hand control-point sphere does not reach
+        # the fingertips, so they get their own floor rows (bounding radius).
+        self._finger_geoms = [
+            g for g in range(self.model.ngeom)
+            if (mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, g) or '')
+            .endswith('finger_collision')]
+        self._prev_finger_J = {}
         # The MJCF is authoritative, but the deployment node (rl_policy_commander)
         # cannot parse it — it reads `obstacle.radius` from this same config to
         # rebuild the observation's obstacle slot. A silent divergence would shift
@@ -167,16 +272,11 @@ class FrankaCBFEnv(gym.Env):
         self.qddot_max = np.array([lim_c[k][3] for k in keys])
 
         # ── Control points for the CBF (body + link radius) ───────────────────
-        # Fallback only — config.yaml is the source of truth. Kept in step with
-        # it so a config without the block still shields the gripper.
-        default_cps = [
-            {'body': 'fr3_link4', 'radius': 0.09},
-            {'body': 'fr3_link5', 'radius': 0.09},
-            {'body': 'fr3_link6', 'radius': 0.08},
-            {'body': 'fr3_link7', 'radius': 0.07},
-            {'body': 'fr3_hand',  'radius': 0.13},   # ≡ robot fr3_link8
-        ]
-        cps = cbf_c.get('control_points', default_cps)
+        # config.yaml is the source of truth; the fallback now lives in
+        # obs_layout next to the sim→robot link-name map, because
+        # `obs.control_point_geometry` puts one observation slot per entry and
+        # the two lists have to be the same list.
+        cps = cbf_c.get('control_points') or DEFAULT_CONTROL_POINTS
         self._cp_body = [mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, c['body'])
                          for c in cps]
         self._cp_radius = np.array([float(c['radius']) for c in cps])
@@ -188,6 +288,27 @@ class FrankaCBFEnv(gym.Env):
         self.cbf = AccelCBFFilter(cbf_c, self.qddot_max, self.qdot_max,
                                   self.q_min, self.q_max, self.dt)
 
+        # ── Policy alone (env.shield: false) ─────────────────────────────────
+        # True (default) = every number measured so far: q̈_nom goes through the
+        # QP above, which with cbf_obstacle_enabled false STILL enforces the
+        # joint position/velocity/acceleration box, slew, workspace, floor and
+        # base keep-out. False = nothing in between: q̈_nom drives the torque
+        # chain directly and those limits become measurements (constraints:).
+        self.shield = bool(env_c.get('shield', True))
+        # How the policy-alone command meets the acceleration limit:
+        #   raw   — q̈ = a·q̈_max as is (q̈_max = joint_limits, up to 17 rad/s²)
+        #   clip  — q̈ = clip(a·q̈_max, ±box): an existing policy, same action
+        #           meaning, saturated at the robot's QP box (cbf.qddot_max_abs)
+        #   scale — q̈ = a·box: a = ±1 IS the limit (for new policies)
+        self.alone_action = str(env_c.get('alone_action', 'raw'))
+        if self.alone_action not in ('raw', 'clip', 'scale'):
+            raise ValueError(f'env.alone_action must be raw|clip|scale, got {self.alone_action}')
+        con_c = cfg.get('constraints') or {}
+        self.constraints = (ConstraintMonitor(self, con_c)
+                            if bool(con_c.get('enabled', False)) else None)
+        #: Largest |τ| − limit seen by _inverse_dynamics this tick (0 = none).
+        self._tau_excess = 0.0
+
         # ── Task / obstacle / reward params ───────────────────────────────────
         self.target_box_min = np.array(task_c.get('target_box_min', [0.30, -0.35, 0.25]))
         self.target_box_max = np.array(task_c.get('target_box_max', [0.60, 0.35, 0.65]))
@@ -195,26 +316,140 @@ class FrankaCBFEnv(gym.Env):
         self.q_init_noise   = float(task_c.get('q_init_noise', 0.05))
 
         self.obs_mode   = str(obs_c.get('mode', 'sinusoidal'))
+        # Per-episode mix: this fraction of episodes uses a STATIC obstacle, the
+        # rest the configured mode. 0 leaves the RNG stream (and every existing
+        # run) unchanged.
+        self._obs_mode_cfg = self.obs_mode
+        self.static_fraction = float(obs_c.get('static_fraction', 0.0))
         self.obs_box_min = np.array(obs_c.get('box_min', [0.30, -0.40, 0.30]))
         self.obs_box_max = np.array(obs_c.get('box_max', [0.65, 0.40, 0.70]))
         self.obs_amp    = float(obs_c.get('amplitude', 0.30))
         self.obs_speed  = float(obs_c.get('speed', 0.6))          # [Hz-ish]
         self.obs_rw_std = float(obs_c.get('random_walk_std', 0.01))
 
+        # ── Reset-time feasibility (see _sample_episode) ──────────────────────
+        # Minimum surface distance the START state must clear. None → d_safe,
+        # i.e. the episode begins with h = d − d_safe ≥ 0. That is the
+        # precondition the HOCBF's forward-invariance guarantee is stated
+        # under; starting outside the safe set certifies nothing.
+        _rc = task_c.get('reset_min_clearance')
+        self.reset_min_clearance = (float(_rc) if _rc is not None
+                                    else float(self.cbf.d_safe))
+        self.reset_max_tries = int(task_c.get('reset_max_tries', 100))
+        # Fraction of episodes whose obstacle must actually SIT ON the straight
+        # EE→target path. 0.0 reproduces the uniform sampling exactly.
+        #
+        # Measured over the 50-episode benchmark with uniform sampling: the
+        # obstacle sweep never came within r_obs + d_safe of the direct path in
+        # 25 of 50 episodes, and intersected it in 1. Half the benchmark
+        # therefore required NO avoidance at all and scored "can it reach a
+        # target", which is not what this environment is for.
+        self.blocking_fraction = float(task_c.get('blocking_fraction', 0.0))
+        # Targeted curriculum (v12): with probability hard_fraction the target
+        # is drawn LOW (z ≤ hard_target_z_max) and the episode must be a
+        # blocking one — the geometry where v11 still failed most (static,
+        # z < 0.35 m: 41 % lost vs 7-12 % higher up). Unlike raising
+        # obstacle.static_fraction it leaves the static/moving mix untouched.
+        self.hard_fraction = float(task_c.get('hard_fraction', 0.0))
+        self.hard_target_z_max = float(task_c.get('hard_target_z_max', 0.35))
+        # [m] how close the sweep must come to the path to count as blocking.
+        # None → r_obs + d_safe, i.e. "the barrier would engage on the direct
+        # route", which is exactly the condition that forces a detour.
+        _bm = task_c.get('blocking_margin')
+        self.blocking_margin = (float(_bm) if _bm is not None
+                                else self.r_obs + float(self.cbf.d_safe))
+        #: Episodes that asked for a blocking obstacle and could not get one.
+        self.blocking_misses = 0
+        #: Episodes that exhausted reset_max_tries and fell back to the best
+        #: draw seen. Non-zero means the boxes are over-constrained — read it
+        #: before trusting a safety number from the run.
+        self.reset_fallbacks = 0
+        #: Phases used to test whether a target is blocked at EVERY sweep phase.
+        self._phases = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+        # [m] obstacle-centre → target distance below which the target counts
+        # as blocked. None → r_obs + d_safe (the historical rule). That rule
+        # ignores the hand control point (radius 0.13 at the hand origin,
+        # ~0.10 m behind the TCP): holding the TCP on the target actually needs
+        # ~r_obs + d_safe + r_hand − 0.10 ≈ 0.26 m, so targets between 0.23 and
+        # 0.26 m were kept and are unreachable without driving h < 0.
+        _tc = task_c.get('target_clearance')
+        self.target_clearance = (float(_tc) if _tc is not None
+                                 else self.r_obs + float(self.cbf.d_safe))
+        # False → reject only targets blocked at EVERY phase (transiently
+        # blocked ones are kept: they can be touched but never held).
+        # True  → reject targets blocked at ANY phase, i.e. every target can be
+        # reached AND held for the whole episode.
+        self.target_free_always = bool(task_c.get('target_free_always', False))
+        # Constrained-IK feasibility of the target (see target_feasibility.py):
+        # target_clearance bounds the target POINT, but the barrier acts on the
+        # hand/elbow spheres, and 7 of the 400 held-out static episodes had no
+        # pose within target_tol with every sphere at d >= d_safe. OFF by
+        # default: it changes which episodes a seed draws, so every existing
+        # run and benchmark stays bit-identical while it is false.
+        self.target_ik_check = bool(task_c.get('target_ik_check', False))
+        # Only targets whose obstacle sweep comes within this distance [m] are
+        # checked; all 22 shared static failures sat at 0.26-0.29 m. None →
+        # target_clearance + 0.06.
+        _ig = task_c.get('ik_check_gate')
+        self.ik_check_gate = (float(_ig) if _ig is not None
+                              else self.target_clearance + 0.06)
+        # A target is feasible when some pose puts the TCP within this distance
+        # [m]. None → target_tol (the physical limit; 0.5·target_tol also drops
+        # the targets that are reachable only in a sliver of the tolerance ball).
+        _it = task_c.get('ik_check_tol')
+        self.ik_check_tol = float(_it) if _it is not None else self.target_tol
+        self.ik_check_starts = int(task_c.get('ik_check_starts', 8))
+        # Moving obstacle: at most this many sweep centres inside the gate are
+        # checked (closest first, >= 5 cm apart), each one separately.
+        self.ik_check_max_points = int(task_c.get('ik_check_max_points', 3))
+        self._target_ik = None
+        #: Draws rejected by the IK check.
+        self.ik_rejects = 0
+
         self.rw = rew_c  # dict of reward weights, read per-step
+
+        # ── Actuation law (see _servo_torque) ────────────────────────────────
+        # OFF by default: the feedforward-only path is the one every number in
+        # the docs was measured with, and it stays bit-identical while this is
+        # false. Turning it on changes the PLANT — retrain and re-benchmark.
+        act_c = cfg.get('actuation', {}) or {}
+        self.actuation_feedback = bool(act_c.get('enabled', False))
+        self._act_kd = np.asarray(act_c.get(
+            'd_gains', [30.0, 30.0, 30.0, 25.0, 10.0, 10.0, 5.0]), float)
+        self._act_kp = np.asarray(act_c.get(
+            'p_gains', [120.0, 120.0, 120.0, 100.0, 40.0, 40.0, 20.0]), float)
+        self._act_e_max = float(act_c.get('e_max', 1.0))
+        self._act_p_max = float(act_c.get('p_max', 0.15))
+        self._act_qdot_margin = float(act_c.get('qdot_margin', 0.95))
+        self._act_fade_band = float(act_c.get('ff_fade_band', 0.25))
+        for name, arr in (('d_gains', self._act_kd), ('p_gains', self._act_kp)):
+            if arr.shape != (NV,):
+                raise ValueError(f'actuation.{name} must have {NV} entries, '
+                                 f'got {arr.shape[0]}')
+        self._qdot_des = np.zeros(NV)
+        self._q_des = np.zeros(NV)
+
+        # ── Domain randomisation / observation noise (OFF by default) ────────
+        # Applied to the OBSERVATION only. The CBF rows keep MuJoCo's true
+        # geometry: the robot's estimate is noisy, but its filter still treats
+        # what it receives as truth, so corrupting the shield's own inputs would
+        # model a different and worse safety filter than the one deployed.
+        self.randomizer = Randomizer(cfg.get('randomization'), self.dt,
+                                     np.random.default_rng())
 
         # ── Spaces ────────────────────────────────────────────────────────────
         # action = q̈_nom / q̈_max  ∈ [−1, 1]⁷
         self.action_space = spaces.Box(-1.0, 1.0, shape=(NV,), dtype=np.float32)
-        # obs = [q(7), q̇(7), ee_pos(3), target(3), obstacle(3), d_min(1)]
-        high = np.concatenate([
-            self.q_max, self.qdot_max,
-            np.full(3, 2.0), np.full(3, 2.0), np.full(3, 2.0), np.array([5.0]),
-        ]).astype(np.float32)
-        low = np.concatenate([
-            self.q_min, -self.qdot_max,
-            np.full(3, -2.0), np.full(3, -2.0), np.full(3, -2.0), np.array([-1.0]),
-        ]).astype(np.float32)
+        # obs layout — see envs/obs_layout.py. A config with no `obs:` block
+        # yields the legacy 24-dim vector, so every model frozen before the
+        # optional blocks existed keeps loading and deploying unchanged.
+        self.obs_spec = spec_from_config(cfg)
+        if self.obs_spec.n_cp and self.obs_spec.n_cp != len(cps):
+            raise ValueError(
+                f'obs.control_point_geometry declares {self.obs_spec.n_cp} '
+                f'control points but cbf.control_points has {len(cps)}')
+        low, high = obs_bounds(self.obs_spec, self.q_min, self.q_max,
+                               self.qdot_max)
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
 
         # ── Episode state ─────────────────────────────────────────────────────
@@ -224,6 +459,13 @@ class FrankaCBFEnv(gym.Env):
         self._obs_dir = np.array([0.0, 1.0, 0.0])
         self._obs_phase = 0.0
         self._prev_a = [None] * self._n_cp       # prev point Jacobians (finite-diff ċ)
+        #: Previous OBSERVED obstacle centre, for the finite-difference
+        #: velocity. Deliberately the post-randomizer value: latency, noise and
+        #: the LPF then propagate into v_obs exactly as they do on the robot,
+        #: which differentiates the same estimate it receives. None = first
+        #: tick of an episode, where the velocity reads zero rather than a step
+        #: from wherever the previous episode left the sphere.
+        self._p_obs_prev = None
         self._prev_ee_J = None
         self._qddot_prev = np.zeros(NV)
         self._viewer = None
@@ -244,6 +486,14 @@ class FrankaCBFEnv(gym.Env):
     def _ee_pos(self):
         return self.data.site_xpos[self._ee_site].copy()
 
+    def _floor_contact(self):
+        """True when any robot geom touches the floor plane this step."""
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if self._floor_geom in (c.geom1, c.geom2):
+                return True
+        return False
+
     def _point_jac(self, body_id, point):
         """(3, NV) linear point Jacobian for the arm dofs at `point` on `body`."""
         jacp = np.zeros((3, self.model.nv))
@@ -256,28 +506,87 @@ class FrankaCBFEnv(gym.Env):
         return jacp[:, self._dadr]
 
     def _build_obstacles(self, qdot):
-        """From MuJoCo geometry → list[Obstacle] + EE workspace-row ingredients."""
-        p_obs = self.data.mocap_pos[self._obs_mocap].copy()
+        """MuJoCo geometry → CBF rows, EE workspace ingredients, obs geometry.
+
+        ``cp_geom`` is ``(n_cp, 4)`` — ``[dᵢ, n̂ᵢ]`` per control point, in
+        ``cbf.control_points`` order — and is what the observation's optional
+        control-point block carries. It is the SAME dᵢ and n̂ᵢ the CBF rows are
+        built from, computed once: the policy and the filter that corrects it
+        then reason over one geometric picture instead of the filter seeing six
+        links and the policy seeing a single scalar.
+        """
+        # Sphere 0 is the primary obstacle; the rest are this episode's extras.
+        centres = [self.data.mocap_pos[self._obs_mocap].copy()]
+        centres += [self.data.mocap_pos[e['mocap']].copy() for e in self._extra]
         obstacles = []
         d_min = np.inf
+        d_sphere = np.full(len(centres), np.inf)        # closest approach per sphere
+        # Rows are dropped when the direction is degenerate, but the geometry
+        # block is positional, so every control point ALWAYS gets a row here.
+        # With several spheres a control point reports its NEAREST one — the
+        # same reduction the robot's control_point_geometry() applies to the
+        # points the perception pipeline reports per link.
+        cp_geom = np.zeros((self._n_cp, CP_WIDTH))
+        cp_best = np.full(self._n_cp, np.inf)
+        # (z, r, Jz, J̇z q̇) per control point for the shield's floor rows,
+        # and (p, r, Jp, J̇p q̇) for the base keep-out rows.
+        self._floor_pts = []
+        self._base_pts = []
+        cp_pts = {}
         for i, bid in enumerate(self._cp_body):
             p_cp = self.data.xpos[bid].copy()
-            diff = p_cp - p_obs
-            dist = float(np.linalg.norm(diff))
-            if dist < 1e-6:
-                continue
-            n_hat = diff / dist                              # obstacle → robot
-            d = dist - self.r_obs - self._cp_radius[i]       # surface distance
-            d_min = min(d_min, d)
             Jp = self._point_jac(bid, p_cp)
-            a = n_hat @ Jp                                   # (NV,)
-            # ċ = n̂ᵀ(J̇p q̇) via finite difference of the point Jacobian.
-            cdot = 0.0
+            # J̇p q̇ via finite difference of the point Jacobian (shared by every
+            # sphere's row of this control point: it is a property of the link).
+            jdq = np.zeros(3)
             if self._use_jdot and self._prev_a[i] is not None:
-                Jdot = (Jp - self._prev_a[i]) / self.dt
-                cdot = float(n_hat @ (Jdot @ qdot))
+                jdq = ((Jp - self._prev_a[i]) / self.dt) @ qdot
             self._prev_a[i] = Jp
-            obstacles.append(Obstacle(self._cp_name[i], d, a, cdot))
+            self._floor_pts.append((p_cp[2], self._cp_radius[i], Jp[2], jdq[2]))
+            cp_pts[self._cp_name[i]] = (p_cp, self._cp_radius[i], Jp, jdq)
+            for k, p_obs in enumerate(centres):
+                diff = p_cp - p_obs
+                dist = float(np.linalg.norm(diff))
+                if dist < 1e-6:
+                    # Control point ON the obstacle centre: the distance is real
+                    # and maximally negative, the direction is undefined. Report
+                    # both honestly — a "far away" placeholder here would hide
+                    # the worst state the policy can be in.
+                    if not np.isfinite(cp_best[i]):
+                        cp_geom[i, 0] = -(self.r_obs + self._cp_radius[i])
+                        cp_geom[i, 1:] = 0.0
+                    continue
+                n_hat = diff / dist                              # obstacle → robot
+                d = dist - self.r_obs - self._cp_radius[i]       # surface distance
+                d_min = min(d_min, d)
+                d_sphere[k] = min(d_sphere[k], d)
+                if d < cp_best[i]:
+                    cp_best[i] = d
+                    cp_geom[i, 0] = d
+                    cp_geom[i, 1:] = n_hat
+                a = n_hat @ Jp                                   # (NV,)
+                cdot = float(n_hat @ jdq)                        # ċ = n̂ᵀ(J̇p q̇)
+                name = self._cp_name[i] if k == 0 else f'{self._cp_name[i]}:{k}'
+                obstacles.append(Obstacle(name, d, a, cdot))
+        self._p_obs_near = centres[int(np.argmin(d_sphere))] if np.isfinite(d_sphere).any() else centres[0]
+        for name in ('fr3_link4', 'fr3_link5', 'fr3_link6', 'fr3_link7', 'fr3_hand'):
+            if name in cp_pts:
+                self._base_pts.append(cp_pts[name])
+        # Forearm midpoint: link5's collision mesh spans link4 → link5 origins,
+        # and it is the forearm that hit the base.
+        if 'fr3_link4' in cp_pts and 'fr3_link5' in cp_pts:
+            a, b = cp_pts['fr3_link4'], cp_pts['fr3_link5']
+            self._base_pts.append((0.5 * (a[0] + b[0]), 0.08,
+                                   0.5 * (a[2] + b[2]), 0.5 * (a[3] + b[3])))
+        for g in self._finger_geoms:
+            p_g = self.data.geom_xpos[g].copy()
+            Jg = self._point_jac(int(self.model.geom_bodyid[g]), p_g)
+            jdq_z = 0.0
+            prev = self._prev_finger_J.get(g)
+            if self._use_jdot and prev is not None:
+                jdq_z = float(((Jg[2] - prev) / self.dt) @ qdot)
+            self._prev_finger_J[g] = Jg[2].copy()
+            self._floor_pts.append((p_g[2], float(self.model.geom_rbound[g]), Jg[2], jdq_z))
         # EE point + Jacobian for the hard workspace-box rows.
         ee_pos = self._ee_pos()
         ee_Jp = self._ee_jac()
@@ -285,7 +594,8 @@ class FrankaCBFEnv(gym.Env):
         if self._use_jdot and self._prev_ee_J is not None:
             ee_jd = ((ee_Jp - self._prev_ee_J) / self.dt) @ qdot
         self._prev_ee_J = ee_Jp
-        return obstacles, ee_pos, ee_Jp, ee_jd, (d_min if np.isfinite(d_min) else 99.0)
+        return (obstacles, ee_pos, ee_Jp, ee_jd,
+                (d_min if np.isfinite(d_min) else 99.0), cp_geom)
 
     def _inverse_dynamics(self, qddot_des):
         """q̈_des → joint torque via MuJoCo inverse dynamics, clipped to limits.
@@ -303,37 +613,399 @@ class FrankaCBFEnv(gym.Env):
         mujoco.mj_inverse(self.model, self.data)
         tau = self.data.qfrc_inverse[self._dadr].copy()
         self.data.qacc[:] = qacc_saved
+        self._tau_excess = max(self._tau_excess, float(np.max(np.maximum(
+            tau - self._tau_hi, self._tau_lo - tau))))
         return np.clip(tau, self._tau_lo, self._tau_hi)
 
-    def _get_obs(self, d_min):
-        return np.concatenate([
-            self._q, self._qdot, self._ee_pos(), self._target,
-            self.data.mocap_pos[self._obs_mocap].copy(), [d_min],
-        ]).astype(np.float32)
+    def _gravity(self):
+        """g(q) alone, as the FR3 firmware compensates it.
+
+        ``mj_inverse`` returns M q̈ + C q̇ + g, so the FEEDFORWARD half of the
+        robot's law — the part `ffScale` is allowed to fade — is that minus
+        g(q).  Evaluated at q̈ = q̇ = 0, `qfrc_inverse` is exactly g(q).
+
+        Keeping the two apart matters: `ffScale` may only scale the term that
+        ACCELERATES the joint.  Scaling gravity would make the arm sag, or fall,
+        precisely when the fade engages — a torque gate that can drop the load
+        is not a safety feature.
+        """
+        qacc_saved = self.data.qacc.copy()
+        qvel_saved = self.data.qvel.copy()
+        self.data.qacc[:] = 0.0
+        self.data.qvel[:] = 0.0
+        mujoco.mj_inverse(self.model, self.data)
+        g = self.data.qfrc_inverse[self._dadr].copy()
+        self.data.qacc[:] = qacc_saved
+        self.data.qvel[:] = qvel_saved
+        return g
+
+    # ── rt_torque_controller's actual law (optional, default OFF) ────────────
+
+    def _servo_reset(self):
+        """Clear the 1 kHz servo's integrated references at an episode start."""
+        self._qdot_des = self._qdot.copy()
+        self._q_des = self._q.copy()
+
+    def _ff_scale(self, tau_ff, q, qdot):
+        """Directional smoothstep fade of the feedforward near the envelope.
+
+        Mirrors ``RtTorqueController::ffScale``: the margin is measured in the
+        direction τ_ff PUSHES, so a τ_ff that decelerates always passes at full
+        strength.  The gate can only reduce |τ| toward zero, never add torque,
+        so it cannot itself cause a violation.
+        """
+        if self._act_fade_band <= 0.0 or self._act_qdot_margin <= 0.0:
+            return np.ones(NV)
+        up, lo = fr3_velocity_envelope(q, margin=self._act_qdot_margin)
+        margin = np.where(tau_ff > 0.0, up - qdot, qdot - lo)
+        x = np.clip(margin / self._act_fade_band, 0.0, 1.0)
+        s = x * x * (3.0 - 2.0 * x)                       # smoothstep
+        return np.where(tau_ff == 0.0, 1.0, s)
+
+    def _servo_torque(self, qddot_safe, dt):
+        """τ = ffScale·τ_ff + Kp·p + Kd·e + g(q), the robot's 1 kHz law.
+
+        Ported term for term from ``rt_torque_controller.cpp::update()``:
+
+            q̇_des += q̈_safe·dt
+            q̇_des  = clamp(q̇_des, qdotFloor(q), qdotCeiling(q))   # envelope
+            e       = clamp(q̇_des − q̇, ±e_max) ; q̇_des = q̇ + e    # anti-windup
+            q_des  += q̇_des·dt
+            p       = clamp(q_des − q, ±p_max) ; q_des  = q + p    # anti-windup
+
+        The position reference integrates q̈_SAFE, not the nominal: it corrects
+        EXECUTION, and a position term built on the nominal would fight the
+        barrier.
+        """
+        q, qdot = self._q, self._qdot
+
+        self._qdot_des += qddot_safe * dt
+        if self._act_qdot_margin > 0.0:
+            up, lo = fr3_velocity_envelope(q, margin=self._act_qdot_margin)
+            np.clip(self._qdot_des, lo, up, out=self._qdot_des)
+
+        e = np.clip(self._qdot_des - qdot, -self._act_e_max, self._act_e_max)
+        self._qdot_des[:] = qdot + e                       # post-clamp reference
+
+        self._q_des += self._qdot_des * dt
+        p = np.clip(self._q_des - q, -self._act_p_max, self._act_p_max)
+        self._q_des[:] = q + p
+
+        # τ_ff is the part the firmware does NOT add: M q̈ + C q̇, i.e.
+        # mj_inverse minus g(q). Only this is faded and only this is what
+        # qddot_to_torque publishes on the robot.
+        g = self._gravity()
+        tau_ff = self._inverse_dynamics(qddot_safe) - g
+        tau = (self._ff_scale(tau_ff, q, qdot) * tau_ff
+               + self._act_kp * p + self._act_kd * e + g)
+        return np.clip(tau, self._tau_lo, self._tau_hi)
+
+    def _get_obs(self, d_min, cp_geom=None):
+        """The vector the policy sees — the ONLY place noise is injected.
+
+        Width and slot order come from ``obs_layout.ObsSpec``;
+        ``utils/rl_policy.build_observation`` rebuilds the same layout on the
+        robot. The randomizer models what the robot's PERCEPTION does to the
+        values, never what the layout is.
+
+        MUST be called exactly once per control tick: the randomizer's delay
+        buffer and LPF advance on every call, and so does the finite-difference
+        velocity below.
+        """
+        q, qdot = self.randomizer.joint_state(self._q, self._qdot)
+        # The slot carries the NEAREST sphere (set by _build_obstacles, which
+        # always runs first); with one obstacle that is the obstacle itself.
+        p_obs, d_min = self.randomizer.obstacle(self._p_obs_near, d_min)
+        # The control-point block rides the same message (identity unless
+        # randomization.cp_geometry; the CBF rows keep the true geometry).
+        if cp_geom is not None and self.obs_spec.n_cp:
+            cp_geom = self.randomizer.cp_geometry(cp_geom)
+
+        # v_obs from the OBSERVED centres, so the same delay/noise/LPF the
+        # position carries is the noise the velocity inherits — the robot
+        # differentiates its estimate, not the truth, and so does this.
+        v_obs = None
+        if self.obs_spec.obstacle_velocity:
+            v_obs = (np.zeros(3) if self._p_obs_prev is None
+                     else (np.asarray(p_obs, float) - self._p_obs_prev) / self.dt)
+            self._p_obs_prev = np.asarray(p_obs, float).copy()
+
+        return assemble_obs(self.obs_spec, q, qdot, self._ee_pos(),
+                            self._target, p_obs, d_min,
+                            v_obs=v_obs, cp_geometry=cp_geom)
 
     # ── Obstacle / target motion ──────────────────────────────────────────────
 
+    def _obstacle_at(self, phase, base=None, direction=None, mode=None):
+        """Obstacle centre at oscillation *phase* — the ONE place that maps
+        phase → position, so ``reset`` and ``step`` cannot disagree.
+        *mode* defaults to the primary sphere's; extras pass their own.
+
+        They used to. ``reset`` parked the sphere at ``_obs_base`` while
+        ``_advance_obstacle`` evaluated ``base + amp·sin(phase)`` with a phase
+        seeded uniformly in [0, 2π), so the FIRST tick displaced the obstacle
+        by up to the full amplitude in one control period: measured mean
+        0.113 m, max 0.200 m per 10 ms tick — 11 to 20 m/s, against the
+        configured peak of 2π·speed·amplitude = 0.251 m/s.
+        No barrier can bound a 20 m/s teleport that lands inside d_safe, and it
+        is why lowering ``obstacle.speed`` never helped: the jump is set by
+        ``amplitude``, which the config deliberately kept.
+        """
+        base = self._obs_base if base is None else base
+        direction = self._obs_dir if direction is None else direction
+        mode = self.obs_mode if mode is None else mode
+        if mode in ('static', 'random_walk'):
+            p = base
+        else:  # 'sinusoidal' / 'linear' — oscillate along `direction`
+            s = np.sin(phase)
+            if mode == 'linear':
+                s = 2.0 * np.abs(((phase / np.pi) % 2.0) - 1.0) - 1.0   # triangle
+            p = base + self.obs_amp * s * direction
+        return np.clip(p, self.obs_box_min, self.obs_box_max)
+
     def _advance_obstacle(self):
-        if self.obs_mode == 'static':
-            p = self._obs_base
-        elif self.obs_mode == 'random_walk':
+        if self.obs_mode == 'random_walk':
             p = self.data.mocap_pos[self._obs_mocap] + \
                 self._rng.normal(0.0, self.obs_rw_std, 3)
-        else:  # 'sinusoidal' / 'linear' — oscillate along _obs_dir
-            self._obs_phase += 2.0 * np.pi * self.obs_speed * self.dt
-            s = np.sin(self._obs_phase)
-            if self.obs_mode == 'linear':
-                s = 2.0 * np.abs(((self._obs_phase / np.pi) % 2.0) - 1.0) - 1.0  # triangle
-            p = self._obs_base + self.obs_amp * s * self._obs_dir
-        p = np.clip(p, self.obs_box_min, self.obs_box_max)
-        self.data.mocap_pos[self._obs_mocap] = p
+            self.data.mocap_pos[self._obs_mocap] = np.clip(
+                p, self.obs_box_min, self.obs_box_max)
+        else:
+            if self.obs_mode != 'static':
+                self._obs_phase += 2.0 * np.pi * self.obs_speed * self.dt
+            self.data.mocap_pos[self._obs_mocap] = self._obstacle_at(self._obs_phase)
+        for e in self._extra:
+            if e['mode'] != 'static':
+                e['phase'] += 2.0 * np.pi * self.obs_speed * self.dt
+            self.data.mocap_pos[e['mocap']] = self._obstacle_at(
+                e['phase'], e['base'], e['dir'], e['mode'])
+
+    def _sample_extras(self):
+        """This episode's extra spheres (``obstacle.count_range``), or ``[]``.
+
+        The primary sphere carries the task structure; extras are additional
+        hazards, static or moving (each drawn with ``static_fraction``), that
+        must not make the episode unsolvable: every extra starts outside
+        ``reset_min_clearance`` of the arm, keeps its WHOLE sweep at least
+        ``target_clearance + 0.06`` from the target (so it can never block the
+        goal the IK check cleared for the primary), and starts at least one
+        diameter from every sphere already placed. A draw that finds no such
+        placement in 200 tries is skipped (the count can fall short). No RNG
+        is consumed unless ``count_range[1] > 1``, so every config without
+        extras replays its seeds bit-identically.
+        """
+        if self.obs_count_range is None or self.obs_count_range[1] <= 1:
+            return []
+        lo, hi = self.obs_count_range
+        n_extra = int(self._rng.integers(lo, hi + 1)) - 1
+        placed = [self._obstacle_at(self._obs_phase)]
+        keep_out = self.target_clearance + 0.06
+        out = []
+        for k in range(min(n_extra, len(self._extra_mocap))):
+            for _ in range(200):
+                base = self._rng.uniform(self.obs_box_min, self.obs_box_max)
+                v = self._rng.normal(0.0, 1.0, 3)
+                n = float(np.linalg.norm(v))
+                direction = v / n if n > 1e-6 else np.array([0.0, 1.0, 0.0])
+                phase = self._rng.uniform(0.0, 2.0 * np.pi)
+                mode = ('static' if self.static_fraction > 0.0
+                        and self._rng.random() < self.static_fraction
+                        else self._obs_mode_cfg)
+                if mode == 'random_walk':
+                    mode = 'static'
+                p0 = self._obstacle_at(phase, base, direction, mode)
+                if self._start_clearance(p0) < self.reset_min_clearance:
+                    continue
+                sweep = self._sweep_points(base, direction, mode)
+                if np.linalg.norm(sweep - self._target, axis=1).min() < keep_out:
+                    continue
+                if any(np.linalg.norm(p0 - q) < 2.0 * self.r_obs + 0.02 for q in placed):
+                    continue
+                out.append(dict(mocap=self._extra_mocap[k], base=base, dir=direction,
+                                phase=phase, mode=mode))
+                placed.append(p0)
+                break
+        return out
+
+    # ── Reset-time feasibility ────────────────────────────────────────────────
+    #
+    # Both rejection rules exist because the uniform sampler put the obstacle on
+    # top of the arm. Measured over 50 episodes before they were added:
+    #
+    #   * 9/50 episodes started already PENETRATING (d_min < 0);
+    #   * the median episode started at d_min = 0.063 m, inside d_safe = 0.15;
+    #   * EVERY collision in the whole benchmark happened at step 1.
+    #
+    # So the collision rate measured the reset distribution, not the
+    # controller: the trained policy, a random policy and an arm that never
+    # moved all scored an identical 20 % with an identical −0.1467 m worst
+    # penetration — the §5 "one trajectory" signature, from a different cause.
+    #
+    # It also broke the barrier's own premise. Forward invariance is a claim
+    # about trajectories that START in the safe set; with h < 0 at t = 0 the
+    # HOCBF certifies nothing, and most episodes began there.
+
+    def _start_clearance(self, p_obs):
+        """Smallest control-point surface distance to a sphere centred at p_obs.
+
+        Same geometry as :meth:`_build_obstacles`, evaluated against the pose
+        already written into ``data`` by :meth:`reset`.
+        """
+        d = np.inf
+        for i, bid in enumerate(self._cp_body):
+            gap = float(np.linalg.norm(self.data.xpos[bid] - p_obs))
+            d = min(d, gap - self.r_obs - self._cp_radius[i])
+        return d
+
+    def _sweep_points(self, base, direction, mode=None):
+        """Obstacle centres over one oscillation — a single point when static.
+
+        ``random_walk`` cannot be predicted, so its start point stands in.
+        """
+        mode = self.obs_mode if mode is None else mode
+        if mode in ('static', 'random_walk'):
+            return np.clip(np.asarray(base, float), self.obs_box_min,
+                           self.obs_box_max)[None, :]
+        return np.array([self._obstacle_at(p, base, direction, mode)
+                         for p in self._phases])
+
+    def _target_always_blocked(self, target, base, direction):
+        """True when the target is inside ``target_clearance`` at EVERY phase
+        (at ANY phase when ``task.target_free_always`` is set).
+
+        Only the ALWAYS case is rejected. Measured over 20 000 draws: 41.6 % of
+        targets are TRANSIENTLY blocked (the obstacle passes over them), and
+        those are kept on purpose — waiting for an obstacle to clear is the
+        behaviour the policy should learn. 4.29 % are blocked at every phase,
+        and those cannot be reached without driving h < 0: pure reward noise,
+        and a hard ceiling on the success rate.
+        """
+        dist = np.linalg.norm(self._sweep_points(base, direction) - target, axis=1)
+        worst = dist.min() if self.target_free_always else dist.max()
+        return bool(worst < self.target_clearance)
+
+    def _target_ik_feasible(self, target, base, direction):
+        """True unless constrained IK finds NO pose holding the TCP within
+        ik_check_tol of the target with every control point at d >= d_safe.
+
+        Only obstacle centres within ik_check_gate of the target are checked,
+        so the common case costs one distance computation.
+        """
+        pts = self._sweep_points(base, direction)
+        dist = np.linalg.norm(pts - target, axis=1)
+        near = np.argsort(dist)
+        near = near[dist[near] < self.ik_check_gate]
+        if near.size == 0:
+            return True
+        chosen = []
+        for i in near:
+            if all(np.linalg.norm(pts[i] - pts[j]) >= 0.05 for j in chosen):
+                chosen.append(i)
+            if len(chosen) >= self.ik_check_max_points:
+                break
+        if self._target_ik is None:
+            from .target_feasibility import TargetIK
+            cbf_c = self.cfg.get('cbf', {}) or {}
+            floor = ((self.cbf.floor_z, self.cbf.floor_margin)
+                     if self.cbf.floor_enable else None)
+            self._target_ik = TargetIK(
+                self.model, self.data.qpos.copy(), self._qadr, self._dadr, self._ee_site,
+                self._cp_body, self._cp_radius, self.r_obs, self.cbf.d_safe,
+                self.q_min, self.q_max, q_margin=float(cbf_c.get('position_margin_rad', 0.05)),
+                floor=floor, n_starts=self.ik_check_starts)
+        err = self._target_ik.min_error(target, pts[chosen], self.data.qpos[self._qadr].copy(),
+                                        self.ik_check_tol)
+        return err < self.ik_check_tol
+
+    def _path_clearance(self, target, base, direction):
+        """Closest approach of the obstacle SWEEP to the straight EE→target line.
+
+        A proxy for "does this obstacle interfere with the task at all". The arm
+        does not travel in a straight line and the whole body must clear, not
+        just the EE — but if the sweep never comes near the direct route, the
+        episode is solvable by ignoring the obstacle, and that is the case this
+        measures.
+        """
+        a = self._ee_pos()
+        b = np.asarray(target, float)
+        pts = self._sweep_points(base, direction)
+        ab = b - a
+        L = float(ab @ ab)
+        t = np.clip((pts - a) @ ab / max(L, 1e-12), 0.0, 1.0)
+        return float(np.linalg.norm(pts - (a + np.outer(t, ab)), axis=1).min())
+
+    def _sample_episode(self):
+        """Draw (target, obstacle base, direction, phase) for a solvable episode.
+
+        Bounded: after ``reset_max_tries`` rejected draws it returns the one
+        with the largest start clearance and counts a fallback. An unbounded
+        loop inside a training reset is a hang, and silently accepting a bad
+        start is what this method exists to prevent — so it does neither.
+        """
+        # Decide up front whether THIS episode must be a blocking one, so the
+        # draw is a Bernoulli over episodes rather than a bias inside the loop.
+        want_block = (self.blocking_fraction > 0.0
+                      and self._rng.random() < self.blocking_fraction)
+        tgt_max = self.target_box_max
+        if self.hard_fraction > 0.0 and self._rng.random() < self.hard_fraction:
+            want_block = True
+            tgt_max = self.target_box_max.copy()
+            tgt_max[2] = min(tgt_max[2], max(self.target_box_min[2], self.hard_target_z_max))
+
+        best = None
+        best_blocking = None
+        for _ in range(self.reset_max_tries):
+            target = self._rng.uniform(self.target_box_min, tgt_max)
+            base   = self._rng.uniform(self.obs_box_min, self.obs_box_max)
+            v = self._rng.normal(0, 1, 3)
+            n = float(np.linalg.norm(v))
+            direction = v / n if n > 1e-6 else np.array([0.0, 1.0, 0.0])
+            phase = self._rng.uniform(0, 2 * np.pi)
+
+            # Clearance is tested at the position the obstacle will ACTUALLY
+            # occupy at t = 0 — _obstacle_at(phase), not the base.
+            clearance = self._start_clearance(
+                self._obstacle_at(phase, base, direction))
+            if best is None or clearance > best[0]:
+                best = (clearance, target, base, direction, phase)
+            if clearance < self.reset_min_clearance:
+                continue
+            if self._target_always_blocked(target, base, direction):
+                continue
+            if self.target_ik_check and not self._target_ik_feasible(target, base, direction):
+                self.ik_rejects += 1
+                continue
+
+            if want_block:
+                # Keep the most obstructing FEASIBLE draw seen, so a miss still
+                # returns the hardest legal episode instead of a uniform one.
+                pc = self._path_clearance(target, base, direction)
+                if best_blocking is None or pc < best_blocking[0]:
+                    best_blocking = (pc, target, base, direction, phase)
+                if pc > self.blocking_margin:
+                    continue
+            return target, base, direction, phase
+
+        if want_block and best_blocking is not None:
+            self.blocking_misses += 1
+            return best_blocking[1], best_blocking[2], best_blocking[3], best_blocking[4]
+        self.reset_fallbacks += 1
+        return best[1], best[2], best[3], best[4]
 
     # ── Gym API ────────────────────────────────────────────────────────────────
+
+    def _obs_proximity(self, d_min):
+        """Normalised obstacle-proximity ramp: 0 beyond obs_soft_margin, 1 at contact."""
+        margin = float(self.rw.get('obs_soft_margin', 0.10))
+        return min(1.0, max(0.0, margin - d_min) / margin)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
             self._rng = np.random.default_rng(seed)
+
+        # Before mj_resetData: dynamics randomisation mutates MjModel in place,
+        # and body_mass/damping must be settled before the first forward pass.
+        self.randomizer.reset(self.model, self._rng)
 
         mujoco.mj_resetDataKeyframe(self.model, self.data, self._key_home)
         # Small joint perturbation around home (kept inside limits).
@@ -348,25 +1020,43 @@ class FrankaCBFEnv(gym.Env):
         self.data.ctrl[self._act] = self._inverse_dynamics(np.zeros(NV))
         mujoco.mj_forward(self.model, self.data)
 
-        # Sample task target + obstacle trajectory.
-        self._target = self._rng.uniform(self.target_box_min, self.target_box_max)
+        if self.static_fraction > 0.0:
+            self.obs_mode = ('static' if self._rng.random() < self.static_fraction
+                             else self._obs_mode_cfg)
+        if self.cbf_obstacle_on_prob is not None:
+            self.cbf_obstacle_enabled = bool(self._rng.random() < self.cbf_obstacle_on_prob)
+
+        # Sample task target + obstacle trajectory, rejecting starts that make
+        # the episode unsolvable or that begin outside the safe set.
+        (self._target, self._obs_base,
+         self._obs_dir, self._obs_phase) = self._sample_episode()
         self.data.mocap_pos[self._tgt_mocap] = self._target
-        self._obs_base = self._rng.uniform(self.obs_box_min, self.obs_box_max)
-        d = self._rng.normal(0, 1, 3); n = np.linalg.norm(d)
-        self._obs_dir = d / n if n > 1e-6 else np.array([0.0, 1.0, 0.0])
-        self._obs_phase = self._rng.uniform(0, 2 * np.pi)
-        self.data.mocap_pos[self._obs_mocap] = self._obs_base
+        # At the phase-consistent position, NOT at _obs_base: the first
+        # _advance_obstacle must move the sphere by one tick's worth of travel,
+        # not by up to a full amplitude. See _obstacle_at.
+        self.data.mocap_pos[self._obs_mocap] = self._obstacle_at(self._obs_phase)
+        # Extra spheres: park them all out of reach, then place this episode's.
+        for m in self._extra_mocap:
+            self.data.mocap_pos[m] = _PARK
+        self._extra = self._sample_extras()
+        for e in self._extra:
+            self.data.mocap_pos[e['mocap']] = self._obstacle_at(
+                e['phase'], e['base'], e['dir'], e['mode'])
         mujoco.mj_forward(self.model, self.data)
 
         # Reset filter + finite-diff caches.
         self.cbf.reset()
+        self._servo_reset()
         self._prev_a = [None] * self._n_cp
         self._prev_ee_J = None
+        self._prev_finger_J = {}
         self._qddot_prev = np.zeros(NV)
         self._step = 0
+        self._p_obs_prev = None
 
-        _, _, _, _, d_min = self._build_obstacles(self._qdot)
-        return self._get_obs(d_min), {}
+        *_, d_min, cp_geom = self._build_obstacles(self._qdot)
+        self._obs_pen_prev = self._obs_proximity(d_min)
+        return self._get_obs(d_min, cp_geom), {}
 
     def step(self, action):
         action = np.clip(np.asarray(action, np.float32), -1.0, 1.0)
@@ -374,10 +1064,25 @@ class FrankaCBFEnv(gym.Env):
 
         q = self._q
         qdot = self._qdot
-        obstacles, ee_pos, ee_Jp, ee_jd, d_min = self._build_obstacles(qdot)
-        rows = obstacles if self.cbf_obstacle_enabled else []
-        qddot_safe, info = self.cbf.filter(q, qdot, qddot_nom, rows,
-                                           ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd)
+        obstacles, ee_pos, ee_Jp, ee_jd, d_min, _ = self._build_obstacles(qdot)
+        if self.shield:
+            rows = obstacles if self.cbf_obstacle_enabled else []
+            qddot_safe, info = self.cbf.filter(q, qdot, qddot_nom, rows,
+                                               ee_pos=ee_pos, ee_Jp=ee_Jp, ee_jd_qd=ee_jd,
+                                               floor_pts=self._floor_pts,
+                                               base_pts=self._base_pts)
+            correction = float(np.linalg.norm(
+                qddot_safe - np.clip(qddot_nom, -self.cbf.qddot_box, self.cbf.qddot_box)))
+        else:
+            # Policy alone: the command IS the nominal, clipped only by the
+            # action scale. Nothing here knows about limits or obstacles.
+            if self.alone_action == 'scale':
+                qddot_nom = action * self.cbf.qddot_box
+            elif self.alone_action == 'clip':
+                qddot_nom = np.clip(qddot_nom, -self.cbf.qddot_box, self.cbf.qddot_box)
+            qddot_safe, info = np.asarray(qddot_nom, float), CBFInfo()
+            correction = 0.0
+        self._tau_excess = 0.0
 
         # q̈_safe → torque, exactly like qddot_to_torque + the FR3 firmware.
         # τ is recomputed at every SUBSTEP from the current state while q̈_safe
@@ -385,8 +1090,12 @@ class FrankaCBFEnv(gym.Env):
         # command at 1 kHz against the latest measured q̇ between two 100 Hz
         # q̈_safe samples. Holding a single 100 Hz feedforward torque instead
         # leaves a zero-order-hold drift the robot does not have.
+        sub_dt = self.model.opt.timestep
         for _ in range(self.n_substeps):
-            self.data.ctrl[self._act] = self._inverse_dynamics(qddot_safe)
+            self.data.ctrl[self._act] = (
+                self._servo_torque(qddot_safe, sub_dt)
+                if self.actuation_feedback
+                else self._inverse_dynamics(qddot_safe))
             mujoco.mj_step(self.model, self.data)
         self._advance_obstacle()
         mujoco.mj_forward(self.model, self.data)   # refresh xpos/site for obs/reward
@@ -395,13 +1104,51 @@ class FrankaCBFEnv(gym.Env):
         ee = self._ee_pos()
         dist = float(np.linalg.norm(ee - self._target))
         # d_min AFTER stepping (what the state actually reached).
-        _, _, _, _, d_min = self._build_obstacles(self._qdot)
+        *_, d_min, cp_geom = self._build_obstacles(self._qdot)
+
+        # Constraint measurements (read-only; see envs/constraints.py).
+        con_ex = con_diag = None
+        if self.constraints is not None:
+            con_ex, con_diag = self.constraints.measure(
+                self._q, self._qdot, qddot_safe, self._qddot_prev,
+                max(0.0, self._tau_excess), ee)
 
         # ── Reward ────────────────────────────────────────────────────────────
         rw = self.rw
         success = dist < self.target_tol
         collision = d_min < float(rw.get('collision_dist', 0.0))
         jerk = float(np.linalg.norm(qddot_safe - self._qddot_prev))
+        # Anticipatory workspace-wall penalty (see reward.w_ws_margin in
+        # config.yaml): a linear ramp that starts well outside the hard CBF
+        # box (cbf.ws_margin) so the policy is pushed off the walls before
+        # the shield ever has to. 0 when ws_enable is off (sim-only feature).
+        ws_pen = 0.0
+        if self.cbf.ws_enable:
+            wall_dist = min(
+                min(ee[k] - self.cbf.ws_min[k], self.cbf.ws_max[k] - ee[k])
+                for k in range(3))
+            soft_margin = float(rw.get('ws_soft_margin', 0.15))
+            ws_pen = max(0.0, soft_margin - wall_dist)
+        # Dense obstacle-proximity penalty (reward.w_obs_margin): normalised
+        # linear ramp on the closest control-point surface distance, 0 at
+        # obs_soft_margin, 1 at contact. With the obstacle CBF rows ON this is
+        # redundant with w_intervention/w_slack; with cbf_obstacle_enabled:
+        # false it is the ONLY dense avoidance signal — without it the sole
+        # obstacle term is the sparse collision_penalty, and an early crash
+        # (which ends the episode) out-scores a full 500-step episode.
+        #
+        # obs_shaping selects HOW the ramp enters the reward:
+        #   penalty   — −w·pen(s') every tick (sac_b1). Raises the per-step
+        #               living cost, which in sac_b1 brought a full episode
+        #               (≈−260 discounted) within ~15 % of an early crash and
+        #               re-opened the crash-to-end-the-episode hack.
+        #   potential — Ng et al. 1999 shaping F = γΦ(s') − Φ(s), Φ = −w·pen:
+        #               the same gradient away from the obstacle, but it
+        #               telescopes to ≈0 over an episode, so it adds no living
+        #               cost and leaves the optimal policy unchanged. Φ of a
+        #               TERMINATED state is 0 (standard episodic convention);
+        #               truncation bootstraps, so Φ(s') is used there.
+        obs_pen = self._obs_proximity(d_min)
         reward = (
             - float(rw.get('w_dist', 1.0)) * dist
             + float(rw.get('w_success', 5.0)) * float(success)
@@ -410,23 +1157,63 @@ class FrankaCBFEnv(gym.Env):
             - float(rw.get('w_slack', 0.5)) * info.slack
             - float(rw.get('w_smooth', 0.001)) * jerk
             - float(rw.get('w_qdot', 0.001)) * float(qdot @ qdot)
+            - float(rw.get('w_ws_margin', 0.0)) * ws_pen
+            + precision_bonus(rw, dist)
+            - correction_cost(rw, correction)
         )
+        # terminate_on_collision: false keeps the episode running and charges
+        # collision_penalty on EVERY tick spent inside the obstacle.
+        violated = con_ex is not None and self.constraints.should_terminate(con_ex)
+        terminated = ((collision and bool(rw.get('terminate_on_collision', True)))
+                      or (success and bool(rw.get('terminate_on_success', True)))
+                      or violated)
+
+        w_obs = float(rw.get('w_obs_margin', 0.0))
+        if str(rw.get('obs_shaping', 'penalty')) == 'potential':
+            gamma = float(rw.get('shaping_gamma',
+                                 self.cfg.get('rl', {}).get('gamma', 0.99)))
+            phi_next = 0.0 if terminated else -w_obs * obs_pen
+            reward += gamma * phi_next - (-w_obs * self._obs_pen_prev)
+        else:
+            reward -= w_obs * obs_pen
+        self._obs_pen_prev = obs_pen
+
         if collision:
             reward -= float(rw.get('collision_penalty', 10.0))
+            # collision_step_cost > 0: also charge every tick the crash skips,
+            # at a rate ≥ the worst per-step cost. Ending the episode early
+            # then always costs more than living it out, whatever the other
+            # weights — the structural fix for the early-termination hack
+            # (an undiscounted sum bounds the discounted one from above).
+            if terminated:
+                reward -= (float(rw.get('collision_step_cost', 0.0))
+                           * (self.max_steps - self._step))
+        if violated and not collision:
+            # Same price as a collision: a violation that ends the episode must
+            # never be a cheaper way out than living the episode to the end.
+            reward -= float(self.constraints.violation_penalty
+                            if self.constraints.violation_penalty is not None
+                            else rw.get('collision_penalty', 10.0))
+            reward -= (float(rw.get('collision_step_cost', 0.0))
+                       * (self.max_steps - self._step))
         self._qddot_prev = qddot_safe
-
-        terminated = bool(collision) or (success and bool(rw.get('terminate_on_success', True)))
         truncated = self._step >= self.max_steps
 
         info_out = {
             'dist': dist, 'd_min': d_min, 'success': bool(success),
             'is_success': bool(success),   # always present (Monitor info_keyword)
             'collision': bool(collision), 'cbf_slack': info.slack,
-            'cbf_intervention': info.intervention, 'cbf_n_c': info.n_c,
-            'cbf_braking': info.braking,
+            'cbf_intervention': info.intervention, 'cbf_correction': correction, 'cbf_n_c': info.n_c,
+            'cbf_braking': info.braking, 'obs_pen': obs_pen,
+            'floor_contact': self._floor_contact(),
+            'n_obstacles': 1 + len(self._extra),
         }
+        if con_ex is not None:
+            info_out['constraint_excess'] = con_ex
+            info_out['constraint_terminated'] = bool(violated)
+            info_out.update(con_diag)
 
-        obs = self._get_obs(d_min)
+        obs = self._get_obs(d_min, cp_geom)
         if self.render_mode == 'human':
             self.render()
         return obs, float(reward), terminated, truncated, info_out

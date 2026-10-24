@@ -15,6 +15,38 @@ Outputs (all at full depth-image resolution):
                            the combined exclusion mask (vs. the body dilation)
   .dilation_margins_px   — (margin_body_px, margin_ee_px), effective full-res
                            dilation margins for downstream metric compensation
+  .robot_depth           — float32 (H, W), the robot's own expected depth per
+                           pixel (+inf where the robot is not there)
+
+THE DEPTH BUFFER, AND WHY THE 2D MASK ALONE IS NOT ENOUGH
+---------------------------------------------------------
+The exclusion mask is a SILHOUETTE: a pixel inside it is discarded whatever its
+depth. That makes the mask a compromise with two bad ends, and this cell has
+been bitten by both.
+
+* Dilate MORE and the blind halo grows. At the shipped radii it is 12 px around
+  the body and 24 px around the end effector at full resolution — about 4 cm
+  and 8 cm at 1.5 m. **A hand inside that halo is not seen at all, at ANY
+  depth**, which is precisely the approach direction the camera is supposed to
+  cover: a hand a metre in front of the arm is as invisible as one touching it.
+* Dilate LESS and robot pixels leak past the edge and read as an obstacle at a
+  gap of ~0. Measured: 23 samples at 0.9-4.7 cm on one control point
+  (fr3_link6#0), 17 barrier rows violated at once and QP slack of 58, on a run
+  where nothing was near the arm.
+
+Both disappear once the mask knows HOW FAR AWAY the robot is at each pixel,
+because the two cases differ in exactly that: a leaking robot pixel sits AT the
+robot's depth, a hand in front sits well BEFORE it. The depth is already
+computed here — ``p_cam[:, 2]`` for every projected mesh sample — and was being
+thrown away when the sample was rasterised into a binary mask. Keeping the
+minimum per pixel costs one ufunc and turns the silhouette into a z-buffer.
+
+Holes matter: the mesh samples are sparse, so most pixels inside the silhouette
+receive no sample. They are filled by a MIN-FILTER over the same structuring
+element the mask is dilated with — dilating a mask and eroding a depth buffer
+are the same operation — so a pixel without a sample inherits the nearest
+robot surface in front of it. Raise ``meshes.sample_points_per_link`` if the
+buffer is still sparse; that cost is paid once, at startup.
 """
 from __future__ import annotations
 
@@ -38,6 +70,15 @@ class MaskBuilder:
         link_thresh_m: float = 0.01,
         logger=None,
     ):
+        #: Finite stand-in for +inf while the depth buffer is min-filtered:
+        #: cv2 will not erode an array containing inf. Far beyond any depth the
+        #: camera reports (distance.max_depth_m is 4 m), so it can never be
+        #: mistaken for a real surface, and it is restored to inf afterwards.
+        self._depth_far_sentinel = 1.0e6
+        #: (H, W) float32, the robot's expected depth per pixel; +inf where the
+        #: robot is not. Empty until the first rebuild().
+        self.robot_depth = None
+        self._zbuf = None
         self._samples     = link_mesh_samples
         self._R_base      = R_base
         self._t_base      = t_base
@@ -99,11 +140,16 @@ class MaskBuilder:
             self._buf_ds_shape    = ds_shape
             self._mask_normal_buf = np.zeros(ds_shape, dtype=np.uint8)
             self._mask_ee_buf     = np.zeros(ds_shape, dtype=np.uint8)
+            self._zbuf            = np.empty(ds_shape, dtype=np.float32)
         else:
             self._mask_normal_buf[:] = 0
             self._mask_ee_buf[:]     = 0
         mask_normal = self._mask_normal_buf
         mask_ee     = self._mask_ee_buf
+        # +inf = "the robot is not at this pixel". np.minimum.at then writes the
+        # nearest projected sample, which is what a z-buffer is.
+        zbuf = self._zbuf
+        zbuf[:] = np.inf
 
         for link_name, pts_local in self._samples.items():
             if link_name not in transforms:
@@ -130,6 +176,13 @@ class MaskBuilder:
                 mask_ee[vs, us] = 255
             else:
                 mask_normal[vs, us] = 255
+
+            # The same points, keeping the depth this loop used to discard.
+            # `.at` is the unbuffered form: without it, repeated indices in
+            # (vs, us) — which are the norm, many samples land on one
+            # downsampled pixel — would keep an arbitrary one instead of the
+            # nearest.
+            np.minimum.at(zbuf, (vs, us), p_cam[ok, 2].astype(np.float32))
 
         mask_normal = _dilate(mask_normal, dilate_px)
         mask_ee     = _dilate(mask_ee,     ee_dilate_px)
@@ -180,6 +233,27 @@ class MaskBuilder:
         ee_source_full = cv2.resize(ee_source_u8, (W, H), interpolation=cv2.INTER_NEAREST)
         self.ee_source_mask = ee_source_full > 0
 
+        # ── Depth buffer: fill the holes, then upsample ─────────────────────
+        # The samples are sparse, so most pixels inside the silhouette carry no
+        # depth. A MIN-FILTER over the same structuring element the mask was
+        # dilated with gives each of them the nearest robot surface in its
+        # neighbourhood — dilating a mask and eroding a depth buffer are the
+        # same operation, so the buffer ends up covering exactly the region the
+        # exclusion mask covers.
+        #
+        # Eroding +inf is a no-op wherever nothing is near, which is what keeps
+        # "the robot is not here" distinguishable from "the robot is very far".
+        # cv2 will not erode float32 with inf, so the filter runs on a finite
+        # sentinel and the inf is restored after.
+        far = float(self._depth_far_sentinel)
+        z_fin = np.where(np.isfinite(zbuf), zbuf, far).astype(np.float32)
+        r_fill = max(dilate_px, ee_dilate_px) + max(extra_px, 0)
+        if r_fill > 0:
+            z_fin = cv2.erode(z_fin, _kernel(r_fill))
+        z_fin[z_fin >= far - 1e-3] = np.inf
+        self.robot_depth = cv2.resize(z_fin, (W, H),
+                                      interpolation=cv2.INTER_NEAREST)
+
         # Margini totali EFFETTIVI a piena risoluzione: il raggio di dilatazione è
         # applicato in spazio downsampled, quindi un raggio di N px downsampled vale
         # N·ds px a piena risoluzione. Sommiamo dilatazione base + extra per sorgente.
@@ -195,8 +269,14 @@ class MaskBuilder:
         self._last_t_vecs = {}
 
 
+def _kernel(r: int):
+    """The structuring element ``_dilate`` uses, exposed so the depth buffer can
+    be eroded with exactly the same shape the mask was dilated with."""
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+
 def _dilate(mask: np.ndarray, r: int) -> np.ndarray:
     if r <= 0 or not np.any(mask):
         return mask
     k = 2 * r + 1
-    return cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    return cv2.dilate(mask, _kernel(r))

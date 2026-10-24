@@ -8,23 +8,37 @@ test/
 ├── launch/
 │   ├── test_velocity_fake.launch.py
 │   ├── test_torque_fake.launch.py
-│   ├── test_oscbf_fake.launch.py
 │   └── test_rl_fake.launch.py          # Safe-RL (ONNX policy) accel pipeline
 ├── scripts/
 │   └── check_topics.sh
 ├── config/
 │   └── test_defaults.yaml
+├── e2e_pentagon_moveit.sh              # end-to-end pentagon commander check
+├── _cbf_builder_harness.py             # headless ConstraintBuilder helper
+├── smoke_cbf_construct.py              # node-level, no bringup
 ├── smoke_cbf_safety_filter.py          # node-level, no bringup
 ├── smoke_rl_policy_commander.py        # node-level, no bringup
 ├── test_avoidance.py                   # pytest (pure numpy)
 ├── test_cbf_hard_constraints.py
 ├── test_cbf_velocity_filter.py
 ├── test_rl_policy.py                   # sim↔real observation/action contract
+├── …                                   # 40 more test_*.py, see `ls test/`
 └── README.md  ← this file
 ```
 
-Pure-python unit tests run with `pytest test/` (68 tests, no ROS graph
-needed beyond a sourced workspace).
+Pure-python unit tests run with `pytest test/`: 59 `test_*.py` files,
+**930 test functions**, no ROS graph needed beyond a sourced workspace. The
+`smoke_*.py` runners are not collected by pytest — run them directly.
+
+**Source the built workspace, not just `/opt/ros`.** `/ros2_ws/build` and
+`/ros2_ws/install` sit one level above the `./:/ros2_ws/src` bind mount, so
+they are container-local and vanish with the container. Without
+`colcon build --packages-up-to franka_experiments` the suite cannot import
+`franka_msgs` and pytest collects **nothing** — it reports "no tests collected"
+rather than failing, which looks like a passing run if you only read the tail.
+
+Pipeline 3 (OSCBF) has no `test_oscbf_fake.launch.py`; see the note in
+that section for the manual bring-up.
 
 ---
 
@@ -124,7 +138,11 @@ rt_torque_controller       →  τ_hw  = τ_filtered             (no g(q) added 
 Franka firmware            →  handles gravity compensation at 1 kHz
 ```
 
-See `refactoring_code.md §10.2` for the full analysis of gravity handling.
+This is by design, not an omission: `rt_torque_controller.cpp` computes no
+gravity term at all, because the Franka firmware balances g(q) in hardware.
+Upstream nodes therefore send the motion component only. In Gazebo the physics
+engine plays the firmware's role, so there is no double-counting either — the
+one requirement is the effort command interface (`gazebo_effort:=true`).
 
 ### Expected results
 
@@ -218,7 +236,7 @@ ros2 topic echo /NS_1/torque_safe --field data
 
 ## Pipeline 4 — Safe-RL / ONNX policy (fake hardware)
 
-Deployment side of `franka_sim_to_real_roadmap.md` Step 3: the SAC policy
+Deployment side of Step 3 in `franka_sim_to_real_implementation_status.md`: the SAC policy
 trained in `franka_sim/` against *this* CBF filter, replayed on the robot by
 `rl_policy_commander`.
 
