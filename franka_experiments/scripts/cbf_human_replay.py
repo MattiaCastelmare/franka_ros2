@@ -328,10 +328,10 @@ def run(rec, config, *, t_start=0.0, duration=0.0):
 #  Scores
 # ═════════════════════════════════════════════════════════════════════════════
 
-def events(gap_ref, dt):
-    """[start, end) index pairs where the measured person is within EVENT_GAP of the
+def events(gap_ref, dt, threshold=EVENT_GAP):
+    """[start, end) index pairs where the measured person is within threshold of the
     recorded arm, merged across dips shorter than 0.3 s."""
-    close = np.isfinite(gap_ref) & (gap_ref < EVENT_GAP)
+    close = np.isfinite(gap_ref) & (gap_ref < threshold)
     idx = np.flatnonzero(np.diff(np.concatenate([[0], close.astype(int), [0]])))
     spans = list(zip(idx[::2], idx[1::2]))
     merged = []
