@@ -11,6 +11,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+option(CHECK_TIDY "Adds clang-tidy tests" OFF)
+
 # ── Dependencies ────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
 find_package(controller_interface REQUIRED)
@@ -114,5 +116,13 @@ ament_export_dependencies(
   ament_index_cpp
   pinocchio
 )
+
+if(BUILD_TESTING)
+  if(CHECK_TIDY)
+    find_package(ament_cmake_clang_tidy REQUIRED)
+    set(ament_cmake_clang_tidy_CONFIG_FILE ../.clang-tidy)
+    ament_clang_tidy(${CMAKE_BINARY_DIR} --jobs 6)
+  endif()
+endif()
 
 ament_package()

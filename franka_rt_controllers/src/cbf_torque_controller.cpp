@@ -22,8 +22,9 @@ controller_interface::InterfaceConfiguration
 CBFTorqueController::command_interface_configuration() const {
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
-  for (int i = 1; i <= kNJ; ++i)
+  for (int i = 1; i <= kNJ; ++i) {
     config.names.push_back(arm_id_ + "_joint" + std::to_string(i) + "/effort");
+  }
   return config;
 }
 
@@ -31,10 +32,12 @@ controller_interface::InterfaceConfiguration
 CBFTorqueController::state_interface_configuration() const {
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
-  for (int i = 1; i <= kNJ; ++i)
+  for (int i = 1; i <= kNJ; ++i) {
     config.names.push_back(arm_id_ + "_joint" + std::to_string(i) + "/position");
-  for (int i = 1; i <= kNJ; ++i)
+  }
+  for (int i = 1; i <= kNJ; ++i) {
     config.names.push_back(arm_id_ + "_joint" + std::to_string(i) + "/velocity");
+  }
   return config;
 }
 
@@ -154,8 +157,9 @@ CallbackReturn CBFTorqueController::on_configure(
         if (msg->name.size()     < static_cast<size_t>(kNJ) ||
             msg->position.size() < static_cast<size_t>(kNJ) ||
             msg->velocity.size() < static_cast<size_t>(kNJ) ||
-            msg->effort.size()   < static_cast<size_t>(kNJ))
+            msg->effort.size()   < static_cast<size_t>(kNJ)) {
           return;
+        }
 
         // Parse into a Setpoint, matching by joint name
         Setpoint sp;
@@ -286,8 +290,9 @@ controller_interface::return_type CBFTorqueController::update(
       }
     }
 
-    for (int i = 0; i < kNJ; ++i)
+    for (int i = 0; i < kNJ; ++i) {
       qddot_pin_[arm_v_idx_[i]] = sp.qddot(i);
+    }
 
     pinocchio::rnea(pin_model_, pin_data_, q_pin_, dq_pin_, qddot_pin_);
     pinocchio::computeGeneralizedGravity(pin_model_, pin_data_, q_pin_);
@@ -303,24 +308,27 @@ controller_interface::return_type CBFTorqueController::update(
     // ── PATH 2: legacy Float64MultiArray (qddot_safe / CBF filter output)
     const Vec7 qddot_ref = *qddot_buf_.readFromRT();
 
-    for (int i = 0; i < kNJ; ++i)
+    for (int i = 0; i < kNJ; ++i) {
       qddot_pin_[arm_v_idx_[i]] = qddot_ref(i);
+    }
 
     pinocchio::rnea(pin_model_, pin_data_, q_pin_, dq_pin_, qddot_pin_);
     pinocchio::computeGeneralizedGravity(pin_model_, pin_data_, q_pin_);
 
-    for (int i = 0; i < kNJ; ++i)
+    for (int i = 0; i < kNJ; ++i) {
       command_interfaces_[i].set_value(
           pin_data_.tau[arm_v_idx_[i]] - pin_data_.g[arm_v_idx_[i]]);
+    }
 
     last_q_d_ = q_;  // sync watchdog hold to current position
 
   } else {
     // ── PATH 3: WATCHDOG — hold last_q_d_ with pure damping
-    for (int i = 0; i < kNJ; ++i)
+    for (int i = 0; i < kNJ; ++i) {
       command_interfaces_[i].set_value(
           kp_local_(i) * (last_q_d_(i) - q_(i))
         - kd_(i)       * dq_(i));
+    }
   }
 
   return controller_interface::return_type::OK;

@@ -31,6 +31,8 @@
   <depend>eigen3_cmake_module</depend>
   <depend>eigen</depend>
 
+  <test_depend>ament_cmake_clang_tidy</test_depend>
+
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
