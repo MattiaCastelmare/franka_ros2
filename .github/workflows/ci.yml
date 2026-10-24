@@ -1,9 +1,10 @@
 name: CI
 on:
   push:
-    branches: [ humble, develop ]
+    branches: [ humble, develop, tesi_federico_urbini ]
   pull_request:
     branches: [ humble, develop ]
+  workflow_dispatch:
 jobs:
   CI:
     runs-on: ubuntu-latest
@@ -48,18 +49,25 @@ jobs:
             cd /ros
             . /opt/ros/humble/setup.sh
             . install/setup.sh
-            colcon test
-            colcon test-result
+            # Everything is built above; only the handover packages are tested
+            # (franka_rt_controllers: clang-tidy, enabled by -DCHECK_TIDY=ON).
+            colcon test --packages-select franka_experiments franka_rt_controllers
+            colcon test-result --verbose
 
       - name: Upload Tests to Artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results
-          path: build/*/test_results/*/*.xml
+          # ament_python packages write pytest.xml, ament_cmake ones test_results/
+          path: |
+            build/*/pytest.xml
+            build/*/test_results/*/*.xml
 
       - name: Publish Unit Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v1
+        uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
         with:
-          files: build/*/test_results/*/*.xml
+          files: |
+            build/*/pytest.xml
+            build/*/test_results/*/*.xml
