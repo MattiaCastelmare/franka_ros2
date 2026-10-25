@@ -2,7 +2,8 @@
 
     ros2 launch franka_simulation_experiments gz_cbf_stack.launch.py \\
         condition:=kf [motion:=pentagon|scenario|rl] [scenario:=<name>] [seed:=0] \\
-        [perception:=true|false|emulated] [scene:=rig|bare] [gui:=false] [duration_s:=0]
+        [perception:=true|false|emulated] [scene:=rig|bare|diag|diag_bare] \\
+        [gui:=false] [duration_s:=0]
 
 What runs (docs/gz_cbf_experiments_plan.md §5):
 
@@ -44,7 +45,9 @@ _ARGS = {
                            "emulated: cbf_scenarios' perception emulation from truth "
                            '(emulated_perception, needs a scenario); false: none'),
     'emulated_fps': ('90', '[Hz] perception:=emulated frame rate (the full chain measures 90)'),
-    'scene': ('', "rig (measured tables) | bare (floor only). Empty = the scenario's, else rig"),
+    'scene': ('', 'rig | bare | diag | diag_bare (simexp.sim_config.SCENES: which lab '
+                  'the world, the camera pose and the depth intrinsics come from). '
+                  "Empty = the scenario's, else rig"),
     'gui': ('false', 'Ignition GUI client (headless otherwise)'),
     'duration_s': ('', "[s sim] stop the run after this long. Empty = the scenario's T "
                        '(0 = run until stopped)'),
@@ -129,6 +132,9 @@ def _launch(context):
     os.makedirs(run_dir, exist_ok=True)
 
     ctrl_yaml = sc.rt_controllers_yaml(run_dir)
+    # The camera the world renders with and the one real_time_distance
+    # back-projects with are the same file, whichever scene this is.
+    scene_files = sc.scene_paths(scene, paths)
     obstacles = scen['obstacles'] if scen else []
     gz_world, _ = sc.franka_simulation_utils()
     world = sc.world_sdf(
@@ -155,7 +161,7 @@ def _launch(context):
         'condition': cond['toggles'],
         'condition_description': cond['description'],
         'files': {'world': world, 'controllers': ctrl_yaml, 'perception_config': rtd_cfg,
-                  'camera_extrinsics': paths['camera_extrinsics_sim'],
+                  'camera_extrinsics': scene_files['extrinsics'],
                   'depth_adapter': adapter_yaml},
     }
     with open(os.path.join(run_dir, 'run_manifest_sim.json'), 'w') as f:
@@ -168,7 +174,7 @@ def _launch(context):
         'motion_source': {'pentagon': 'pentagon', 'rl': 'rl', 'scenario': 'none'}[motion],
         'enable_camera': 'false',            # no RealSense driver: Gazebo is the camera
         'start_real_time_distance': 'true' if perception else 'false',
-        'camera_extrinsics_yaml': paths['camera_extrinsics_sim'],
+        'camera_extrinsics_yaml': scene_files['extrinsics'],
         'robot_config_yaml': rtd_cfg,
         'camera_depth_profile': '848x480x90',
         'rt_pin_cpu': '',                    # no isolcpus core to pin to in sim

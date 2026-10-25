@@ -1,0 +1,35 @@
+# SIM. base -> the frame the simulated D455 renders depth in, for the `diag`
+# scene (worlds/fr3_cbf_lab_diag.sdf). Read by two things, so they cannot
+# disagree: real_time_distance (through camera_extrinsics_path) and
+# utils/gz_world.py (the Gazebo sensor pose).
+#
+# MEASURED from datasets/experiments_irim2.zip, /tf_static (recorded
+# 2026-10-09): base -> camera_link composed with camera_link ->
+# camera_depth_frame -> camera_depth_optical_frame, i.e. the frame the bag's
+# depth images are actually in.
+#
+# Why the DEPTH frame under a `camera_color_optical_frame` label: in sim the
+# depth image is rendered IN the frame these numbers place, and the engine
+# consumes that same image, so the pose that matters is the depth one. The
+# child_frame name stays the one the stack publishes and real_time_distance
+# looks up. On the rig the two are 5.9 cm apart; that real offset is removed
+# here, exactly as camera_extrinsics_sim.yaml does for the `rig` scene (H11).
+# For the record, the same bag's base -> camera_color_optical_frame is
+#   translation 1.994941 0.091126 1.081549
+#   rotation    0.576644 0.568077 -0.403727 -0.426353
+#
+# This is a SIM file. The rig's own calibration lives in
+# franka_experiments/config/camera_extrinsics.yaml and is NOT touched by it,
+# even though the camera has clearly been moved since that file was written
+# (irim1: 1.754113 0.154097 1.059057).
+parent_frame: base
+child_frame: camera_color_optical_frame
+translation:
+  x: 1.993009
+  y: 0.032024
+  z: 1.080394
+rotation:
+  x: 0.576894
+  y: 0.568193
+  z: -0.403120
+  w: -0.426433

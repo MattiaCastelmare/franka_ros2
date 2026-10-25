@@ -6,8 +6,8 @@ republisher + JSB), with what only this package can add:
 * the rt_torque_controller YAML from franka_experiments'
   ``launch_support.generate_rt_controllers_yaml`` (hardware gains, 1000 Hz,
   ``gazebo: true``), given to the plugin as a second ``<parameters>`` file;
-* the world configured from ``config/sim/camera_extrinsics_sim.yaml`` and the
-  D455 depth intrinsics.
+* the world configured from the camera extrinsics and D455 depth intrinsics the
+  ``scene`` selects (``simexp.sim_config.SCENES``).
 
 ``spawn_rt_controller:=true`` also spawns it (the Phase 1 tests); the full stack
 leaves that to torque_control_stack's own spawner.
@@ -25,7 +25,9 @@ from launch.substitutions import LaunchConfiguration
 
 _ARGS = {
     'run_dir': ('', 'Run directory (generated files). Empty = a new one under sim_runs/'),
-    'scene': ('rig', 'rig (tables as measured on the rig) | bare (floor only, H9)'),
+    'scene': ('rig', 'rig | bare | diag | diag_bare: which lab the world, the camera '
+                     'pose and the depth intrinsics come from (sim_config.SCENES). '
+                     '`*_bare` is floor only (H9)'),
     'spawn_rt_controller': ('false', 'Spawn rt_torque_controller here (Phase 1 tests)'),
     'gui': ('false', 'Ignition GUI client'),
     'initial_q': ('0.0, -0.70, 0.0, -2.35, 0.0, 1.57, 0.70', 'Start pose [rad]'),

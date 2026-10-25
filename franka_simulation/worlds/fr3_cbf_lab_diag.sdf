@@ -1,0 +1,287 @@
+<?xml version="1.0"?>
+<!--
+  fr3_cbf_lab_diag: the DIAG robotics lab as its bag recorded it, for Ignition
+  Fortress. Sibling of fr3_cbf_lab.sdf (the irim1 rig), selected with
+  `scene:=diag`; the two never share numbers, so an old run stays reproducible.
+
+  SIM. Generated per run by scripts/utils/gz_world.py, which rewrites the camera
+  pose from config/sim/camera_extrinsics_diag.yaml, the depth-stream geometry
+  from config/sim/depth_intrinsics_diag.yaml, the scene variant (furniture |
+  bare) and the obstacles. The values below are that generator's defaults and
+  are pinned by test/sim/test_gz_world.py.
+
+  Physics at 1 kHz, the RtTorqueController rate (plan H4). Gravity is exactly
+  -9.8: the gz_ros2_control plugin compensates with a KDL model at 9.8
+  (ign_system.cpp:644), so any other value leaves part of the arm's weight
+  uncompensated (plan H3).
+
+  NO OBSTACLES. The scene is the empty room; the roll and the person that the
+  bag happens to contain are deliberately left out, so obstacles come only from
+  the scenario (gz_world.obstacle_models + the ScenarioObstacles plugin).
+
+  Scene MEASURED from datasets/experiments_irim2.zip (recorded 2026-10-09;
+  three depth frames from the first 15 s back-projected with the /tf_static
+  camera pose in config/sim/camera_extrinsics_diag.yaml). The room is yawed
+  -0.127013 rad (-7.277 deg) about z relative to the robot: that is the fit of
+  the back wall, x = 0.1277 y - 2.1349 in the base frame, residual rms 0.8 cm.
+  The robot's own table is NOT yawed - its edges are parallel to the base x
+  axis to within 4 cm over 1.6 m.
+
+    floor            z = -0.904
+    robot table top  z =  0.000, y in [-0.27, 0.31]; x from -0.81 forward past
+                     x = +1.00, where the camera's bottom ray leaves the table,
+                     so the near edge is UNOBSERVED and modelled at +1.15
+    right desk top   z = -0.139 (an L: the near desk and a corner return)
+    robot-cell bench z = -0.022, 1.5 m to -y
+    back wall        2.1 m in front of the robot
+
+  On the right desk, the two things that stand up off it are modelled as well,
+  fitted to their own returns (the desk is the robot's right-hand side, +y):
+
+    laptop   open, lid 0.346 m wide, top 0.236 m above the desk top, leaning
+             16.1 deg back, hinge at y = 0.792; plane residual rms 1.6 cm
+    monitor  panel 0.455 m wide, top 0.373 m above the desk top, vertical to
+             0.9 deg; plane residual rms 1.9 cm
+
+  The monitor is the one of the two inside the arm's reach (0.69 m from the
+  base); the laptop is at 1.03 m, past it.
+
+  Ray-casting these boxes from the measured camera pose reproduces the bag's
+  depth frame to a median 7.6 cm, with every modelled surface within ~1 cm of
+  its own pixels; the residual is the rest of the desk clutter (keyboards,
+  boxes, the two arms of the second cell, the doorway recess) that is
+  deliberately not modelled - a wrong block occludes, and occlusion is worse
+  than absence for a depth-based barrier. The laptop and the monitor earn their
+  place because they stand up off the desk: they are what a barrier built on
+  that desk's surface would otherwise miss. Side walls and the ceiling are
+  OUTSIDE the camera frustum in this run and are not modelled for the same
+  reason.
+-->
+<sdf version="1.9">
+  <world name="fr3_cbf_lab_diag">
+    <physics name="1ms" type="dart">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Tiled floor, 0.904 m below the robot's mounting surface. -->
+    <model name="floor">
+      <static>true</static>
+      <pose>0 0 -0.904 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material><ambient>0.62 0.60 0.56 1</ambient><diffuse>0.62 0.60 0.56 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The wall the robot faces, with the room's -7.277 deg yaw. -->
+    <model name="diag_wall_back">
+      <static>true</static>
+      <pose>-2.17236 0.27741 0.523 0 0 -0.127013</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.1 8 2.854</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 8 2.854</size></box></geometry>
+          <material><ambient>0.78 0.76 0.72 1</ambient><diffuse>0.78 0.76 0.72 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The table the FR3 is bolted to: top at z = 0, square to the robot. -->
+    <model name="diag_robot_table">
+      <static>true</static>
+      <pose>0.17 0.02 -0.025 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.96 0.58 0.05</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.96 0.58 0.05</size></box></geometry>
+          <material><ambient>0.82 0.80 0.76 1</ambient><diffuse>0.82 0.80 0.76 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The cabinet under the far half of that table (the camera sees its
+         front face; the near half is open, and the floor shows through). -->
+    <model name="diag_table_body">
+      <static>true</static>
+      <pose>-0.345 0.02 -0.475 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.93 0.58 0.85</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.93 0.58 0.85</size></box></geometry>
+          <material><ambient>0.20 0.28 0.48 1</ambient><diffuse>0.20 0.28 0.48 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Desk bank on the +y side, 14 cm below the robot's table. -->
+    <model name="diag_desk_right">
+      <static>true</static>
+      <pose>-0.0785868 0.766126 -0.164 0 0 -0.127013</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.85 1 0.05</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.85 1 0.05</size></box></geometry>
+          <material><ambient>0.80 0.78 0.74 1</ambient><diffuse>0.80 0.78 0.74 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="diag_desk_corner">
+      <static>true</static>
+      <pose>-0.50801 2.53477 -0.164 0 0 -0.127013</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.05 0.9 0.05</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.05 0.9 0.05</size></box></geometry>
+          <material><ambient>0.80 0.78 0.74 1</ambient><diffuse>0.80 0.78 0.74 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The open laptop on the right desk, MEASURED from the same depth frames
+         (its lid is the only part the stereo returns: the black shell is dark to
+         the projector). Lid plane: top 0.236 m above the desk top, 0.346 m wide,
+         leaning 16.1 deg back from vertical, panel yaw -5.78 deg; the hinge line
+         sits on the base at y = 0.792. The base is the 2 cm plate that carries
+         it, 0.22 m deep, which the depth frame sees out to y = 1.00. -->
+    <model name="diag_laptop">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="base">
+          <pose>0.5231 0.9014 -0.129 0 0 -0.10088</pose>
+          <geometry><box><size>0.35 0.22 0.02</size></box></geometry>
+        </collision>
+        <visual name="base">
+          <pose>0.5231 0.9014 -0.129 0 0 -0.10088</pose>
+          <geometry><box><size>0.35 0.22 0.02</size></box></geometry>
+          <material><ambient>0.12 0.12 0.13 1</ambient><diffuse>0.12 0.12 0.13 1</diffuse></material>
+        </visual>
+        <collision name="lid">
+          <pose>0.5089 0.761 -0.0109 0.280998 0 -0.10088</pose>
+          <geometry><box><size>0.35 0.012 0.225</size></box></geometry>
+        </collision>
+        <visual name="lid">
+          <pose>0.5089 0.761 -0.0109 0.280998 0 -0.10088</pose>
+          <geometry><box><size>0.35 0.012 0.225</size></box></geometry>
+          <material><ambient>0.10 0.10 0.11 1</ambient><diffuse>0.10 0.10 0.11 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The desktop monitor standing beside it, MEASURED the same way: panel
+         0.455 m wide, top 0.373 m above the desk top, vertical to 0.9 deg, yaw
+         -9.11 deg, its lower edge 0.118 m above the desk on a neck and a foot.
+         It is the tallest thing on that desk and the only one of the two that
+         stands inside the arm's reach. -->
+    <model name="diag_desk_monitor">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="panel">
+          <pose>-0.2371 0.6479 0.1065 0 0 -0.158999</pose>
+          <geometry><box><size>0.455 0.015 0.255</size></box></geometry>
+        </collision>
+        <visual name="panel">
+          <pose>-0.2371 0.6479 0.1065 0 0 -0.158999</pose>
+          <geometry><box><size>0.455 0.015 0.255</size></box></geometry>
+          <material><ambient>0.08 0.08 0.09 1</ambient><diffuse>0.08 0.08 0.09 1</diffuse></material>
+        </visual>
+        <collision name="neck">
+          <pose>-0.2308 0.6084 -0.08 0 0 -0.158999</pose>
+          <geometry><box><size>0.06 0.06 0.118</size></box></geometry>
+        </collision>
+        <visual name="neck">
+          <pose>-0.2308 0.6084 -0.08 0 0 -0.158999</pose>
+          <geometry><box><size>0.06 0.06 0.118</size></box></geometry>
+          <material><ambient>0.10 0.10 0.11 1</ambient><diffuse>0.10 0.10 0.11 1</diffuse></material>
+        </visual>
+        <collision name="foot">
+          <pose>-0.2308 0.6084 -0.1315 0 0 -0.158999</pose>
+          <geometry><box><size>0.24 0.18 0.015</size></box></geometry>
+        </collision>
+        <visual name="foot">
+          <pose>-0.2308 0.6084 -0.1315 0 0 -0.158999</pose>
+          <geometry><box><size>0.24 0.18 0.015</size></box></geometry>
+          <material><ambient>0.10 0.10 0.11 1</ambient><diffuse>0.10 0.10 0.11 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- The second robot cell's bench, 1.5 m to -y. Solid to the floor: the
+         camera gets no returns under it. -->
+    <model name="diag_cell_bench">
+      <static>true</static>
+      <pose>-0.653287 -1.95802 -0.461 0 0 -0.127013</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.8 1.15 0.878</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.8 1.15 0.878</size></box></geometry>
+          <material><ambient>0.22 0.30 0.50 1</ambient><diffuse>0.22 0.30 0.50 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Tripod pole, behind the camera so it is outside its frustum. -->
+    <model name="d455_mount">
+      <static>true</static>
+      <pose>2.069 0.0293 0.088 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.015</radius><length>1.984</length></cylinder></geometry>
+        </visual>
+      </link>
+    </model>
+
+    <!-- D455 scene camera. <pose> is the camera LINK (looks along +x), derived from
+         base -> the depth optical frame in config/sim/camera_extrinsics_diag.yaml.
+         Depth only: 848x480 at 90 Hz, HFOV 2*atan(424/fx) with fx from
+         config/sim/depth_intrinsics_diag.yaml. 32FC1 metres; the
+         depth_sim_adapter turns it into the 16UC1 millimetres the engine expects. -->
+    <model name="d455">
+      <static>true</static>
+      <pose>1.993009 0.032024 1.080394 -0.0204972889 0.316560641 3.10589856</pose>
+      <link name="link">
+        <visual name="body">
+          <pose>-0.02 0 0 0 0 0</pose>
+          <geometry><box><size>0.026 0.124 0.029</size></box></geometry>
+          <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+        </visual>
+        <sensor name="depth" type="depth_camera">
+          <always_on>true</always_on>
+          <update_rate>90</update_rate>
+          <visualize>false</visualize>
+          <topic>d455/depth/image</topic>
+          <camera name="d455_depth">
+            <horizontal_fov>1.55328417</horizontal_fov>
+            <image><width>848</width><height>480</height><format>R_FLOAT32</format></image>
+            <clip><near>0.1</near><far>10.0</far></clip>
+          </camera>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>

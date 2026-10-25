@@ -1,16 +1,22 @@
-"""The Gazebo world of the CBF experiments, generated from ``worlds/fr3_cbf_lab.sdf``.
+"""The Gazebo worlds of the CBF experiments, generated from the ``worlds/`` templates.
 
-The shipped SDF is the rig at its default: 1 kHz physics, g = -9.8, the floor,
-the two table tops measured from a real depth frame, and the D455 at the
-calibrated pose. This module edits a copy for one run, so the camera pose and
-the obstacles can never disagree with the files they come from:
+The shipped SDFs are a lab at its default: 1 kHz physics, g = -9.8, the floor,
+the surfaces measured from a real depth frame, and the D455 at the calibrated
+pose. ``worlds/fr3_cbf_lab.sdf`` is the irim1 rig, ``fr3_cbf_lab_diag.sdf``
+the DIAG robotics lab; ``simexp.sim_config.SCENES`` says which ``scene`` uses
+which.
+This module edits a copy for one run, so the camera pose and the obstacles can
+never disagree with the files they come from:
 
-* the camera ``<pose>`` is recomputed from a ``base -> camera_color_optical_frame``
-  extrinsics YAML (H8): a Gazebo camera looks along +x of its link, and an
-  optical frame looks along +z, so ``R_link = R_optical · R_ol``;
+* the camera ``<pose>`` is recomputed from an extrinsics YAML (H8) holding the
+  pose of the frame the depth image is rendered in — labelled
+  ``camera_color_optical_frame``, the name the stack publishes. A Gazebo camera
+  looks along +x of its link and an optical frame along +z, so
+  ``R_link = R_optical · R_ol``;
 * the depth sensor gets the D455 depth stream geometry (H8): resolution,
   update rate and a horizontal FOV computed from fx;
-* ``scene='bare'`` drops the tables (robot-only scene, H9);
+* ``scene='bare'`` drops the furniture, whichever template it came from, and
+  keeps the floor, the camera and its mount (robot-only scene, H9);
 * obstacles and the ScenarioObstacles system are appended when given.
 
 Pure ElementTree + numpy; no ROS import.
@@ -33,7 +39,11 @@ R_LINK_FROM_OPTICAL = np.array([[0.0, 0.0, 1.0],
 
 CAMERA_MODEL = 'd455'
 DEPTH_SENSOR = 'depth'
+#: The rig template's furniture, kept as a name for the tests that pin it.
 TABLE_MODELS = ('rig_table_top', 'rig_side_table')
+#: What ``scene='bare'`` keeps. Everything else in the template is furniture,
+#: so a new world only has to name its models to inherit the bare variant.
+BARE_KEEP = ('floor', CAMERA_MODEL, 'd455_mount')
 
 
 def quat_to_matrix(x: float, y: float, z: float, w: float) -> np.ndarray:
@@ -122,8 +132,8 @@ def configure_world(sdf_xml: str, *, extrinsics_path: str | None = None,
     if depth_topic:
         sensor.find('topic').text = depth_topic
     if scene == 'bare':
-        for name in TABLE_MODELS:
-            world.remove(_model(root, name))
+        for m in [m for m in world.findall('model') if m.get('name') not in BARE_KEEP]:
+            world.remove(m)
     elif scene != 'rig':
         raise ValueError(f"scene must be 'rig' or 'bare', got {scene!r}")
     for xml in extra_world_plugins:

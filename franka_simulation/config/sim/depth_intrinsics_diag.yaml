@@ -1,0 +1,65 @@
+# SIM. D455 depth-stream intrinsics of the `diag` scene, in the same
+# `ros2 topic echo` layout as franka_experiments/config/depth_intrinsics.yaml
+# so utils/gz_world.load_depth_intrinsics reads it unchanged.
+#
+# MEASURED: /camera/camera/depth/camera_info, first message of
+# datasets/experiments_irim2.zip (2026-10-09). Same 848x480 stream as the rig
+# file, but a different device/profile: fx 431.4909 vs 428.8444, cx 424.7540 vs
+# 426.0634, cy 238.1736 vs 235.1672. Only the Gazebo sensor's horizontal_fov
+# and resolution are derived from it.
+header:
+  stamp:
+    sec: 1791564434
+    nanosec: 842298096
+  frame_id: camera_depth_optical_frame
+height: 480
+width: 848
+distortion_model: plumb_bob
+d:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+k:
+- 431.4909362792969
+- 0.0
+- 424.7539978027344
+- 0.0
+- 431.4909362792969
+- 238.17355346679688
+- 0.0
+- 0.0
+- 1.0
+r:
+- 1.0
+- 0.0
+- 0.0
+- 0.0
+- 1.0
+- 0.0
+- 0.0
+- 0.0
+- 1.0
+p:
+- 431.4909362792969
+- 0.0
+- 424.7539978027344
+- 0.0
+- 0.0
+- 431.4909362792969
+- 238.17355346679688
+- 0.0
+- 0.0
+- 0.0
+- 1.0
+- 0.0
+binning_x: 0
+binning_y: 0
+roi:
+  x_offset: 0
+  y_offset: 0
+  height: 0
+  width: 0
+  do_rectify: false
+---

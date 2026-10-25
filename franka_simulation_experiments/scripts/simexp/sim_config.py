@@ -6,8 +6,9 @@ into the run directory, from the files it is derived from:
 * the rt_torque_controller YAML, by franka_experiments' own
   ``launch_support.generate_rt_controllers_yaml`` (hardware gains, 1000 Hz,
   ``gazebo: true``) — the plugin's second ``<parameters>`` file (plan H4);
-* the world SDF, by franka_simulation's ``utils/gz_world.py`` from the shipped
-  template, the sim extrinsics and the D455 depth intrinsics (plan H8);
+* the world SDF, by franka_simulation's ``utils/gz_world.py`` from the template,
+  sim extrinsics and D455 depth intrinsics the ``scene`` selects (plan H8;
+  see :data:`SCENES`);
 * the merged perception YAML (fr3_complete.yaml + sim overrides + condition).
 
 No rclpy import: the launch files and the tests both use it.
@@ -45,13 +46,56 @@ def default_paths() -> dict:
     fs, fe = share('franka_simulation'), share('franka_experiments')
     return dict(
         world_template=os.path.join(fs, 'worlds', 'fr3_cbf_lab.sdf'),
+        world_template_diag=os.path.join(fs, 'worlds', 'fr3_cbf_lab_diag.sdf'),
         camera_extrinsics_sim=os.path.join(fs, 'config', 'sim', 'camera_extrinsics_sim.yaml'),
+        camera_extrinsics_diag=os.path.join(fs, 'config', 'sim',
+                                            'camera_extrinsics_diag.yaml'),
+        depth_intrinsics_diag=os.path.join(fs, 'config', 'sim',
+                                           'depth_intrinsics_diag.yaml'),
         perception_sim=os.path.join(fs, 'config', 'sim', 'perception_sim.yaml'),
         depth_adapter=os.path.join(fs, 'config', 'sim', 'depth_adapter.yaml'),
         depth_intrinsics=os.path.join(fe, 'config', 'depth_intrinsics.yaml'),
         fr3_complete=os.path.join(fe, 'config', 'fr3_complete.yaml'),
         fr3_control=os.path.join(fe, 'config', 'fr3_control.yaml'),
     )
+
+
+#: The scenes a run can be built on: which world template, which camera
+#: calibration and depth intrinsics it is generated from, and whether the
+#: furniture stays. The lab was re-arranged and the camera moved between the two
+#: recordings, so the numbers are never shared: `rig` is the lab of
+#: rosbag/irim1_raw, `diag` the DIAG robotics lab of datasets/experiments_irim2.zip
+#: (2026-10-09), and an old run stays reproducible on the scene it used.
+#: `*_bare` is the same camera over an empty floor (plan H9).
+SCENES = {
+    'rig':        dict(template='world_template', extrinsics='camera_extrinsics_sim',
+                       intrinsics='depth_intrinsics', furniture='rig'),
+    'bare':       dict(template='world_template', extrinsics='camera_extrinsics_sim',
+                       intrinsics='depth_intrinsics', furniture='bare'),
+    'diag':       dict(template='world_template_diag',
+                       extrinsics='camera_extrinsics_diag',
+                       intrinsics='depth_intrinsics_diag', furniture='rig'),
+    'diag_bare':  dict(template='world_template_diag',
+                       extrinsics='camera_extrinsics_diag',
+                       intrinsics='depth_intrinsics_diag', furniture='bare'),
+}
+
+
+def scene_paths(scene: str, paths: dict | None = None) -> dict:
+    """The files ``scene`` is built from, and whether its furniture stays.
+
+    Everything that has to agree with the simulated camera reads it from here:
+    the world generator (the Gazebo sensor pose and FOV) and the launch files
+    (real_time_distance's ``camera_extrinsics_yaml``). Those two must never be
+    given different scenes' calibrations.
+    """
+    try:
+        s = SCENES[scene]
+    except KeyError:
+        raise ValueError(f'scene={scene!r}: expected one of {sorted(SCENES)}') from None
+    P = paths or default_paths()
+    return dict(template=P[s['template']], extrinsics=P[s['extrinsics']],
+                intrinsics=P[s['intrinsics']], furniture=s['furniture'], name=scene)
 
 
 def sim_runs_root() -> str:
@@ -101,12 +145,13 @@ def world_sdf(run_dir: str, *, scene: str = 'rig', depth_rate_hz: float = 90.0,
               paths: dict | None = None) -> str:
     gz_world, _ = franka_simulation_utils()
     P = paths or default_paths()
-    with open(P['world_template']) as f:
+    S = scene_paths(scene, P)
+    with open(S['template']) as f:
         template = f.read()
     sdf = gz_world.configure_world(
-        template, extrinsics_path=extrinsics_path or P['camera_extrinsics_sim'],
-        intrinsics=gz_world.load_depth_intrinsics(P['depth_intrinsics']),
-        depth_rate_hz=depth_rate_hz, scene=scene, extra_models=extra_models,
+        template, extrinsics_path=extrinsics_path or S['extrinsics'],
+        intrinsics=gz_world.load_depth_intrinsics(S['intrinsics']),
+        depth_rate_hz=depth_rate_hz, scene=S['furniture'], extra_models=extra_models,
         extra_world_plugins=extra_world_plugins)
     path = os.path.join(run_dir, 'world.sdf')
     with open(path, 'w') as f:

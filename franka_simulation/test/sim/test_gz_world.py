@@ -11,11 +11,20 @@ from utils.gz_robot_description import rpy_to_matrix
 PKG = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..', '..')
 WORLD = os.path.join(PKG, 'worlds', 'fr3_cbf_lab.sdf')
 EXT_SIM = os.path.join(PKG, 'config', 'sim', 'camera_extrinsics_sim.yaml')
+WORLD_DIAG = os.path.join(PKG, 'worlds', 'fr3_cbf_lab_diag.sdf')
+EXT_DIAG = os.path.join(PKG, 'config', 'sim', 'camera_extrinsics_diag.yaml')
+INTR_DIAG = os.path.join(PKG, 'config', 'sim', 'depth_intrinsics_diag.yaml')
 
 
 @pytest.fixture(scope='module')
 def sdf():
     with open(WORLD) as f:
+        return f.read()
+
+
+@pytest.fixture(scope='module')
+def sdf_diag():
+    with open(WORLD_DIAG) as f:
         return f.read()
 
 
@@ -124,3 +133,148 @@ def test_scenario_obstacles_block_carries_every_law_parameter():
     assert [float(v) for v in models[0].find('pose').text.split()[:3]] == list(W.PARK_AT)
     assert [float(v) for v in models[1].find('pose').text.split()[:3]] == [0, 0.5, 0.5]
     assert all(m.find('.//collision') is None for m in models)
+
+
+# ── the diag lab (worlds/fr3_cbf_lab_diag.sdf) ──────────────────────────────
+
+def test_diag_world_has_the_same_physics_and_gravity(sdf_diag):
+    """It is the same plant with different furniture: H3 and H4 still hold."""
+    w = ET.fromstring(sdf_diag).find('world')
+    assert float(w.find('physics/max_step_size').text) == 0.001
+    assert float(w.find('physics/real_time_update_rate').text) == 1000
+    assert [float(v) for v in w.find('gravity').text.split()] == [0.0, 0.0, -9.8]
+
+
+def test_diag_camera_pose_is_derived_from_its_own_extrinsics(sdf_diag):
+    cam = W._model(ET.fromstring(sdf_diag), W.CAMERA_MODEL)
+    xyz, rpy = W.camera_link_pose(*W.load_optical_extrinsics(EXT_DIAG))
+    np.testing.assert_allclose(_pose(cam), np.r_[xyz, rpy], atol=1e-8)
+
+
+def test_diag_camera_is_the_one_the_bag_recorded():
+    """The pose is base -> camera_depth_optical_frame of
+    datasets/experiments_irim2.zip /tf_static: base -> camera_link
+    [1.993009, 0.032024, 1.080394] q [-0.157767, -0.007306, 0.98732, 0.016008],
+    composed with the RealSense optical rotation. Re-derive it from the bag
+    before changing these numbers."""
+    R, t = W.load_optical_extrinsics(EXT_DIAG)
+    np.testing.assert_allclose(t, [1.993009, 0.032024, 1.080394], atol=1e-9)
+    # It is NOT the rig calibration: the camera was moved between the two
+    # sessions (24 cm in x, 6 cm in y). A sim file, so the rig file is untouched.
+    _, t_rig = W.load_optical_extrinsics(EXT_SIM)
+    assert np.linalg.norm(t - t_rig) > 0.2
+
+
+def test_diag_depth_sensor_matches_its_own_intrinsics(sdf_diag):
+    I = W.load_depth_intrinsics(INTR_DIAG)
+    s = W._model(ET.fromstring(sdf_diag),
+                 W.CAMERA_MODEL).find(f"link/sensor[@name='{W.DEPTH_SENSOR}']")
+    assert s.get('type') == 'depth_camera'
+    assert float(s.find('update_rate').text) == 90
+    c = s.find('camera')
+    assert (int(c.find('image/width').text), int(c.find('image/height').text)) == \
+        (I['width'], I['height'])
+    assert float(c.find('horizontal_fov').text) == pytest.approx(
+        W.hfov_from_fx(I['width'], I['fx']), abs=1e-8)
+
+
+def test_diag_surfaces_are_the_measured_ones(sdf_diag):
+    """The numbers measured from the bag's depth frames: the floor 0.904 m below
+    the robot's mounting surface, its table top at z = 0, the +y desk bank at
+    z = -0.139, and the room yawed -0.127013 rad about z (the back-wall fit)."""
+    root = ET.fromstring(sdf_diag)
+    assert _pose(W._model(root, 'floor'))[2] == pytest.approx(-0.904)
+
+    def top(name):
+        m = W._model(root, name)
+        return _pose(m)[2] + float(m.find('link/visual/geometry/box/size').text.split()[2]) / 2
+
+    assert top('diag_robot_table') == pytest.approx(0.0, abs=1e-9)
+    assert top('diag_desk_right') == pytest.approx(-0.139, abs=1e-9)
+    assert top('diag_desk_corner') == pytest.approx(-0.139, abs=1e-9)
+    assert top('diag_cell_bench') == pytest.approx(-0.022, abs=1e-9)
+    # the robot's own table is square to the robot; the room is not
+    assert _pose(W._model(root, 'diag_robot_table'))[5] == 0.0
+    for name in ('diag_wall_back', 'diag_desk_right', 'diag_desk_corner',
+                 'diag_cell_bench'):
+        assert _pose(W._model(root, name))[5] == pytest.approx(-0.127013)
+
+
+def test_diag_laptop_and_monitor_stand_on_the_right_desk(sdf_diag):
+    """The two things that stand up off the +y desk, fitted to the same bag's
+    depth returns: the open laptop's lid (top 0.236 m above the desk top,
+    0.346 m wide, 16.1 deg off vertical) and the monitor's panel (top 0.373 m,
+    0.455 m wide, vertical). Everything they are made of rests on the desk top
+    at z = -0.139 and nothing of either pokes through it."""
+    root = ET.fromstring(sdf_diag)
+    desk = -0.139
+
+    def part(model, name):
+        m = W._model(root, model)
+        g = m.find(f"link/collision[@name='{name}']")
+        pose = np.array([float(v) for v in g.find('pose').text.split()])
+        size = np.array([float(v) for v in g.find('geometry/box/size').text.split()])
+        return pose, size
+
+    def corners(pose, size):
+        r, p_, y = pose[3:]
+        Rx = np.array([[1, 0, 0], [0, np.cos(r), -np.sin(r)], [0, np.sin(r), np.cos(r)]])
+        Rz = np.array([[np.cos(y), -np.sin(y), 0], [np.sin(y), np.cos(y), 0], [0, 0, 1]])
+        c = np.array([[sx, sy, sz] for sx in (-.5, .5) for sy in (-.5, .5) for sz in (-.5, .5)])
+        return (c * size) @ (Rz @ Rx).T + pose[:3]
+
+    lid = corners(*part('diag_laptop', 'lid'))
+    base = corners(*part('diag_laptop', 'base'))
+    panel = corners(*part('diag_desk_monitor', 'panel'))
+    foot = corners(*part('diag_desk_monitor', 'foot'))
+
+    assert lid[:, 2].max() - desk == pytest.approx(0.236, abs=0.005)
+    assert panel[:, 2].max() - desk == pytest.approx(0.373, abs=0.005)
+    assert part('diag_laptop', 'lid')[1][0] == pytest.approx(0.346, abs=0.01)
+    assert part('diag_desk_monitor', 'panel')[1][0] == pytest.approx(0.455, abs=0.01)
+    # the lid leans back off vertical, the panel does not
+    assert np.degrees(part('diag_laptop', 'lid')[0][3]) == pytest.approx(16.1, abs=0.2)
+    assert part('diag_desk_monitor', 'panel')[0][3] == 0.0
+    # both sit ON the desk, on the robot's right (+y), and nothing dips below it
+    for pts in (lid, base, panel, foot):
+        assert pts[:, 2].min() >= desk - 1e-6
+        assert pts[:, 1].min() > 0.3
+    assert base[:, 2].min() == pytest.approx(desk, abs=1e-6)
+    assert foot[:, 2].min() == pytest.approx(desk, abs=1e-6)
+
+
+def test_diag_laptop_and_monitor_are_scene_not_obstacles(sdf_diag):
+    """They are furniture: static, inside the desk's footprint, and dropped by
+    `bare` like the rest of it (so a robot-only run is unchanged)."""
+    root = ET.fromstring(sdf_diag)
+    deskm = W._model(root, 'diag_desk_right')
+    dpose = np.array([float(v) for v in deskm.find('pose').text.split()])
+    dsize = np.array([float(v) for v in deskm.find('link/collision/geometry/box/size').text.split()])
+    for name in ('diag_laptop', 'diag_desk_monitor'):
+        m = W._model(root, name)
+        assert m.find('static').text == 'true'
+        for g in m.findall('link/collision'):
+            xy = np.array([float(v) for v in g.find('pose').text.split()[:2]]) - dpose[:2]
+            yaw = -dpose[5]
+            c, s_ = np.cos(yaw), np.sin(yaw)
+            local = np.array([c * xy[0] - s_ * xy[1], s_ * xy[0] + c * xy[1]])
+            assert (np.abs(local) < dsize[:2] / 2).all(), (name, g.get('name'), local)
+    bare = {m.get('name') for m in
+            ET.fromstring(W.configure_world(sdf_diag, scene='bare')).iter('model')}
+    assert 'diag_laptop' not in bare and 'diag_desk_monitor' not in bare
+
+
+def test_diag_world_ships_without_obstacles(sdf_diag):
+    """Obstacles come from the scenario, never from the scene."""
+    root = ET.fromstring(sdf_diag)
+    assert root.find(".//plugin[@filename='franka_scenario_obstacles']") is None
+    assert not [m for m in root.iter('model') if m.find('.//sphere') is not None]
+
+
+def test_bare_strips_the_furniture_of_either_world(sdf, sdf_diag):
+    """H9 is a property of the variant, not of one template: whatever furniture
+    a world ships, `bare` leaves the floor, the camera and its mount."""
+    for xml in (sdf, sdf_diag):
+        names = {m.get('name') for m in
+                 ET.fromstring(W.configure_world(xml, scene='bare')).iter('model')}
+        assert names == set(W.BARE_KEEP)

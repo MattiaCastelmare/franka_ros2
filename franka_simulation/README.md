@@ -893,7 +893,12 @@ container shares the DDS domain).
 
 **Where things are.** The plant is in this package and depends on nothing of
 `franka_experiments`: `worlds/fr3_cbf_lab.sdf` (DART at 1 kHz, the measured rig
-tables, the D455 at the calibrated extrinsic), `launch/gz_fr3_plant.launch.py`,
+tables, the D455 at the calibrated extrinsic) and `worlds/fr3_cbf_lab_diag.sdf`
+(the same plant with the DIAG robotics lab as `datasets/experiments_irim2.zip`
+recorded it on 2026-10-09: its own surfaces, camera pose and depth intrinsics,
+plus the open laptop and the monitor standing on the desk to the robot's right,
+under `scene:=diag`; `simexp.sim_config.SCENES` maps a scene to its three
+files), `launch/gz_fr3_plant.launch.py`,
 `scripts/utils/gz_robot_description.py` (bringup-compatible URDF: `base` frame,
 rigid fingers, reflected rotor inertia, initial q), `scripts/depth_sim_adapter.py`
 (32FC1 m → 16UC1 mm, optional delay / dropout / stereo range noise),
