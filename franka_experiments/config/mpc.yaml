@@ -45,7 +45,8 @@ weights:
   w_posture:       1.0     # ‖q − q_home‖², the null space
   w_velocity:      0.1     # ‖q̇_k‖²
   w_accel:         0.01    # ‖u_k‖²
-  w_jerk:          1.0e-4  # ‖(u_k − u_{k−1}) / dt‖²
+  w_jerk:          3.0e-3  # ‖(u_k − u_{k−1}) / dt‖². Smaller q̈ steps every dt: the shield's slew limit
+                           # and HOCBF act far less (paired replay: shield active 88 -> 29 s)
   w_terminal:      10.0    # ‖q̇_N‖² with terminal: soft
   slack_linear:    10000.0 # ρ, above the multipliers of the human rows (they reach 1e3 with w_position
                            # 1e3: analysis point 5). daqp only: OSQP's ADMM stalls at 1e4
