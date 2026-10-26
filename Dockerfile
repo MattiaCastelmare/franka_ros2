@@ -213,6 +213,14 @@ RUN python3 -m pip install --user --no-cache-dir \
 RUN python3 -m pip install --user --no-cache-dir "daqp==0.10.3"
 
 # ============================================================================
+# A-posteriori analyses (franka_experiments/analysis/: Kalman filter, MPC).
+#
+# They read the experiment CSVs with pandas; scipy and matplotlib are already
+# here. numpy is named again only to keep the 1.26 pinned above.
+# ============================================================================
+RUN python3 -m pip install --user --no-cache-dir "pandas==2.2.3" "numpy==1.26.4"
+
+# ============================================================================
 # Python environment smoke test.
 #
 # Fails the build if any core import is broken. For OpenCV the loaded
