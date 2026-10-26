@@ -24,7 +24,9 @@ updates values (OSQP keeps its factorisation):
     'q'      G_1..G_N        q_min + margin ≤ q_k ≤ q_max − margin
     'qd'     V_1..V_N        |q̇_k| ≤ qdot_scale · q̇_max
     'term'   V_N             q̇_N = 0                               (terminal == 'hard')
-    'human'  a_jᵀ G_k | +1   d̄_j + a_jᵀ(q_k − q̄_k) ≥ d_safe + δ + m_j − s_jk
+    'human'      a_jᵀ G_k | +1             d̄_j + a_jᵀ(q_k − q̄_k) ≥ d_safe + δ + m_j − s_jk
+    'lookahead'  a_jᵀ(G_k + T V_k) | +1    the same + T·a_jᵀq̇_k       (human_lookahead_s T > 0)
+The two human blocks share the slacks: together they hold d + T·min(ḣ, 0) ≥ d_safe + δ + m.
 
 One cycle (the node calls them in this order):
     begin_cycle(q0, qd0, u_prev)
@@ -72,6 +74,10 @@ class MPCSettings:
     # Safety: same d_safe as the CBF, delta on top so the shield rarely has to act
     d_safe: float = 0.15          # [m]
     delta: float = 0.05           # [m]
+    # T [s]: next to d_k ≥ d_safe + δ + m, a second row d_k + T·ḣ_k ≥ the same (ḣ_k = a·q̇_k, the
+    # robot's own approach speed): the robot slows down T·|ḣ| before the distance, as the shield's
+    # HOCBF does with T = k1_cbf/k0_cbf. Only tighter, never looser. 0 = the position rows only
+    human_lookahead_s: float = 0.0
     # rho must stay above the multipliers of the human rows (~450 with w_position 1000:
     # they grow with the task weights) for the penalty to be exact. 1e4 is not safer:
     # it makes OSQP's ADMM stall (4000 iterations without converging on a plain case).
@@ -110,7 +116,7 @@ class MPCDiagnostics:
     cost: float = float('nan')            # ½zᵀPz + qᵀz at the solution (no constant term)
     human_rows: int = 0                   # human rows in use this cycle (the others are padding)
     human_binding: int = 0                # of those, at their bound or violated
-    human_clearance: float = float('nan') # [m] min over rows of d_lin − (d_safe + δ + m); < 0 = slack used
+    human_clearance: float = float('nan') # [m] min over rows of d_lin + T·ḣ − (d_safe + δ + m); < 0 = slack used
     max_slack: float = 0.0                # [m]
     accel_saturation: float = 0.0         # fraction of the planned q̈ at the q̈ box
     # For the a-posteriori checks (analysis/mpc_analysis.py): the optimal cost V and two of its parts
@@ -157,6 +163,7 @@ class MPCProblem:
         # D U − (u_prev, 0, ..., 0) = (u_0 − u_prev, u_1 − u_0, ...)
         self.D = np.eye(self.nu) - np.eye(self.nu, k=-n)
         self.rows = self._row_layout()
+        self.human_blocks = [b for b in ('human', 'lookahead') if b in self.rows]
         self.n_rows = max(r.stop for r in self.rows.values())
         self._A_pattern, self._P_pattern = self._build_patterns()
 
@@ -175,7 +182,7 @@ class MPCProblem:
         self._stage_terms = []                    # (M, c, W) of step 1's terms, see _add_quadratic
         self._terminal_terms = []
 
-        self._human_scale = np.ones(self.ns)      # row scaling of the human rows, see set_human_rows
+        self._human_scale = np.ones((len(self.human_blocks), self.ns))   # row scaling, see set_human_rows
         self._osqp = None                         # osqp.OSQP, created on the first solve
         self.diag = MPCDiagnostics()
 
@@ -253,6 +260,8 @@ class MPCProblem:
         if self.cfg.terminal == 'hard':
             sizes.append(('term', n))
         sizes.append(('human', self.ns))
+        if self.cfg.human_lookahead_s > 0.0:
+            sizes.append(('lookahead', self.ns))
         rows, start = {}, 0
         for name, size in sizes:
             rows[name] = slice(start, start + size)
@@ -274,11 +283,12 @@ class MPCProblem:
         a_mask[R['qd'], self.iU] = self.V.reshape(-1, self.nu) != 0
         if 'term' in R:
             a_mask[R['term'], self.iU] = self.V[-1] != 0
-        a_mask[R['human'], self.iS] = np.eye(self.ns, dtype=bool)
-        for k in range(N):
-            # A human row of step k+1 depends on the inputs before it, like q_{k+1}
-            inputs = self.G[k].any(axis=0)
-            a_mask[R['human'].start + k * K:R['human'].start + (k + 1) * K, self.iU] = inputs
+        for block in self.human_blocks:
+            a_mask[R[block], self.iS] = np.eye(self.ns, dtype=bool)
+            for k in range(N):
+                # A human row of step k+1 depends on the inputs before it, like q_{k+1} and q̇_{k+1}
+                inputs = self.G[k].any(axis=0)
+                a_mask[R[block].start + k * K:R[block].start + (k + 1) * K, self.iU] = inputs
 
         p_mask = np.zeros((self.nz, self.nz), dtype=bool)
         p_mask[self.iU, self.iU] = True
@@ -398,10 +408,11 @@ class MPCProblem:
 
     def _reset_human_rows(self) -> None:
         """Every human row starts inert: a = 0, lower bound -inf, the slack coefficient kept."""
-        R = self.rows['human']
-        self.A[R, self.iU] = 0.0
-        self.A[R, self.iS] = np.eye(self.ns)
-        self.l[R], self.u[R] = -np.inf, np.inf
+        for block in self.human_blocks:
+            R = self.rows[block]
+            self.A[R, self.iU] = 0.0
+            self.A[R, self.iS] = np.eye(self.ns)
+            self.l[R], self.u[R] = -np.inf, np.inf
         self._human_scale[:] = 1.0
 
     def set_human_rows(self, k: int, a, d_bar, margin, q_bar_k) -> None:
@@ -413,10 +424,14 @@ class MPCProblem:
         q_bar_k (7,)    linearisation point (the shifted plan)
         with m ≤ K; the caller keeps the K pairs with the smallest d_bar.
 
-        Row j of step k has index (k-1)·K + j in both the 'human' block and the slacks:
-            A[row, U] = a_j G_k,   A[row, s_jk] = 1
-            l[row]    = d_safe + δ + m_j - d̄_j + a_j·(q̄_k - q_free,k),   u[row] = +inf
-        The whole row is then divided by ‖a_j G_k‖: the same constraint, with the slack
+        Pair j holds d_k ≥ d_safe + δ + m_j ('human' block) and, with T = human_lookahead_s > 0,
+        d_k + T·ḣ_k ≥ d_safe + δ + m_j ('lookahead' block), with the linearised distance
+        d_k = d̄_j + a_j·(q_k − q̄_k) and ḣ_k = a_j·q̇_k, the robot's own approach speed (as the
+        shield's ḣ: the human's motion is in d̄_j). Both rows have index (k-1)·K + j in their
+        block and share the slack s_jk (t = 0 in the 'human' block, T in 'lookahead'):
+            A[row, U] = a_j (G_k + t V_k),   A[row, s_jk] = 1
+            l[row]    = d_safe + δ + m_j - d̄_j + a_j·(q̄_k - q_free,k) - t a_j·qd_free,k,   u[row] = +inf
+        The whole row is then divided by ‖a_j (G_k + t V_k)‖: the same constraint, with the slack
         still in metres. Unscaled, the U entries (dt²-sized, 1e-3 at k = 1) next to the
         slack's 1 stalled OSQP for thousands of iterations (scripts/mpc_problem_demo.py).
         """
@@ -427,16 +442,19 @@ class MPCProblem:
             raise ValueError(f'at most {self.n_pairs} pairs per step, got {a.shape[0]}')
         cfg, first = self.cfg, (k - 1) * self.n_pairs
         offset = self._joint_vector(q_bar_k, 'q_bar_k') - self.q_free[k - 1]
-        for j, (a_j, d_j, m_j) in enumerate(zip(a, np.ravel(d_bar), np.ravel(margin))):
-            row = self.rows['human'].start + first + j
-            row_u = a_j @ self.G[k - 1]
-            norm = float(np.linalg.norm(row_u))
-            scale = 1.0 / norm if norm > 1e-12 else 1.0
-            self.A[row, self.iU] = scale * row_u
-            self.A[row, self.nu + first + j] = scale
-            self.l[row] = scale * (cfg.d_safe + cfg.delta + m_j - d_j + a_j @ offset)
-            self.u[row] = np.inf
-            self._human_scale[first + j] = scale
+        for b, block in enumerate(self.human_blocks):
+            t = cfg.human_lookahead_s if block == 'lookahead' else 0.0
+            for j, (a_j, d_j, m_j) in enumerate(zip(a, np.ravel(d_bar), np.ravel(margin))):
+                row = self.rows[block].start + first + j
+                row_u = a_j @ (self.G[k - 1] + t * self.V[k - 1])
+                norm = float(np.linalg.norm(row_u))
+                scale = 1.0 / norm if norm > 1e-12 else 1.0
+                self.A[row, self.iU] = scale * row_u
+                self.A[row, self.nu + first + j] = scale
+                self.l[row] = scale * (cfg.d_safe + cfg.delta + m_j - d_j + a_j @ offset
+                                       - t * a_j @ self.qd_free[k - 1])
+                self.u[row] = np.inf
+                self._human_scale[b, first + j] = scale
 
     # ── Solve ───────────────────────────────────────────────────────────────
 
@@ -504,14 +522,17 @@ class MPCProblem:
             diag.lambda_accel = float(lam[self.rows['u']].max())
             diag.lambda_position = float(lam[self.rows['q']].max())
             diag.lambda_velocity = float(lam[self.rows['qd']].max())
-            # A human row was divided by ‖a G_k‖ (scale): its multiplier per metre is λ·scale
-            diag.lambda_human = float((lam[self.rows['human']] * self._human_scale).max())
-        R = self.rows['human']
-        in_use = np.isfinite(self.l[R])
+            # A human row was divided by its norm (scale): its multiplier per metre is λ·scale.
+            # The two rows of a pair share a slack: their multipliers add up against ρ
+            diag.lambda_human = float(sum(lam[self.rows[block]] * self._human_scale[b]
+                                          for b, block in enumerate(self.human_blocks)).max())
+        in_use = np.isfinite(self.l[self.rows['human']])
         diag.human_rows = int(in_use.sum())
         if diag.human_rows:
-            # Linearised distance minus what the row asks for, without the slack's help [m]
-            clearance = ((self.A[R, self.iU] @ x[self.iU] - self.l[R]) / self._human_scale)[in_use]
+            # Per pair, the tighter of its rows: (lookahead) distance minus what the row asks
+            # for, without the slack's help [m]
+            clearance = np.min([(self.A[self.rows[block], self.iU] @ x[self.iU] - self.l[self.rows[block]])
+                                / self._human_scale[b] for b, block in enumerate(self.human_blocks)], axis=0)[in_use]
             diag.human_binding = int(np.sum(clearance <= BINDING_TOL))
             diag.human_clearance = float(clearance.min())
         diag.max_slack = float(max(0.0, x[self.iS].max())) if self.ns else 0.0

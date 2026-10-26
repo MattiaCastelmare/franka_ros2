@@ -257,8 +257,12 @@ def test_human_rows_start_inert():
     assert np.all(p.l[rh] <= -INF) and np.all(p.u[rh] >= INF)
 
 
-def test_human_row_is_the_linearised_distance():
-    p = _problem()
+@pytest.mark.parametrize('lookahead', [0.0, 0.42])
+def test_human_row_is_the_linearised_distance(lookahead):
+    """'human': d̄ + a·(q_k − q̄) + s ≥ d_safe + δ + m. With T = human_lookahead_s > 0 a
+    'lookahead' row per pair adds T·a·q̇_k on the same slack."""
+    p = _problem(human_lookahead_s=lookahead)
+    assert ('lookahead' in p.rows) == (lookahead > 0)
     rng = np.random.default_rng(4)
     _state(p, q0=rng.normal(size=7), qd0=rng.normal(size=7))
     p._reset_human_rows()
@@ -267,26 +271,56 @@ def test_human_row_is_the_linearised_distance():
     d_bar, margin, q_bar = np.array([0.30, 0.25]), np.array([0.02, 0.05]), rng.normal(size=7)
     p.set_human_rows(k, a, d_bar, margin, q_bar)
 
-    rh, K = p.rows['human'], p.n_pairs
-    for j in range(2):
-        idx = (k - 1) * K + j
-        row = rh.start + idx
-        # Row j means d̄ + a·(q_k − q̄) + s ≥ d_safe + δ + m, up to a positive scale of the row
-        ratios = []
-        for _ in range(3):
-            U, s = rng.normal(size=p.nu), rng.uniform(0.0, 0.1, size=p.ns)
-            q, _ = p.rollout(p.q0, p.qd0, U)
-            lhs = d_bar[j] + a[j] @ (q[k - 1] - q_bar) + s[idx]
-            ratios.append((p.A[row] @ _z(p, U, s) - p.l[row]) / (lhs - (p.cfg.d_safe + p.cfg.delta + margin[j])))
-        assert ratios[0] > 0.0 and np.allclose(ratios, ratios[0])
-        assert p.u[row] >= INF
-    # The unused rows of step k and every other step stay inert
-    used = {rh.start + (k - 1) * K + j for j in range(2)}
-    for row in set(range(rh.start, rh.stop)) - used:
-        assert not p.A[row, p.iU].any() and p.l[row] <= -INF
+    K = p.n_pairs
+    for block, t in (('human', 0.0), ('lookahead', lookahead)):
+        if block not in p.rows:
+            continue
+        rh = p.rows[block]
+        for j in range(2):
+            idx = (k - 1) * K + j
+            row = rh.start + idx
+            ratios = []          # the row's value over the constraint's, for random U and s
+            for _ in range(3):
+                U, s = rng.normal(size=p.nu), rng.uniform(0.0, 0.1, size=p.ns)
+                q, qd = p.rollout(p.q0, p.qd0, U)
+                lhs = d_bar[j] + a[j] @ (q[k - 1] - q_bar) + t * a[j] @ qd[k - 1] + s[idx]
+                ratios.append((p.A[row] @ _z(p, U, s) - p.l[row]) / (lhs - (p.cfg.d_safe + p.cfg.delta + margin[j])))
+            assert ratios[0] > 0.0 and np.allclose(ratios, ratios[0])
+            assert p.u[row] >= INF
+        # The unused rows of step k and every other step stay inert
+        used = {rh.start + (k - 1) * K + j for j in range(2)}
+        for row in set(range(rh.start, rh.stop)) - used:
+            assert not p.A[row, p.iU].any() and p.l[row] <= -INF
     # The next cycle starts inert again
     p._reset_human_rows()
-    assert not p.A[rh, p.iU].any() and np.all(p.l[rh] <= -INF)
+    for block in p.human_blocks:
+        assert not p.A[p.rows[block], p.iU].any() and np.all(p.l[p.rows[block]] <= -INF)
+
+
+@pytest.mark.parametrize('solver', SOLVERS)
+def test_the_lookahead_slows_the_approach_and_never_loosens(solver):
+    """A task pulling joint 1 onto a row at q_k[0] ≥ −0.05 for every k: the position row
+    alone lets the joint arrive fast; with the lookahead it arrives slowly, and both
+    conditions hold on every step."""
+    def solve(lookahead):
+        p = _problem(solver=solver, human_lookahead_s=lookahead)
+        p.begin_cycle(np.zeros(7), np.zeros(7), np.zeros(7))
+        goal = np.zeros(7)
+        goal[0] = -0.3
+        _track_joint_goal(p, goal)
+        a = np.zeros((1, 7))
+        a[0, 0] = 1.0
+        for k in range(1, p.n_steps + 1):
+            p.set_human_rows(k, a, np.array([p.cfg.d_safe + p.cfg.delta + 0.05]), np.zeros(1), np.zeros(7))
+        U = p.solve(np.zeros(p.nu))
+        assert U is not None and p.diag.max_slack < 1e-3
+        return p.rollout(np.zeros(7), np.zeros(7), U)
+
+    q0, qd0 = solve(0.0)
+    q1, qd1 = solve(0.42)
+    assert np.all(q0[:, 0] >= -0.05 - 2e-3) and np.all(q1[:, 0] >= -0.05 - 2e-3)
+    assert np.all(q1[:, 0] + 0.42 * qd1[:, 0] >= -0.05 - 2e-3)
+    assert np.min(qd1[:, 0]) > np.min(qd0[:, 0]) + 0.05     # a slower approach
 
 
 # ── Solve ───────────────────────────────────────────────────────────────────
@@ -387,15 +421,16 @@ def test_diagnostics_report_the_cost_parts_at_the_solution(solver):
     assert max(d.lambda_human, d.lambda_accel, d.lambda_position, d.lambda_velocity) < 1e-2
 
 
-@pytest.mark.parametrize('solver, rho', [(s, 1e3) for s in SOLVERS]
-                         + ([('daqp', 1e4)] if 'daqp' in SOLVERS else []))
-def test_multipliers_of_a_held_and_of_a_slackened_human_row(solver, rho):
+@pytest.mark.parametrize('solver, rho, lookahead', [(s, 1e3, 0.0) for s in SOLVERS]
+                         + ([('daqp', 1e4, 0.0), ('daqp', 1e4, 0.42)] if 'daqp' in SOLVERS else []))
+def test_multipliers_of_a_held_and_of_a_slackened_human_row(solver, rho, lookahead):
     """KKT of a slack (s ≥ 0, cost ρs + ½σs²): a row held without slack has λ < ρ, a row that
-    needs slack has λ = ρ + σs. λ is the unscaled multiplier, in cost per metre.
-    ρ = 1e4 (mpc.yaml) with DAQP only: OSQP's ADMM stalls there."""
+    needs slack has λ = ρ + σs (with the lookahead, the two rows of the pair together).
+    λ is the unscaled multiplier, in cost per metre. ρ = 1e4 (mpc.yaml) with DAQP only:
+    OSQP's ADMM stalls there."""
     def solve(need, qddot_max):
         # The task pulls joint 1 to −0.1; the row wants q_N[0] ≥ need
-        p = _problem(solver=solver, qddot_max=qddot_max, slack_linear=rho)
+        p = _problem(solver=solver, qddot_max=qddot_max, slack_linear=rho, human_lookahead_s=lookahead)
         p.begin_cycle(np.zeros(7), np.zeros(7), np.zeros(7))
         goal = np.zeros(7)
         goal[0] = -0.1
@@ -489,3 +524,8 @@ def test_mpc_yaml_sets_every_setting():
     assert len(params['q_home']) == NUM_JOINTS
     # OSQP stalls with ρ above 1e3 (module docstring of MPCSettings.slack_linear)
     assert params['solver'] == 'daqp' or params['slack_linear'] <= 1e3
+    # The lookahead is the shield's braking time k1/k0 (or off)
+    with open(os.path.join(os.path.dirname(__file__), '..', 'config', 'fr3_control.yaml')) as f:
+        cbf = yaml.safe_load(f)['params']
+    T = params['human_lookahead_s']
+    assert T == 0.0 or abs(T - cbf['k1_cbf'] / cbf['k0_cbf']) < 0.01, (T, cbf['k1_cbf'] / cbf['k0_cbf'])

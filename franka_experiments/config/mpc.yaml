@@ -55,6 +55,8 @@ weights:
 safety:
   d_safe: 0.15             # [m] as the CBF
   delta:  0.05             # [m] on top of d_safe: the MPC keeps away first, the shield rarely acts
+  human_lookahead_s: 0.42  # [s] T: also d + T·ḣ ≥ d_safe + δ + m, slowing the approach as the shield's
+                           # HOCBF does: T = k1_cbf/k0_cbf of fr3_control.yaml (10.5/25). 0 = distance only
 
 human:
   human_enabled:     true
