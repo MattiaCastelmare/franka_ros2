@@ -7,8 +7,11 @@
 ROS messages only, no graph.
 """
 
+import dataclasses
+
 import numpy as np
 import pytest
+from franka_msgs.msg import MpcDiagnostics
 from visualization_msgs.msg import Marker
 
 from franka_experiments.utils.human_markers import EE_PLAN_COLOR, ee_path_markers
@@ -86,6 +89,21 @@ def test_diagnostics_message_copies_every_field():
     # A failed solve keeps its NaNs (cost, clearance): the CSV shows them as nan
     failed = mpc_diagnostics_msg(MPCDiagnostics(status='primal infeasible'), _stamp())
     assert not failed.solved and np.isnan(failed.cost) and np.isnan(failed.human_clearance)
+    assert np.isnan(failed.cost_full) and np.isnan(failed.lambda_human)
+
+
+def test_cost_parts_multipliers_and_delay_reach_the_message_and_the_csv():
+    diag = _solved(cost_full=12.5, stage_cost=1.5, terminal_cost=0.25, lambda_human=450.0,
+                   lambda_accel=3.0, lambda_position=0.0, lambda_velocity=0.5)
+    msg = mpc_diagnostics_msg(diag, _stamp(), input_delay=0.018)
+    assert msg.input_delay == 0.018
+    assert (msg.cost_full, msg.stage_cost, msg.terminal_cost) == (12.5, 1.5, 0.25)
+    assert (msg.lambda_human, msg.lambda_accel, msg.lambda_position, msg.lambda_velocity) == (450.0, 3.0, 0.0, 0.5)
+    # human_logging writes one column per message field, in its FIELDS order
+    from franka_experiments.nodes.human_logging import MpcDiagnosticsLogger
+    msg_fields = set(MpcDiagnostics.get_fields_and_field_types()) - {'header'}
+    assert set(MpcDiagnosticsLogger.FIELDS) == msg_fields
+    assert {f.name for f in dataclasses.fields(MPCDiagnostics)} | {'fallback', 'input_delay'} == msg_fields
 
 
 def test_summary_of_a_quiet_second():

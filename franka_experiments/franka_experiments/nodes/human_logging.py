@@ -196,8 +196,10 @@ class TaskEventLogger(BaseLogger):
 class MpcDiagnosticsLogger(BaseLogger):
     """Logger for one row per MPC solve (franka_msgs/MpcDiagnostics on /mpc/diagnostics)."""
 
-    FIELDS = ['status', 'solved', 'fallback', 'iterations', 'solve_time_ms', 'cost',
-              'human_rows', 'human_binding', 'human_clearance', 'max_slack', 'accel_saturation']
+    FIELDS = ['status', 'solved', 'fallback', 'input_delay', 'iterations', 'solve_time_ms', 'cost',
+              'human_rows', 'human_binding', 'human_clearance', 'max_slack', 'accel_saturation',
+              'cost_full', 'stage_cost', 'terminal_cost',
+              'lambda_human', 'lambda_accel', 'lambda_position', 'lambda_velocity']
 
     def __init__(self, base_path: str):
         super().__init__(f"{base_path}_mpc_diagnostics.csv", self.FIELDS)

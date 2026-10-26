@@ -113,6 +113,15 @@ class MPCDiagnostics:
     human_clearance: float = float('nan') # [m] min over rows of d_lin − (d_safe + δ + m); < 0 = slack used
     max_slack: float = 0.0                # [m]
     accel_saturation: float = 0.0         # fraction of the planned q̈ at the q̈ box
+    # For the a-posteriori checks (analysis/mpc_analysis.py): the optimal cost V and two of its parts
+    cost_full: float = float('nan')       # V = cost + the constant term (≥ 0): comparable across cycles
+    stage_cost: float = float('nan')      # ℓ(x_0, u_0): the terms of step 1 (q_1, q̇_1, u_0, u_0 − u_prev, s_1)
+    terminal_cost: float = float('nan')   # w_terminal·‖q̇_N‖² (terminal 'soft'), included in cost_full
+    # Largest |multiplier| per row family: how much V would drop per unit the bound gave way
+    lambda_human: float = float('nan')    # [cost/m] unscaled: the L1 penalty is exact while < slack_linear
+    lambda_accel: float = float('nan')    # [cost/(rad/s²)] q̈ box (and trust region)
+    lambda_position: float = float('nan') # [cost/rad] joint position limits
+    lambda_velocity: float = float('nan') # [cost/(rad/s)] joint velocity limits
 
 
 class MPCProblem:
@@ -162,6 +171,9 @@ class MPCProblem:
         self.A = np.zeros((self.n_rows, self.nz))  # dense here, sparse only for OSQP
         self.l = np.zeros(self.n_rows)
         self.u = np.zeros(self.n_rows)
+        self.cost_constant = 0.0                  # Σ cᵀWc of the cost terms: the solver does without it
+        self._stage_terms = []                    # (M, c, W) of step 1's terms, see _add_quadratic
+        self._terminal_terms = []
 
         self._human_scale = np.ones(self.ns)      # row scaling of the human rows, see set_human_rows
         self._osqp = None                         # osqp.OSQP, created on the first solve
@@ -284,15 +296,22 @@ class MPCProblem:
         self.H[:] = 0.0
         self.g[:] = 0.0
         self.A[:] = 0.0
+        self.cost_constant = 0.0
+        self._stage_terms, self._terminal_terms = [], []
         self._add_regularisation()
         self._set_limit_rows()
         self._reset_human_rows()
 
-    def _add_quadratic(self, M, c, W) -> None:
-        """Add ‖M U - c‖²_W to the cost: H[U,U] += 2 MᵀWM, g[U] -= 2 MᵀWc. W: matrix or scalar."""
+    def _add_quadratic(self, M, c, W, part: Optional[list] = None) -> None:
+        """Add ‖M U - c‖²_W to the cost: H[U,U] += 2 MᵀWM, g[U] -= 2 MᵀWc, cost_constant += cᵀWc.
+        W: matrix or scalar. part: a list that also keeps (M, c, W), so the diagnostics can
+        evaluate that share of the cost at the solution (stage and terminal cost)."""
         MtW = W * M.T if np.ndim(W) == 0 else M.T @ W
         self.H[self.iU, self.iU] += 2.0 * MtW @ M
         self.g[self.iU] -= 2.0 * MtW @ c
+        self.cost_constant += float(c @ (W * c if np.ndim(W) == 0 else W @ c))
+        if part is not None:
+            part.append((M, c, W))
 
     def add_tracking_term(self, k: int, C, r, W) -> None:
         """Add ‖C·q_k - r‖²_W to the cost, k = 1..N.
@@ -313,7 +332,8 @@ class MPCProblem:
             raise IndexError(f'step k must be in 1..{self.n_steps}, got {k}')
         C = np.atleast_2d(np.asarray(C, dtype=np.float64))
         r = np.asarray(r, dtype=np.float64)
-        self._add_quadratic(C @ self.G[k - 1], r - C @ self.q_free[k - 1], np.asarray(W, dtype=np.float64))
+        self._add_quadratic(C @ self.G[k - 1], r - C @ self.q_free[k - 1], np.asarray(W, dtype=np.float64),
+                            self._stage_terms if k == 1 else None)
 
     def _add_regularisation(self) -> None:
         """Velocity, effort, jerk, soft terminal stop and slack penalties.
@@ -325,16 +345,18 @@ class MPCProblem:
             ρ·1ᵀs + ½σ‖s‖²
         With w_accel > 0 the Hessian is positive definite: the solution is unique.
         """
-        cfg = self.cfg
+        cfg, n = self.cfg, self.n_joints
         for k in range(self.n_steps):
-            w = cfg.w_velocity
-            if cfg.terminal == 'soft' and k == self.n_steps - 1:
-                w += cfg.w_terminal
-            self._add_quadratic(self.V[k], -self.qd_free[k], w)
+            self._add_quadratic(self.V[k], -self.qd_free[k], cfg.w_velocity, self._stage_terms if k == 0 else None)
+        if cfg.terminal == 'soft':
+            self._add_quadratic(self.V[-1], -self.qd_free[-1], cfg.w_terminal, self._terminal_terms)
         self.H[self.iU, self.iU] += 2.0 * cfg.w_accel * np.eye(self.nu)
         c = np.zeros(self.nu)
-        c[:self.n_joints] = self.u_prev
+        c[:n] = self.u_prev
         self._add_quadratic(self.D, c, cfg.w_jerk / self.dt ** 2)
+        # Step 1's share of the two terms that span all of U: u_0 and u_0 − u_prev
+        self._stage_terms += [(np.eye(n, self.nu), np.zeros(n), cfg.w_accel),
+                              (self.D[:n], c[:n], cfg.w_jerk / self.dt ** 2)]
         self.H[self.iS, self.iS] += cfg.slack_quadratic * np.eye(self.ns)
         self.g[self.iS] += cfg.slack_linear
 
@@ -433,9 +455,9 @@ class MPCProblem:
         self.l[R], self.u[R] = lo, hi
 
         solve = self._solve_daqp if self.cfg.solver == 'daqp' else self._solve_osqp
-        x, status, solved, iterations, solve_time = solve(U_bar)
+        x, duals, status, solved, iterations, solve_time = solve(U_bar)
         solved = solved and x is not None and bool(np.all(np.isfinite(x)))
-        self.diag = self._diagnose(x, status, solved, iterations, solve_time)
+        self.diag = self._diagnose(x, duals, status, solved, iterations, solve_time)
         return x[:self.nu].copy() if solved else None
 
     def _solve_osqp(self, U_bar):
@@ -451,7 +473,7 @@ class MPCProblem:
             self._osqp.update(q=self.g, l=self.l, u=self.u, Px=Px, Ax=Ax)
         self._osqp.warm_start(x=np.concatenate([U_bar, np.zeros(self.ns)]))
         res = self._osqp.solve()
-        return (res.x, str(res.info.status), res.info.status_val in OSQP_SOLVED,
+        return (res.x, res.y, str(res.info.status), res.info.status_val in OSQP_SOLVED,
                 int(res.info.iter), float(res.info.solve_time))
 
     def _solve_daqp(self, U_bar):
@@ -459,15 +481,30 @@ class MPCProblem:
         lower, upper = np.maximum(self.l, -DAQP_INF), np.minimum(self.u, DAQP_INF)
         sense = np.where(lower == upper, DAQP_EQUALITY, 0).astype(np.int32)
         x, _, flag, info = daqp.solve(self.H, self.g, self.A, upper, lower, sense)
-        return (x, DAQP_STATUS.get(flag, f'exitflag {flag}'), flag in (1, 2),
+        return (x, info.get('lam'), DAQP_STATUS.get(flag, f'exitflag {flag}'), flag in (1, 2),
                 int(info['iterations']), float(info['solve_time']))
 
-    def _diagnose(self, x, status: str, solved: bool, iterations: int, solve_time: float) -> MPCDiagnostics:
+    def _diagnose(self, x, duals, status: str, solved: bool, iterations: int,
+                  solve_time: float) -> MPCDiagnostics:
+        """duals: one multiplier per row of A (sign: + at the upper bound, − at the lower)."""
         diag = MPCDiagnostics(status=status, solved=solved, iterations=iterations,
                               solve_time_ms=1e3 * solve_time)
         if not solved:
             return diag
+        cfg, U, s = self.cfg, x[self.iU], x[self.iS]
         diag.cost = float(0.5 * x @ self.H @ x + self.g @ x)
+        diag.cost_full = diag.cost + self.cost_constant
+        s_1 = s[:self.n_pairs]
+        diag.stage_cost = (self._terms_cost(self._stage_terms, U)
+                           + float(cfg.slack_linear * s_1.sum() + 0.5 * cfg.slack_quadratic * s_1 @ s_1))
+        diag.terminal_cost = self._terms_cost(self._terminal_terms, U)
+        if duals is not None and len(duals) == self.n_rows and np.all(np.isfinite(duals)):
+            lam = np.abs(np.asarray(duals, dtype=np.float64))
+            diag.lambda_accel = float(lam[self.rows['u']].max())
+            diag.lambda_position = float(lam[self.rows['q']].max())
+            diag.lambda_velocity = float(lam[self.rows['qd']].max())
+            # A human row was divided by ‖a G_k‖ (scale): its multiplier per metre is λ·scale
+            diag.lambda_human = float((lam[self.rows['human']] * self._human_scale).max())
         R = self.rows['human']
         in_use = np.isfinite(self.l[R])
         diag.human_rows = int(in_use.sum())
@@ -480,6 +517,15 @@ class MPCProblem:
         at_box = np.abs(x[self.iU]) >= np.tile(self.qddot_max, self.n_steps) - 1e-3
         diag.accel_saturation = float(at_box.mean())
         return diag
+
+    @staticmethod
+    def _terms_cost(terms, U) -> float:
+        """Σ ‖M U − c‖²_W over the (M, c, W) kept by _add_quadratic."""
+        total = 0.0
+        for M, c, W in terms:
+            e = M @ U - c
+            total += float(e @ (W * e if np.ndim(W) == 0 else W @ e))
+        return total
 
     def first_input(self, U) -> np.ndarray:
         """u_0 of a solution, the input to apply now."""

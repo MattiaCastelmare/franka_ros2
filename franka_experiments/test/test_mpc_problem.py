@@ -6,7 +6,8 @@ The tests pin the conventions of the module and method docstrings:
 - every cost term is the exact quadratic expansion of what its docstring says;
 - every row block means the constraint its docstring says, for any U;
 - solve() returns the QP minimiser, keeps the box, and stays right across updates;
-- the diagnostics report what the solution did with the human rows.
+- the diagnostics report what the solution did with the human rows, the whole cost and its
+  stage and terminal parts, and the multipliers of each row family.
 
 The solve tests run with every installed solver (OSQP always, DAQP if present).
 Pure numpy + QP solvers, no ROS.
@@ -342,6 +343,81 @@ def test_a_human_row_holds_in_the_solution(solver):
     assert d.max_slack < 1e-3
 
 
+@pytest.mark.parametrize('terminal', ['soft', 'none'])
+def test_cost_constant_stage_and_terminal_terms_add_up(terminal):
+    """½zᵀHz + gᵀz + cost_constant is the whole cost (not up to a constant); the kept stage
+    terms are step 1's share of it (q_1, q̇_1, u_0, u_0 − u_prev), the terminal ones w_terminal‖q̇_N‖²."""
+    p = _problem(terminal=terminal)
+    rng = np.random.default_rng(3)
+    q0, qd0, u_prev, goal = (rng.normal(size=7) for _ in range(4))
+    p.begin_cycle(q0, qd0, u_prev)
+    _track_joint_goal(p, goal, weight=100.0)
+    cfg = p.cfg
+    for _ in range(3):
+        U = rng.normal(size=p.nu)
+        q, qd = p.rollout(q0, qd0, U)
+        u = U.reshape(p.n_steps, 7)
+        jerk = np.diff(np.vstack([u_prev, u]), axis=0) / p.dt
+        terminal_cost = cfg.w_terminal * np.sum(qd[-1] ** 2) if terminal == 'soft' else 0.0
+        full = (100.0 * np.sum((q - goal) ** 2) + cfg.w_velocity * np.sum(qd ** 2) + terminal_cost
+                + cfg.w_accel * np.sum(u ** 2) + cfg.w_jerk * np.sum(jerk ** 2))
+        stage = (100.0 * np.sum((q[0] - goal) ** 2) + cfg.w_velocity * np.sum(qd[0] ** 2)
+                 + cfg.w_accel * np.sum(u[0] ** 2) + cfg.w_jerk * np.sum(jerk[0] ** 2))
+        assert _quad(p.H, p.g, _z(p, U)) + p.cost_constant == pytest.approx(full, rel=1e-9)
+        assert p._terms_cost(p._stage_terms, U) == pytest.approx(stage, rel=1e-9)
+        assert p._terms_cost(p._terminal_terms, U) == pytest.approx(terminal_cost, rel=1e-9, abs=1e-12)
+
+
+@pytest.mark.parametrize('solver', SOLVERS)
+def test_diagnostics_report_the_cost_parts_at_the_solution(solver):
+    p = _problem(solver=solver, q_lim=10.0, qdot_max=10.0, qddot_max=100.0)
+    rng = np.random.default_rng(4)
+    q0, qd0, u_prev = 0.1 * rng.normal(size=7), 0.2 * rng.normal(size=7), rng.normal(size=7)
+    p.begin_cycle(q0, qd0, u_prev)
+    _track_joint_goal(p, 0.2 * rng.normal(size=7))
+    U = p.solve(np.zeros(p.nu))
+    d = p.diag
+    assert U is not None
+    assert d.cost_full == pytest.approx(d.cost + p.cost_constant) and d.cost_full >= 0.0
+    # Without human rows the slacks sit at 0 (OSQP: within its tolerance, times ρ)
+    assert d.stage_cost == pytest.approx(p._terms_cost(p._stage_terms, U), abs=1e-2)
+    assert d.terminal_cost == pytest.approx(p._terms_cost(p._terminal_terms, U))
+    assert 0.0 < d.stage_cost < d.cost_full and 0.0 <= d.terminal_cost < d.cost_full
+    # Nothing binds: every multiplier is 0 (OSQP: about)
+    assert max(d.lambda_human, d.lambda_accel, d.lambda_position, d.lambda_velocity) < 1e-2
+
+
+@pytest.mark.parametrize('solver, rho', [(s, 1e3) for s in SOLVERS]
+                         + ([('daqp', 1e4)] if 'daqp' in SOLVERS else []))
+def test_multipliers_of_a_held_and_of_a_slackened_human_row(solver, rho):
+    """KKT of a slack (s ≥ 0, cost ρs + ½σs²): a row held without slack has λ < ρ, a row that
+    needs slack has λ = ρ + σs. λ is the unscaled multiplier, in cost per metre.
+    ρ = 1e4 (mpc.yaml) with DAQP only: OSQP's ADMM stalls there."""
+    def solve(need, qddot_max):
+        # The task pulls joint 1 to −0.1; the row wants q_N[0] ≥ need
+        p = _problem(solver=solver, qddot_max=qddot_max, slack_linear=rho)
+        p.begin_cycle(np.zeros(7), np.zeros(7), np.zeros(7))
+        goal = np.zeros(7)
+        goal[0] = -0.1
+        _track_joint_goal(p, goal)
+        a = np.zeros((1, 7))
+        a[0, 0] = 1.0
+        d_bar = np.array([p.cfg.d_safe + p.cfg.delta - need])
+        p.set_human_rows(p.n_steps, a, d_bar, np.zeros(1), np.zeros(7))
+        assert p.solve(np.zeros(p.nu)) is not None
+        return p.cfg, p.diag
+
+    cfg, held = solve(0.0, 5.0)
+    assert held.max_slack < 1e-3 and held.human_binding == 1
+    assert 10.0 < held.lambda_human < cfg.slack_linear
+    assert held.lambda_position < 1e-2 and held.lambda_velocity < 1e-2   # limits far away
+    # 0.5 rad is out of reach in 0.5 s with |q̈| ≤ 1: the row leans on its slack, q̈ on its box
+    cfg, pushed = solve(0.5, 1.0)
+    assert pushed.max_slack > 0.1 and pushed.lambda_accel > 1.0
+    assert pushed.lambda_human == pytest.approx(cfg.slack_linear + cfg.slack_quadratic * pushed.max_slack,
+                                                rel=1e-2)
+
+
 @pytest.mark.parametrize('solver', SOLVERS)
 def test_an_infeasible_cycle_returns_none_and_says_so(solver):
     # Stop in N steps from 1 rad/s, but q̈ may only move 0.1 around a plan of zeros
@@ -349,6 +425,7 @@ def test_an_infeasible_cycle_returns_none_and_says_so(solver):
     p.begin_cycle(np.zeros(7), np.full(7, 1.0), np.zeros(7))
     assert p.solve(np.zeros(p.nu)) is None
     assert not p.diag.solved and p.diag.status
+    assert np.isnan(p.diag.cost_full) and np.isnan(p.diag.lambda_human)
 
 
 @pytest.mark.parametrize('solver', SOLVERS)

@@ -438,13 +438,15 @@ def ee_trajectory_arrays(msg: MultiDOFJointTrajectory) -> Tuple[np.ndarray, np.n
     return times, positions, orientations
 
 
-def mpc_diagnostics_msg(diag, stamp, fallback: bool = False) -> MpcDiagnostics:
-    """franka_msgs/MpcDiagnostics of one solve: an mpc_problem.MPCDiagnostics plus the node's fallback."""
+def mpc_diagnostics_msg(diag, stamp, fallback: bool = False, input_delay: float = 0.0) -> MpcDiagnostics:
+    """franka_msgs/MpcDiagnostics of one solve: an mpc_problem.MPCDiagnostics plus what only the
+    node knows: the fallback and the input delay (the plan starts input_delay after stamp)."""
     msg = MpcDiagnostics()
     msg.header.stamp = stamp
     for field in dataclasses.fields(diag):
         setattr(msg, field.name, getattr(diag, field.name))
     msg.fallback = bool(fallback)
+    msg.input_delay = float(input_delay)
     return msg
 
 
