@@ -20,9 +20,11 @@ mpc      The real mpc_commander node (its control_loop, mpc.yaml), on an isolate
          It receives the joint state every cycle and each HumanArmState T_CAM after its
          capture stamp, as on the robot.
 arm      Double integrator at the CBF's qp_rate_hz; the MPC's q̈ is held between its
-         cycles (dt of mpc.yaml).
+         cycles (dt of mpc.yaml). --plant-delay-s D: each q̈ reaches the arm D after its
+         cycle (the loop's own time on the robot), the previous one acting until then.
 shield   +cbf: the CBF of cbf_human_replay (shipped ConstraintBuilder and QP,
-         fr3_control.yaml, prediction rows off) filters the held q̈. +shield: the same
+         fr3_control.yaml, prediction rows off) filters the held q̈, and its output is
+         handed back to the MPC as the q̈ in force (its qddot_safe subscription). +shield: the same
          with config/cbf_shield.yaml on top, as easy_torque runs it behind the MPC. Rows are rebuilt at cbf_update_rate_hz, robot-only rows
          included when nobody is near (perception keeps publishing empty frames).
 truth    The measured keypoints (median of 3, no filter): every configuration is scored
@@ -46,9 +48,11 @@ USAGE (inside the ROS container, workspace sourced, this checkout on PYTHONPATH)
     python3 scripts/mpc_human_replay.py cbf_final.npz \\
         --configs static prediction static+cbf prediction+cbf [--shift-m 0.15]
 
-Configs: <static|prediction>[+cbf|+shield]. --shift-m D moves the person D metres toward the
-robot (a stress test: the lab people mostly kept clear of the arm). --cbf-set '{"key": v}'
-overrides fr3_control.yaml keys of the shield (to try a looser one).
+Configs: <static|prediction>[+cbf|+shield][[key=value,...]], the brackets overriding mpc.yaml
+keys of that configuration only, e.g. prediction+shield[input_delay_s=0.018,slack_linear=1e4].
+--shift-m D moves the person D metres toward the robot (a stress test: the lab people mostly
+kept clear of the arm). --cbf-set '{"key": v}' overrides fr3_control.yaml keys of the shield
+(to try a looser one).
 """
 from __future__ import annotations
 
@@ -66,9 +70,11 @@ os.environ['ROS_LOCALHOST_ONLY'] = '1'
 import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 from rclpy.clock import ClockType  # noqa: E402
+from rclpy.parameter import Parameter  # noqa: E402
 from rclpy.time import Time  # noqa: E402
 from scipy.spatial.transform import Rotation, Slerp  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
+from std_msgs.msg import Float64MultiArray  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -106,9 +112,30 @@ def stamp(t):
     return Time(nanoseconds=int(round(t * 1e9)), clock_type=ClockType.ROS_TIME).to_msg()
 
 
-def make_mpc(human_mode):
-    """A real MPCCommander with sinks for publishers and a replay clock."""
-    node = MPCCommander()
+def parse_config(config):
+    """'prediction+shield[input_delay_s=0.018]' -> ('prediction', 'shield', {'input_delay_s': 0.018}).
+
+    The values take the type of the mpc.yaml key they override.
+    """
+    name, _, brackets = config.partition('[')
+    human_mode, _, shield = name.partition('+')
+    if human_mode not in ('static', 'prediction') or shield not in ('', 'cbf', 'shield'):
+        raise SystemExit(f'unknown config {config}')
+    with open(os.path.join(cs.PKG, 'config', 'mpc.yaml')) as f:
+        defaults = {k: v for section in yaml.safe_load(f).values() for k, v in section.items()}
+    mpc_set = {}
+    for item in filter(None, brackets.rstrip(']').split(',')):
+        key, _, value = (part.strip() for part in item.partition('='))
+        if key not in defaults:
+            raise SystemExit(f'{config}: {key} is not a key of mpc.yaml')
+        default = defaults[key]
+        mpc_set[key] = type(default)(value) if isinstance(default, (int, float)) and not isinstance(default, bool) else value
+    return human_mode, shield, mpc_set
+
+
+def make_mpc(human_mode, mpc_set):
+    """A real MPCCommander (mpc.yaml with mpc_set on top), sinks for publishers and a replay clock."""
+    node = MPCCommander(parameter_overrides=[Parameter(k, value=v) for k, v in mpc_set.items()])
     node.get_logger().set_level(rclpy.logging.LoggingSeverity.ERROR)
     node.destroy_timer(node.timer)   # control_loop is called from here
     node.pub = node.sp_pub = node.plan_pub = node.diag_pub = _Sink()
@@ -153,10 +180,8 @@ def task_path(node, rec, t0, t1):
     return times, np.array(positions), Slerp(times, Rotation.from_matrix(np.array(rotations)))
 
 
-def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None):
-    human_mode, _, shield = config.partition('+')
-    if human_mode not in ('static', 'prediction') or shield not in ('', 'cbf', 'shield'):
-        raise SystemExit(f'unknown config {config}')
+def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None, plant_delay=0.0):
+    human_mode, shield, mpc_set = parse_config(config)
     P = easy_torque_params('off')
     overrides = {}
     if shield == 'shield':
@@ -168,7 +193,7 @@ def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None):
         setattr(P, key, value)
     F = cs.Filter(P)                       # kinematics for the scoring, and the shield
     hd = HumanDistance(F, rec.sides)
-    node, clock = make_mpc(human_mode)
+    node, clock = make_mpc(human_mode, mpc_set)
     dt = F.dt
     every_rows = max(1, int(round(P.qp_rate_hz / P.cbf_update_rate_hz)))   # also the scoring rate
     every_mpc = max(1, int(round(node.dt / dt)))
@@ -184,6 +209,8 @@ def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None):
 
     q, qdot = q_ref[0].copy(), dq_ref[0].copy()
     u = qddot = np.zeros(NV)
+    pending = []                           # (time it reaches the arm, q̈) of the MPC's outputs
+    safe_msg = Float64MultiArray()
     frame, latest, latest_cap, latest_conf = 0, {s: None for s in rec.sides}, None, {}
     con = None
     out = dict(gap=[], gap_ref=[], dev=[], mpc_t=[], binding=[], slack=[], change=[], causes=[])
@@ -212,7 +239,7 @@ def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None):
                 orientations=path_R(np.clip(t_prev, path_t[0], path_t[-1])).as_quat())
             node.latest_task_trajectory = (preview, clock.now())
             node.control_loop()
-            u = np.array(node.qddot_msg.data)
+            pending.append((t + plant_delay, np.array(node.qddot_msg.data)))
             out['mpc_t'].append(len(out['gap']))   # scoring index of this cycle
             out['binding'].append(node.problem.diag.human_binding)
             out['slack'].append(node.problem.diag.max_slack)
@@ -237,7 +264,9 @@ def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None):
                 con = F.builder.build(JointSnap(q=q, qdot=qdot, stamp=t),
                                       ObstacleSnap(items=obs, stamp=t, t_cap=latest_cap or t), t)
 
-        # ── the arm: the MPC's q̈, through the shield with +cbf
+        # ── the arm: the MPC's q̈ once it arrives, through the shield with +cbf
+        while pending and pending[0][0] <= t + 1e-9:
+            u = pending.pop(0)[1]
         qddot_prev, qddot = qddot, u
         if shield:
             qddot, _, nom, _, _ = F.tick(t, con, q, qdot, u)
@@ -259,6 +288,9 @@ def run(rec, config, *, t_start=0.0, duration=0.0, cbf_set=None):
                 causes[-1] = not causes[:-1].any() and float(np.linalg.norm(nom - u)) > 1e-3
             out['change'].append(change)
             out['causes'].append(causes)
+            if node.qddot_safe_topic:      # what the node's subscription would receive
+                safe_msg.data = qddot.tolist()
+                node.latest_qddot_safe = (safe_msg, clock.now())
         qdot = qdot + qddot * dt
         q = q + qdot * dt
     node.destroy_node()
@@ -324,6 +356,8 @@ def main(argv=None):
     ap.add_argument('--shift-m', type=float, default=0.0,
                     help='stress test: move the person this far toward the robot base')
     ap.add_argument('--cbf-set', default='', help='JSON of fr3_control.yaml keys for the shield')
+    ap.add_argument('--plant-delay-s', type=float, default=0.0,
+                    help="each MPC q̈ reaches the arm this long after its cycle (the loop's own time)")
     ap.add_argument('--json', default='', help='write every score here')
     args = ap.parse_args(argv)
     cbf_set = json.loads(args.cbf_set) if args.cbf_set else None
@@ -337,20 +371,21 @@ def main(argv=None):
         if args.shift_m:
             rec.shift_toward_robot(args.shift_m)
             print(f'   person moved {100 * args.shift_m:.0f} cm toward the robot base')
-        results = {c: run(rec, c, t_start=args.start_s, duration=args.duration_s, cbf_set=cbf_set)
-                   for c in args.configs}
+        results = {c: run(rec, c, t_start=args.start_s, duration=args.duration_s, cbf_set=cbf_set,
+                          plant_delay=args.plant_delay_s) for c in args.configs}
         first = results[args.configs[0]]
         ev = events(first['gap_ref'], first['dt_score'], EVENT_GAP)
         print(f'   {len(ev)} approach events (person within {EVENT_GAP:.2f} m of the recorded arm), '
               f'd_safe {first["d_safe"]:.2f} m, MPC target d_safe+δ {first["d_safe"] + first["delta"]:.2f} m')
         scores = {c: score(r, ev) for c, r in results.items()}
-        print(f"   {'config':18s} {'min gap':>8s} {'<d_safe':>8s} {'<+δ':>7s} {'react d':>8s} "
+        w = max(18, *(len(c) for c in args.configs))
+        print(f"   {'config':{w}s} {'min gap':>8s} {'<d_safe':>8s} {'<+δ':>7s} {'react d':>8s} "
               f"{'dev mean':>9s} {'dev p95':>8s} {'slack cyc':>9s} {'shield':>7s} {'near':>12s}")
         for c, s in scores.items():
             react = np.nanmedian(s['ev_react']) if np.isfinite(s['ev_react']).any() else np.nan
             shield = (f"{s['shield_s']:6.1f}s {s['shield_near_s']:5.1f}/{s['near_s']:4.1f}s"
                       if 'shield_s' in s else f"{'–':>7s} {'–':>12s}")
-            print(f"   {c:18s} {100 * s['min_gap']:+7.1f}c {s['inside_s']:7.2f}s {s['inside_delta_s']:6.2f}s "
+            print(f"   {c:{w}s} {100 * s['min_gap']:+7.1f}c {s['inside_s']:7.2f}s {s['inside_delta_s']:6.2f}s "
                   f"{100 * react:7.1f}c {100 * s['dev_mean']:7.1f}cm {100 * s['dev_p95']:6.1f}cm "
                   f"{s['slack_cycles']:9d} {shield}")
         paired(scores, 'ev_min', args.configs[0], 'closest point per event')
@@ -368,7 +403,6 @@ def main(argv=None):
         with open(args.json, 'w') as f:
             json.dump(dump, f, indent=1)
     rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
