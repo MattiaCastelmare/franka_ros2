@@ -288,7 +288,8 @@ class MPCProblem:
     # ── One cycle ───────────────────────────────────────────────────────────
 
     def begin_cycle(self, q0, qd0, u_prev) -> None:
-        """Start a new QP from the measured state and the last published input."""
+        """Start a new QP from the state where the plan starts and the q̈ in force then (u_prev:
+        the jerk term's starting point)."""
         self.q0 = self._joint_vector(q0, 'q0')
         self.qd0 = self._joint_vector(qd0, 'qd0')
         self.u_prev = self._joint_vector(u_prev, 'u_prev')

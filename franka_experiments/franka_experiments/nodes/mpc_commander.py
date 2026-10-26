@@ -2,9 +2,10 @@
 """MPC commander: tracks a task preview with the condensed QP of utils/mpc_problem.py.
 
 Every dt (config/mpc.yaml) control_loop:
-  1. reads q, q̇ of the 7 arm joints (1 kHz joint states);
-  2. samples the task preview (/task/trajectory) at t + k·dt, k = 1..N;
-  3. linearises around the shifted previous plan q̄_k (kinematics);
+  1. reads q, q̇ of the 7 arm joints (1 kHz joint states) and the q̈ in force on them;
+  2. samples the task preview (/task/trajectory) at t0 + k·dt, k = 1..N, where t0 = now +
+     input_delay_s is when u_0 reaches the controller (this loop's own time);
+  3. predicts the state at t0 and linearises around the shifted previous plan q̄_k;
   4. adds the task terms and 5. the human rows to the QP;
   6. solves; on failure runs the previous plan for max_failures cycles, then brakes;
   7. publishes u_0 on /NS_1/qddot_nom (or the brake), 8. the plan and its next state;
@@ -12,7 +13,8 @@ Every dt (config/mpc.yaml) control_loop:
 
 The node does not know the task: pick_place_qddot_commander with reference_only: true
 publishes the preview (easy_torque.launch.py commander:=mpc). With control_mode:=cbf the
-CBF filters /NS_1/qddot_nom downstream (shielded MPC).
+CBF filters /NS_1/qddot_nom downstream (shielded MPC), and its output /NS_1/qddot_safe is
+read back as the q̈ in force.
 
 q̈ = 0 is NOT a stop: rt_torque_controller integrates q̈, so every stop path brakes.
 """
@@ -52,8 +54,9 @@ MAX_IMAGE_LATENCY_S = 0.5   # an arm state stamped further back is a replayed ba
 
 
 class MPCCommander(Node):
-    def __init__(self):
-        super().__init__('mpc_commander')
+    def __init__(self, **node_kwargs):
+        # node_kwargs: e.g. parameter_overrides, for scripts/mpc_human_replay.py
+        super().__init__('mpc_commander', **node_kwargs)
         self.done = False
         config_dir = os.path.join(get_package_share_directory('franka_experiments'), 'config')
 
@@ -65,6 +68,9 @@ class MPCCommander(Node):
         self.settings = MPCSettings(**{field.name: param(field.name)
                                        for field in dataclasses.fields(MPCSettings)})
         self.dt = self.settings.dt
+        self.input_delay_s = float(param('input_delay_s'))
+        if not 0.0 <= self.input_delay_s < self.dt:
+            raise ValueError('input_delay_s must be in [0, dt)')
         self.brake_gain = float(param('brake_gain'))
         self.joint_state_timeout_s = float(param('joint_state_timeout_s'))
         self.task_timeout_s = float(param('task_timeout_s'))
@@ -109,9 +115,10 @@ class MPCCommander(Node):
         # ── State ────────────────────────────────────────────────────────────
         self.latest_joint_state = None          # (msg, receipt time)
         self.latest_task_trajectory = None      # (msg, receipt time)
+        self.latest_qddot_safe = None           # (msg, receipt time): the shield's output, if any
         self.last_qdot = np.zeros(NUM_JOINTS)   # for braking without a fresh joint state
         self.U = np.zeros(self.problem.nu)      # current plan
-        self.u_prev = np.zeros(NUM_JOINTS)      # last published q̈ (the jerk term starts from it)
+        self.u_prev = np.zeros(NUM_JOINTS)      # last published q̈: the q̈ in force without a shield
         self.failures = 0
         self.stop_end = None                    # request_stop: brake until this time
         self.diag_window, self.fallbacks = [], 0
@@ -144,6 +151,13 @@ class MPCCommander(Node):
         # Task reference over the horizon: the MPC does not know which task it tracks
         self.task_trajectory_sub = self.create_subscription(
             MultiDOFJointTrajectory, param('task_trajectory_topic'), self.task_trajectory_cb, latest_qos)
+        # With a CBF downstream its output, not our u, is the q̈ the arm gets ('' = always ours)
+        self.qddot_safe_topic = param('qddot_safe_topic')
+        if self.qddot_safe_topic == AUTO_SENTINEL:
+            self.qddot_safe_topic = control_topics.get('qddot_safe', '')
+        if self.qddot_safe_topic:
+            self.qddot_safe_sub = self.create_subscription(
+                Float64MultiArray, self.qddot_safe_topic, self.qddot_safe_cb, js_qos)
 
         # ── Publishers ───────────────────────────────────────────────────────
         qddot_topic = param('qddot_nom_topic')
@@ -173,6 +187,9 @@ class MPCCommander(Node):
 
     def task_trajectory_cb(self, msg: MultiDOFJointTrajectory):
         self.latest_task_trajectory = (msg, self.get_clock().now())
+
+    def qddot_safe_cb(self, msg: Float64MultiArray):
+        self.latest_qddot_safe = (msg, self.get_clock().now())
 
     def request_stop(self):
         """Ctrl-C: brake for 0.5 s, then let run_node_main exit."""
@@ -257,19 +274,30 @@ class MPCCommander(Node):
         u = None          # q̈ to publish this cycle; None = brake
         planned = False   # True when u comes from a plan (then the plan is published too)
 
-        # ── 1. Arm state: q, q̇ of the 7 arm joints by name (the message has the fingers too)
+        # ── 1. Arm state: q, q̇ of the 7 arm joints by name (the message has the fingers too),
+        # how old it is, and the q̈ in force on them: the shield's last output while fresh (a CBF
+        # downstream), else our last u
         q = qd = None
+        state_age = 0.0
         if self.latest_joint_state is not None:
             msg, received = self.latest_joint_state
             index = {name: i for i, name in enumerate(msg.name)}
-            if ((now - received).nanoseconds * 1e-9 <= self.joint_state_timeout_s
+            state_age = (now - received).nanoseconds * 1e-9
+            if (state_age <= self.joint_state_timeout_s
                     and all(name in index for name in FR3_JOINT_NAMES)
                     and len(msg.velocity) == len(msg.position)):
                 idx = [index[name] for name in FR3_JOINT_NAMES]
                 q, qd = np.array(msg.position)[idx], np.array(msg.velocity)[idx]
                 self.last_qdot = qd
+        u_in_force = self.u_prev
+        if self.latest_qddot_safe is not None:
+            msg, received = self.latest_qddot_safe
+            if (now - received).nanoseconds * 1e-9 <= self.dt and len(msg.data) == NUM_JOINTS:
+                u_in_force = np.array(msg.data)
 
-        # ── 2. Task reference at t + k·dt, k = 1..N (none yet, stale, or another frame: None)
+        # ── 2. Task reference at t0 + k·dt, k = 1..N (none yet, stale, or another frame: None).
+        # t0 = now + input_delay_s: when u_0 reaches the controller, so where the plan starts
+        t0 = now_s + self.input_delay_s
         reference = None
         if self.latest_task_trajectory is not None:
             msg, received = self.latest_task_trajectory
@@ -278,7 +306,7 @@ class MPCCommander(Node):
                     self.get_logger().warn(f'The task preview moves {msg.joint_names}, not {self.ee_frame}',
                                            throttle_duration_sec=5.0)
                 else:
-                    reference = self.sample_task_reference(msg, now_s + self.dt * np.arange(1, N + 1))
+                    reference = self.sample_task_reference(msg, t0 + self.dt * np.arange(1, N + 1))
 
         if self.stop_end is not None:
             self.done = now >= self.stop_end
@@ -287,12 +315,16 @@ class MPCCommander(Node):
         elif reference is None:
             self.get_logger().info('Waiting for the task preview: holding (braking)', throttle_duration_sec=5.0)
         else:
-            # ── 3. Real-time iteration: linearise around the previous plan, one step on.
+            # ── 3. The state at t0, τ after the measured one, with the q̈ in force until then:
+            #   q0 = q + τ·q̇ + ½τ²·u_in_force,   q̇0 = q̇ + τ·u_in_force
+            # Real-time iteration: linearise around the previous plan, one step on.
             # lin[k-1] = (p_tcp, R_tcp, J_tcp 6×7, control points) at q̄_k
+            tau = state_age + self.input_delay_s
+            q0, qd0 = q + tau * qd + 0.5 * tau ** 2 * u_in_force, qd + tau * u_in_force
             U_bar = problem.shift_plan(self.U)
-            q_bar, _ = problem.rollout(q, qd, U_bar)
+            q_bar, _ = problem.rollout(q0, qd0, U_bar)
             lin = [self.kinematics(q_k) for q_k in q_bar]
-            problem.begin_cycle(q, qd, self.u_prev)
+            problem.begin_cycle(q0, qd0, u_in_force)
 
             # ── 4. Task terms ‖C q_k − r‖²_W, Gauss-Newton around q̄_k (add_tracking_term):
             #   TCP position     C = J̄_v,  r = p_ref − p̄ + J̄_v q̄_k
@@ -313,7 +345,7 @@ class MPCCommander(Node):
             # ── 5. Human rows: at each step the arm where the forecast puts it, and the K
             # control-point / capsule pairs closest to it (set_human_rows):
             #   d̄ + a·(q_k − q̄_k) ≥ d_safe + δ + m,   a = n̂ᵀ J_c(q̄_k)
-            # τ counts from the image: its latency plus k·dt. 'prediction' moves the keypoints
+            # τ counts from the image: its latency, input_delay_s and k·dt. 'prediction' moves the keypoints
             # along their velocity up to prediction_cap_s, 'static' leaves them where they are;
             # both widen the margin m with the forecast uncertainty at τ:
             #   m = min(k_sigma·σ, margin_max),  σ² = n̂ᵀ(Σ_pp + τ(Σ_pv + Σ_pvᵀ) + τ²Σ_vv)n̂
@@ -322,7 +354,7 @@ class MPCCommander(Node):
             for k in range(1, N + 1):
                 capsules = []   # (capsule, arm, τ) of this step
                 for arm in arms:
-                    tau = arm['latency'] + k * self.dt
+                    tau = arm['latency'] + self.input_delay_s + k * self.dt
                     shift = min(tau, self.prediction_cap_s) if self.human_mode == 'prediction' else 0.0
                     for capsule in self.human_geometry.build_capsules(arm['p'] + shift * arm['v'], arm['valid']):
                         capsules.append((capsule, arm, tau))
@@ -356,7 +388,7 @@ class MPCCommander(Node):
             fallback = U is None
             self.failures = 0 if U is not None else self.failures + 1
             self.U = U if U is not None else U_bar
-            self.diag_pub.publish(mpc_diagnostics_msg(problem.diag, now.to_msg(), fallback))
+            self.diag_pub.publish(mpc_diagnostics_msg(problem.diag, now.to_msg(), fallback, self.input_delay_s))
             self.diag_window.append(problem.diag)
             self.fallbacks += int(fallback)
             if self.summary_log.due(now_s):
@@ -377,9 +409,9 @@ class MPCCommander(Node):
         self.pub.publish(self.qddot_msg)
         self.u_prev = u
 
-        # ── 8. The plan: its TCP path (RViz, logs) and its next state on q_des_state
+        # ── 8. The plan from t0: its TCP path (RViz, logs) and its next state on q_des_state
         if planned:
-            q_plan, qd_plan = problem.rollout(q, qd, self.U)
+            q_plan, qd_plan = problem.rollout(q0, qd0, self.U)
             stamp = now.to_msg()
             fill_ee_trajectory_msg(self.plan_msg, stamp, np.array([self.tcp_position(q_k) for q_k in q_plan]))
             self.plan_pub.publish(self.plan_msg)

@@ -9,6 +9,8 @@ io:
   task_trajectory_topic: /task/trajectory    # task preview (pick_place_qddot_commander, reference_only)
   plan_topic:            /mpc/plan           # planned TCP path, drawn by human_visualizer
   diagnostics_topic:     /mpc/diagnostics    # one MpcDiagnostics per solve, logged by human_logging
+  qddot_safe_topic:      __auto__            # qddot_safe of fr3_control.yaml: with a CBF downstream, its output
+                                             # is the q̈ in force (state prediction, jerk term); '' = always ours
   ee_frame:              fr3_hand_tcp        # frame the task preview names (checked at runtime)
 
 # Stopping and fallbacks. q̈ = 0 is NOT a stop (rt_torque_controller integrates q̈):
@@ -19,6 +21,10 @@ safety_io:
   task_timeout_s:        0.2    # [s] older task preview (or none yet) -> brake
   max_failures:          3      # failed solves in a row running the previous plan, then brake
   log_period_s:          1.0    # [s] one summary line (logging_utils.format_mpc_summary)
+  # [s] from reading the joint state to u_0 reaching the controller (the loop's own time: ~18 ms in
+  # Gazebo with the human rows, analysis/mpc_analysis.py point 6). The plan starts then, from the
+  # state predicted with the q̈ in force. 0 = plan from the measured state, as if u_0 acted at once
+  input_delay_s:         0.018
 
 horizon:
   dt:             0.05     # [s] also the period of the control loop
