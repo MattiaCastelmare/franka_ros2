@@ -481,6 +481,11 @@ def test_mpc_yaml_sets_every_setting():
     fields = [field.name for field in dataclasses.fields(MPCSettings)]
     assert set(fields) <= set(params), set(fields) - set(params)
     settings = MPCSettings(**{name: params[name] for name in fields})
+    # YAML 1.1 reads 1.0e4 (no sign in the exponent) as a string
+    numeric = [f.name for f in dataclasses.fields(MPCSettings) if isinstance(f.default, (int, float))]
+    assert all(isinstance(params[name], (int, float)) for name in numeric), {n: params[n] for n in numeric}
     ones = np.ones(NUM_JOINTS)
     MPCProblem(settings, -ones, ones, ones, ones)
     assert len(params['q_home']) == NUM_JOINTS
+    # OSQP stalls with ρ above 1e3 (module docstring of MPCSettings.slack_linear)
+    assert params['solver'] == 'daqp' or params['slack_linear'] <= 1e3
