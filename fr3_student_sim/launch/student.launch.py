@@ -36,7 +36,7 @@ ARGS = {
     'duration': ('20.0', '[s] run length after the settle phase'),
     'control_rate': ('1000.0', '[Hz] how often Controller.update is called (<= 1000)'),
     'gui': ('true', 'Open the Gazebo window'),
-    'log_dir': ('', 'Where the .npz logs go (empty = ./runs)'),
+    'log_dir': ('', 'Where the .npz logs go (empty = runs/ in the fr3_student_sim source folder)'),
     'run_name': ('', 'Prefix of the log file (empty = controller name)'),
     'real_time_factor': ('0.5', 'Gazebo speed vs wall clock. 0.5 leaves the Python controller '
                                 'time to run at 1 kHz; raise it only for light controllers'),
@@ -116,6 +116,7 @@ def _launch(context):
     a = {k: LaunchConfiguration(k).perform(context) for k in ARGS}
     on = lambda k: a[k].lower() in ('1', 'true', 'yes')  # noqa: E731
     share = get_package_share_directory(PKG)
+    from fr3_student_sim.paths import runs_dir
     from fr3_student_sim.robot_description import build_urdf, process_xacro
 
     controller = a['controller']
@@ -177,7 +178,7 @@ def _launch(context):
                      'wall_enabled': on('wall'),
                      'stop_at_detachment': on('stop_at_detachment'), 'duration': float(a['duration']),
                      'control_rate': float(a['control_rate']),
-                     'log_dir': a['log_dir'] or os.path.join(os.getcwd(), 'runs'),
+                     'log_dir': a['log_dir'] or runs_dir(),
                      'run_name': a['run_name']}])
 
     actions = env + [

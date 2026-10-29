@@ -53,7 +53,7 @@ ros2 run fr3_student_sim plot_run runs/<newest file>.npz                        
 ```
 
 The Gazebo window opens, the run lasts `duration` seconds, then everything closes
-and the log is saved in `runs/` **inside the folder you launched from**. `Ctrl+C`
+and the log is saved in `fr3_student_sim/runs/` (whatever folder you launch from). `Ctrl+C`
 stops a run early (the log is still saved). Edits to your controller work at the
 next launch (no rebuild).
 
@@ -67,7 +67,7 @@ Options (`name:=value` after the launch command):
 | `stop_at_detachment` | `false` | end the run when the fingertip first leaves the wall |
 | `task_config`, `wall_config` | `config/…` | other parameter files (e.g. one per experiment) |
 | `run_name` | controller name | prefix of the log file |
-| `log_dir` | `./runs` | where the logs go |
+| `log_dir` | `fr3_student_sim/runs` | where the logs go |
 | `gui` | `true` | the Gazebo window |
 | `real_time_factor` | `0.5` | simulation speed: 0.5 leaves Python the time to run at 1 kHz |
 | `control_rate` | `1000` | [Hz] how often `update` is called |

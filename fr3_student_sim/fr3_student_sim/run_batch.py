@@ -18,7 +18,7 @@ The batch file::
         launch: {noise_dq: 0.001}                  # extra launch options for this run
 
 Each run gets its own task/wall YAML in ``runs/batch_configs/``; the logs go to
-``runs/`` as usual. At the end a table of the ground-truth contact facts is printed.
+``runs/`` as usual (both in the fr3_student_sim folder). At the end a table of the ground-truth contact facts is printed.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ import sys
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
+from fr3_student_sim.paths import runs_dir
 from fr3_student_sim.plot_run import load_run, metrics
 
 
@@ -59,7 +60,8 @@ def main():
     defaults = dict(batch.get('defaults', {}))
     task0 = _yaml(defaults.pop('task_config', os.path.join(share, 'config', 'task.yaml')))
     wall0 = _yaml(defaults.pop('wall_config', os.path.join(share, 'config', 'wall.yaml')))
-    cfg_dir = os.path.join(os.getcwd(), 'runs', 'batch_configs')
+    logs = runs_dir()
+    cfg_dir = os.path.join(logs, 'batch_configs')
     os.makedirs(cfg_dir, exist_ok=True)
 
     results = []
@@ -73,17 +75,18 @@ def main():
             yaml.safe_dump(merge(wall0, run.get('wall')), f, sort_keys=False)
         opts = merge(defaults, run.get('launch'))
         opts.update({'run_name': name, 'task_config': task_path, 'wall_config': wall_path,
+                     'log_dir': logs,
                      'gui': 'true' if a.gui else 'false'})
         cmd = ['ros2', 'launch', 'fr3_student_sim', 'student.launch.py'] + [
             f'{k}:={str(v).lower() if isinstance(v, bool) else v}' for k, v in opts.items()]
         print(f'\n[{i + 1}/{len(batch["runs"])}] {name}', flush=True)
-        before = set(glob.glob(os.path.join('runs', f'{name}_*.npz')))
+        before = set(glob.glob(os.path.join(logs, f'{name}_*.npz')))
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for line in proc.stdout:          # show only what the runner says
             if 'student_runner' in line or 'Traceback' in line or 'Error' in line:
                 sys.stdout.write('   ' + line.split(']: ', 1)[-1])
         proc.wait()
-        new = sorted(set(glob.glob(os.path.join('runs', f'{name}_*.npz'))) - before)
+        new = sorted(set(glob.glob(os.path.join(logs, f'{name}_*.npz'))) - before)
         results.append((name, metrics(load_run(new[-1])) if new else None))
 
     keys = ['stop_reason', 't_contact_s', 'entry_speed_mps', 'peak_force_N',
