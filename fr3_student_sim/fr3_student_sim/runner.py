@@ -2,8 +2,9 @@
 
 At every ``/joint_states`` message (1 kHz, simulation time) it:
 
-1. SETTLE  for ``settle_time`` s brings the arm to ``initial_q`` of the task YAML
-           (it sags a little while the controllers start) and holds it there;
+1. SETTLE  brings the arm to ``initial_q`` of the task YAML in ``settle_time`` s (it
+           sags a little while the controllers start) and holds it there until
+           it has really stopped, so the run starts from rest;
 2. RUN     calls ``Controller.update(t, q, dq)`` at ``control_rate`` Hz, clips the
            torque to the FR3 limits, adds the virtual wall's ``J_c^T F`` and
            publishes on ``/fr3_effort_controller/commands``;
@@ -46,6 +47,11 @@ HOLD_KP = np.array([600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0])
 HOLD_KD = np.array([50.0, 50.0, 50.0, 30.0, 25.0, 25.0, 15.0])
 STOP_KD = np.array([30.0, 30.0, 30.0, 20.0, 10.0, 10.0, 5.0])
 Q_MARGIN = 0.05        # [rad] safety stop this close to a joint limit
+#: The run starts only when the arm is this close to initial_q and this still:
+#: a fixed hold left joint 6 coasting at 0.03 rad/s in some runs, which a zero
+#: torque command then keeps forever (36 mm drift in 5 s).
+SETTLED_Q, SETTLED_DQ = 1e-3, 3e-4        # [rad], [rad/s]
+SETTLE_TIMEOUT = 5.0                      # [s] beyond settle_time: start anyway, warn
 #: A torque published after joint-state sample k acts on the plant during
 #: (k+1, k+2], one sample later than one would assume: measured with the
 #: momentum observer (residual 0.11 instead of 0.49 N m without contact).
@@ -154,10 +160,16 @@ class Runner(Node):
             tau_hold = HOLD_KP * (q_ref - q) - HOLD_KD * dq
             self._publish(tau_hold)
             self.pub_hist.append(tau_hold)
-            if t_sim - self.t_settle0 >= self.settle_time:
+            elapsed = t_sim - self.t_settle0
+            err, speed = np.max(np.abs(q - self.q_goal)), np.max(np.abs(dq))
+            settled = err < SETTLED_Q and speed < SETTLED_DQ
+            if elapsed >= self.settle_time and (settled or
+                                                elapsed >= self.settle_time + SETTLE_TIMEOUT):
                 self.phase, self.t0_sim, self.wall_t0 = 'RUN', t_sim, time.monotonic()
-                self.get_logger().info(
-                    f'RUN started, |q - initial_q| = {np.max(np.abs(q - self.q_goal)):.4f} rad')
+                (self.get_logger().info if settled else self.get_logger().warn)(
+                    f'RUN started after {elapsed:.1f} s of settling: |q - initial_q| = '
+                    f'{err:.4f} rad, |dq| = {speed:.4f} rad/s'
+                    + ('' if settled else '  (NOT fully at rest: check initial_q)'))
             return
         if self.phase == 'DONE':
             self._publish(-STOP_KD * dq)

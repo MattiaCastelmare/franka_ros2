@@ -19,7 +19,7 @@ file**. You do not need to know ROS 2: you write a `Controller` class
 
 What the package does for you at every run: starts Gazebo with the FR3,
 **compensates gravity** (as the real robot does), moves the arm to the start pose
-(2 s), calls your `update` at 1 kHz, clips your torques to the FR3 limits, applies
+(about 2 s, until it is at rest), calls your `update` at 1 kHz, clips your torques to the FR3 limits, applies
 the wall force, stops the robot safely if something goes wrong, and saves a log.
 
 The scene: at the start pose the tool points horizontally at the wall (+x),
