@@ -13,7 +13,7 @@
   It is 0 for seed 0, so seed 0 is the 1:1 port. It is the only randomness
   unless a scenario declares ``jitter_m``.
 
-Episode discipline (franka_sim _sample_episode): ``check_start`` refuses a start
+Episode discipline (franka_rl _sample_episode): ``check_start`` refuses a start
 that is inside the barrier, measured on TRUE control-point gaps at Q0.
 """
 from __future__ import annotations
@@ -161,7 +161,7 @@ def enforce_start_clearance(resolved: dict, cps: list, d_safe: float,
     The catalog positions are cbf_scenarios', whose emulated control points
     (CP_SEGS, R_CAP) are not the real perception set
     (``define_control_points``: the fingertip CP, per-segment radii). With the
-    real set, ``wedge`` starts 9 mm inside d_safe, on fr3_link8#0. franka_sim's
+    real set, ``wedge`` starts 9 mm inside d_safe, on fr3_link8#0. franka_rl's
     rule is to never start inside the barrier (_sample_episode), so the
     offending obstacle moves radially away from its nearest control point by
     ``d_safe - gap + margin``. The move is recorded in ``start_shift``; every

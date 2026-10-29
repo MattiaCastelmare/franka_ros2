@@ -3,7 +3,7 @@
 // docs/gz_cbf_experiments_plan.md §5.4. A world system for Ignition Fortress (gazebo 6).
 // In every PreUpdate it writes a WorldPoseCmd for each obstacle model. The pose
 // comes from ONE law function evaluated for the end of the step, so reset and
-// step cannot disagree (franka_sim's _obstacle_at rule). Laws:
+// step cannot disagree (franka_rl's _obstacle_at rule). Laws:
 //
 //   static     p(t) = p0
 //   linear     p(t) = p0 + v0 t

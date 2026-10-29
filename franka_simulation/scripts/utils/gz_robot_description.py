@@ -226,7 +226,7 @@ def _configure_plugin(root: ET.Element, namespace: str, extra_params: Sequence[s
 
 
 #: [kg·m²] reflected rotor inertia per arm joint, as identified in the MuJoCo
-#: Menagerie FR3 that franka_sim trains on (franka_sim/assets/franka_fr3/fr3.xml:
+#: Menagerie FR3 that franka_rl trains on (franka_rl/assets/franka_fr3/fr3.xml:
 #: joint class default 0.195, joints 5-7 0.074). franka_description's URDF has
 #: none, and URDF/SDF cannot express it.
 ARMATURE = (0.195, 0.195, 0.195, 0.195, 0.074, 0.074, 0.074)

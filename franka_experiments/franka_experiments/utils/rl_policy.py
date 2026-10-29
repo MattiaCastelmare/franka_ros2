@@ -4,7 +4,7 @@ Everything here is plain numpy / YAML so it can be unit-tested without a ROS
 environment, and — more importantly — so the **observation contract** between
 training and deployment lives in ONE place.
 
-``franka_sim/envs/franka_cbf_env.py`` builds, every 100 Hz control tick::
+``franka_rl/envs/franka_cbf_env.py`` builds, every 100 Hz control tick::
 
     obs(24) = [ q(7), q̇(7), ee_pos(3), target(3), obstacle(3), d_min(1) ]
     + v_obs(3)                        if `obs.obstacle_velocity`
@@ -13,7 +13,7 @@ training and deployment lives in ONE place.
 
 :func:`build_observation` rebuilds exactly that vector from robot topics and
 :func:`action_to_qddot` applies exactly that scaling, so a policy trained in
-``franka_sim`` sees the same numbers on hardware.
+``franka_rl`` sees the same numbers on hardware.
 
 The optional blocks are PREFIX EXTENSIONS: slots 0..23 keep their meaning and
 their offsets, so a model frozen before they existed deploys unchanged.  Which
@@ -22,7 +22,7 @@ blocks a given policy wants is a property of the POLICY, not of this file:
 :func:`resolve_sim_config_path` reads that copy back, so
 :class:`ObsSpec` travels with the artifact.
 
-:class:`ObsSpec` mirrors ``franka_sim/envs/obs_layout.py``.  ``franka_sim`` is
+:class:`ObsSpec` mirrors ``franka_rl/envs/obs_layout.py``.  ``franka_rl`` is
 deliberately not a ROS package (it must stay importable without ROS, for
 training), so the node cannot import it at runtime and the layout is written
 out twice on purpose — exactly as the ``cbf:`` / ``joint_limits:`` config
@@ -79,7 +79,7 @@ CP_WIDTH: int = 4
 """Width of one control-point geometry block: dᵢ + n̂ᵢ."""
 
 #: Fallback control points — mirror of
-#: ``franka_sim.envs.obs_layout.DEFAULT_CONTROL_POINTS``.  Only reached by a
+#: ``franka_rl.envs.obs_layout.DEFAULT_CONTROL_POINTS``.  Only reached by a
 #: config that asks for the geometry block without listing `cbf.control_points`;
 #: both sides must then invent the SAME list or the widths disagree.
 DEFAULT_CONTROL_POINTS: Tuple[dict, ...] = (
@@ -96,7 +96,7 @@ DEFAULT_CONTROL_POINTS: Tuple[dict, ...] = (
 class ObsSpec:
     """Which optional observation blocks a policy carries — see module docstring.
 
-    Mirror of ``franka_sim.envs.obs_layout.ObsSpec``.
+    Mirror of ``franka_rl.envs.obs_layout.ObsSpec``.
     """
 
     n_joints: int = NUM_JOINTS
@@ -370,7 +370,7 @@ def synthetic_obstacle(ee_pos: np.ndarray, centre: np.ndarray,
 def qddot_max_from_limits(limits: dict) -> np.ndarray:
     """``joint_limits`` block → ``(7,)`` q̈_max, in ``joint1..joint7`` order.
 
-    Both ``franka_sim/config.yaml`` and ``config/fr3_control.yaml`` use the same
+    Both ``franka_rl/config.yaml`` and ``config/fr3_control.yaml`` use the same
     ``[q_min, q_max, q̇_max, q̈_max, τ_max]`` row layout.
     """
     return np.array([float(limits[k][3]) for k in _JOINT_KEYS], dtype=np.float64)
@@ -407,19 +407,19 @@ def load_yaml(path: str) -> dict:
 
 
 def find_sim_root(start: str) -> str:
-    """Locate the standalone ``franka_sim/`` module from *start*.
+    """Locate the standalone ``franka_rl/`` module from *start*.
 
-    ``franka_sim`` is deliberately NOT a ROS package (it must stay importable
+    ``franka_rl`` is deliberately NOT a ROS package (it must stay importable
     without ROS for training), so ``get_package_share_directory`` cannot find
     it.  Walk up from *start* — ``realpath`` first, so that under
     ``colcon build --symlink-install`` the installed node file resolves back
-    into the source checkout — and return the first ``franka_sim`` directory
+    into the source checkout — and return the first ``franka_rl`` directory
     that carries a ``config.yaml``.  Returns ``''`` when not found; callers
     then require an explicit path parameter.
     """
     d = os.path.dirname(os.path.realpath(start))
     while True:
-        cand = os.path.join(d, 'franka_sim')
+        cand = os.path.join(d, 'franka_rl')
         if os.path.isfile(os.path.join(cand, 'config.yaml')):
             return cand
         parent = os.path.dirname(d)
@@ -451,9 +451,9 @@ def find_latest_model(sim_root: str) -> str:
     """Newest exported ``.onnx`` under ``<sim_root>/models``, or ``''``.
 
     Backs the documented ``rl_onnx_model:=""`` default ("empty = newest model
-    under franka_sim/models", ``config/launch_defaults.yaml``).  Ordered by
+    under franka_rl/models", ``config/launch_defaults.yaml``).  Ordered by
     MTIME, not by filename, for the same reason
-    :func:`~franka_sim.scripts.evaluate_policy.latest_checkpoint` is:
+    :func:`~franka_rl.scripts.evaluate_policy.latest_checkpoint` is:
     ``best_model.onnx`` is rewritten whenever eval improves, so "the newest
     file" and "the highest episode number" are different questions, and the
     newest file is the one that was just trained.
@@ -484,7 +484,7 @@ def resolve_sim_config_path(explicit: str, model_path: str,
 
     Preference order: explicit parameter → the ``config.yaml`` frozen next to
     the model by ``train.py`` (authoritative: it is the config the run actually
-    used) → ``franka_sim/config.yaml``.  Returns ``''`` if nothing is found.
+    used) → ``franka_rl/config.yaml``.  Returns ``''`` if nothing is found.
     """
     if explicit:
         return explicit

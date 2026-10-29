@@ -13,7 +13,7 @@ is what the camera reports).
 
 H11, fidelity (each stage OFF by default, each with its own switch). Gazebo
 depth is exact and instantaneous; the stages put back what the rig measured.
-The order and semantics follow ``franka_sim/envs/randomization.py::obstacle``:
+The order and semantics follow ``franka_rl/envs/randomization.py::obstacle``:
 delay first (the frame is old), then dropout (a lost frame), then range noise.
 
 * range noise: per-pixel Gaussian on z with

@@ -16,7 +16,7 @@ indipendenti, che condividono lo stesso livello hardware (`franka_hardware` +
 | **B** | `franka_experiments/launch/velocity_cbf_control_stack.launch.py` | pipeline cinematica parallela, a due fasi | comando di velocità EE → CBF-QP di velocità → controllore di velocità RT |
 | **C** | `franka_experiments/launch/minimal.launch.py` (`use_torque_controller:=cbf`) | "raramente usata" (`franka_experiments/config/launch_defaults.yaml:89`) | dinamica inversa Pinocchio **dentro** il controllore C++ RT; nessun commander/CBF viene avviato automaticamente |
 | **D** | `franka_simulation` (pacchetto separato) | Gazebo Ignition, quattro pipeline selezionabili + una pipeline di avoidance | non condivide nodi con A/B/C, ma A **dipende in runtime** da utility di D (vedi §11, §13) |
-| **E** | `franka_sim` (pacchetto separato, **niente ROS 2**) | training offline | addestra la policy Safe-RL (SAC) che, esportata in ONNX, viene eseguita da `rl_policy_commander` dentro **A** |
+| **E** | `franka_rl` (pacchetto separato, **niente ROS 2**) | training offline | addestra la policy Safe-RL (SAC) che, esportata in ONNX, viene eseguita da `rl_policy_commander` dentro **A** |
 
 ---
 
@@ -28,7 +28,7 @@ indipendenti, che condividono lo stesso livello hardware (`franka_hardware` +
 | `franka_rt_controllers` | ROS 2 C++ (`ros2_control` plugin) | 3 controllori RT: `RtTorqueController`, `RtVelocityExecutorController`, `CBFTorqueController` | vedi §5 per la discrepanza nomi file/classe/istanza |
 | `franka_hardware` | ROS 2 C++ | `SystemInterface` verso libfranka (`FrankaHardwareInterface`), azione `error_recovery`, servizi `Set*` | nessun clamp software oltre al controllo NaN/Inf (§5) |
 | `franka_simulation` | ROS 2 Python + msg/action | Gazebo Ignition + MoveIt2, 4 pipeline (posizione/velocità/accelerazione/coppia) + pipeline CBF/avoidance con Pinocchio | vedi §11 |
-| `franka_sim` | Python puro, **zero import ROS** (verificato: `grep -rn "rclpy" franka_sim/` → 0 risultati) | ambiente Gymnasium MuJoCo, CBF filter duplicato, training SAC (Stable-Baselines3), export ONNX | vedi §11 |
+| `franka_rl` | Python puro, **zero import ROS** (verificato: `grep -rn "rclpy" franka_rl/` → 0 risultati) | ambiente Gymnasium MuJoCo, CBF filter duplicato, training SAC (Stable-Baselines3), export ONNX | vedi §11 |
 | `franka_bringup` | ROS 2 launch/config | bringup base: `robot_state_publisher`, `ros2_control_node`, `joint_state_broadcaster`, gripper | `franka_bringup/launch/franka.launch.py:87-173` |
 | `franka_description` | URDF/xacro + mesh | modello FR3, incluse le mesh di collisione usate sia dal mascheramento percezione sia dal self-collision CBF | `franka_arm.srdf.xacro` condiviso da tutta la famiglia Franka (fr3/fer/fp3), non specifico FR3 |
 | `franka_fr3_moveit_config` | ROS 2 MoveIt2 | `move_group.launch.py`, planning **solo OMPL** (nessun Pilz) | vedi §12 |
@@ -491,7 +491,7 @@ vs. filtro) in questa analisi — vedi §14.
 
 ---
 
-## 10. `franka_simulation` e `franka_sim`
+## 10. `franka_simulation` e `franka_rl`
 
 `franka_simulation` (Gazebo Ignition + MoveIt2): quattro launch selezionabili
 (`sim_position.launch.py`, `sim_velocity.launch.py`, `sim_acceleration.launch.py`,
@@ -506,7 +506,7 @@ codice sorgente Python vive sotto `franka_simulation/scripts/` (non nella direct
 `ament_python` `franka_simulation/franka_simulation/`, che contiene solo un `__init__.py`
 vuoto); `franka_simulation/src/` è vuoto.
 
-`franka_sim` (MuJoCo, **zero import ROS** — `grep -rn "rclpy" franka_sim/` non trova
+`franka_rl` (MuJoCo, **zero import ROS** — `grep -rn "rclpy" franka_rl/` non trova
 nulla): `envs/franka_cbf_env.py` (`import mujoco`, ambiente Gymnasium `FrankaCBF-v0`) più
 un CBF filter duplicato (`envs/cbf_filter.py`). `train.py` addestra con
 **SAC di Stable-Baselines3** (`from stable_baselines3 import SAC`, `train.py:30,199` —

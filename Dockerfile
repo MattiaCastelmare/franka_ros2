@@ -145,7 +145,7 @@ ENV PATH=/home/${USERNAME}/.local/bin:$PATH
 #
 # VERSION LOCK — qpsolvers 4.3.3 + osqp 0.6.x, do not float either:
 #   * osqp must stay on 0.6.x because cbf_safety_filter.py and
-#     franka_sim/envs/cbf_filter.py drive the RAW OSQP object
+#     franka_rl/envs/cbf_filter.py drive the RAW OSQP object
 #     (`OSQP().setup()/.update()`, `res.info.status_val`); osqp 1.x rewrote
 #     that API and would break the safety filter.
 #   * qpsolvers ≥ 4.4 imports `from osqp import OSQP, SolverStatus`, which only
@@ -176,7 +176,7 @@ RUN python3 -m pip install --user --no-cache-dir --upgrade \
         "osqp>=0.6.2,<1.0"
 
 # ============================================================================
-# Safe-RL + CBF Sim-to-Real training stack (franka_sim/).
+# Safe-RL + CBF Sim-to-Real training stack (franka_rl/).
 #
 # MuJoCo physics + Gymnasium + Stable-Baselines3 (SAC) on CUDA, plus the ONNX
 # export/inference runtime used by the deployment node. Pinned to the versions
@@ -228,7 +228,7 @@ print('gymnasium', gymnasium.__version__); \
 print('sb3      ', stable_baselines3.__version__); \
 print('onnxrt   ', onnxruntime.__version__); \
 print('protobuf ', pb.__version__, '(tensorboard SummaryWriter + mediapipe coexist)'); \
-print('osqp OK — franka_sim training stack ready')"
+print('osqp OK — franka_rl training stack ready')"
 
 # ============================================================================
 # Entrypoint script (root-owned, executable)
