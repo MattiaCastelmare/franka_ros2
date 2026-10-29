@@ -1,0 +1,13 @@
+# Example batch: ros2 run fr3_student_sim run_batch config/batch_example.yaml
+# Every entry under "task:" is merged into config/task.yaml and reaches your
+# controller as self.params, so add whatever keys your controller reads.
+defaults:
+  controller: examples/cartesian_pd.py
+  duration: 12
+  stop_at_detachment: true
+runs:
+  - name: pd_stiff_wall
+  - name: pd_soft_wall
+    wall: {stiffness: 1500.0}          # the planar 3R wall
+  - name: pd_noisy_sensors
+    launch: {noise_q: 0.0001, noise_dq: 0.002}

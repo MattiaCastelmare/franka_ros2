@@ -1,0 +1,8 @@
+# Virtual compliant wall (a plane). Units: m, N/m, N s/m. World frame = robot base.
+# Turn it off with:  ros2 launch fr3_student_sim student.launch.py wall:=false
+point: [0.62, 0.0, 0.50]    # on the wall surface: the circle (start x + 8 cm at
+                            # its far side) goes 2 cm into it
+normal: [-1.0, 0.0, 0.0]    # outward normal: from the wall towards free space
+stiffness: 20000.0          # k_e: stiff enough to see the push (~3 mm in).
+                            # The planar 3R study used 1500 (a soft, foam-like wall).
+damping: 15.0               # b_e, active only while compressing (3R value)

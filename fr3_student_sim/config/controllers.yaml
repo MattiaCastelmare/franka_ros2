@@ -1,0 +1,13 @@
+# Extra parameters for the controller_manager inside Gazebo. The controller
+# TYPES (and update_rate: 1000 Hz) come from franka_gazebo_bringup's
+# franka_gazebo_controllers.yaml, which the FR3 URDF already loads.
+fr3_effort_controller:
+  ros__parameters:
+    joints:
+      - fr3_joint1
+      - fr3_joint2
+      - fr3_joint3
+      - fr3_joint4
+      - fr3_joint5
+      - fr3_joint6
+      - fr3_joint7

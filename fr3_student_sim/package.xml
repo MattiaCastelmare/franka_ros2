@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fr3_student_sim</name>
+  <version>0.1.0</version>
+  <description>
+    Minimal Gazebo FR3 torque-control kit for student projects: one launch file,
+    a Pinocchio model of the simulated robot, a virtual compliant wall and a run
+    logger. Students write a single Python controller class.
+  </description>
+  <maintainer email="castelmare@diag.uniroma1.it">Mattia Castelmare</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>effort_controllers</exec_depend>
+  <exec_depend>franka_description</exec_depend>
+  <exec_depend>franka_gazebo_bringup</exec_depend>
+  <exec_depend>franka_ign_ros2_control</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <!-- Pinocchio comes from robotpkg in the franka_ros2 Docker image (no rosdep key). -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

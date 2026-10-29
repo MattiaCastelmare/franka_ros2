@@ -1,0 +1,19 @@
+# Task parameters: the runner passes this whole file to your controller as
+# self.params (a dict). Add whatever you need.
+
+# Start pose [rad], fr3_joint1..7. The robot is spawned here. The tool points
+# horizontally at the wall (+x), fingertip at (0.56, 0, 0.50) m.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
+
+# Circle in the vertical x-z plane. It starts at the start-pose tool position
+# (its -x point) and reaches its +x point, inside the wall, at T/2.
+# Same reference as the planar 3R study.
+circle:
+  radius: 0.04      # [m]
+  period: 8.0       # [s]
+  ramp: 1.0         # [s] smooth start of the angular speed
+
+# Gains of the planar 3R study (normalized error dynamics e'' + Kd e' + Kp e = 0).
+# The examples do not use them; your controller may.
+Kp: 400.0           # [1/s^2]
+Kd: 40.0            # [1/s]    (critical damping: Kd = 2 sqrt(Kp))
