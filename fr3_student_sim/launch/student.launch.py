@@ -24,6 +24,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 PKG = 'fr3_student_sim'
+QUIET = {'stdout': 'log', 'stderr': 'log'}     # helper processes: ~/.ros/log only
 
 ARGS = {
     'controller': ('my_controller.py', 'Controller file (relative to students/ or absolute); '
@@ -94,6 +95,13 @@ WALL = """    <model name="virtual_wall">
 """
 
 
+def _quiet_process(cmd, log_path, name):
+    """``cmd`` with its output in ``log_path``, stopped cleanly: the Franka Gazebo
+    plugin aborts at every shutdown (upstream bug), see quiet_process.py."""
+    return ExecuteProcess(cmd=['python3', '-m', 'fr3_student_sim.quiet_process', log_path] + cmd,
+                          name=name, output='log')
+
+
 def _wall_sdf(wall: dict) -> str:
     """A thin visual-only box whose +x face lies on the wall plane (no collision:
     the force comes from the runner's spring-damper model)."""
@@ -161,10 +169,10 @@ def _launch(context):
         env.append(SetEnvironmentVariable('IGN_PARTITION', a['partition']))
 
     spawner = lambda name: Node(  # noqa: E731
-        package='controller_manager', executable='spawner', output='log',
+        package='controller_manager', executable='spawner', output=QUIET,
         arguments=[name, '--controller-manager', '/controller_manager',
                    '--controller-manager-timeout', '60'])
-    spawn_robot = Node(package='ros_gz_sim', executable='create', output='log',
+    spawn_robot = Node(package='ros_gz_sim', executable='create', output=QUIET,
                        arguments=['-file', urdf_path, '-name', 'fr3'])
     jsb, effort = spawner('joint_state_broadcaster'), spawner('fr3_effort_controller')
     runner = Node(
@@ -182,13 +190,14 @@ def _launch(context):
                      'run_name': a['run_name']}])
 
     actions = env + [
-        LogInfo(msg=f'[{PKG}] controller={controller}  world={world_path}'),
-        ExecuteProcess(cmd=['ign', 'gazebo', '-s', '-r', '-v', '1', world_path],
-                       output='log', name='gazebo'),
+        LogInfo(msg=f'[{PKG}] controller={controller}'),
+        LogInfo(msg=f'[{PKG}] Gazebo output (if something goes wrong): {run_dir}/gazebo.log'),
+        _quiet_process(['ign', 'gazebo', '-s', '-r', '-v', '1', world_path],
+                       os.path.join(run_dir, 'gazebo.log'), 'gazebo'),
         Node(package='ros_gz_bridge', executable='parameter_bridge', name='clock_bridge',
-             arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'], output='log'),
+             arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'], output=QUIET),
         Node(package='robot_state_publisher', executable='robot_state_publisher',
-             output='log', parameters=[{'robot_description': urdf, 'use_sim_time': True}]),
+             output=QUIET, parameters=[{'robot_description': urdf, 'use_sim_time': True}]),
         spawn_robot,
         # robot -> joint_state_broadcaster -> effort controller -> runner -> shutdown
         RegisterEventHandler(OnProcessExit(target_action=spawn_robot, on_exit=[jsb])),
@@ -205,8 +214,8 @@ def _launch(context):
                 EmitEvent(event=Shutdown(reason='run finished'))])),
         ]
     if on('gui'):
-        actions.append(ExecuteProcess(cmd=['ign', 'gazebo', '-g', '-v', '1'],
-                                      output='log', name='gazebo_gui'))
+        actions.append(_quiet_process(['ign', 'gazebo', '-g', '-v', '1'],
+                                      os.path.join(run_dir, 'gazebo_gui.log'), 'gazebo_gui'))
     return actions
 
 

@@ -170,6 +170,11 @@ Then bring your planar-3R study to the FR3. You decide and justify:
 ## Troubleshooting
 
 * **No window**: run `xhost +local:docker` on the host, or use `gui:=false`.
+* **Nothing happens / the run never starts**: Gazebo's own output is not shown in
+  the terminal; its file is printed at the start (`Gazebo output (if something goes
+  wrong): /tmp/fr3_student_…/gazebo.log`). Look there.
+* **`Ctrl+C` while the simulation is still starting** may print one
+  `[ERROR] [spawner-…]: process has died`: harmless, the start-up was interrupted.
 * **"X% of the joint states were missed"**: your controller is too slow; use
   `real_time_factor:=0.25` or `control_rate:=500`.
 * **Exception in Controller.update**: the traceback is printed, the robot stops safely,

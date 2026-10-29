@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import sys
 import time
 import traceback
@@ -82,7 +83,8 @@ def _load_yaml(path: str) -> dict:
 class Runner(Node):
 
     def __init__(self):
-        super().__init__('student_runner')
+        # no rosout: the last messages are logged after Ctrl+C has shut ROS down
+        super().__init__('student_runner', enable_rosout=False)
         P = {
             'urdf_path': '', 'controller': '', 'task_config': '', 'wall_config': '',
             'duration': 20.0, 'control_rate': 1000.0, 'settle_time': 2.0,
@@ -295,16 +297,32 @@ class Runner(Node):
             f'{np.max(out["ctrl_ms"]):.2f} ms max, peak wall force {np.max(out["F_n"]):.2f} N)')
 
 
+def _save_interrupted(node):
+    if node.phase not in ('DONE', 'WAIT') and node.rows:
+        node.stop_reason = node.stop_reason or 'interrupted (Ctrl+C)'
+        node._save()
+
+
 def main():
     rclpy.init()
     node = Runner()
     try:
         rclpy.spin(node)
+    except Exception as exc:  # noqa: BLE001
+        # Ctrl+C shuts the ROS context down, and a callback in progress then
+        # fails with a RuntimeError: that is an interruption too. With ROS
+        # still running, an exception is a real error: report it.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if rclpy.ok():
+            node.get_logger().error(f'runner error: {exc!r}')
+        _save_interrupted(node)
     except (SystemExit, KeyboardInterrupt):
-        if node.phase not in ('DONE', 'WAIT') and node.rows:
-            node.stop_reason = node.stop_reason or 'interrupted'
-            node._save()
+        # Ctrl+C reaches this process twice (terminal + launch): ignore the
+        # second one, so it cannot interrupt the save or the clean-up.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        _save_interrupted(node)
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
