@@ -9,7 +9,7 @@ Drives the deployment node with synthetic /NS_1/joint_states and
                                            BIT-EQUAL to an independently rebuilt
                                            observation + onnxruntime inference
                                            (proves the obs layout the node feeds
-                                           the net is the one franka_sim trained)
+                                           the net is the one franka_rl trained)
   3. obstacle injected                  -> d_min on /NS_1/rl_status equals the
                                            reported surface distance
   4. distances stop (perception fault)  -> zeros (never a stale-obstacle action)
@@ -133,9 +133,9 @@ def main():
     if not args.model or not os.path.isfile(args.model):
         raise SystemExit(
             'No ONNX policy found. Train + export one first:\n'
-            '  python3 -m franka_sim.train --total-timesteps 5000 --exp-name smoke\n'
-            '  python3 -m franka_sim.export_onnx '
-            '--model franka_sim/models/smoke/final_model.zip')
+            '  python3 -m franka_rl.train --total-timesteps 5000 --exp-name smoke\n'
+            '  python3 -m franka_rl.export_onnx '
+            '--model franka_rl/models/smoke/final_model.zip')
 
     # The node reads onnx_model at declare time, so the override has to reach it
     # through the global ROS args (the Stimulus node simply ignores it).

@@ -237,18 +237,18 @@ ros2 topic echo /NS_1/torque_safe --field data
 ## Pipeline 4 — Safe-RL / ONNX policy (fake hardware)
 
 Deployment side of Step 3 in `franka_sim_to_real_implementation_status.md`: the SAC policy
-trained in `franka_sim/` against *this* CBF filter, replayed on the robot by
+trained in `franka_rl/` against *this* CBF filter, replayed on the robot by
 `rl_policy_commander`.
 
 ### Prerequisite — an exported policy
 
 ```bash
 cd /ros2_ws/src && export PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl
-python3 -m franka_sim.train --total-timesteps 400000 --exp-name sac_deploy
-python3 -m franka_sim.export_onnx --model franka_sim/models/sac_deploy/best_model.zip
+python3 -m franka_rl.train --total-timesteps 400000 --exp-name sac_deploy
+python3 -m franka_rl.export_onnx --model franka_rl/models/sac_deploy/best_model.zip
 # score the artifact that actually ships:
-python3 -m franka_sim.scripts.evaluate_policy \
-    --model franka_sim/models/sac_deploy/best_model.onnx --episodes 50
+python3 -m franka_rl.scripts.evaluate_policy \
+    --model franka_rl/models/sac_deploy/best_model.onnx --episodes 50
 ```
 
 ### Node-level smoke test (no bringup, ~10 s)
@@ -267,7 +267,7 @@ zeros.
 
 ```bash
 ros2 launch franka_experiments test_rl_fake.launch.py \
-    rl_onnx_model:=/ros2_ws/src/franka_sim/models/sac_deploy/best_model.onnx
+    rl_onnx_model:=/ros2_ws/src/franka_rl/models/sac_deploy/best_model.onnx
 ```
 
 ```bash
@@ -320,7 +320,7 @@ ticks > 1.5x nominal: 0.00 %
 > commands, so the arm does not move and the observation stays frozen. This
 > test validates the *command chain* (nodes, topics, rates, controller
 > activation, gating), not closed-loop behaviour. Closed-loop policy + CBF
-> behaviour is validated in MuJoCo via `franka_sim.scripts.evaluate_policy`.
+> behaviour is validated in MuJoCo via `franka_rl.scripts.evaluate_policy`.
 
 ---
 

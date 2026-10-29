@@ -819,7 +819,7 @@ def _launch_all(context):
     # Both sources publish /NS_1/qddot_nom and would fight for the topic, so
     # motion_source selects exactly one:
     #   'pentagon' — analytic path + avoidance-first shaping (default)
-    #   'rl'       — ONNX Safe-RL policy trained in franka_sim against this same
+    #   'rl'       — ONNX Safe-RL policy trained in franka_rl against this same
     #                CBF filter (franka_sim_to_real_implementation_status.md, Step 3)
     # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
     # identical in both cases: the safety certificate does not depend on who
@@ -837,12 +837,12 @@ def _launch_all(context):
     elif motion_source == 'rl':
         # Only non-empty overrides are passed: forwarding '' would override a
         # working node default with an invalid path. Left unset,
-        #   onnx_model → the newest .onnx under franka_sim/models, resolved by
+        #   onnx_model → the newest .onnx under franka_rl/models, resolved by
         #                utils.rl_policy.find_latest_model and logged at WARN
         #                (an implicitly chosen policy is never quiet);
         #   sim_config → the config.yaml frozen next to that model by train.py,
         #                which is the config the run actually used.
-        # Both resolve through the franka_sim SOURCE checkout, which this
+        # Both resolve through the franka_rl SOURCE checkout, which this
         # package's --symlink-install install still points back into.
         rl_params = {
             'action_scale': float(p['rl_action_scale']),
@@ -1183,11 +1183,11 @@ def generate_launch_description():
                 'rl_onnx_model',
                 default_value=_DEFAULTS.get('rl_onnx_model', ''),
                 description='Path to the exported .onnx actor. Empty = '
-                            'auto-discover the newest model in franka_sim/models'),
+                            'auto-discover the newest model in franka_rl/models'),
             DeclareLaunchArgument(
                 'rl_sim_config',
                 default_value=_DEFAULTS.get('rl_sim_config', ''),
-                description='Path to the franka_sim config.yaml the policy was '
+                description='Path to the franka_rl config.yaml the policy was '
                             'trained with. Empty = the config frozen next to the model'),
             DeclareLaunchArgument(
                 'rl_target_xyz',

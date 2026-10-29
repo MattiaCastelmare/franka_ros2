@@ -9,7 +9,7 @@ Last updated: **2026-09-17**.
 > **How this file goes stale, and how to tell.** It did once, badly. Between
 > 2026-09-14 and 2026-09-17 the robot side gained the ISO 10218 layer, an
 > acceleration-authority cap, the firmware velocity envelope and a state
-> governor, while `franka_sim/` stood still — and this document went on
+> governor, while `franka_rl/` stood still — and this document went on
 > claiming the two shields were equivalent. §11 is the changelog that exists so
 > the next divergence shows up as a diff rather than as a re-audit. The
 > mechanical check is `pytest test/test_rl_policy.py`: it fails when the two
@@ -22,26 +22,26 @@ Last updated: **2026-09-17**.
 
 | # | Roadmap item | File | Status |
 |---|---|---|---|
-| 1 | Gymnasium env with MuJoCo + CBF shield | `franka_sim/envs/franka_cbf_env.py` | **COMPLETE** |
-| 1 | Central experiment config | `franka_sim/config.yaml` | **COMPLETE** |
-| — | CBF filter mirroring the real node | `franka_sim/envs/cbf_filter.py` | **COMPLETE, but a documented SUBSET** — see §2.1 |
-| 2 | SAC training, CUDA, TensorBoard, checkpoints | `franka_sim/train.py` | **COMPLETE** |
-| 2 | Actor → ONNX export | `franka_sim/export_onnx.py` | **COMPLETE** |
+| 1 | Gymnasium env with MuJoCo + CBF shield | `franka_rl/envs/franka_cbf_env.py` | **COMPLETE** |
+| 1 | Central experiment config | `franka_rl/config.yaml` | **COMPLETE** |
+| — | CBF filter mirroring the real node | `franka_rl/envs/cbf_filter.py` | **COMPLETE, but a documented SUBSET** — see §2.1 |
+| 2 | SAC training, CUDA, TensorBoard, checkpoints | `franka_rl/train.py` | **COMPLETE** |
+| 2 | Actor → ONNX export | `franka_rl/export_onnx.py` | **COMPLETE** |
 | 3 | ROS 2 ONNX inference / command node | `franka_experiments/nodes/rl_policy_commander.py` | **COMPLETE** |
 | 3 | Sim↔real observation/action contract | `franka_experiments/utils/rl_policy.py` | **COMPLETE** |
 | 3 | Launch integration | `torque_control_stack.launch.py` (`motion_source:=rl`) | **COMPLETE** |
-| — | CBF guarantee proof (reduced model) | `franka_sim/scripts/validate_cbf.py` | **COMPLETE** |
-| — | Actuation-authority regression guard | `franka_sim/scripts/validate_actuation.py` | **COMPLETE** |
-| — | Policy evaluation (task + safety + latency) | `franka_sim/scripts/evaluate_policy.py` | **COMPLETE** |
-| — | Benchmark table with baseline deltas | `franka_sim/scripts/benchmark.py` | **COMPLETE** (2026-09-17) |
+| — | CBF guarantee proof (reduced model) | `franka_rl/scripts/validate_cbf.py` | **COMPLETE** |
+| — | Actuation-authority regression guard | `franka_rl/scripts/validate_actuation.py` | **COMPLETE** |
+| — | Policy evaluation (task + safety + latency) | `franka_rl/scripts/evaluate_policy.py` | **COMPLETE** |
+| — | Benchmark table with baseline deltas | `franka_rl/scripts/benchmark.py` | **COMPLETE** (2026-09-17) |
 | — | Timing/jitter figure | `franka_experiments/scripts/plot_rl_timing.py` | **COMPLETE** |
 | — | Unit tests for the contract | `franka_experiments/test/test_rl_policy.py` | **COMPLETE** (29 tests) |
-| — | `franka_sim` regression suite | `franka_sim/tests/` | **COMPLETE** (2026-09-17, 38 tests) |
+| — | `franka_rl` regression suite | `franka_rl/tests/` | **COMPLETE** (2026-09-17, 38 tests) |
 | — | Node-level smoke test | `franka_experiments/test/smoke_rl_policy_commander.py` | **COMPLETE** |
 | — | Fake-hardware pipeline test | `franka_experiments/test/launch/test_rl_fake.launch.py` | **COMPLETE** |
-| — | Domain randomisation / latency / obs noise | `franka_sim/envs/randomization.py` | **COMPLETE, default OFF** (2026-09-17) — §2.2 |
+| — | Domain randomisation / latency / obs noise | `franka_rl/envs/randomization.py` | **COMPLETE, default OFF** (2026-09-17) — §2.2 |
 | — | Actuation feedback fidelity (Kd/Kp/ffScale) | `FrankaCBFEnv._servo_torque` | **COMPLETE, default OFF** (2026-09-17) — §2.2 |
-| — | Optional-fidelity regression guards | `franka_sim/tests/test_optional_fidelity.py` | **COMPLETE** (12 tests) |
+| — | Optional-fidelity regression guards | `franka_rl/tests/test_optional_fidelity.py` | **COMPLETE** (12 tests) |
 
 Roadmap deviations, and why:
 
@@ -60,7 +60,7 @@ Roadmap deviations, and why:
 ```
                   TRAINING (standalone, no ROS)          DEPLOYMENT (ROS 2)
                   ────────────────────────────           ──────────────────
- franka_sim/config.yaml ──┐                     ┌── franka_experiments/config/
+ franka_rl/config.yaml ──┐                     ┌── franka_experiments/config/
    (mirror, test-enforced)│                     │      fr3_control.yaml
                           ▼                     ▼
    FrankaCBFEnv  ──►  AccelCBFFilter  ⊂  cbf_safety_filter (HOCBF QP, OSQP)
@@ -80,13 +80,13 @@ Everything else is *mirrored*, and the mirrors are checked mechanically:
 
 | Mirrored quantity | Sim source | Robot source | Check |
 |---|---|---|---|
-| `joint_limits` (incl. q̈_max) | `franka_sim/config.yaml` | `config/fr3_control.yaml` | `test_real_configs_are_in_sync`, plus a startup warning per drifted entry |
+| `joint_limits` (incl. q̈_max) | `franka_rl/config.yaml` | `config/fr3_control.yaml` | `test_real_configs_are_in_sync`, plus a startup warning per drifted entry |
 | CBF gains, `d_safe`, box shape | same | same | `test_real_configs_are_in_sync` (14 keys) |
 | Acceleration cap vs action scale | `cbf.qddot_max_abs` | `params.qddot_max_abs` | `test_accel_cap_applies_to_the_box_and_not_to_the_action` |
 | Shield family coverage | `cbf.shield_parity` | every `enable_*`/`*_enabled` | `test_shield_families_are_declared` |
 | Workspace box (sim-only) | `cbf.ws_*` | absent | `test_workspace_box_is_sim_only` |
 | Obstacle sphere radius | `scene_cbf.xml` `obstacle_geom` | `obstacle.radius` in `config.yaml` | env raises on mismatch at construction |
-| Observation layout | `franka_sim/envs/obs_layout.py` | `utils/rl_policy.ObsSpec` (mirror) | `test_observation_layout_mirrors_franka_sim` + the smoke test's bit-equal replay |
+| Observation layout | `franka_rl/envs/obs_layout.py` | `utils/rl_policy.ObsSpec` (mirror) | `test_observation_layout_mirrors_franka_sim` + the smoke test's bit-equal replay |
 | Action scaling | `FrankaCBFEnv.step` | `utils/rl_policy.action_to_qddot` | `test_action_scaling_matches_env` |
 | EE frame | `env.ee_site` | node `ee_frame` | `test_ee_frame_matches_sim_ee_site` |
 
@@ -95,7 +95,7 @@ Everything else is *mirrored*, and the mirrors are checked mechanically:
 The robot's `cbf_safety_filter` has grown well past the sim's shield. Mirroring
 it would mean maintaining a second copy of a ~6900-line subsystem that is still
 changing, so the asymmetry is deliberate — but it is **declared**, in
-`franka_sim/config.yaml` under `shield_parity:`, and
+`franka_rl/config.yaml` under `shield_parity:`, and
 `test_shield_families_are_declared` fails when a robot flag is added, removed,
 or flipped without being reclassified.
 
@@ -173,7 +173,7 @@ teleporting the obstacle.
 + [dᵢ, n̂ᵢ] × 6                    `obs.control_point_geometry`
 ```
 
-The layout lives in **`franka_sim/envs/obs_layout.py`** and is mirrored by
+The layout lives in **`franka_rl/envs/obs_layout.py`** and is mirrored by
 `utils/rl_policy.ObsSpec`; `test_observation_layout_mirrors_franka_sim` loads
 the sim module off disk and fails on any one-sided edit.
 
@@ -264,11 +264,11 @@ Environment: the repository's own container (`docker compose` service
 
 | Check | Command | Result |
 |---|---|---|
-| Env self-check + random rollout | `python3 -m franka_sim.envs.franka_cbf_env` | PASS (`check_env: OK`; full 500 steps, `min d_min=0.101`, no collision) |
-| CBF guarantee (reduced model) | `python3 -m franka_sim.scripts.validate_cbf` | PASS (shield holds at `d_safe=0.150`, passthrough penetrates to −2.25) |
-| Actuation guard | `python3 -m franka_sim.scripts.validate_actuation` | PASS — see §5.1 |
-| `franka_sim` regression suite | `python3 -m pytest franka_sim/tests -q` | **38 passed** |
-| ONNX export validation | `python3 -m franka_sim.export_onnx --model .../sac_v3/best_model.zip` | PASS (`max\|onnx − sb3\| = 5.7e-06`) |
+| Env self-check + random rollout | `python3 -m franka_rl.envs.franka_cbf_env` | PASS (`check_env: OK`; full 500 steps, `min d_min=0.101`, no collision) |
+| CBF guarantee (reduced model) | `python3 -m franka_rl.scripts.validate_cbf` | PASS (shield holds at `d_safe=0.150`, passthrough penetrates to −2.25) |
+| Actuation guard | `python3 -m franka_rl.scripts.validate_actuation` | PASS — see §5.1 |
+| `franka_rl` regression suite | `python3 -m pytest franka_rl/tests -q` | **38 passed** |
+| ONNX export validation | `python3 -m franka_rl.export_onnx --model .../sac_v3/best_model.zip` | PASS (`max\|onnx − sb3\| = 5.7e-06`) |
 | ROS-side unit tests | `pytest test/` in `franka_experiments` | **915 passed, 0 failed** |
 | Node smoke test | `python3 test/smoke_rl_policy_commander.py` | PASS — warm-up gate, 100 Hz, `\|q̈\| ≤ q̈_max`, **observation replay error 0.00e+00**, `d_min` propagation, both stale-input gates |
 | Launch argument resolution | `ros2 launch … --show-args` | PASS — 64 args on `torque_control_stack`, and on `test_rl_fake` |
@@ -408,7 +408,7 @@ soft rows do not promise that, and the log says otherwise.
 | Namespaces | Topics from `fr3_control.yaml`; `joint_state_topic` defaults to `__auto__` → namespace from `franka.config.yaml`. |
 | Rates | Timer at `env.control_rate_hz` from the *training* config (100 Hz); overridable with `rate_hz`. |
 | Limits | q̈ clamp from the **robot** config; every difference against the training config is logged as a `SIM-TO-REAL joint_limits drift` warning. |
-| Policy selection | `onnx_model` unset → newest `.onnx` under `franka_sim/models` by mtime, **logged at WARN** with the resolved path. Pin it with `rl_onnx_model:=<path>` for any real run. |
+| Policy selection | `onnx_model` unset → newest `.onnx` under `franka_rl/models` by mtime, **logged at WARN** with the resolved path. Pin it with `rl_onnx_model:=<path>` for any real run. |
 | Safety behaviour | Five explicit zero-output gates (§2). All hard limits stay downstream in the CBF filter. |
 | Startup | xacro, Pinocchio and the first ONNX inference are paid in `__init__`; `_warmup()` runs every per-tick path once. Measured 0.5–1.6 ms. |
 | Shutdown | `request_stop()` publishes zeros for 0.5 s, then exits; CSV closed in `destroy_node`. |
@@ -445,7 +445,7 @@ actuators' `ctrlrange`, which for a `position` actuator is the joint POSITION
 range, pinning joint 4's torque at −0.15 N·m. Limits now come from the joint's
 `actuatorfrcrange` (±87 / ±12 N·m).
 
-**Result** (`validate_actuation.py`, now also `franka_sim/tests/`):
+**Result** (`validate_actuation.py`, now also `franka_rl/tests/`):
 
 ```
 max |realized q̈ − commanded q̈| = 1.499e-15 rad/s²
@@ -519,7 +519,7 @@ P1 item 1, and it is about the controller's feedback law, not about drift.
 ### 5.3 The sim-to-real contract had silently drifted (2026-09-17)
 
 Eight robot-side commits landed between 2026-09-14 and 2026-09-17 while
-`franka_sim/` stood still. Four divergences resulted; all are now mirrored and
+`franka_rl/` stood still. Four divergences resulted; all are now mirrored and
 covered by `test_real_configs_are_in_sync`.
 
 * **`d_safe`** — sim 0.15, robot 0.10. `test_real_configs_are_in_sync` had been
@@ -580,7 +580,7 @@ session. Tracked in §9.
 ### 5.4 `motion_source:=rl` could not start (2026-09-17)
 
 `launch_defaults.yaml` documented `rl_onnx_model: ""` as "newest model under
-`franka_sim/models`" and the launch file repeated the claim, but
+`franka_rl/models`" and the launch file repeated the claim, but
 `rl_policy_commander` raised `RuntimeError` on an empty path — so the shipped
 defaults killed the node before it published anything. `find_latest_model()`
 now implements the documented behaviour and logs the resolved path at WARN.
@@ -651,7 +651,7 @@ numbers with a newer run's.
    `docker-compose.yml` mounts `./:/ros2_ws/src`, and `/ros2_ws/build` and
    `/ros2_ws/install` sit one level *above* that mount — so they do **not**
    live on the host and do **not** survive container recreation. Source,
-   `franka_logs/`, `franka_sim/models/` and `franka_sim/runs/` are under the
+   `franka_logs/`, `franka_rl/models/` and `franka_rl/runs/` are under the
    mount and do persist. After a fresh container, `colcon build` before
    running anything: without it most of `test/` cannot even import
    `franka_msgs`, and only the pure-numpy tests run.
@@ -662,17 +662,17 @@ numbers with a newer run's.
 7. **Never use a MuJoCo actuator's `ctrlrange` as a force limit** unless you
    know it is a force actuator. For a `<position>` actuator it is the joint
    *position* range. This is the trap behind §5.1.
-8. **`franka_sim` is not a ROS package.** Do not "fix" this by adding a
+8. **`franka_rl` is not a ROS package.** Do not "fix" this by adding a
    `package.xml` — the whole point is that training does not need ROS. Paths
-   are resolved via a `realpath` walk-up, and `franka_sim/tests/` runs under
+   are resolved via a `realpath` walk-up, and `franka_rl/tests/` runs under
    plain pytest rather than `colcon test`.
 9. **The container may hold stray processes between runs.** Note that
    `pkill -f "topic pub"` also kills the `docker exec` shell whose command line
-   contains that string, and `pgrep -af "franka_sim.train"` matches its own
+   contains that string, and `pgrep -af "franka_rl.train"` matches its own
    shell — check `ps aux` rather than trusting either.
 10. **The training config frozen next to the model is authoritative.**
     `train.py` copies `config.yaml` into `models/<exp>/`; the node prefers it
-    over `franka_sim/config.yaml`, because that is the config the run used.
+    over `franka_rl/config.yaml`, because that is the config the run used.
 11. **A run's feature flags come from the LAUNCH file, not the YAML.** Seven
     shield mechanisms are `false` in `fr3_control.yaml` and `true` in
     `launch_defaults.yaml`.
@@ -692,11 +692,11 @@ docker exec franka_ros2 bash -lc 'source /opt/ros/humble/setup.bash && \
 
 # sim guards (no ROS needed)
 docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl \
-  python3 -m pytest franka_sim/tests -q'
+  python3 -m pytest franka_rl/tests -q'
 docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl \
-  python3 -m franka_sim.scripts.validate_cbf'
+  python3 -m franka_rl.scripts.validate_cbf'
 docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl \
-  python3 -m franka_sim.scripts.validate_actuation'
+  python3 -m franka_rl.scripts.validate_actuation'
 
 # the sim-to-real contract + the whole ROS suite
 docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
@@ -704,7 +704,7 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
 
 # the benchmark table
 docker exec franka_ros2 bash -lc 'cd /ros2_ws/src && PYTHONPATH=/ros2_ws/src MUJOCO_GL=egl \
-  python3 -m franka_sim.scripts.benchmark --latest franka_sim/models/sac_v4 \
+  python3 -m franka_rl.scripts.benchmark --latest franka_rl/models/sac_v4 \
   --episodes 50 --markdown -'
 
 # node + pipeline
@@ -779,7 +779,7 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
    not from the singularity row — a hypothesis to check on the robot. Not
    reproduced: the firmware's collision reflex and torque-rate limiter
    (clips are counted), link friction as on the robot, the RL training plant
-   (franka_sim stays MuJoCo). Plan and deviations:
+   (franka_rl stays MuJoCo). Plan and deviations:
    `franka_simulation/docs/gz_cbf_experiments_plan.md`.
 
 ### P1b — the benchmark's difficulty
@@ -811,7 +811,7 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
 
 ### P3 — engineering polish
 
-10. **CI.** Wiring `colcon build` + `colcon test` + `franka_sim/tests` +
+10. **CI.** Wiring `colcon build` + `colcon test` + `franka_rl/tests` +
     `validate_actuation` + `validate_cbf` into it would have caught §5.1, §5.3
     and §5.5.
 11. **Write `test_oscbf_fake.launch.py`** so the documented Pipeline 3 commands
@@ -834,7 +834,7 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
 `state_box_relax_s`, `accel_box_clip_to_limits`, `firmware_envelope` and the
 `fr3_link3` control point; obstacle teleport and reset feasibility fixed;
 `shield_parity` register added; `find_latest_model` implemented;
-`benchmark.py` and `franka_sim/tests/` added; the actuation law and the four
+`benchmark.py` and `franka_rl/tests/` added; the actuation law and the four
 randomisation mechanisms added **default-off** (§2.2); `sac_v4` trained
 (4 h 19 m, 86 % success / 0 collisions) and re-validated on fake hardware.
 
@@ -854,7 +854,7 @@ guarantees zero collisions" — it is ~0, not 0 (§3.1.1).
 Six point-in-time documents deleted, their live content folded here and into
 `LEGACY.md`. **This is the edit after which the file went stale:** eight
 robot-side commits landed over the next three days without a corresponding
-`franka_sim` change, which §5.3 cleans up.
+`franka_rl` change, which §5.3 cleans up.
 
 ### 2026-09-04 — gripper, obstacle regime, episode checkpoints
 

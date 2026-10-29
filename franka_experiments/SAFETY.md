@@ -119,7 +119,7 @@ it once: `h` is now measured from the capsule **surface**, so the effective
 standoff grew 6-16 cm at an unchanged numeric value. Any statement about
 `d_safe` in this file is a statement about the value in `fr3_control.yaml` at
 the time of writing — check it, do not quote it. It is also **out of sync with
-`franka_sim/config.yaml` (0.15 m)**, which is a real divergence between the
+`franka_rl/config.yaml` (0.15 m)**, which is a real divergence between the
 policy's training envelope and the robot's, not only a failing test.
 
 **Consequence.** The barrier offset carries no ISO meaning while `iso_enabled`
@@ -231,7 +231,7 @@ q̈ → τ chain is open-loop (`M q̈ + C q̇`, no PD, no friction model), so th
 would fire on model error as readily as on danger until its fault rate is known
 on hardware.
 
-**G7 — `franka_sim` mirrors the pre-ISO math.** `franka_sim/envs/cbf_filter.py`
+**G7 — `franka_rl` mirrors the pre-ISO math.** `franka_rl/envs/cbf_filter.py`
 is a deliberate duplicate of the filter's row math and was **not** updated by
 this work. Anything trained or validated against it is validated against the
 pre-ISO filter, not the deployed one.

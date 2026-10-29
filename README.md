@@ -19,7 +19,7 @@ This repository provides a **ROS 2 integration framework for Franka Robotics res
 > | **`franka_experiments`** | Two end-to-end CBF safety stacks for the real FR3 (acceleration/torque and velocity): motion generators, HOCBF/OSCBF QP filters, depth-camera human–robot distance estimation, hand–eye calibration |
 > | **`franka_rt_controllers`** | Real-time C++ `ros2_control` controllers running inside the 1 kHz loop: joint-torque executor, joint-velocity executor, and a C++ CBF torque controller |
 > | **`franka_simulation`** | Gazebo (Ignition) + RViz2 + MoveIt2 simulation with four control pipelines (position, velocity, acceleration, torque) plus a CBF/avoidance pipeline |
-> | **`franka_sim`** | Standalone MuJoCo module (no ROS 2) for training a Safe-RL policy against the *same* CBF filter that runs on the robot, exported to ONNX for deployment |
+> | **`franka_rl`** | Standalone MuJoCo module (no ROS 2) for training a Safe-RL policy against the *same* CBF filter that runs on the robot, exported to ONNX for deployment |
 
 The goal of this fork is to provide a **reproducible robotics research environment** for developing and testing algorithms such as:
 
@@ -44,7 +44,7 @@ The goal of this fork is to provide a **reproducible robotics research environme
 - [franka_experiments](#franka_experiments)
 - [franka_rt_controllers](#franka_rt_controllers)
 - [franka_simulation](#franka_simulation)
-- [franka_sim](#franka_sim)
+- [franka_rl](#franka_rl)
 - [Documentation map](#documentation-map)
 - [Troubleshooting](#troubleshooting)
   - [libfranka: UDP receive: Timeout error](#libfranka-udp-receive-timeout-error)
@@ -72,7 +72,7 @@ The main additions of this fork include:
 - **`franka_experiments`** — CBF safety filters and experiment nodes for the real FR3 (or fake hardware), covering both an acceleration/torque stack and a velocity stack
 - **`franka_rt_controllers`** — real-time C++ `ros2_control` controllers that execute torque and velocity commands in the 1 kHz loop
 - **`franka_simulation`** — Gazebo (Ignition) and RViz2 simulation with MoveIt2 planning, four control pipelines, and an online collision avoidance pipeline
-- **`franka_sim`** — MuJoCo-based Safe-RL training module whose learned policies deploy back onto the ROS 2 torque stack through ONNX
+- **`franka_rl`** — MuJoCo-based Safe-RL training module whose learned policies deploy back onto the ROS 2 torque stack through ONNX
 - a **Docker-based development environment** for reproducible builds
 - additional utilities for robotics experimentation
 
@@ -86,7 +86,7 @@ While it is possible to install all dependencies directly on the host system, th
 - easier onboarding for new users
 
 For these reasons, **using Docker is the recommended installation method** for this repository.
-The training stack used by `franka_sim` (PyTorch + CUDA, MuJoCo, Gymnasium, Stable-Baselines3, ONNX Runtime, OSQP) lives **only** in the container image, not on the host.
+The training stack used by `franka_rl` (PyTorch + CUDA, MuJoCo, Gymnasium, Stable-Baselines3, ONNX Runtime, OSQP) lives **only** in the container image, not on the host.
 
 ## Research Extensions in This Fork
 
@@ -99,7 +99,7 @@ research-oriented extensions. The four additional packages introduced in this fo
 
 - **`franka_simulation`** — Gazebo (Ignition) + RViz2 simulation of the FR3 with MoveIt2 integration and four selectable control pipelines (position, velocity, acceleration, torque), plus a CBF/avoidance pipeline with a Pinocchio-based online avoidance controller, a velocity-blending CBF-QP, obstacle synchronisation with the MoveIt planning scene, and an optional RealSense + MediaPipe human pose pipeline.
 
-- **`franka_sim`** — Standalone MuJoCo training module with **no ROS 2 dependency**. It reproduces the robot's acceleration-level CBF filter inside a Gymnasium environment, trains a SAC policy that explores *behind the same shield* it will meet on hardware, and exports the actor to ONNX. `rl_policy_commander` in `franka_experiments` replays that ONNX graph on the real robot (`motion_source:=rl`).
+- **`franka_rl`** — Standalone MuJoCo training module with **no ROS 2 dependency**. It reproduces the robot's acceleration-level CBF filter inside a Gymnasium environment, trains a SAC policy that explores *behind the same shield* it will meet on hardware, and exports the actor to ONNX. `rl_policy_commander` in `franka_experiments` replays that ONNX graph on the real robot (`motion_source:=rl`).
 
 Docker support and the `.devcontainer` configuration are also developed in this fork.
 
@@ -481,7 +481,7 @@ The motion generator is selected with `motion_source`, and **exactly one** may p
 | `motion_source` | Node | Notes |
 |---|---|---|
 | `pentagon` (default) | `pentagon_qddot_commander` | Analytic/MoveIt Cartesian path with avoidance-first shaping. Requires `move_group`. |
-| `rl` | `rl_policy_commander` | Replays the ONNX Safe-RL policy trained in [`franka_sim`](#franka_sim). Pass `start_move_group:=false`. |
+| `rl` | `rl_policy_commander` | Replays the ONNX Safe-RL policy trained in [`franka_rl`](#franka_rl). Pass `start_move_group:=false`. |
 
 ```bash
 # Full stack on the real robot
@@ -556,7 +556,7 @@ Two-phase design: `bypass_cbf:=true` (default) passes the trajectory straight th
 
 | File | Purpose |
 |---|---|
-| `fr3_control.yaml` | CBF gains and tuning for both stacks — mirrored by `franka_sim/config.yaml` and checked by the tests |
+| `fr3_control.yaml` | CBF gains and tuning for both stacks — mirrored by `franka_rl/config.yaml` and checked by the tests |
 | `oscbf_params.yaml` | OSCBF QP weights and CBF gains |
 | `fr3_complete.yaml` | Robot geometry (control points, meshes, frames) for `real_time_distance` |
 | `fr3_distance.yaml` | Per-link distance thresholds |
@@ -661,14 +661,14 @@ ros2 launch franka_simulation move_group.launch.py spawn_obstacles:=false enable
 
 ---
 
-## franka_sim
+## franka_rl
 
-`franka_sim` is a **standalone MuJoCo training module with no ROS 2 dependency**. It trains a **Safe Reinforcement Learning** policy (SAC, Stable-Baselines3) shielded by the *same* acceleration-level CBF filter that runs on the real robot in `franka_experiments/nodes/cbf_safety_filter.py` — safe exploration in simulation, safe execution on hardware.
+`franka_rl` is a **standalone MuJoCo training module with no ROS 2 dependency**. It trains a **Safe Reinforcement Learning** policy (SAC, Stable-Baselines3) shielded by the *same* acceleration-level CBF filter that runs on the real robot in `franka_experiments/nodes/cbf_safety_filter.py` — safe exploration in simulation, safe execution on hardware.
 
-Full guide: [`franka_sim/README.md`](./franka_sim/README.md) · architecture, validation status, gotchas and backlog: [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md).
+Full guide: [`franka_rl/README.md`](./franka_rl/README.md) · architecture, validation status, gotchas and backlog: [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md).
 
 ```
-franka_sim/
+franka_rl/
 ├── assets/franka_fr3/    # MuJoCo FR3 model incl. the Franka Hand (transforms from the real URDF)
 ├── envs/
 │   ├── franka_cbf_env.py # Gymnasium env FrankaCBF-v0 (reach + moving obstacle)
@@ -684,15 +684,15 @@ Everything runs **inside the container** (the training stack is in the image, no
 ```bash
 # Train
 docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
-  python3 -m franka_sim.train --exp-name sac_v3 --total-timesteps 2000000'
+  python3 -m franka_rl.train --exp-name sac_v3 --total-timesteps 2000000'
 
 # Score every checkpoint against the zero-action and random baselines
 docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
-  python3 -m franka_sim.scripts.compare_checkpoints --model-dir franka_sim/models/sac_v3'
+  python3 -m franka_rl.scripts.compare_checkpoints --model-dir franka_rl/models/sac_v3'
 
 # Export a checkpoint for the robot
 docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && \
-  python3 -m franka_sim.export_onnx --model franka_sim/models/sac_v3/best_model.zip'
+  python3 -m franka_rl.export_onnx --model franka_rl/models/sac_v3/best_model.zip'
 ```
 
 Then deploy the exported policy onto the torque stack:
@@ -703,9 +703,9 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
     rl_onnx_model:=/path/to/best_model.onnx rl_action_scale:=0.3
 ```
 
-> **Training artefacts are not versioned.** `franka_sim/models/`, `runs/`, `*.zip` and `*.onnx` are git-ignored: they are regenerated by `train.py` / `export_onnx.py`. To move a policy between machines, copy the `.onnx` **together with the `config.yaml` frozen next to it** — the deployment node falls back to the repository default otherwise, which may not be the configuration the policy was trained under.
+> **Training artefacts are not versioned.** `franka_rl/models/`, `runs/`, `*.zip` and `*.onnx` are git-ignored: they are regenerated by `train.py` / `export_onnx.py`. To move a policy between machines, copy the `.onnx` **together with the `config.yaml` frozen next to it** — the deployment node falls back to the repository default otherwise, which may not be the configuration the policy was trained under.
 >
-> Sim and robot configurations are kept in sync by `franka_experiments/test/test_rl_policy.py`, which fails if a CBF gain drifts between `franka_sim/config.yaml` and `fr3_control.yaml`.
+> Sim and robot configurations are kept in sync by `franka_experiments/test/test_rl_policy.py`, which fails if a CBF gain drifts between `franka_rl/config.yaml` and `fr3_control.yaml`.
 
 ---
 
@@ -716,7 +716,7 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 | [`franka_experiments/README.md`](./franka_experiments/README.md) | Node-by-node reference, topics, launch sequencing, configuration keys |
 | [`franka_experiments/test/README.md`](./franka_experiments/test/README.md) | Test suite: what is checked and how to run it |
 | [`franka_simulation/README.md`](./franka_simulation/README.md) | The four simulation pipelines, controllers, kinematics library |
-| [`franka_sim/README.md`](./franka_sim/README.md) | Training, evaluation, the MuJoCo viewer, sim↔robot sync, gotchas |
+| [`franka_rl/README.md`](./franka_rl/README.md) | Training, evaluation, the MuJoCo viewer, sim↔robot sync, gotchas |
 | [`franka_sim_to_real_implementation_status.md`](./franka_sim_to_real_implementation_status.md) | Safe-RL + CBF sim-to-real: the three-step specification, what is built, how it was validated, gotchas and the prioritised backlog |
 | [`franka_experiments/LEGACY.md`](./franka_experiments/LEGACY.md) | Inventory of everything unreachable from the torque stack, with the deletion units |
 

@@ -392,7 +392,7 @@ def velocity_accel_box(
     SUPERSEDED in cbf_safety_filter by position_velocity_accel_box, which adds
     the position-limit braking curve on top of this. Kept: it is the
     velocity-only box, still the right choice for a caller that has no position
-    limits to enforce, and franka_sim carries its own copy of both.
+    limits to enforce, and franka_rl carries its own copy of both.
 
     Args:
         qdot: (n,) measured joint velocities [rad/s].

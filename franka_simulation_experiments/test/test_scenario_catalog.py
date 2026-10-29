@@ -158,7 +158,7 @@ def test_pentagon_path_is_the_commanders(cfg):
 
 
 def test_every_scenario_resolves_and_none_starts_inside_the_barrier(cfg):
-    """franka_sim's rule: forward invariance is a statement about trajectories
+    """franka_rl's rule: forward invariance is a statement about trajectories
     that START in the safe set. Checked on TRUE gaps at Q0."""
     from simexp.truth_geometry import TruthGeometry, load_perception_config
     sys.path.insert(0, os.path.join(REPO, 'franka_simulation', 'scripts'))

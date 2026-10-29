@@ -172,10 +172,11 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
                               target_offset=(0.0, 0.0, 0.107)) -> str:
     """The ScenarioObstacles world-system block for these obstacle specs.
 
-    Each spec: ``name, radius, law (static|linear|ballistic|pursuit), p0`` and,
-    per law, ``v0``, ``gravity``, ``speed``; ``park`` (default True). The
-    pursuit target is the flange: fr3_link7 + 0.107 m along its z, because
-    Gazebo lumps the fixed fr3_link8 into fr3_link7.
+    Each spec: ``name, radius, law (static|linear|ballistic|pursuit|oscillate),
+    p0`` and, per law, ``v0``, ``gravity``, ``speed``, ``axis`` + ``amplitude``
+    + ``period``; ``park`` (default True). The pursuit target is the flange:
+    fr3_link7 + 0.107 m along its z, because Gazebo lumps the fixed fr3_link8
+    into fr3_link7.
     """
     rows = []
     for o in obstacles:
@@ -185,6 +186,9 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
             f'<p0>{_fmt(o["p0"])}</p0><v0>{_fmt(o.get("v0", (0, 0, 0)))}</v0>'
             f'<gravity>{_fmt(o.get("gravity", (0, 0, -9.81)))}</gravity>'
             f'<speed>{float(o.get("speed", 0.0)):.9g}</speed>'
+            f'<axis>{_fmt(o.get("axis", (1, 0, 0)))}</axis>'
+            f'<amplitude>{float(o.get("amplitude", 0.0)):.9g}</amplitude>'
+            f'<period>{float(o.get("period", 0.0)):.9g}</period>'
             f'<park>{"true" if o.get("park", True) else "false"}</park>'
             f'<park_at>{_fmt(o.get("park_at", PARK_AT))}</park_at>'
             '</obstacle>')
