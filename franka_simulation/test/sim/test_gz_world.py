@@ -120,14 +120,20 @@ def test_hfov_from_fx_inverts_the_pinhole():
 
 def test_scenario_obstacles_block_carries_every_law_parameter():
     obs = [dict(name='a', radius=0.05, law='linear', p0=[1, 2, 3], v0=[0, -3, 0]),
-           dict(name='b', radius=0.08, law='pursuit', p0=[0, 0.5, 0.5], speed=0.3, park=False)]
+           dict(name='b', radius=0.08, law='pursuit', p0=[0, 0.5, 0.5], speed=0.3, park=False),
+           dict(name='c', radius=0.06, law='oscillate', p0=[0.4, 0, 0.45], axis=[1, 0, 0],
+                amplitude=0.9, period=4.0)]
     pl = ET.fromstring(W.scenario_obstacles_plugin(obs))
     assert pl.get('filename') == 'franka_scenario_obstacles'
     rows = pl.findall('obstacle')
-    assert [r.find('model').text for r in rows] == ['a', 'b']
+    assert [r.find('model').text for r in rows] == ['a', 'b', 'c']
     assert rows[0].find('v0').text.split() == ['0', '-3', '0']
     assert rows[1].find('law').text == 'pursuit' and float(rows[1].find('speed').text) == 0.3
     assert rows[1].find('park').text == 'false'
+    assert rows[2].find('law').text == 'oscillate'
+    assert rows[2].find('axis').text.split() == ['1', '0', '0']
+    assert float(rows[2].find('amplitude').text) == 0.9
+    assert float(rows[2].find('period').text) == 4.0
     models = [ET.fromstring(m) for m in W.obstacle_models(obs)]
     # parked obstacles wait out of view, unparked ones start at p0
     assert [float(v) for v in models[0].find('pose').text.split()[:3]] == list(W.PARK_AT)

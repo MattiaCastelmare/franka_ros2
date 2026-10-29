@@ -11,6 +11,11 @@
 //   pursuit    p <- p + speed * (target - p)/|target - p| * dt
 //              with target = the TRUE flange pose read from the ECM in the same
 //              step, i.e. cbf_scenarios.Sphere.step(dt, flange)
+//   oscillate  p(t) = p0 + axis * amplitude * sin(2 pi t / period)      (exact)
+//              A ball sweeping back and forth across the robot's path: it passes
+//              the plane through p0 twice per period, at peak speed
+//              amplitude * 2 pi / period. <axis> is normalised here, so the
+//              amplitude is always metres along it.
 //
 // Before the episode starts the obstacles are PARKED out of view (unless
 // <park>false</park>). The start time arrives as a sim time on a gz topic
@@ -77,8 +82,9 @@ struct Obstacle
 {
   std::string model;
   std::string law{"static"};
-  Vector3d p0, v0, gravity{0, 0, -9.81}, park{0, 0, -20};
+  Vector3d p0, v0, gravity{0, 0, -9.81}, park{0, 0, -20}, axis{1, 0, 0};
   double speed{0.0};
+  double amplitude{0.0}, period{0.0};
   bool use_park{true};
   ignition::gazebo::Entity entity{ignition::gazebo::kNullEntity};
   Vector3d p, v;   // pursuit state, and the last commanded position / velocity
@@ -113,13 +119,25 @@ public:
       ob.park = ParseVec(o->Get<std::string>("park_at", "0 0 -20").first, {0, 0, -20});
       ob.use_park = o->Get<bool>("park", true).first;
       ob.speed = o->Get<double>("speed", 0.0).first;
+      ob.axis = ParseVec(o->Get<std::string>("axis", "1 0 0").first, {1, 0, 0});
+      ob.amplitude = o->Get<double>("amplitude", 0.0).first;
+      ob.period = o->Get<double>("period", 0.0).first;
       ob.p = ob.p0;
       ob.v = Vector3d::Zero;
       if (ob.law != "static" && ob.law != "linear" && ob.law != "ballistic" &&
-        ob.law != "pursuit")
+        ob.law != "pursuit" && ob.law != "oscillate")
       {
         ignerr << "[ScenarioObstacles] unknown law '" << ob.law << "' for " << ob.model << "\n";
         continue;
+      }
+      if (ob.law == "oscillate") {
+        const double n = ob.axis.Length();
+        if (n < 1e-9 || ob.period <= 0.0) {
+          ignerr << "[ScenarioObstacles] oscillate needs a non-zero <axis> and a positive "
+                 << "<period> for " << ob.model << "\n";
+          continue;
+        }
+        ob.axis /= n;
       }
       obstacles_.push_back(ob);
     }
@@ -175,6 +193,10 @@ public:
         } else if (ob.law == "ballistic") {
           p = ob.p0 + ob.v0 * t + 0.5 * ob.gravity * t * t;
           ob.v = ob.v0 + ob.gravity * t;
+        } else if (ob.law == "oscillate") {
+          const double w = 2.0 * M_PI / ob.period;
+          p = ob.p0 + ob.axis * (ob.amplitude * std::sin(w * t));
+          ob.v = ob.axis * (ob.amplitude * w * std::cos(w * t));
         } else {   // pursuit: the same time origin as the analytic laws
           if (!target) {
             target = Target(ecm);
