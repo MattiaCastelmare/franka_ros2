@@ -75,7 +75,7 @@ franka_experiments/
 | Node executable | Source file | Pipeline | Subscribes | Publishes | Description |
 |---|---|---|---|---|---|
 | `pentagon_qddot_commander` | `nodes/pentagon_qddot_commander.py` | Torque (accel) | `/NS_1/joint_states`, move_group services (`compute_fk`, `compute_cartesian_path`) | `/NS_1/qddot_nom` (Float64MultiArray, 7), `/NS_1/q_des_state` (JointState), `~/planned_trajectory` (JointTrajectory, debug) | MoveIt-based pentagon reference generator: Cartesian path planned by move_group (group `fr3_arm`, `fr3_link0` → `fr3_hand_tcp`), sampled at `rate_hz`; q̈ output = feedforward + Cartesian-space tracking correction `J†(q)·(kp_cart·clip(x_d−x,±cart_err_clamp) + kd_cart·(ẋ_d−ẋ))` (applied before the CBF filter). Pinocchio (FR3 + Franka hand URDF) provides FK and the 3×7 linear Jacobian at `fr3_hand_tcp`; Cartesian references are pre-computed during _ingest (offline). Requires a running `move_group` (`ros2 launch franka_fr3_moveit_config move_group.launch.py`); publishes zeros until it is available |
-| `rl_policy_commander` | `nodes/rl_policy_commander.py` | Torque (accel) | `/NS_1/joint_states`, `/cbf/per_link_distances`, `/NS_1/cbf_status` (diagnostics), optional target `PointStamped` | `/NS_1/qddot_nom` (Float64MultiArray, 7), `/NS_1/rl_status` (Float64MultiArray, 6) | Sim-to-real deployment of the Safe-RL policy trained in `franka_rl/` against this same CBF filter. Rebuilds the 24-dim training observation `[q, q̇, ee, target, obstacle, d_min]` (Pinocchio FK at `ee_frame`, obstacle slot reconstructed from the point-cloud surface distance — see `utils/rl_policy.py`), runs the exported ONNX actor with `onnxruntime` (single-threaded, ~0.1 ms) and publishes `q̈_nom = a·q̈_max·action_scale`. Alternative to `pentagon_qddot_commander` on the same topic — select with `motion_source:=rl`, never both. Publishes zeros during warm-up, on stale joint state and on a perception fault |
+| `rl_policy_commander` | `nodes/rl_policy_commander.py` | Torque (accel) | `/NS_1/joint_states`, `/cbf/per_link_distances`, `/NS_1/cbf_status` (diagnostics), optional target `PointStamped` | `/NS_1/qddot_nom` (Float64MultiArray, 7), `/NS_1/rl_status` (Float64MultiArray, 6) | Sim-to-real deployment of the Safe-RL policy trained in `franka_sim/` against this same CBF filter. Rebuilds the 24-dim training observation `[q, q̇, ee, target, obstacle, d_min]` (Pinocchio FK at `ee_frame`, obstacle slot reconstructed from the point-cloud surface distance — see `utils/rl_policy.py`), runs the exported ONNX actor with `onnxruntime` (single-threaded, ~0.1 ms) and publishes `q̈_nom = a·q̈_max·action_scale`. Alternative to `pentagon_qddot_commander` on the same topic — select with `motion_source:=rl`, never both. Publishes zeros during warm-up, on stale joint state and on a perception fault |
 | `cbf_safety_filter` | `nodes/cbf_safety_filter.py` | Torque (accel) | `/NS_1/qddot_nom`, `/cbf/per_link_distances`, `/NS_1/joint_states` | `/NS_1/qddot_safe` (Float64MultiArray, 7) | HOCBF QP filter: min ‖q̈ − q̈_nom‖² s.t. CBF constraints |
 | `qddot_to_torque` | `nodes/qddot_to_torque.py` | Torque (accel) | `/NS_1/qddot_safe` (remapped from `qddot_nom`), `/NS_1/joint_states` | `/NS_1/torque_cmd` (Float64MultiArray, 7) | Dynamics converter: τ = M(q)·q̈ + C(q,q̇)·q̇ via Pinocchio |
 | `pentagon_torque_commander` | `nodes/pentagon_torque_commander.py` | Torque (OSCBF) | `/NS_1/joint_states` | `/NS_1/torque_cmd` (Float64MultiArray, 7) | 6D Cartesian PD + damped-LS Jacobian torque commander |
@@ -136,7 +136,7 @@ pentagon_qddot_commander          │
 
 > **Note** — `motion_source` selects the single q̈_nom generator: `pentagon`
 > (default, analytic path + avoidance-first shaping) or `rl` (the ONNX Safe-RL
-> policy from `franka_rl/`, see `../franka_sim_to_real_implementation_status.md`).  Both
+> policy from `franka_sim/`, see `../franka_sim_to_real_implementation_status.md`).  Both
 > publish `/NS_1/qddot_nom`, so exactly one runs at a time; everything
 > downstream (CBF filter → torque → controller) is identical:
 >
@@ -333,7 +333,9 @@ a configuration** — nothing in this repository touches Watchman.
 ## Evaluating avoidance without the robot
 
 `scripts/ball_closed_loop.py` runs the real `cbf_safety_filter` against the recorded ball throws with a modelled
-arm (clearance, command/realised jerk, peak velocity vs the firmware envelope, aimed-throw hit rate). Companions:
+arm (clearance, command/realised jerk, peak velocity vs the firmware envelope, aimed-throw hit rate). The method,
+the numbers behind the shipped smoothing parameters, what was tried and dropped, and the next hardware-run
+checklist are in [`docs/ball_throw_closed_loop.md`](docs/ball_throw_closed_loop.md). Companions:
 `scripts/smoothness_report.py` (jerk / chatter of any bag), `scripts/pass_plot.py` (one figure per pass),
 `scripts/throw_lead.py` (perception warning time per pass).
 

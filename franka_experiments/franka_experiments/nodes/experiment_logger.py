@@ -150,15 +150,6 @@ class ExperimentLogger(Node):
         self.declare_parameter("qddot_safe_topic", DEFAULT_QDDOT_SAFE_TOPIC)
         self.declare_parameter("per_link_distances_topic", DEFAULT_PER_LINK_TOPIC)
         self.tcp_link = declare_str(self, "tcp_link", DEFAULT_TCP_LINK)
-        # Ground truth of a SIMULATED run (franka_simulation_experiments'
-        # ground_truth_node, /sim/truth/cp_gaps): true per-control-point surface
-        # gaps. Empty (the default) = no subscription and no truth_* column, so
-        # the header and every row are exactly what they were without it
-        # (test_experiment_logger_truth_off_identical.py).
-        self.truth_topic = str(self.declare_parameter("truth_topic", "").value).strip()
-        _n_cp = declare_int(self, "truth_n_cp", 11, positive=True)
-        self.truth_n_cp = int(_n_cp) if self.truth_topic else 0
-        self.last_truth = np.full(3 + self.truth_n_cp, np.nan)
 
         self.output_root = Path(str(self.get_parameter("output_dir").value)).expanduser()
         exp_name = str(self.get_parameter("experiment_name").value)
@@ -293,9 +284,6 @@ class ExperimentLogger(Node):
             self.create_subscription(
                 MultiLinkDistance, _pl, self.per_link_cb,
                 QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
-
-        if self.truth_topic:
-            self.create_subscription(Float64MultiArray, self.truth_topic, self.truth_cb, 10)
 
         for topic_param, cb in (("cbf_status_topic", self.cbf_status_cb),
                                 ("iso_safety_topic", self.iso_safety_cb),
@@ -491,37 +479,7 @@ class ExperimentLogger(Node):
                 f"cbf{k}_confidence",
                 f"cbf{k}_valid",
             ]
-        # SIM ground truth, appended last and only when truth_topic is set.
-        n_truth = getattr(self, "truth_n_cp", 0)
-        if n_truth:
-            header += ["truth_t", "truth_min_gap", "truth_h_min"]
-            header += [f"truth_gap_{i}" for i in range(n_truth)]
         return header
-
-    def truth_cb(self, msg: Float64MultiArray):
-        """/sim/truth/cp_gaps: [t, n_cp, gap_0 .. gap_{n_cp-1}, min_gap, h_min]."""
-        d = list(msg.data)
-        if len(d) < 2:
-            return
-        n = int(d[1])
-        if len(d) < 4 + n:
-            return
-        k = min(n, self.truth_n_cp)
-        self.last_truth[:] = np.nan
-        self.last_truth[0] = d[0]
-        self.last_truth[1] = d[2 + n]
-        self.last_truth[2] = d[3 + n]
-        self.last_truth[3:3 + k] = d[2:2 + k]
-
-    def _truth_fields(self) -> dict:
-        n = getattr(self, "truth_n_cp", 0)
-        if not n:
-            return {}
-        out = {"truth_t": self.last_truth[0], "truth_min_gap": self.last_truth[1],
-               "truth_h_min": self.last_truth[2]}
-        for i in range(n):
-            out[f"truth_gap_{i}"] = self.last_truth[3 + i]
-        return out
 
     def _vector_from_joint_state(self, msg: JointState, field: Sequence[float]) -> np.ndarray:
         out = np.full(NUM_JOINTS, np.nan, dtype=float)
@@ -841,7 +799,6 @@ class ExperimentLogger(Node):
                 row[f"cbf{k}_zone"] = ""
                 row[f"cbf{k}_confidence"] = np.nan
                 row[f"cbf{k}_valid"] = 0
-        row.update(self._truth_fields())
 
         self.writer.writerow(row)
         self.rows.append(row)

@@ -106,7 +106,7 @@ params:
                         # 0.15 m is therefore a RESEARCH value, tuned against
                         # hardware, and not an ISO-derived one.
                         #
-                        # IN SYNC WITH SIM (21 Sep 2026): franka_rl/config.yaml
+                        # IN SYNC WITH SIM (21 Sep 2026): franka_sim/config.yaml
                         # carries 0.15 m and so does this file, so the policy is
                         # shielded by the same barrier it trained behind and
                         # test_rl_policy::test_real_configs_are_in_sync passes.

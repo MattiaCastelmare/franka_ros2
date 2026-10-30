@@ -69,9 +69,9 @@ removed before anyone acts on it.
 | `config/fake_hw_controller_params.yaml:1` | file | **DEAD** — loaded by no code |
 | `config/fr3_distance.yaml:1` | file | **Effectively dead** — loaded by `experiment_logger` (result discarded) and `cbf_velocity_filter` (legacy) |
 | `config/fr3_control.yaml:51` | `d_safe_default` | **LEGACY** — read only by `utils/cbf_constraints.py` (dead) |
-| `config/fr3_control.yaml:83` | `control_rate_hz` | **LEGACY** — read only by `cbf_OSCBF_filter`, `cbf_velocity_filter` (`rl_policy_commander` reads the *franka_rl* key of the same name) |
+| `config/fr3_control.yaml:83` | `control_rate_hz` | **LEGACY** — read only by `cbf_OSCBF_filter`, `cbf_velocity_filter` (`rl_policy_commander` reads the *franka_sim* key of the same name) |
 | `config/fr3_control.yaml:116` | `ema_alpha` | **DEAD** |
-| `config/fr3_control.yaml:126` | `gamma` | **DEAD** (franka_rl `rl.gamma` is unrelated) |
+| `config/fr3_control.yaml:126` | `gamma` | **DEAD** (franka_sim `rl.gamma` is unrelated) |
 | `config/fr3_control.yaml:321` | `cbf_activation_margin` | **LEGACY** — `cbf_velocity_filter` only |
 | `config/fr3_control.yaml:323` | `cbf_hysteresis` | **LEGACY** — `cbf_velocity_filter` only |
 | `config/fr3_control.yaml:386` | `qp_smooth_weight` | **DEAD** |
@@ -154,16 +154,16 @@ stale markers in §1 and the docs in §5.
   Intentional (flags-off builds stay bit-identical), but a run's actual config
   can only be read from the launch, not the YAML.
 - **`joint_limits` in 3 copies** (identical today): `fr3_control.yaml`,
-  `franka_rl/config.yaml`, `franka_description/robots/fr3/joint_limits.yaml`.
+  `franka_sim/config.yaml`, `franka_description/robots/fr3/joint_limits.yaml`.
   `cbf_safety_filter` already reads the franka_description one;
   `pentagon_qddot_commander` and `rl_policy_commander` still read `fr3_control`.
 - **`d_safe`:** RESOLVED 2026-09-17 — the robot was raised 0.10 → 0.15 to match
-  `franka_rl/config.yaml`, and `test_rl_policy::test_real_configs_are_in_sync`
+  `franka_sim/config.yaml`, and `test_rl_policy::test_real_configs_are_in_sync`
   passes again. NOT yet validated on hardware, and it moved every zone-ladder
   rung with it (`zone_r_*` are multiples of `d_safe`).
   (`experiment_logger` still falls back to 0.20 in code.)
 - **Controller gains now have FIVE copies.** `rt_torque_controller.cpp`'s
-  `d_gains`/`p_gains` defaults are mirrored into `franka_rl/config.yaml` when
+  `d_gains`/`p_gains` defaults are mirrored into `franka_sim/config.yaml` when
   the actuation-fidelity item lands (backlog P1). Same risk as `joint_limits`.
 - **`lpf_alpha`** names two different things: the torque LPF in
   `launch_defaults` (0.3) and the distance LPF in `fr3_complete.yaml` (0.5).
@@ -189,4 +189,5 @@ and `franka_experiments/ARCHITECTURE.md` (stale as described above, and
 regenerable from `torque_control_stack.launch.py`). The handover's gotchas and
 backlog were folded into `franka_sim_to_real_implementation_status.md` §8–§9, and
 the gravity analysis of `refactoring_code.md §10.2` into
-`franka_experiments/test/README.md`.
+`franka_experiments/test/README.md`. `docs/reactivity_evasion_report.md` is now
+linked from the root README documentation map.

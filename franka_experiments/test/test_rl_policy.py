@@ -2,7 +2,7 @@
 deployment node (pure numpy/YAML, no ROS environment needed).
 
 The critical property under test is that ``rl_policy_commander`` rebuilds on the
-robot exactly the observation/action pair ``franka_rl/envs/franka_cbf_env.py``
+robot exactly the observation/action pair ``franka_sim/envs/franka_cbf_env.py``
 produced during training: same layout, same obstacle geometry, same q̈ scaling.
 A silent divergence here is invisible until the arm moves.
 
@@ -100,9 +100,9 @@ _EXT_SPEC = ObsSpec(obstacle_velocity=True,
 
 
 def _sim_obs_layout():
-    """Load franka_rl/envs/obs_layout.py off disk, or skip.
+    """Load franka_sim/envs/obs_layout.py off disk, or skip.
 
-    Imported by PATH, not by package: franka_rl is deliberately not a ROS
+    Imported by PATH, not by package: franka_sim is deliberately not a ROS
     package and obs_layout is written to need nothing but numpy, precisely so
     this cross-check can run wherever the source tree is.
     """
@@ -114,7 +114,7 @@ def _sim_obs_layout():
     sim_root = find_sim_root(__file__)
     path = os.path.join(sim_root, 'envs', 'obs_layout.py') if sim_root else ''
     if not path or not os.path.isfile(path):
-        pytest.skip('franka_rl checkout not available in this layout')
+        pytest.skip('franka_sim checkout not available in this layout')
     spec = importlib.util.spec_from_file_location('_sim_obs_layout', path)
     mod = importlib.util.module_from_spec(spec)
     # Register BEFORE exec: @dataclass resolves annotations through
@@ -125,7 +125,7 @@ def _sim_obs_layout():
 
 
 def test_observation_layout_mirrors_franka_sim():
-    """This module and franka_rl/envs/obs_layout.py must agree, slot for slot.
+    """This module and franka_sim/envs/obs_layout.py must agree, slot for slot.
 
     The layout is written out twice on purpose (the node cannot import a
     non-ROS package at runtime), so this test is the ONLY thing standing
@@ -148,7 +148,7 @@ def test_observation_layout_mirrors_franka_sim():
 
 
 def test_extended_observation_matches_the_sim_assembly():
-    """Byte-for-byte the vector franka_rl builds, optional blocks included."""
+    """Byte-for-byte the vector franka_sim builds, optional blocks included."""
     sim = _sim_obs_layout()
     q, qdot, ee, tgt, obst, d = _obs_args()
     v = np.array([0.1, -0.2, 0.05])
@@ -208,7 +208,7 @@ def test_shipped_sim_config_is_the_extended_layout():
 
     sim_root = find_sim_root(__file__)
     if not sim_root:
-        pytest.skip('franka_rl checkout not available in this layout')
+        pytest.skip('franka_sim checkout not available in this layout')
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         spec = obs_spec_from_config(yaml.safe_load(fh))
     assert spec.obstacle_velocity
@@ -421,9 +421,9 @@ def test_limits_mismatch_silent_when_identical():
 
 
 def test_real_configs_are_in_sync():
-    """franka_rl/config.yaml and config/fr3_control.yaml must stay mirrors.
+    """franka_sim/config.yaml and config/fr3_control.yaml must stay mirrors.
 
-    Skipped when the standalone franka_rl checkout is not next to the package
+    Skipped when the standalone franka_sim checkout is not next to the package
     (e.g. an installed-only deployment).
     """
     import os
@@ -434,7 +434,7 @@ def test_real_configs_are_in_sync():
     ctrl = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                         '..', 'config', 'fr3_control.yaml')
     if not sim_root or not os.path.isfile(ctrl):
-        pytest.skip('franka_rl / fr3_control.yaml not available in this layout')
+        pytest.skip('franka_sim / fr3_control.yaml not available in this layout')
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         sim = yaml.safe_load(fh)
     with open(ctrl) as fh:
@@ -455,7 +455,7 @@ def test_real_configs_are_in_sync():
                 # allowed 17 rad/s² while the robot clipped to 10.
                 'qddot_max_abs', 'state_box_relax_s',
                 'accel_box_clip_to_limits'):
-        assert key in sim['cbf'], f'cbf.{key} missing from franka_rl/config.yaml'
+        assert key in sim['cbf'], f'cbf.{key} missing from franka_sim/config.yaml'
         assert key in robot['params'], f'params.{key} missing from fr3_control.yaml'
         if key == 'max_qddot_delta':
             # Per TICK on both sides, and the ticks differ (sim CBF at
@@ -491,7 +491,7 @@ def test_accel_cap_applies_to_the_box_and_not_to_the_action_scale():
     ctrl = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                         '..', 'config', 'fr3_control.yaml')
     if not sim_root or not os.path.isfile(ctrl):
-        pytest.skip('franka_rl / fr3_control.yaml not available in this layout')
+        pytest.skip('franka_sim / fr3_control.yaml not available in this layout')
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         sim = yaml.safe_load(fh)
     with open(ctrl) as fh:
@@ -529,13 +529,13 @@ def test_workspace_box_is_sim_only():
     ctrl = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                         '..', 'config', 'fr3_control.yaml')
     if not sim_root or not os.path.isfile(ctrl):
-        pytest.skip('franka_rl / fr3_control.yaml not available in this layout')
+        pytest.skip('franka_sim / fr3_control.yaml not available in this layout')
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         sim = yaml.safe_load(fh)
     with open(ctrl) as fh:
         robot = yaml.safe_load(fh)
     for key in ('ws_enable', 'ws_min', 'ws_max', 'ws_margin', 'ws_horizon'):
-        assert key in sim['cbf'], f'cbf.{key} missing from franka_rl/config.yaml'
+        assert key in sim['cbf'], f'cbf.{key} missing from franka_sim/config.yaml'
         assert key not in robot['params'], (
             f'params.{key} appeared in fr3_control.yaml — the workspace box is '
             f'no longer sim-only; add it to test_real_configs_are_in_sync')
@@ -571,7 +571,7 @@ def test_shield_families_are_declared():
     Three things fail here, all of them things that have actually happened to
     this repo in one form or another:
 
-    * a NEW row family appears on the robot and nobody re-reads franka_rl;
+    * a NEW row family appears on the robot and nobody re-reads franka_sim;
     * a family the register calls active is quietly switched off;
     * a family the register calls inactive (ISO, latency compensation) is
       switched on, silently widening the gap the policy never trained against.
@@ -589,7 +589,7 @@ def test_shield_families_are_declared():
     ctrl = os.path.join(here, '..', 'config', 'fr3_control.yaml')
     defaults = os.path.join(here, '..', 'config', 'launch_defaults.yaml')
     if not sim_root or not os.path.isfile(ctrl) or not os.path.isfile(defaults):
-        pytest.skip('franka_rl / robot configs not available in this layout')
+        pytest.skip('franka_sim / robot configs not available in this layout')
 
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         sim = yaml.safe_load(fh)
@@ -599,7 +599,7 @@ def test_shield_families_are_declared():
         launch = yaml.safe_load(fh)
 
     reg = sim.get('shield_parity')
-    assert reg, 'franka_rl/config.yaml has no shield_parity block'
+    assert reg, 'franka_sim/config.yaml has no shield_parity block'
 
     declared = (list(reg.get('mirrored', []))
                 + list(reg.get('robot_only_active', []))
@@ -615,7 +615,7 @@ def test_shield_families_are_declared():
 
     missing = found - set(declared)
     assert not missing, (
-        'these robot shield flags are not classified in franka_rl/config.yaml '
+        'these robot shield flags are not classified in franka_sim/config.yaml '
         f'shield_parity: {sorted(missing)} — add each to mirrored, '
         'robot_only_active or robot_only_inactive')
     stale = set(declared) - found
@@ -648,7 +648,7 @@ def test_shield_parity_sim_only_entries_exist_in_sim():
 
     sim_root = find_sim_root(__file__)
     if not sim_root:
-        pytest.skip('franka_rl not available in this layout')
+        pytest.skip('franka_sim not available in this layout')
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         sim = yaml.safe_load(fh)
     for key in sim.get('shield_parity', {}).get('sim_only', []):
@@ -658,7 +658,7 @@ def test_shield_parity_sim_only_entries_exist_in_sim():
 # ── Path resolution ──────────────────────────────────────────────────────────
 
 def test_resolve_model_path(tmp_path):
-    root = tmp_path / 'franka_rl'
+    root = tmp_path / 'franka_sim'
     (root / 'models' / 'exp').mkdir(parents=True)
     onnx = root / 'models' / 'exp' / 'best_model.onnx'
     onnx.write_bytes(b'\x00')
@@ -675,7 +675,7 @@ def test_find_latest_model_picks_newest_by_mtime(tmp_path):
     orderings genuinely disagree and only mtime answers "the one I just
     trained".
     """
-    root = tmp_path / 'franka_rl'
+    root = tmp_path / 'franka_sim'
     for name in ('sac_v9', 'sac_v1'):
         (root / 'models' / name).mkdir(parents=True)
         (root / 'models' / name / 'best_model.onnx').write_bytes(b'\x00')
@@ -688,7 +688,7 @@ def test_find_latest_model_picks_newest_by_mtime(tmp_path):
 
 def test_find_latest_model_searches_nested_checkpoints(tmp_path):
     """Episode checkpoints live in models/<exp>/checkpoints/ — reachable too."""
-    root = tmp_path / 'franka_rl'
+    root = tmp_path / 'franka_sim'
     ckpt = root / 'models' / 'exp' / 'checkpoints'
     ckpt.mkdir(parents=True)
     onnx = ckpt / 'sac_ep000400.onnx'
@@ -702,7 +702,7 @@ def test_find_latest_model_ignores_zip_and_missing_roots(tmp_path):
     Returning '' lets the node raise its explicit "export a policy first"
     error instead of failing later inside InferenceSession.
     """
-    root = tmp_path / 'franka_rl'
+    root = tmp_path / 'franka_sim'
     (root / 'models' / 'exp').mkdir(parents=True)
     (root / 'models' / 'exp' / 'best_model.zip').write_bytes(b'\x00')
     assert find_latest_model(str(root)) == ''
@@ -717,7 +717,7 @@ def test_resolve_sim_config_prefers_frozen_config(tmp_path):
     model.write_bytes(b'\x00')
     frozen = model_dir / 'config.yaml'
     frozen.write_text('rl: {}\n')
-    root = tmp_path / 'franka_rl'
+    root = tmp_path / 'franka_sim'
     root.mkdir()
     (root / 'config.yaml').write_text('rl: {}\n')
 
@@ -753,7 +753,7 @@ def test_ee_frame_matches_sim_ee_site():
     node = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..',
                         'franka_experiments', 'nodes', 'rl_policy_commander.py')
     if not sim_root or not os.path.isfile(node):
-        pytest.skip('franka_rl / rl_policy_commander not available in this layout')
+        pytest.skip('franka_sim / rl_policy_commander not available in this layout')
 
     with open(os.path.join(sim_root, 'config.yaml')) as fh:
         ee_site = yaml.safe_load(fh)['env']['ee_site']

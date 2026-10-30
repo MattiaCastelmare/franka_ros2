@@ -24,7 +24,7 @@ chain, not obstacle avoidance.
 Usage::
 
     ros2 launch franka_experiments test_rl_fake.launch.py \\
-        rl_onnx_model:=/ros2_ws/src/franka_rl/models/<exp>/best_model.onnx
+        rl_onnx_model:=/ros2_ws/src/franka_sim/models/<exp>/best_model.onnx
 
 Topics to monitor::
 

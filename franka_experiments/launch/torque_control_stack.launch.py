@@ -142,8 +142,7 @@ _ALL_PARAMS = [
     'start_rviz', 'trajectory_viz_delay_s',
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
-    'external_plant',
-    'rl_target_sequence', 'rl_action_scale', 'isolation_test',
+    'rl_target_sequence', 'rl_action_scale', 'isolation_test', 'external_plant',
     'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
     'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
     'torque_world_tf_delay_s', 'torque_camera_tf_delay_s',
@@ -472,13 +471,6 @@ def _launch_all(context):
         ],
     )
 
-    # external_plant: someone else provides the robot -- robot_state_publisher,
-    # the controller_manager in <namespace> and joint_state_broadcaster (the
-    # Gazebo replica, franka_simulation_experiments). Only the bringup include
-    # is dropped; the rt_torque_controller spawner below still runs, against
-    # that controller_manager. Off by default: with it off this list is exactly
-    # what it was (test_torque_stack_external_plant_off_identical.py).
-    external_plant = _as_bool(p['external_plant'])
     actions = [
         LogInfo(msg=[
             '[torque_stack] accel-space pipeline'
@@ -486,9 +478,15 @@ def _launch_all(context):
             '  ip=', p['robot_ip'],
             '  fake=', p['use_fake_hardware'],
         ]),
+        # external_plant: someone else provides the robot -- robot_state_publisher,
+        # the controller_manager in <namespace> and joint_state_broadcaster (the
+        # Gazebo replica, franka_simulation_experiments). Only the bringup
+        # include is dropped; the rt_torque_controller spawner below still runs,
+        # against that controller_manager. Off by default, so a hardware run is
+        # exactly what it was before this argument existed.
         (LogInfo(msg='[torque_stack] [Execution]       franka bringup SKIPPED '
                      '(external_plant:=true: the caller provides the robot)')
-         if external_plant else franka_launch),
+         if _as_bool(p['external_plant']) else franka_launch),
         TimerAction(period=float(p['torque_world_tf_delay_s']),
                     actions=[world_tf_node]),
         TimerAction(period=control_delay, actions=[controller_spawner]),
@@ -819,30 +817,28 @@ def _launch_all(context):
     # Both sources publish /NS_1/qddot_nom and would fight for the topic, so
     # motion_source selects exactly one:
     #   'pentagon' — analytic path + avoidance-first shaping (default)
-    #   'rl'       — ONNX Safe-RL policy trained in franka_rl against this same
+    #   'rl'       — ONNX Safe-RL policy trained in franka_sim against this same
     #                CBF filter (franka_sim_to_real_implementation_status.md, Step 3)
     # The downstream chain (cbf_safety_filter → qddot_to_torque → controller) is
     # identical in both cases: the safety certificate does not depend on who
     # generates the nominal acceleration.
-    #   'none'     — no commander: the caller owns /NS_1/qddot_nom (the
-    #                Gazebo scenario commander). Never a default.
     motion_source = str(p['motion_source']).strip().lower()
+    #   'none'     — the CALLER publishes it (the Gazebo scenario commander in
+    #                franka_simulation_experiments). Still exactly one source.
     if motion_source not in ('pentagon', 'rl', 'none'):
         raise RuntimeError(
-            f'motion_source="{motion_source}" — expected "pentagon", "rl" or "none"')
+            f'motion_source="{motion_source}" — expected "pentagon", "rl" '
+            'or "none"')
 
-    if motion_source == 'none':
-        commander_node = None
-        commander_label = None
-    elif motion_source == 'rl':
+    if motion_source == 'rl':
         # Only non-empty overrides are passed: forwarding '' would override a
         # working node default with an invalid path. Left unset,
-        #   onnx_model → the newest .onnx under franka_rl/models, resolved by
+        #   onnx_model → the newest .onnx under franka_sim/models, resolved by
         #                utils.rl_policy.find_latest_model and logged at WARN
         #                (an implicitly chosen policy is never quiet);
         #   sim_config → the config.yaml frozen next to that model by train.py,
         #                which is the config the run actually used.
-        # Both resolve through the franka_rl SOURCE checkout, which this
+        # Both resolve through the franka_sim SOURCE checkout, which this
         # package's --symlink-install install still points back into.
         rl_params = {
             'action_scale': float(p['rl_action_scale']),
@@ -897,9 +893,10 @@ def _launch_all(context):
             parameters=[{'isolation_test': _as_bool(p['isolation_test'])}],
         )
         commander_label = 'pentagon_qddot_commander'
-    if commander_node is None:
-        actions.append(LogInfo(msg='[torque_stack] [Motion gen.]     NONE '
-                                   '(motion_source:=none: the caller publishes q̈_nom)'))
+    if motion_source == 'none':
+        actions.append(LogInfo(
+            msg='[torque_stack] [Motion gen.]     NONE (motion_source:=none: the '
+                'caller publishes /NS_1/qddot_nom)'))
     else:
         actions.append(TimerAction(period=commander_delay, actions=[commander_node]))
         actions.append(LogInfo(msg=['[torque_stack] [Motion gen.]     ', commander_label,
@@ -1167,9 +1164,8 @@ def generate_launch_description():
                 'motion_source',
                 default_value=_DEFAULTS.get('motion_source', 'pentagon'),
                 description="Which node publishes q̈_nom: 'pentagon' "
-                            "(analytic path), 'rl' (ONNX Safe-RL policy) or "
-                            "'none' (the caller does, e.g. the Gazebo scenario "
-                            "commander)"),
+                            "(analytic path) or 'rl' (ONNX Safe-RL policy)"),
+            # ── Harness plumbing, ported from the Oct-2026 stack ───────
             # Not in launch_defaults.yaml on purpose, like isolation_test: a
             # run that does not pass it is the hardware stack, unchanged.
             DeclareLaunchArgument(
@@ -1183,11 +1179,11 @@ def generate_launch_description():
                 'rl_onnx_model',
                 default_value=_DEFAULTS.get('rl_onnx_model', ''),
                 description='Path to the exported .onnx actor. Empty = '
-                            'auto-discover the newest model in franka_rl/models'),
+                            'auto-discover the newest model in franka_sim/models'),
             DeclareLaunchArgument(
                 'rl_sim_config',
                 default_value=_DEFAULTS.get('rl_sim_config', ''),
-                description='Path to the franka_rl config.yaml the policy was '
+                description='Path to the franka_sim config.yaml the policy was '
                             'trained with. Empty = the config frozen next to the model'),
             DeclareLaunchArgument(
                 'rl_target_xyz',

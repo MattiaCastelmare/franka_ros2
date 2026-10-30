@@ -2,9 +2,9 @@
 """RL policy commander — ONNX Safe-RL policy → /NS_1/qddot_nom (Sim-to-Real).
 
 Step 3 of ``franka_sim_to_real_implementation_status.md``: the deployment counterpart of
-``franka_rl``.  A SAC policy trained in MuJoCo *against the same
+``franka_sim``.  A SAC policy trained in MuJoCo *against the same
 acceleration-level CBF shield that runs on this robot* is exported to ONNX by
-``franka_rl/export_onnx.py``; this node replays it on hardware.
+``franka_sim/export_onnx.py``; this node replays it on hardware.
 
     /joint_states ────┐                     ┌─► q̈_nom = a·q̈_max
     /cbf/per_link_… ──┼─► observation(24) ──┤   (Float64MultiArray, 7)
@@ -119,7 +119,7 @@ class RLPolicyCommander(Node):
         _limits = _cfg['joint_limits']
 
         # ── Parameters ───────────────────────────────────────────────────────
-        # Policy / config discovery.  franka_rl is a standalone (non-ROS)
+        # Policy / config discovery.  franka_sim is a standalone (non-ROS)
         # module, so paths are parameters — never hard-coded — with a source-tree
         # fallback that works under colcon --symlink-install.
         self.declare_parameter('onnx_model',   '')
@@ -194,7 +194,7 @@ class RLPolicyCommander(Node):
         sim_root = str(gp('sim_root').value) or find_sim_root(__file__)
         model_param = str(gp('onnx_model').value)
         # Empty parameter = the documented default in launch_defaults.yaml
-        # ("empty = newest model under franka_rl/models"). Resolve it rather
+        # ("empty = newest model under franka_sim/models"). Resolve it rather
         # than refusing to start: the shipped `motion_source:=rl` defaults
         # would otherwise kill the node before it publishes anything.
         auto_selected = False
@@ -204,10 +204,10 @@ class RLPolicyCommander(Node):
         if not model_param:
             raise RuntimeError(
                 'Parameter "onnx_model" is empty and no exported policy was '
-                f'found under "{sim_root or "<no franka_rl checkout found>"}'
+                f'found under "{sim_root or "<no franka_sim checkout found>"}'
                 '/models". Export one first:\n'
-                '  python3 -m franka_rl.export_onnx --model '
-                'franka_rl/models/<exp>/best_model.zip\n'
+                '  python3 -m franka_sim.export_onnx --model '
+                'franka_sim/models/<exp>/best_model.zip\n'
                 'or pass onnx_model:=/absolute/path/to/policy.onnx')
         self._model_path = resolve_model_path(model_param, sim_root)
         if auto_selected:
@@ -224,7 +224,7 @@ class RLPolicyCommander(Node):
         sim_cfg = load_yaml(cfg_path) if cfg_path else {}
         if not sim_cfg:
             self.get_logger().warn(
-                'No franka_rl config found (sim_config / model dir / '
+                'No franka_sim config found (sim_config / model dir / '
                 f'sim_root="{sim_root}") — falling back to fr3_control.yaml '
                 'limits and parameter defaults. Verify that the policy was '
                 'trained with these values.')

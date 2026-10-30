@@ -197,8 +197,7 @@ class HandEyeEyeInHandNode(Node):
         P('accept_translation_mm', 5.0)
         P('accept_rotation_deg', 2.0)
 
-        self._p = {name: self.get_parameter(name).value
-                   for name in self.get_parameters_by_prefix('')}
+        self._p = {name: self.get_parameter(name).value for name in self._parameters}
         p = self._p
 
         self.done = False
