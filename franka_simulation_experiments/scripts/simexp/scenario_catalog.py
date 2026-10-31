@@ -130,6 +130,13 @@ def resolve(name: str, seed: int = 0, cfg: dict | None = None, depth_rate_hz: fl
         spec = dict(name=f'obstacle_{k}', radius=float(o['radius']), law=o.get('law', 'static'),
                     p0=p0.tolist(), v0=list(o.get('v0', (0.0, 0.0, 0.0))),
                     speed=float(o.get('speed', 0.0)), gravity=list(o.get('gravity', GRAVITY)),
+                    # oscillate's parameters, carried with the same defaults
+                    # gz_world.scenario_obstacles_plugin writes into the SDF.
+                    # Dropping them here would silently turn an oscillating
+                    # obstacle into one sitting still at p0.
+                    axis=list(o.get('axis', (1.0, 0.0, 0.0))),
+                    amplitude=float(o.get('amplitude', 0.0)),
+                    period=float(o.get('period', 0.0)),
                     park=bool(o.get('park', True)))
         obstacles.append(spec)
     nominal = dict(sc.get('nominal', {'law': 'joint_pd'}))

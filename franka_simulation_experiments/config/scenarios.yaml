@@ -110,6 +110,19 @@ pentagon:
     pentagon_pursuer:                    # a hand following the flange at 0.3 m/s
       T: 12.0
       obstacles: [{p0: [0.4, 0.75, 0.45], radius: 0.05, law: pursuit, speed: 0.3}]
+    pentagon_sweep:                      # a ball TOURING the workspace, not homing on it
+      # pursuit converges onto the flange and then rides along with it, which
+      # reads as a ball stuck to the end effector. This sweeps instead: p0 is
+      # the CENTRE of the oscillation, out to the robot's left and clear of the
+      # barrier at Q0, and the ball runs the diagonal p0 +/- 0.5 * axis_hat
+      # every 10 s. Its two ends are (y 0.03, z 0.62), in among the hand and
+      # the circle, and (y 0.97, z 0.29), out low and clear: one pass travels
+      # past the forearm and up to the wrist. Peak speed A*2pi/P = 0.314 m/s,
+      # the same order as the pursuers. axis need not be unit: the plugin and
+      # simexp.obstacle_laws both normalise it.
+      T: 30.0
+      obstacles: [{p0: [0.45, 0.50, 0.45], radius: 0.06, law: oscillate,
+                   axis: [0.0, -1.0, 0.35], amplitude: 0.5, period: 10.0}]
 
 # ── Ball-throw speed sweep, as approach_envelope.py builds its cells ──────────
 # A ball of R_BALL aimed at the flange centre along +y, constant velocity:

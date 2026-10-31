@@ -9,6 +9,21 @@ from __future__ import annotations
 import numpy as np
 
 
+def _axis(spec: dict) -> np.ndarray:
+    """The oscillation axis, normalised as ScenarioObstacles::Configure does.
+
+    The plugin normalises once at configure time and refuses a zero axis, so a
+    caller who writes an unnormalised ``axis`` gets the same trajectory from
+    both sides. Doing it here too is what keeps this a mirror rather than an
+    approximation.
+    """
+    a = np.asarray(spec.get('axis', (1.0, 0.0, 0.0)), float)
+    n = float(np.linalg.norm(a))
+    if n < 1e-9:
+        raise ValueError('oscillate needs a non-zero axis')
+    return a / n
+
+
 def position(spec: dict, t: float) -> np.ndarray:
     p0 = np.asarray(spec['p0'], float)
     law = spec.get('law', 'static')
@@ -20,6 +35,9 @@ def position(spec: dict, t: float) -> np.ndarray:
     if law == 'ballistic':
         g = np.asarray(spec.get('gravity', (0, 0, -9.81)), float)
         return p0 + v0 * t + 0.5 * g * t * t
+    if law == 'oscillate':
+        w = 2.0 * np.pi / float(spec['period'])
+        return p0 + _axis(spec) * (float(spec['amplitude']) * np.sin(w * t))
     raise ValueError(f'{law} is not analytic (pursuit needs the target, see pursue())')
 
 
@@ -32,6 +50,9 @@ def velocity(spec: dict, t: float) -> np.ndarray:
         return v0
     if law == 'ballistic':
         return v0 + np.asarray(spec.get('gravity', (0, 0, -9.81)), float) * t
+    if law == 'oscillate':
+        w = 2.0 * np.pi / float(spec['period'])
+        return _axis(spec) * (float(spec['amplitude']) * w * np.cos(w * t))
     raise ValueError(law)
 
 
