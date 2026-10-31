@@ -304,6 +304,19 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
 
     ``hlat``     [m] largest latency-compensation tightening (prediction +
                  propagated position uncertainty). 0 with the flag off.
+    ``tan``      [rad/s²] tangential STEERING actually added to q̈_nom
+                 (post-EMA) / the same tick's magnitude PRE-cap. ``raw > applied``
+                 means ``cbf_tangential_max_bias`` is biting. This is a bias on
+                 the QP's cost, never a row, so it cannot weaken a barrier.
+    ``ntan``     rows that contributed a nonzero steering term, and ``tanrow``
+                 the largest contributor — the row the arm is actually being
+                 steered around, which is NOT always the closest one.
+    ``tanmix``   [-] 1.00 = steering on the sideways component q̈_nom already
+                 had; 0.00 = that component vanished and it is steering on the
+                 orthogonal joint DRIFT instead. tangential_bias AMPLIFIES
+                 sideways motion rather than generating it, so a low ``tanmix``
+                 while an obstacle is dead ahead is the mechanism failing in
+                 the case it exists for.
     ``w=[..]``   per-OBSTACLE-row slack weight. 1.00 = relaxes as it does with
                  the weighting off; ``w_max`` = treated as maximally critical.
     ``wq=[..]``  per-JOINT-LIMIT-row weight, LABELLED by row because which
@@ -394,6 +407,11 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'esc={getattr(rows, "diag_esc_w", 0.0):.2f} '
         f'outr={getattr(rows, "diag_outrun_r", 0.0):.2f}/{getattr(rows, "diag_outrun_w", 0.0):.2f} '
         f'hlat={getattr(rows, "diag_hlat", 0.0):.4f} '
+        f'tan={getattr(rows, "diag_tan", 0.0):.4f}/'
+        f'{getattr(rows, "diag_tan_raw", 0.0):.4f} '
+        f'ntan={getattr(rows, "diag_tan_n", 0)} '
+        f'tanrow={getattr(rows, "diag_tan_row", "-")} '
+        f'tanmix={getattr(rows, "diag_tan_mix", 0.0):.2f} '
         # enable_sensor_range_uncertainty: largest tightening bought by the
         # depth SENSOR's own range noise — independent of hunc (tracker
         # covariance) and hlat (latency prediction), see cbf_state_rows.

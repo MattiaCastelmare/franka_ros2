@@ -274,9 +274,29 @@ def pad_rows_to_block(G: Optional[np.ndarray], h_qp: Optional[np.ndarray],
     return G_out, h_out
 
 
+def _tb_diag(diag: Optional[dict], *, n: int = 0, raw: float = 0.0,
+             norm: float = 0.0, row: str = '-', s: float = 0.0,
+             w: float = 0.0) -> None:
+    """Fill ``diag`` in place; a no-op when the caller passed nothing.
+
+    Every exit path of :func:`tangential_bias` goes through this, including
+    the early returns. A diagnostic that reports a STALE value is worse than
+    one that reports nothing, and the one direction it must never fail in is
+    "looks like it did nothing": ``logging_utils`` reads these through
+    ``getattr(..., 0.0)``, so a missing key is indistinguishable from an
+    inactive bias.
+    """
+    if diag is None:
+        return
+    diag.clear()
+    diag.update(n=int(n), raw=float(raw), norm=float(norm), row=str(row),
+                mix=float(s), w=float(w))
+
+
 def tangential_bias(qddot_nom: np.ndarray, qdot: np.ndarray, con, *,
                     gain: float, engage_margin: float,
-                    max_bias: float = None) -> np.ndarray:
+                    max_bias: float = None,
+                    diag: Optional[dict] = None) -> np.ndarray:
     """The sideways nudge to ADD to q̈_nom, so the QP steers AROUND a close
     obstacle/self-collision instead of only backing straight off it.
 
@@ -344,21 +364,50 @@ def tangential_bias(qddot_nom: np.ndarray, qdot: np.ndarray, con, *,
             ``h̄ᵢ`` is below this — far rows add no bias and no cost.
         max_bias: [rad/s²] cap on ``‖bias‖``, or ``None``/``<= 0`` for no cap.
 
+        diag: optional dict, CLEARED and filled with what this tick did —
+            see ``_tb_diag``. An out-parameter rather than a second return
+            value on purpose: the return contract above ("exactly
+            ``zeros_like`` when nothing is engaged") is what lets the caller
+            EMA the result, and every existing caller and test depends on the
+            return being one array. Nothing here reads ``diag``, so the
+            computation is unchanged whether it is passed or not.
+
     Returns:
         (nv,) the bias to ADD to ``q̈_nom`` — NOT ``q̈_nom`` itself. Exactly
         ``np.zeros_like(qddot_nom)`` whenever nothing is engaged, so a caller
         EMA-ing this return value decays cleanly to zero on disengagement.
+
+    WHY THIS IS INSTRUMENTED AT ALL
+    -------------------------------
+    Until 2026-10-30 this function's output was computed, EMA'd onto
+    ``q̈_nom`` and never reported: no CBFDIAG field, nothing in
+    ``logging_utils``. The gain has carried the comment "still UNTUNED,
+    re-validate" since v2 and there was no way to tell from a log whether the
+    steering had acted at all, let alone which row drove it.
+
+    ``mix`` is the field worth watching. This function AMPLIFIES the sideways
+    component ``q̈_nom`` already has; it does not generate one. Heading
+    straight at an obstacle makes ``qn_perp`` vanish, so the steering is
+    weakest exactly where going around matters most, and it falls back to the
+    direction of the orthogonal joint DRIFT instead. ``mix`` is that blend:
+    1.0 = steering on the command's own sideways part, 0.0 = steering on
+    drift, which is noise with a confidence ramp on it.
     """
     if gain <= 0.0 or con is None or con.A.shape[0] == 0:
+        _tb_diag(diag)
         return np.zeros_like(qddot_nom)
     mask = ((con.group == G_OBS) | (con.group == G_SC)) & (con.h_bar < engage_margin)
     idx = np.flatnonzero(mask)
     if idx.size == 0:
+        _tb_diag(diag)
         return np.zeros_like(qddot_nom)
     nom_norm = float(np.linalg.norm(qddot_nom))
     if nom_norm < 1e-9:
+        _tb_diag(diag)
         return np.zeros_like(qddot_nom)   # no direction to amplify or scale to
     bias = np.zeros_like(qddot_nom)
+    n_rows = 0
+    best = (-1.0, '-', 0.0, 0.0)      # (contribution, label, mix, weight)
     for i in idx:
         a = con.A[i]
         a2 = float(a @ a)
@@ -381,12 +430,29 @@ def tangential_bias(qddot_nom: np.ndarray, qdot: np.ndarray, con, *,
 
         perp = s * qn_perp + (1.0 - s) * fallback
         w = float(np.clip((engage_margin - con.h_bar[i]) / engage_margin, 0.0, 1.0))
-        bias += w * perp
+        contrib = w * perp
+        bias += contrib
+        # Report the row that moved the arm most, not the closest one: a row
+        # can be very close and still contribute nothing when its tangent
+        # plane holds no sideways command.
+        c_norm = float(np.linalg.norm(contrib))
+        if c_norm > 1e-12:
+            n_rows += 1
+            if c_norm > best[0]:
+                lbl = (con.links[i] if getattr(con, 'links', None) is not None
+                       and i < len(con.links) else f'row{int(i)}')
+                best = (c_norm, lbl, s, w)
     bias *= gain
+    raw_norm = float(np.linalg.norm(bias))
     if max_bias is not None and max_bias > 0.0:
-        bias_norm = float(np.linalg.norm(bias))
+        bias_norm = raw_norm
         if bias_norm > max_bias:
             bias *= max_bias / bias_norm
+    # raw is PRE-cap, norm POST-cap, so `raw > norm` in a log line is the cap
+    # biting and needs no flag of its own.
+    _tb_diag(diag, n=n_rows, raw=raw_norm,
+             norm=float(np.linalg.norm(bias)), row=best[1], s=best[2],
+             w=best[3])
     return bias
 
 

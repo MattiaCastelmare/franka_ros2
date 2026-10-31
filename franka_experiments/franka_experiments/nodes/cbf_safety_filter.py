@@ -1147,13 +1147,23 @@ class CBFSafetyFilter(Node):
         # when the feed died.
         a_tan = self._a_tan
         if n_c > 0:
+            tan_diag: dict = {}
             raw_bias = tangential_bias(
                 qddot_nom, self._qdot_cbf, con, gain=P.cbf_tangential_gain,
                 engage_margin=P.cbf_tangential_engage_margin,
-                max_bias=P.cbf_tangential_max_bias)
+                max_bias=P.cbf_tangential_max_bias, diag=tan_diag)
             self._tan_bias *= a_tan
             self._tan_bias += (1.0 - a_tan) * raw_bias
             qddot_nom = qddot_nom + self._tan_bias
+            # Report what was ADDED (post-EMA), not what the function returned:
+            # with alpha 0.9 the two differ by ~100 ms of history, and the arm
+            # is moved by the former. build() zeroed these at the top of this
+            # tick, so nothing here can be stale.
+            self._rows.diag_tan     = float(np.linalg.norm(self._tan_bias))
+            self._rows.diag_tan_raw = float(tan_diag.get('raw', 0.0))
+            self._rows.diag_tan_n   = int(tan_diag.get('n', 0))
+            self._rows.diag_tan_row = str(tan_diag.get('row', '-'))
+            self._rows.diag_tan_mix = float(tan_diag.get('mix', 0.0))
         else:
             self._tan_bias *= a_tan
 

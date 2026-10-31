@@ -18,6 +18,7 @@ Pure numpy.
 """
 
 import numpy as np
+import pytest
 
 from franka_experiments.utils.cbf_qp_assembly import tangential_bias
 from franka_experiments.utils.cbf_state_rows import (
@@ -233,3 +234,120 @@ def test_self_collision_rows_engage_like_obstacle_rows():
     qn = np.array([1.0, 2.0, 0, 0, 0, 0, 0])
     bias = tangential_bias(qn, np.zeros(NV), con, **KW)
     assert np.linalg.norm(bias) > 0.0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The diagnostic (added 2026-10-30)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Until this was added, the bias was computed, EMA'd onto q̈_nom and never
+# reported: no CBFDIAG field, nothing in logging_utils, while the gain carried
+# "still UNTUNED, re-validate". The tests below are mostly about the one way a
+# diagnostic must not fail — reading as "nothing happened" when something did.
+
+
+def _diag(**kw):
+    d = {}
+    tangential_bias(diag=d, **kw)
+    return d
+
+
+def test_the_diagnostic_reports_a_bias_that_actually_fired():
+    con = _single_row(h=0.05)
+    nom = np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    d = _diag(qddot_nom=nom, qdot=np.zeros(7), con=con,
+              gain=0.5, engage_margin=0.30)
+    assert d['n'] == 1
+    assert d['norm'] > 0.0
+    assert d['row'] == 'l#0'
+    assert d['mix'] == pytest.approx(1.0)      # pure q̈_nom sideways part
+
+
+def test_every_early_return_still_leaves_a_consistent_dict():
+    """A stale dict would report the PREVIOUS tick's steering."""
+    con = _single_row(h=0.05)
+    nom = np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    live = _diag(qddot_nom=nom, qdot=np.zeros(7), con=con,
+                 gain=0.5, engage_margin=0.30)
+    assert live['norm'] > 0.0
+    for kw in (dict(gain=0.0, engage_margin=0.30),                 # disabled
+               dict(gain=0.5, engage_margin=0.01)):                # out of range
+        d = dict(live)                                             # pre-poisoned
+        tangential_bias(nom, np.zeros(7), con, diag=d, **kw)
+        assert d['n'] == 0 and d['norm'] == 0.0 and d['row'] == '-', kw
+    d = dict(live)
+    tangential_bias(np.zeros(7), np.zeros(7), con, diag=d,
+                    gain=0.5, engage_margin=0.30)                  # zero nominal
+    assert d['n'] == 0 and d['norm'] == 0.0
+    d = dict(live)
+    tangential_bias(nom, np.zeros(7), _con([], []), diag=d,
+                    gain=0.5, engage_margin=0.30)                  # no rows
+    assert d['n'] == 0 and d['norm'] == 0.0
+
+
+def test_mix_distinguishes_amplified_intent_from_drift():
+    """The field that exposes the mechanism's weak case.
+
+    ``tangential_bias`` amplifies the sideways component q̈_nom already has.
+    A command pointed straight along the row normal has none, so the steering
+    falls back to the orthogonal joint drift — and ``mix`` is what says so.
+    """
+    a = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    con = _single_row(a=a, h=0.05)
+    head_on = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])        # all normal
+    drift = np.array([0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0])
+    d = _diag(qddot_nom=head_on, qdot=drift, con=con,
+              gain=0.5, engage_margin=0.30)
+    assert d['mix'] == pytest.approx(0.0), 'no sideways intent to amplify'
+    sideways = np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    d2 = _diag(qddot_nom=sideways, qdot=np.zeros(7), con=con,
+               gain=0.5, engage_margin=0.30)
+    assert d2['mix'] == pytest.approx(1.0)
+
+
+def test_raw_is_pre_cap_so_a_log_line_shows_the_cap_biting():
+    con = _single_row(h=0.0)
+    nom = np.array([0.0, 50.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    d = _diag(qddot_nom=nom, qdot=np.zeros(7), con=con,
+              gain=0.5, engage_margin=0.30, max_bias=1.0)
+    assert d['norm'] == pytest.approx(1.0)
+    assert d['raw'] > d['norm'], 'raw must be the pre-cap magnitude'
+
+
+def test_the_largest_contributor_is_reported_not_the_closest():
+    """Two rows: the nearer one has no sideways command in its tangent plane."""
+    near = (0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)   # normal ALONG q̈_nom
+    far = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)    # normal across it
+    con = _con([near, far], [0.01, 0.20])        # near is much closer
+    nom = np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    d = _diag(qddot_nom=nom, qdot=np.zeros(7), con=con,
+              gain=0.5, engage_margin=0.30)
+    assert d['row'] == 'l#1', 'the row that moved the arm, not the nearest'
+
+
+def test_omitting_diag_changes_nothing():
+    con = _single_row(h=0.05)
+    nom = np.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    kw = dict(gain=0.5, engage_margin=0.30, max_bias=2.0)
+    with_d = tangential_bias(nom, np.zeros(7), con, diag={}, **kw)
+    without = tangential_bias(nom, np.zeros(7), con, **kw)
+    assert np.array_equal(with_d, without)
+
+
+def test_the_builder_declares_the_fields_at_both_sites():
+    """The silent-zero guard.
+
+    ``logging_utils`` reads these with ``getattr(rows, ..., 0.0)``, so a field
+    the builder never declares is indistinguishable from a bias that never
+    fired. They are set in ``ConstraintBuilder.__init__`` AND reset in
+    ``build()``; this pins both, because missing either is invisible.
+    """
+    import inspect
+
+    from franka_experiments.utils import cbf_state_rows as csr
+    fields = ('diag_tan', 'diag_tan_raw', 'diag_tan_n', 'diag_tan_row',
+              'diag_tan_mix')
+    for fn in (csr.ConstraintBuilder.__init__, csr.ConstraintBuilder.build):
+        src = inspect.getsource(fn)
+        for f in fields:
+            assert f'self.{f}' in src, f'{fn.__qualname__} never sets {f}'

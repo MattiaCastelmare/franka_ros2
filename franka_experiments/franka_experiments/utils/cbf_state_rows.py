@@ -1704,6 +1704,17 @@ class ConstraintBuilder:
         self.diag_vobs_hdot = 0.0
         self.diag_vobs_hdot_n = 0
         self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
+        # Tangential steering (cbf_qp_assembly.tangential_bias), set by the
+        # FILTER after build() because it needs the assembled rows. Declared in
+        # __init__ AND reset in build() like every other diag_* field: miss one
+        # and logging_utils' getattr(..., 0.0) reports a confident "the
+        # steering never fired", which is the one direction a diagnostic must
+        # not fail in.
+        self.diag_tan      = 0.0   # [rad/s^2] ||bias|| actually added (post-EMA)
+        self.diag_tan_raw  = 0.0   # [rad/s^2] ||bias|| this tick, pre-cap
+        self.diag_tan_n    = 0     # rows that contributed a nonzero bias
+        self.diag_tan_row  = '-'   # label of the largest contributor
+        self.diag_tan_mix  = 0.0   # 1 = command's own sideways part, 0 = drift
         self.diag_fast = 0          # rows whose track passed the fast-track test
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
@@ -1841,6 +1852,17 @@ class ConstraintBuilder:
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
         self.diag_hstand = 0.0
+        # Tangential steering (cbf_qp_assembly.tangential_bias), set by the
+        # FILTER after build() because it needs the assembled rows. Declared in
+        # __init__ AND reset in build() like every other diag_* field: miss one
+        # and logging_utils' getattr(..., 0.0) reports a confident "the
+        # steering never fired", which is the one direction a diagnostic must
+        # not fail in.
+        self.diag_tan      = 0.0   # [rad/s^2] ||bias|| actually added (post-EMA)
+        self.diag_tan_raw  = 0.0   # [rad/s^2] ||bias|| this tick, pre-cap
+        self.diag_tan_n    = 0     # rows that contributed a nonzero bias
+        self.diag_tan_row  = '-'   # label of the largest contributor
+        self.diag_tan_mix  = 0.0   # 1 = command's own sideways part, 0 = drift
         self.diag_fast = 0
         # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
         # inf/0.0 with the flag off, which is how the CBFDIAG line says
