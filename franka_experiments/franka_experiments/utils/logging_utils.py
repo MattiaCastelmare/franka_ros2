@@ -419,6 +419,12 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f'hrng={getattr(rows, "diag_hrng", 0.0):.4f} '
         # enable_velocity_standoff: largest speed-proportional standoff [m].
         f'hstd={getattr(rows, "diag_hstand", 0.0):.4f} '
+        # go-around bias (utils.go_around): post-EMA norm [rad/s²], proximity
+        # weight, current tangential speed [m/s], head-on fallback flag; and the
+        # smallest approach-gate weight applied to hunc/hlat this rebuild.
+        f'ga={getattr(rows, "diag_ga", 0.0):.3f}/{getattr(rows, "diag_ga_w", 0.0):.2f}/'
+        f'{getattr(rows, "diag_ga_vt", 0.0):+.3f}/{getattr(rows, "diag_ga_head", 0)} '
+        f'gate={getattr(rows, "diag_gate_w", 1.0):.2f} '
         # obstacle_velocity_fast_trust: rows whose young track passed the
         # fast-track test this rebuild. 0 with the flag off.
         f'fast={getattr(rows, "diag_fast", 0)} '

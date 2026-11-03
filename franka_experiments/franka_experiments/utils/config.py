@@ -390,6 +390,12 @@ CBF_PARAM_SPEC = {
     'k0_cbf': ('float', dict(minimum=0.0, maximum=10000.0)),
     'k1_cbf': ('float', dict(minimum=0.0, maximum=10000.0)),
     'rho_slack': ('float', dict(positive=True)),
+    # Upper bound on the OBSTACLE family's slack variable. 1e6 is the
+    # preallocated default and means 'soft, priced by rho_slack'. 0.0 makes
+    # every obstacle row HARD: the QP may then be infeasible, which the
+    # fallback ladder reports rather than hides. Diagnostic knob; it changes
+    # no gain and adds no avoidance mechanism.
+    'obstacle_slack_max': ('float', dict(minimum=0.0)),
     'rho_slack_self_collision': ('float', dict(positive=True)),
     'rho_slack_joint_limit': ('float', dict(positive=True)),
     'rho_slack_singularity': ('float', dict(positive=True)),
@@ -408,6 +414,20 @@ CBF_PARAM_SPEC = {
     'cbf_tangential_engage_margin': ('float', dict(positive=True, maximum=1.0)),
     'cbf_tangential_filter_alpha': ('float', dict(minimum=0.0, maximum=0.98)),
     'cbf_tangential_max_bias': ('float', dict(positive=True, maximum=100.0)),
+    'margin_gate_on_approach': ('bool', dict()),
+    'margin_gate_ref_speed': ('float', dict(positive=True, maximum=2.0)),
+    'enable_go_around': ('bool', dict()),
+    'go_around_engage_margin': ('float', dict(positive=True, maximum=1.0)),
+    'go_around_speed': ('float', dict(minimum=0.0, maximum=2.0)),
+    'go_around_gain': ('float', dict(minimum=0.0, maximum=100.0)),
+    'go_around_max_accel': ('float', dict(minimum=0.0, maximum=20.0)),
+    'go_around_max_bias': ('float', dict(positive=True, maximum=100.0)),
+    'go_around_horizon_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    'go_around_damping': ('float', dict(positive=True, maximum=1.0)),
+    'go_around_turn_tau': ('float', dict(positive=True, maximum=10.0)),
+    'go_around_release_factor': ('float', dict(minimum=1.0, maximum=5.0)),
+    'go_around_max_jerk': ('float', dict(positive=True, maximum=1000.0)),
+    'go_around_push_cut': ('float', dict(minimum=0.0, maximum=1.0)),
     'joint_limit_rows_enabled': ('bool', dict()),
     'joint_limit_row_margin': ('float', dict(minimum=0.0, maximum=1.0)),
     'joint_limit_row_horizon': ('float', dict(positive=True, maximum=3.0)),

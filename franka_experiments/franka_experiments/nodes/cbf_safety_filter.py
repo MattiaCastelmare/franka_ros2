@@ -61,6 +61,7 @@ from franka_experiments.utils.cbf_hard_limits import (
     position_velocity_accel_box,
 )
 from franka_experiments.utils.cbf_zones import ladder_from_params, ZONE_NAMES
+from franka_experiments.utils.go_around import GoAroundState, go_around_step
 from franka_experiments.utils.cbf_qp_assembly import (
     LEVEL_NAMES,
     OSQP_LEVEL_BOX,
@@ -103,6 +104,7 @@ from franka_experiments.utils.config import (
 from franka_experiments.utils.kinematics import (
     CBFKinematics,
     build_urdf_no_hand,
+    configure_control_points_from_node,
 )
 from franka_experiments.utils.logging_utils import (
     format_cbf_diag,
@@ -196,6 +198,7 @@ class CBFSafetyFilter(Node):
 
         # ── 3. Kinematics and the row builders ──────────────────────────
         kin = CBFKinematics(pin.buildModelFromUrdf(build_urdf_no_hand()))
+        configure_control_points_from_node(kin, self)
         opt = build_optional_row_builders(P, kin, self.get_logger())
 
         # The one object that turns a (joint state, obstacle) pair into rows.
@@ -221,7 +224,8 @@ class CBFSafetyFilter(Node):
             P, kin, q_min=self._q_min, q_max=self._q_max,
             acc_lb=self._lb, acc_ub=self._ub, logger=self.get_logger(),
             brake_acc=self._brake_acc,
-            qdot_max=self._qdot_max, **opt)
+            qdot_max=self._qdot_max,
+            control_point_jacobian=kin.control_point_jacobian, **opt)
 
         # ── 4. QP, preallocated once ────────────────────────────────────
         # Slack penalty is QUADRATIC (½ρs²) and one slack per FAMILY. Quadratic
@@ -256,6 +260,17 @@ class CBFSafetyFilter(Node):
         self._qvec = np.zeros(NX)
         self._box_lb = np.concatenate([self._lb, np.zeros(N_SLACK)])
         self._box_ub = np.concatenate([self._ub, np.full(N_SLACK, 1e6)])
+        # Hard-obstacle diagnostic. Only the OBSTACLE family's cap moves;
+        # every physical and actuator constraint keeps its slack, so when
+        # this makes the QP infeasible the failure is attributable to the
+        # obstacle rows and is surfaced by the fallback ladder (qp_fails,
+        # fb=[full, box, brake]) instead of being absorbed somewhere else.
+        # Only [:NV] is mutated per tick, so this bound stands for the run.
+        self._box_ub[NV + G_OBS] = float(P.obstacle_slack_max)
+        if P.obstacle_slack_max <= 0.0:
+            self.get_logger().warn(
+                'obstacle_slack_max=0: obstacle CBF rows are HARD. The QP can\n'
+                'be infeasible; watch qp_fails and the fallback counters.')
         self._osqp_prob = None
         self._prev_nc = -1
         self._qp_fail_count = 0
@@ -309,6 +324,7 @@ class CBFSafetyFilter(Node):
         self._qddot_prev = np.zeros(NV)
         self._nom_prev = np.zeros(NV)   # last tick's (biased) nominal, for the livelock test
         self._tan_bias = np.zeros(NV)   # EMA state for tangential_bias, below
+        self._around = GoAroundState(bias=np.zeros(NV))  # side, weight, bias
         self._esc_bias = np.zeros(NV)   # EMA state for the lateral-evasion bias
         self._outrun_bias = np.zeros(NV)  # EMA state for the Phase-2 escape bias
 
@@ -1166,6 +1182,31 @@ class CBFSafetyFilter(Node):
             self._rows.diag_tan_mix = float(tan_diag.get('mix', 0.0))
         else:
             self._tan_bias *= a_tan
+
+        # ── STEP 3b': go AROUND the closest obstacle (utils.go_around) ────
+        # Side chosen once and held, two-sided low-gain speed loop, weight and
+        # bias rate limited (jerk bound), and the task's push INTO the obstacle
+        # removed while engaged. Blind / nothing nearby (n_c == 0 or no
+        # geometry): Jp=None, so everything fades out at the rate limits.
+        if P.enable_go_around:
+            geom_ok = n_c > 0 and con is not None and con.around_geom is not None
+            h_a, Jp_a, n_a, _lbl = (con.around_geom if geom_ok
+                                    else (float('inf'), None, None, '-'))
+            ga_diag: dict = {}
+            ga_bias, ga_cut = go_around_step(
+                self._around, qddot_nom, self._qdot_cbf, Jp_a, n_a, h_a, self._dt_qp,
+                engage_margin=P.go_around_engage_margin, speed=P.go_around_speed,
+                gain=P.go_around_gain, max_accel=P.go_around_max_accel,
+                max_bias=P.go_around_max_bias, horizon_s=P.go_around_horizon_s,
+                damping=P.go_around_damping, turn_tau=P.go_around_turn_tau,
+                release_factor=P.go_around_release_factor,
+                max_jerk=P.go_around_max_jerk, push_cut=P.go_around_push_cut,
+                diag=ga_diag)
+            qddot_nom = qddot_nom + ga_bias + ga_cut
+            self._rows.diag_ga = float(np.linalg.norm(ga_bias))
+            self._rows.diag_ga_w = float(ga_diag.get('w', 0.0))
+            self._rows.diag_ga_vt = float(ga_diag.get('vt', 0.0))
+            self._rows.diag_ga_head = int(ga_diag.get('head_on', 0))
 
         # ── STEP 3c: get OUT OF THE WAY when backing off cannot work ────
         # The tangential bias above uses the directions the barrier leaves

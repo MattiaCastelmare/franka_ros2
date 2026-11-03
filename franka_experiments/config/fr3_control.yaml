@@ -63,7 +63,7 @@ topics:
 
 params:
   # Safety distances — used by cbf_safety_filter and cbf_velocity_filter
-  d_safe: 0.15          # minimum safe distance from obstacles [m]
+  d_safe: 0.10          # minimum safe distance from obstacles [m]
                         # VALUE UNCHANGED, MEANING TIGHTENED: the barrier is now
                         # h = LinkDistance.distance - d_safe, i.e. measured from
                         # the capsule SURFACE. It used to be rebuilt as
@@ -202,6 +202,10 @@ params:
   #   joint-lim - the hard box underneath is the real guarantee; the row only
   #               shapes the approach, so letting it yield costs little.
   rho_slack: 1000.0                  # obstacle rows
+  # Cap on the obstacle family's shared slack variable. 1e6 = the
+  # preallocated default, i.e. unchanged soft behaviour. 0.0 makes the
+  # obstacle rows hard (no relaxation) and can render the QP infeasible.
+  obstacle_slack_max: 1000000.0
   rho_slack_self_collision: 20000.0  # self-collision rows
   rho_slack_joint_limit: 200.0       # joint-limit rows
   rho_slack_singularity: 2000.0      # singularity row (sigma_min of J)
@@ -541,6 +545,32 @@ params:
                                     # how large qddot_nom gets during a
                                     # tracking-error spike (the exact scenario
                                     # that preceded the hardware oscillation).
+
+  # Approach gate on the two covariance margins (uncertainty_margin and
+  # latency_compensation). The tracker covariance never reaches zero, so ungated
+  # they subtracted ~6 cm (3.5 + 2.7) from h for a STATIC obstacle, all the time
+  # (DIAG Gazebo and both IRIM sessions), and k0*h_bar < 0 pushed the arm off
+  # it. Gated, they scale with smoothstep(v_o / margin_gate_ref_speed), v_o the
+  # conditioned closing speed: zero for a static obstacle, full above ref.
+  margin_gate_on_approach: true
+  margin_gate_ref_speed: 0.15       # [m/s] closing speed at which both apply in full
+
+  # Go-around bias (utils/go_around.py): drives the closest control point's
+  # speed ALONG the obstacle surface, in the direction of the task's own
+  # tangential intent (side held with hysteresis when head-on), mapped through
+  # damped pinv(Jp). Objective only, like the tangential bias above.
+  enable_go_around: true
+  go_around_engage_margin: 0.15     # [m] barrier h_bar below which it acts (smoothstep)
+  go_around_speed: 0.25             # [m/s] target tangential speed of the control point
+  go_around_gain: 3.0               # [1/s] speed-loop gain (two-sided; 8 + one-sided clip oscillated at ~2 Hz)
+  go_around_max_accel: 2.5          # [m/s^2] Cartesian accel cap
+  go_around_max_bias: 8.0           # [rad/s^2] joint bias norm cap
+  go_around_horizon_s: 0.3          # [s] look-ahead of the task intent
+  go_around_damping: 0.05           # [m] damped least squares lambda
+  go_around_turn_tau: 1.0           # [s] how fast the kept side may turn toward the task (never flips)
+  go_around_release_factor: 1.5     # side forgotten only once h_bar > factor * engage_margin
+  go_around_max_jerk: 10.0          # [rad/s^3] max change rate of the go-around bias
+  go_around_push_cut: 1.0           # fraction of the task's push INTO the obstacle removed at full engagement
 
   # QP cost: ||qddot - qddot_nom||²  (smoothing now via slew-rate QP constraint)
   # TODO[LEGACY]: read by no active node | confidence: high | superseded-by: none | flagged: 2026-09-01

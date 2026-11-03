@@ -1292,6 +1292,12 @@ G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD = 0, 1, 2, 3, 4, 5
 #: window on this path is a duration and not a frame count.
 from franka_experiments.utils.rate_scaling import ema_alpha_for, frames_for
 
+
+def _approach_weight(v_o: float, v_ref: float) -> float:
+    """Smoothstep of the conditioned closing speed: 0 static, 1 at ``v_ref``."""
+    x = min(max(float(v_o) / max(float(v_ref), 1e-6), 0.0), 1.0)
+    return x * x * (3.0 - 2.0 * x)
+
 #: The link the ISO 'reduced' mode's 250 mm/s row is built on, and the one
 #: ``iso_safety_monitor`` applies its copy of the same cap to (its
 #: ``iso_tcp_link`` parameter defaults to this). Last entry of
@@ -1486,6 +1492,12 @@ class ConstraintSnap(NamedTuple):
                            # speed is v_obs + (k0/k1)·|h̄|; flooring |h̄| at
                            # dv·k1/k0 bounds the part that does NOT come from
                            # the obstacle's own speed to dv. See build_row_rhs.
+    around_geom: Optional[tuple] = None
+                           # (h̄, Jp (3,nv), n̂ (3,), label) of the CLOSEST
+                           # obstacle row, or None when enable_go_around is off
+                           # or no obstacle row was built. Consumed by the QP
+                           # tick's go-around bias (utils.go_around); the
+                           # geometry is frozen at this rebuild like every row.
 
 
 
@@ -1595,8 +1607,11 @@ class ConstraintBuilder:
     def __init__(self, P, kin, *, q_min, q_max, acc_lb, acc_ub,
                  sc_rows=None, sc_kin=None, sc_qi=None, sc_vi=None,
                  sc_q=None, sc_v=None, sing_rows=None, logger=None,
-                 qdot_max=None, brake_acc=None):
+                 qdot_max=None, brake_acc=None, control_point_jacobian=None):
         self._P, self._kin, self._log = P, kin, logger
+        # Optional for generic rigid-point callers and analytic test harnesses.
+        # The torque node supplies the perception geometry's exact derivatives.
+        self._control_point_jacobian = control_point_jacobian
         self._q_min, self._q_max = q_min, q_max
         self._lb, self._ub = acc_lb, acc_ub
         # Per-joint velocity bound the filter ENFORCES (velocity_box_margin
@@ -1715,6 +1730,8 @@ class ConstraintBuilder:
         self.diag_tan_n    = 0     # rows that contributed a nonzero bias
         self.diag_tan_row  = '-'   # label of the largest contributor
         self.diag_tan_mix  = 0.0   # 1 = command's own sideways part, 0 = drift
+        self.diag_ga = self.diag_ga_w = self.diag_ga_vt = 0.0  # go-around (node fills)
+        self.diag_ga_head = 0
         self.diag_fast = 0          # rows whose track passed the fast-track test
         self.diag_sigma = float('nan')
         self.diag_esc_w = 0.0
@@ -1836,6 +1853,11 @@ class ConstraintBuilder:
         # escape must live in the nullspace of ALL of them (a wedge).
         lock_best = None
         lock_rows: list = []
+        around_best = None          # (h̄, Jp, n̂, label) of the closest obstacle row
+        go_on = bool(getattr(self._P, 'enable_go_around', False))
+        gate_on = bool(getattr(self._P, 'margin_gate_on_approach', False))
+        gate_v = float(getattr(self._P, 'margin_gate_ref_speed', 0.15))
+        self.diag_gate_w = 1.0      # smallest approach weight applied this rebuild
         # Same contract for the JOINT-LIMIT family: one weight per emitted row,
         # in append order, scattered by family at the end.
         qlim_w: list[float] = []
@@ -1863,6 +1885,8 @@ class ConstraintBuilder:
         self.diag_tan_n    = 0     # rows that contributed a nonzero bias
         self.diag_tan_row  = '-'   # label of the largest contributor
         self.diag_tan_mix  = 0.0   # 1 = command's own sideways part, 0 = drift
+        self.diag_ga = self.diag_ga_w = self.diag_ga_vt = 0.0  # go-around (node fills)
+        self.diag_ga_head = 0
         self.diag_fast = 0
         # ISO layer: tightest SSM speed cap and largest S_p this rebuild.
         # inf/0.0 with the flag off, which is how the CBFDIAG line says
@@ -1904,9 +1928,13 @@ class ConstraintBuilder:
             if fid is None:
                 continue
 
-            # point_jacobian returns (Jp, J̇p): Jp is the 3×7 position Jacobian
-            # (same matrix as the old point_jacobian_pos), J̇p feeds jdq below.
-            Jp, Jpd = self._kin.point_jacobian(fid, ob.pr)
+            # Configured samples are origin interpolations (except the rigid
+            # fingertip). End-link labels are identities, not attachments.
+            # Unlabelled generic obstacles retain the rigid-point interface.
+            if self._control_point_jacobian is not None and ob.cp_label:
+                Jp, Jpd = self._control_point_jacobian(ob.cp_label)
+            else:
+                Jp, Jpd = self._kin.point_jacobian(fid, ob.pr)
             a      = (n_w @ Jp).astype(np.float64)      # (NV,)  aᵢ = n̂ᵀ Jp
             a_norm = float(np.linalg.norm(a))
             # Drop constraints with too little leverage on q̈ along THIS
@@ -2227,6 +2255,17 @@ class ConstraintBuilder:
                     prev = self._unc_ema.get(lbl, h_unc)
                     h_unc = a_u * prev + (1.0 - a_u) * h_unc
                 self._unc_ema[lbl] = h_unc
+                # Approach gate (margin_gate_on_approach): the covariance never
+                # reaches zero, so ungated this term subtracted ~3.5 cm from a
+                # STATIC obstacle permanently (DIAG sim and both IRIM sessions)
+                # and the k0 term pushed the arm off it. Weighted by the
+                # conditioned closing speed, the same v_o the standoff uses.
+                # The EMA above keeps tracking the ungated value, so the margin
+                # comes back at full size the moment the obstacle approaches.
+                if gate_on:
+                    w_g = _approach_weight(v_o, gate_v)
+                    self.diag_gate_w = min(self.diag_gate_w, w_g)
+                    h_unc *= w_g
                 h -= h_unc
                 if h_unc > self.diag_hunc:
                     self.diag_hunc = h_unc
@@ -2245,6 +2284,8 @@ class ConstraintBuilder:
                     t_blind=self._P.latency_t_blind, k_sigma=self._P.latency_k_sigma,
                     margin_max=self._P.latency_margin_max)
                 h_lat = min(h_pred + h_lat_unc, self._P.latency_margin_max)
+                if gate_on:     # same approach gate as the uncertainty margin
+                    h_lat *= _approach_weight(v_o, gate_v)
                 h -= h_lat
                 if h_lat > self.diag_hlat:
                     self.diag_hlat = h_lat
@@ -2325,6 +2366,8 @@ class ConstraintBuilder:
                 # state produced it — and names it the way the publisher and
                 # skip_keys do.
                 rows_link.append(lbl)
+                if go_on and (around_best is None or h < around_best[0]):
+                    around_best = (float(h), Jp, n_w, lbl)
 
                 # Retreat cap for THIS control point, on the same normal. One
                 # per kept obstacle row, so the cap set follows the barrier set
@@ -2774,7 +2817,8 @@ class ConstraintBuilder:
                                     float(esc_w_max),
                                     outrun_v,
                                     lock_dir,
-                                    k0_row, k1_row, zone_row, h_pen_row)
+                                    k0_row, k1_row, zone_row, h_pen_row,
+                                    around_geom=around_best)
 
     def _escape_row(self, ob, a: np.ndarray, Jp: np.ndarray, h: float,
                     v_obs: float, qdot: np.ndarray):

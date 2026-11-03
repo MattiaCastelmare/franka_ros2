@@ -782,7 +782,30 @@ tracking:
   # the ~0.17 s a 5-frame coast lasts", and that sentence is only true if the
   # coast stays 0.17 s when the frame rate changes. 0.167 s = the 5 frames this
   # was tuned with at 30 Hz, = 15 frames at 90 Hz.
-  max_coast_s: 0.167
+  #
+  # RAISED to 0.8 s (2026-11-01). 0.167 s is shorter than the time an obstacle
+  # spends inside the robot self-mask, so the track died mid-approach and the
+  # CBF lost its row with the obstacle still there. Measured at d_safe 0.10 over
+  # 72 runs (4 obstacle types x 3 seeds, DIAG scene, full depth perception):
+  #
+  #   tracker  coast    contacts   worst gap   P95 jerk   max jerk
+  #   kf       0.167    3/12 (25%)   -0.092 m      35.9      83.8
+  #   imm      0.167    3/12 (25%)   -0.096 m      34.2     105.2
+  #   kf       0.8      1/12  (8%)   -0.094 m      41.0     179.8
+  #   imm      0.8      1/24  (4%)   -0.053 m      28.3      76.3
+  #
+  # The coast removes most of the contacts; imm_enabled is what makes the
+  # residual one shallow and the motion smooth (kf + long coast spikes to
+  # 180 m/s^3). The two belong together: imm with the SHORT coast was the worst
+  # configuration tested, because it differentiates the track's death-and-rebirth
+  # position jump into a phantom obstacle velocity.
+  #
+  # CAVEAT, deliberately not acted on here: this breaks the sentence above that
+  # sizes gate_max_m (0.5 m) on a 0.17 s coast. At 0.8 s the association gate is
+  # no longer "what a limb covers in one coast". It was left at 0.5 m because
+  # nothing in these 72 runs showed a mis-association, but gate_max_m should be
+  # re-derived before this ships to hardware.
+  max_coast_s: 0.8
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Simulated obstacle (real_time_distance)  --  OFF, and it must stay off
