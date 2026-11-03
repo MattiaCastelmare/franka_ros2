@@ -101,12 +101,78 @@ pentagon:
     pentagon_on_path:                    # static sphere ON the circle (its -y point)
       T: 30.0
       obstacles: [{p0: [0.4, -0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_ball_left:                  # mirror of pentagon_on_path: sphere ON the circle
+      # at its +y point, i.e. the robot's LEFT in fr3_link0 (REP-103: +y = left).
+      # scene pinned to diag_bare on purpose: with scene=rig the perception
+      # chain reports d_obstacle_min = 0.000 on every tick from the rig
+      # structure itself, which floods the QP and starves it to ~20-36 Hz.
+      scene: diag_bare
+      T: 30.0
+      obstacles: [{p0: [0.4, 0.25, 0.45], radius: 0.05, law: static}]
     pentagon_beside_path:                # 0.15 m in front of the circle (toward the camera)
       T: 30.0
       obstacles: [{p0: [0.55, 0.25, 0.45], radius: 0.06, law: static}]
     pentagon_crossing:                   # crosses the path plane at 0.3 m/s, through the centre
       T: 12.0
       obstacles: [{p0: [1.0, 0.0, 0.45], radius: 0.06, law: linear, v0: [-0.3, 0.0, 0.0]}]
+    pentagon_static_baseline:            # PHASE 1 baseline: static ball beside the path
+      # Designed so the filter has real work to do AND a feasible way to do it.
+      # The pentagon is traced in the plane x = 0.400; this ball sits 0.15 m in
+      # FRONT of that plane, squarely off the vertex the hand reaches at
+      # (0.400, -0.250, 0.449). Every capsule control point and the obstacle
+      # have radius 0.05, so gap = centre distance - 0.10, and the UNFILTERED
+      # nominal trajectory therefore passes at a gap of 0.05 m: half of d_safe,
+      # a plain violation, yet nowhere near contact.
+      #
+      # Recovering it needs ~0.05 m of retreat along -x, back toward the robot,
+      # where nothing is in the way. That is a local correction a barrier can
+      # actually produce: a CBF filter bends the commanded acceleration, it does
+      # not plan a detour, so an obstacle sitting ON the path (pentagon_on_path)
+      # would demand a 0.15 m excursion the filter has no means to construct.
+      # The point of this scenario is a safety distance the baseline CAN hold.
+      #
+      # scene: diag. WITHOUT this key the catalog default is 'rig', and the
+      # first sweep (sim_runs/static_baseline_sweep_20261102/{A..E}) ran there
+      # by accident: a different room, a different camera extrinsic, and the
+      # robot's own mounting table as the nearest perceived obstacle. The DIAG
+      # lab is the environment this programme uses, so it is stated here.
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.55, -0.25, 0.449], radius: 0.05, law: static}]
+
+    pentagon_static_baseline_bare:      # the SAME experiment, room emptied
+      # Separates two causes that the 'isolated sphere' condition conflates.
+      # Going from perception:=true to perception:=emulated removes the
+      # furniture AND replaces measured geometry with exact geometry, so a
+      # difference between them cannot be attributed to either. This scene
+      # keeps the real depth camera and the real clustering on the sphere and
+      # takes only the furniture away:
+      #   diag      + perception true      furniture + measured sphere
+      #   diag_bare + perception true      measured sphere, nothing else  <-
+      #   diag      + perception emulated  exact sphere, nothing else
+      # Same obstacle, same trajectory, same d_safe as the baseline above.
+      scene: diag_bare
+      T: 30.0
+      obstacles: [{p0: [0.55, -0.25, 0.449], radius: 0.05, law: static}]
+
+    pentagon_lateral:                    # a ball passing SIDEWAYS across the workspace
+      # pentagon_crossing drives along -x, straight down the robot's own reach
+      # axis and through the centre of the path: the arm is pinned between the
+      # ball and its base and there is no direction left to retreat in, so that
+      # scenario tests braking, not avoidance. This one is the tangential case.
+      # The ball travels along +y INSIDE the path plane (x = 0.40, the plane the
+      # pentagon is drawn in) at 0.3 m/s, about 5.7 s to cross. Its velocity is
+      # perpendicular to the robot's reach, so the arm can give way along z or
+      # around the circle instead of only backing off.
+      #
+      # z = 0.62 is 0.17 above the path centre, which is what makes it a real
+      # encounter: the arm rides the RIM of a 0.25 m circle, so a ball crossing
+      # at the centre height passes 0.25 m away and never threatens it. At
+      # z = 0.62 the ball's line cuts the circle at y = +/- sqrt(0.25^2 -
+      # 0.17^2) = +/- 0.183, straight through the path the hand is tracing.
+      T: 12.0
+      obstacles: [{p0: [0.40, -0.85, 0.62], radius: 0.06, law: linear,
+                   v0: [0.0, 0.3, 0.0]}]
     pentagon_pursuer:                    # a hand following the flange at 0.3 m/s
       T: 12.0
       obstacles: [{p0: [0.4, 0.75, 0.45], radius: 0.05, law: pursuit, speed: 0.3}]
@@ -123,6 +189,17 @@ pentagon:
       T: 30.0
       obstacles: [{p0: [0.45, 0.50, 0.45], radius: 0.06, law: oscillate,
                    axis: [0.0, -1.0, 0.35], amplitude: 0.5, period: 10.0}]
+    pentagon_multi_static:               # pentagon_on_path + pentagon_beside_path at once
+      T: 30.0
+      obstacles: [{p0: [0.40, -0.25, 0.45], radius: 0.05, law: static},
+                  {p0: [0.55, 0.25, 0.45], radius: 0.06, law: static}]
+    pentagon_multi_mixed:                # static ball on the path + a ball sweeping IN FRONT
+      # of the circle (x 0.6, camera side, never behind the arm): y in +/-0.35
+      # every 12 s, peak speed 0.18 m/s.
+      T: 30.0
+      obstacles: [{p0: [0.40, -0.25, 0.45], radius: 0.05, law: static},
+                  {p0: [0.60, 0.0, 0.50], radius: 0.05, law: oscillate,
+                   axis: [0.0, 1.0, 0.0], amplitude: 0.35, period: 12.0}]
 
 # ── Ball-throw speed sweep, as approach_envelope.py builds its cells ──────────
 # A ball of R_BALL aimed at the flange centre along +y, constant velocity:
