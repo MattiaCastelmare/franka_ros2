@@ -292,8 +292,14 @@ class QddotToTorqueNode(Node):
         np.copyto(self._M_arm,
                   np.asarray(self._data.M)[self._arm_v_ix])
 
-        # C·qdot restricted to arm joints
-        Cqdot_full = np.asarray(self._data.C) @ self._qdot_full
+        # C·qdot restricted to arm joints.
+        # NOT data.C: pin.computeAllTerms does NOT fill the Coriolis MATRIX
+        # (verified Pinocchio 4.0.0 — data.C stays identically zero), so
+        # `data.C @ qdot` silently dropped the whole Coriolis/centrifugal
+        # torque. data.nle and data.g ARE filled by the same call, and
+        # nle = C(q,q̇)·q̇ + g(q), so nle - g is the gravity-free term exactly
+        # (checked to 2.7e-15 against RNEA with zero gravity) at no extra cost.
+        Cqdot_full = np.asarray(self._data.nle) - np.asarray(self._data.g)
         for k, iv in enumerate(self._arm_v_ids):
             self._C_qdot_arm[k] = Cqdot_full[iv]
 

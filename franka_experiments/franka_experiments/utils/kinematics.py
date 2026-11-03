@@ -452,6 +452,59 @@ class CBFKinematics:
     def __init__(self, model: pin.Model):
         self.model = model
         self.data = model.createData()
+        self._control_points = {}
+
+    def configure_control_points(self, robot_cfg: dict, distance_cfg: dict) -> None:
+        """Resolve the geometry and wire labels used by define_control_points.
+
+        Interpolations use origin Jacobians, even for nonconsecutive frames.
+        Only the final EE sample is replaced by a rigid fingertip offset.
+        Labels count samples per end link in (seg_idx, cp_idx) order; an
+        obstacle-rank suffix does not change the point's kinematics.
+        """
+        specs, seen = {}, {}
+        ee_link = robot_cfg.get('ee_link', 'fr3_link8')
+        for seg in sorted(robot_cfg['segments'], key=lambda s: int(s['seg_idx'])):
+            n = int(seg.get('control_points', 0))
+            if n <= 0:
+                continue
+            start, end = seg['start_link'], seg['end_link']
+            if not self.model.existFrame(start) or not self.model.existFrame(end):
+                raise ValueError(f'Control-point frames not in model: {start}, {end}')
+            f0, f1 = self.model.getFrameId(start), self.model.getFrameId(end)
+            for k in range(n):
+                t = (k + 1) / (n if end == ee_link else n + 1)
+                offset = None
+                if end == ee_link and np.isclose(t, 1.0):
+                    offset = np.zeros(3)
+                    offset[int(distance_cfg['ee_tip_axis'])] = float(distance_cfg['ee_tip_offset'])
+                i = seen.get(end, 0)
+                seen[end] = i + 1
+                specs[f'{end}#{i}'] = (f0, f1, t, offset)
+        self._control_points = specs
+
+    def control_point_jacobian(self, label: str, *, with_jdot: bool = True):
+        """Return (J, Jdot) for a configured perception point after update().
+
+        With with_jdot=False, return (J, None); update(with_jdot=False) is
+        sufficient. Unknown labels raise KeyError rather than selecting a
+        different physical point. Published positions/labels are unchanged.
+        """
+        f0, f1, t, offset = self._control_points[label.partition('.')[0]]
+        if offset is not None:
+            p = self.data.oMf[f1].act(offset)
+            if with_jdot:
+                return self.point_jacobian(f1, p)
+            return self.point_jacobian_pos(f1, p), None
+        rf = pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
+        J0 = pin.getFrameJacobian(self.model, self.data, f0, rf)[:3, :]
+        J1 = pin.getFrameJacobian(self.model, self.data, f1, rf)[:3, :]
+        J = (1.0 - t) * J0 + t * J1
+        if not with_jdot:
+            return J, None
+        D0 = pin.getFrameJacobianTimeVariation(self.model, self.data, f0, rf)[:3, :]
+        D1 = pin.getFrameJacobianTimeVariation(self.model, self.data, f1, rf)[:3, :]
+        return J, (1.0 - t) * D0 + t * D1
 
     def update(self, q: np.ndarray, qdot: np.ndarray,
                with_jdot: bool = True) -> None:
@@ -505,9 +558,26 @@ class CBFKinematics:
         Jv,  Jw  = J6[:3, :],    J6[3:, :]
         Jvd, Jwd = Jdot6[:3, :], Jdot6[3:, :]
 
+        # A fixed local offset rotates in LWA coordinates: rdot = omega × r.
+        omega = pin.getFrameVelocity(
+            self.model, self.data, frame_id,
+            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+        ).angular
         Jp   = Jv  - r_cross @ Jw
-        Jpd  = Jvd - r_cross @ Jwd   # first-order approx; exact for fixed r
+        Jpd  = Jvd - r_cross @ Jwd - _skew(np.cross(omega, r)) @ Jw
         return Jp, Jpd
+
+
+def configure_control_points_from_node(kin: CBFKinematics, node) -> None:
+    """Use the same geometry config as RealTimeDistance, with a standalone default."""
+    from ament_index_python.packages import get_package_share_directory
+    from .config import load_config_file
+    from .params import declare_str
+
+    default = os.path.join(get_package_share_directory('franka_experiments'),
+                           'config', 'fr3_complete.yaml')
+    cfg = load_config_file(declare_str(node, 'robot_config_path', default))
+    kin.configure_control_points(cfg['robot'], cfg['distance'])
 
 
 def build_urdf_with_sc(hand: bool = True,

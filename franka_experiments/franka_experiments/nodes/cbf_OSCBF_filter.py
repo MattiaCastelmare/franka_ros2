@@ -151,8 +151,14 @@ class _RobotDynamics:
         M_full = np.asarray(self.data.M)
         np.copyto(self.M, M_full[self.arm_v_ix])
 
-        # C·qdot vector 7
-        np.dot(np.asarray(self.data.C), self._qdot_full, out=self._Cqdot_full)
+        # C·qdot vector 7.
+        # NOT data.C: pin.computeAllTerms does NOT fill the Coriolis MATRIX
+        # (verified Pinocchio 4.0.0 — data.C stays identically zero), so
+        # `data.C @ qdot` silently dropped the whole Coriolis/centrifugal
+        # torque. nle = C(q,q̇)·q̇ + g(q) and both nle and g are filled by the
+        # same call, so nle - g is the gravity-free term exactly, for free.
+        np.subtract(np.asarray(self.data.nle), np.asarray(self.data.g),
+                    out=self._Cqdot_full)
         for k, iv in enumerate(self.arm_v_ids):
             self.C_qdot[k] = self._Cqdot_full[iv]
 

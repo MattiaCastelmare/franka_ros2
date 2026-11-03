@@ -355,9 +355,14 @@ class PentagonTorqueCommander(Node):
         M_full = np.asarray(self.pin_data.M)  # view, no copy
         np.copyto(self._M_arm_buf, M_full[self._arm_v_ix])
 
-        # Coriolis × qdot → 7-element arm vector
-        np.dot(np.asarray(self.pin_data.C), self._qdot_full_buf,
-               out=self._Cqdot_full_buf)
+        # Coriolis × qdot → 7-element arm vector.
+        # NOT data.C: pin.computeAllTerms does NOT fill the Coriolis MATRIX
+        # (verified Pinocchio 4.0.0 — data.C stays identically zero), so
+        # `data.C @ qdot` silently dropped the whole Coriolis/centrifugal
+        # torque. nle = C(q,q̇)·q̇ + g(q) and both nle and g are filled by the
+        # same call, so nle - g is the gravity-free term exactly, for free.
+        np.subtract(np.asarray(self.pin_data.nle), np.asarray(self.pin_data.g),
+                    out=self._Cqdot_full_buf)
         for i, vid in enumerate(self._arm_v_ids):
             self._C_qdot_buf[i] = self._Cqdot_full_buf[vid]
 
