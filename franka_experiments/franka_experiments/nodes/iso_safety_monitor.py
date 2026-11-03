@@ -96,7 +96,8 @@ from std_srvs.srv import Trigger
 from franka_experiments.utils.cbf_state_rows import FR3_JOINTS, NV
 from franka_experiments.utils.config import load_cbf_config
 from franka_experiments.utils.iso_ssm import protective_separation, ssm_speed_cap
-from franka_experiments.utils.kinematics import CBFKinematics, build_urdf_no_hand
+from franka_experiments.utils.kinematics import (
+    CBFKinematics, build_urdf_no_hand, configure_control_points_from_node)
 from franka_experiments.utils.perception_msgs import labelled_links
 
 #: trip_reason values published on data[1].
@@ -138,6 +139,7 @@ class ISOSafetyMonitor(Node):
             'iso_tcp_link', 'fr3_link8').value
 
         self._kin = CBFKinematics(pin.buildModelFromUrdf(build_urdf_no_hand()))
+        configure_control_points_from_node(self._kin, self)
         self._fid: dict = {}
 
         # ── State ───────────────────────────────────────────────────────
@@ -314,9 +316,7 @@ class ISOSafetyMonitor(Node):
             if n_norm < 1e-9:
                 continue
             n /= n_norm                       # n̂: obstacle -> control point
-            p_r = np.array([ld.closest_point_robot.x, ld.closest_point_robot.y,
-                            ld.closest_point_robot.z])
-            Jp = self._kin.point_jacobian_pos(fid, p_r)
+            Jp, _ = self._kin.control_point_jacobian(label, with_jdot=False)
             v_cp = Jp @ qdot
             # +n̂ is AWAY from the obstacle, so the robot's closing speed is the
             # negative projection. Clamped at 0: a receding point is not closing.

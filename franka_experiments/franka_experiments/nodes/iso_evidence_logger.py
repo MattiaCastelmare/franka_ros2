@@ -83,7 +83,8 @@ from franka_experiments.utils.cbf_state_rows import (
 from franka_experiments.utils.config import (
     load_cbf_config, load_franka_joint_limits, resolve_log_dir)
 from franka_experiments.utils.iso_ssm import protective_separation, ssm_speed_cap
-from franka_experiments.utils.kinematics import CBFKinematics, build_urdf_no_hand
+from franka_experiments.utils.kinematics import (
+    CBFKinematics, build_urdf_no_hand, configure_control_points_from_node)
 from franka_experiments.utils.params import declare_float, declare_str
 from franka_experiments.utils.perception_msgs import labelled_links
 
@@ -159,6 +160,7 @@ class ISOEvidenceLogger(Node):
         self._effort_max = jl['effort_max']
 
         self._kin = CBFKinematics(pin.buildModelFromUrdf(build_urdf_no_hand()))
+        configure_control_points_from_node(self._kin, self)
         self._fid: dict = {}
         self._tcp_fid = self._kin.resolve_frame_id(self._tcp_link)
         if self._tcp_fid is None:
@@ -491,9 +493,8 @@ class ISOEvidenceLogger(Node):
             if nn < 1e-9:
                 continue
             n /= nn                                  # obstacle → control point
-            p_r = np.array([ld.closest_point_robot.x, ld.closest_point_robot.y,
-                            ld.closest_point_robot.z])
-            v_cp = self._kin.point_jacobian_pos(fid, p_r) @ qdot
+            Jp, _ = self._kin.control_point_jacobian(label, with_jdot=False)
+            v_cp = Jp @ qdot
             speed = float(np.linalg.norm(v_cp))
             if speed > cp_speed_max:
                 cp_speed_max, cp_lbl = speed, label
