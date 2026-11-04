@@ -198,10 +198,9 @@ def build_cp_messages(
     # so a permuted row order would silently degrade every warm start.
     #
     # robot_link_name repeats across the CPs of one link — that is intended and
-    # safe.  cbf_safety_filter uses it only to resolve a Pinocchio frame id, and
-    # then calls point_jacobian(fid, ob.pr), which builds the Jacobian of the
-    # arbitrary world point ob.pr rigidly attached to that frame.  Each CP
-    # therefore gets its own correct row from its own closest_point_robot.
+    # safe. The stable CP label selects the same configured origin interpolation
+    # (or rigid fingertip) in cbf_safety_filter. The end-link name identifies
+    # the segment; interpolated samples need not be rigid to that end frame.
     link_entries = []
     link_cluster_ids = []
     for lk in segment_links:

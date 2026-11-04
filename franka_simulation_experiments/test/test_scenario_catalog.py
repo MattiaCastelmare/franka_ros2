@@ -176,12 +176,14 @@ def test_every_scenario_resolves_and_none_starts_inside_the_barrier(cfg):
         assert chk['ok'], (name, chk)
         if r['start_shift']:
             shifted[name] = [s['shift_m'] for s in r['start_shift']]
-    # The only scenario the real control-point set puts inside the barrier is
-    # wedge: 9.4 mm on fr3_link8#0, so its shift is 9.4 + 1 (margin) = 10.4 mm.
-    # Anything else moving, or more than 12 mm, means the catalog or the CP
-    # geometry changed.
-    assert set(shifted) == {'wedge'}, shifted
-    assert max(shifted['wedge']) < 0.012, shifted
+    # At d_safe = 0.15 the one scenario the real control-point set put inside
+    # the barrier was wedge (9.4 mm on fr3_link8#0, shifted 9.4 + 1 margin =
+    # 10.4 mm). d_safe is now 0.10, and at that radius wedge starts clear, so
+    # NO scenario needs a start shift. Any name appearing here means the
+    # catalog, d_safe or the CP geometry changed — check which before relaxing
+    # this: the assertion above is what keeps forward invariance meaningful,
+    # since it is a statement about trajectories that START in the safe set.
+    assert shifted == {}, shifted
 
 
 def test_seeds_replay_and_seed0_is_the_port(cfg):
