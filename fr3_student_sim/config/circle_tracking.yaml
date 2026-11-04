@@ -1,5 +1,5 @@
 # FR3 fingertip near (0.56, 0, 0.50) m, tool directed along base +X.
-# The desired orientation is computed from this joint pose and held constant.
+# Only the fingertip position is controlled; orientation is free.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
 # Vertical x-z circle. Start at its -x point with zero initial velocity.
@@ -9,13 +9,9 @@ circle:
   period: 8.0        # [s] at cruise speed, following the startup ramp
   ramp: 1.0         # [s] smooth angular-velocity ramp
 
-# Resolved-acceleration feedback gains: kp [1/s^2], kd [1/s].
+# Cartesian acceleration PD: kp [1/s^2], kd [1/s].
 # The simulator compensates gravity; the controller must not add g(q).
 tracking:
   kp_position: 100.0
   kd_position: 20.0
-  kp_orientation: 64.0
-  kd_orientation: 16.0
-  kp_posture: 4.0
-  kd_posture: 4.0
-  jacobian_damping: 0.01
+  kd_nullspace: 4.0  # [1/s] velocity damping only, no desired joint posture
