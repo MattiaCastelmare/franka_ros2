@@ -24,6 +24,7 @@ Pure ElementTree + numpy; no ROS import.
 from __future__ import annotations
 
 import math
+import os
 import xml.etree.ElementTree as ET
 from typing import Sequence
 
@@ -131,6 +132,11 @@ def configure_world(sdf_xml: str, *, extrinsics_path: str | None = None,
         sensor.find('update_rate').text = f'{float(depth_rate_hz):g}'
     if depth_topic:
         sensor.find('topic').text = depth_topic
+    # Hide the safety halo (and only it) from the depth camera. Harmless when no
+    # halo exists: every ordinary visual keeps the default all-ones flags.
+    cam_el = sensor.find('camera')
+    if cam_el is not None and cam_el.find('visibility_mask') is None:
+        ET.SubElement(cam_el, 'visibility_mask').text = str(DEPTH_VISIBILITY_MASK)
     if scene == 'bare':
         for m in [m for m in world.findall('model') if m.get('name') not in BARE_KEEP]:
             world.remove(m)
@@ -144,7 +150,8 @@ def configure_world(sdf_xml: str, *, extrinsics_path: str | None = None,
 
 
 def sphere_model(name: str, radius: float, xyz: Sequence[float], *,
-                 static: bool = True, rgba: str = '0.9 0.3 0.3 1') -> str:
+                 static: bool = True, rgba: str = '0.9 0.3 0.3 1',
+                 halo_m: float | None = None) -> str:
     """A visual-only sphere: seen by the depth camera, collides with nothing.
 
     No ``<collision>``: obstacles must not touch the arm (contact is measured
@@ -158,7 +165,30 @@ def sphere_model(name: str, radius: float, xyz: Sequence[float], *,
             f'<izz>1e-5</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>'
             f'<visual name="visual"><geometry><sphere><radius>{float(radius):.6g}</radius>'
             f'</sphere></geometry><material><ambient>{rgba}</ambient><diffuse>{rgba}</diffuse>'
-            f'</material></visual></link></model>')
+            f'</material></visual>{_halo_visual(radius, halo_m)}</link></model>')
+
+
+#: Visibility bit the safety halo lives on. The depth sensor's visibility_mask
+#: clears this bit (DEPTH_VISIBILITY_MASK), so the halo is drawn for the GUI —
+#: and for a screen recording of it — while the depth camera, and therefore the
+#: whole perception chain, never sees it. Gazebo renders a visual for a camera
+#: only when (camera.visibility_mask & visual.visibility_flags) != 0.
+HALO_VISIBILITY_FLAGS = 1
+DEPTH_VISIBILITY_MASK = 0xFFFFFFFF ^ HALO_VISIBILITY_FLAGS
+
+
+def _halo_visual(radius: float, halo_m: float | None) -> str:
+    """Translucent shell at ``radius + halo_m``: the region the CBF holds clear."""
+    if not halo_m or float(halo_m) <= 0.0:
+        return ''
+    r = float(radius) + float(halo_m)
+    return (f'<visual name="safety_halo"><geometry><sphere><radius>{r:.6g}</radius>'
+            f'</sphere></geometry><transparency>0.72</transparency>'
+            f'<material><ambient>0.15 0.75 1.0 0.28</ambient>'
+            f'<diffuse>0.15 0.75 1.0 0.28</diffuse>'
+            f'<specular>0.1 0.1 0.1 1</specular></material>'
+            f'<cast_shadows>false</cast_shadows>'
+            f'<visibility_flags>{HALO_VISIBILITY_FLAGS}</visibility_flags></visual>')
 
 
 #: Where an obstacle waits before its episode starts: below the floor, out of
@@ -202,10 +232,22 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
 
 
 def obstacle_models(obstacles) -> list[str]:
-    """Visual-only spheres, initially where the system will hold them before start."""
+    """Visual-only spheres, initially where the system will hold them before start.
+
+    ``FR3_SAFETY_HALO=<metres>`` also draws, around each obstacle, the shell the
+    CBF is holding clear (obstacle radius + d_safe). It is GUI-only: see
+    HALO_VISIBILITY_FLAGS — the depth camera cannot see it, so perception,
+    clustering, tracking and every metric are byte-for-byte what they are with
+    the halo off. Unset = no halo, which is what every batch run uses.
+    """
+    try:
+        halo = float(os.environ.get('FR3_SAFETY_HALO', '') or 0.0)
+    except ValueError:
+        halo = 0.0
     out = []
     for o in obstacles:
         at = o['p0'] if not o.get('park', True) else o.get('park_at', PARK_AT)
         out.append(sphere_model(o['name'], o['radius'], at, static=False,
-                                rgba=o.get('rgba', '0.9 0.3 0.3 1')))
+                                rgba=o.get('rgba', '0.9 0.3 0.3 1'),
+                                halo_m=halo or None))
     return out
