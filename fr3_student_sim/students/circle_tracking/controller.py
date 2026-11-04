@@ -12,7 +12,7 @@ from reference import CircleReference
 
 
 class Controller(StudentController):
-    """Track the fingertip position, with velocity damping in the null space."""
+    """Track the fingertip position with minimum-norm joint acceleration."""
 
     def __init__(self, robot, params, dt):
         super().__init__(robot, params, dt)
@@ -27,7 +27,6 @@ class Controller(StudentController):
         tracking = params.get('tracking', {})
         self.kp_position = float(tracking.get('kp_position', 100.0))
         self.kd_position = float(tracking.get('kd_position', 20.0))
-        self.kd_nullspace = float(tracking.get('kd_nullspace', 4.0))
 
     def update(self, t, q, dq):
         """Return joint torques without gravity compensation."""
@@ -41,13 +40,9 @@ class Controller(StudentController):
         a = (a_ref + self.kp_position * position_error
              + self.kd_position * velocity_error)
 
-        # Redundant inverse kinematics (lecture 02, slide 7), damping only.
+        # Minimum-norm solution (lecture 02, slide 7), with qdd_0 = 0.
         J_pinv = np.linalg.pinv(J)
-        N = np.eye(7) - J_pinv @ J
-        qdd_command = (
-            J_pinv @ (a - self.robot.jdot_dq(q, dq))
-            - self.kd_nullspace * (N @ dq)
-        )
+        qdd_command = J_pinv @ (a - self.robot.jdot_dq(q, dq))
         torque = self.robot.mass_matrix(q) @ qdd_command + self.robot.coriolis(q, dq)
 
         # Each array is a snapshot: the runner retains these values until saving.

@@ -14,4 +14,3 @@ circle:
 tracking:
   kp_position: 100.0
   kd_position: 20.0
-  kd_nullspace: 4.0  # [1/s] velocity damping only, no desired joint posture

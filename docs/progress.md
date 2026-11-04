@@ -12,11 +12,11 @@ disabled in the launch command below.
 
 ### Simulation files
 
-| File                                                       | Responsibility                                                                                                      |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `fr3_student_sim/students/circle_tracking/controller.py` | Cartesian position tracking, velocity damping in the Jacobian nullspace and computation of the seven joint torques. |
-| `fr3_student_sim/students/circle_tracking/reference.py`  | New `CircleReference` class: desired circle position, velocity and acceleration, with a smooth startup.           |
-| `fr3_student_sim/config/circle_tracking.yaml`            | Initial joint configuration, radius, period, ramp and controller gains.                                             |
+| File                                                       | Responsibility                                                                                               |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `fr3_student_sim/students/circle_tracking/controller.py` | Cartesian position tracking with minimum-norm joint acceleration and computation of the seven joint torques. |
+| `fr3_student_sim/students/circle_tracking/reference.py`  | New `CircleReference` class: desired circle position, velocity and acceleration, with a smooth startup.    |
+| `fr3_student_sim/config/circle_tracking.yaml`            | Initial joint configuration, radius, period, ramp and controller gains.                                      |
 
 The controller follows:
 
@@ -25,12 +25,11 @@ $$
 a &= \ddot{p}_{\mathrm{ref}}
    + K_d\left(\dot{p}_{\mathrm{ref}} - J\dot{q}\right)
    + K_p\left(p_{\mathrm{ref}} - p\right), \\
-N &= I - J^{\dagger}J, \\
-\ddot{q}_{\mathrm{cmd}} &= J^{\dagger}\left(a - \dot{J}\dot{q}\right)
-   - K_{d,\mathrm{nullspace}}N\dot{q}, \\
+\ddot{q}_{\mathrm{cmd}} &= J^{\dagger}\left(a - \dot{J}\dot{q}\right), \\
 \tau &= M(q)\ddot{q}_{\mathrm{cmd}} + c(q,\dot{q}).
 \end{aligned}
 $$
+
 
 Gravity is already compensated by the simulator. The existing runner,
 model, trajectory reference and launch file are reused without changes.
