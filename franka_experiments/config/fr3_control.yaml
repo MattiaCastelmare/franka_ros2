@@ -618,6 +618,29 @@ params:
   # field in CBFDIAG to see which joints it binds.
   max_qddot_delta: 0.5
 
+  # Rate-compensate the slew box. max_qddot_delta is a PER-TICK bound, so the
+  # jerk it actually imposes is max_qddot_delta * (achieved tick rate) -- not
+  # qp_rate_hz. When the executor misses ticks the bound silently tightens:
+  # measured 2026-11-03 in sim, the filter held 36 Hz against a 300 Hz target,
+  # which turned the designed 150 rad/s^3 into 18 rad/s^3 (8.3x less authority)
+  # with nothing reporting it. See OPEN_ISSUES.md S6.
+  #
+  # With this true the step is scaled by the MEASURED tick interval:
+  #     delta_eff = max_qddot_delta * (dt_tick / (1 / qp_rate_hz))
+  # so the physical jerk bound stays max_qddot_delta * qp_rate_hz [rad/s^3]
+  # whatever rate the node achieves. A tick that arrives late genuinely had
+  # more time to change the acceleration, so the larger step is correct.
+  # false restores the old raw per-tick behaviour exactly.
+  slew_rate_compensation: true
+
+  # Cap on dt_tick / dt_nominal, so one long stall (GC pause, scheduler gap,
+  # a paused simulator) cannot authorise an unbounded acceleration step. At
+  # qp_rate_hz = 300 this allows the compensation to work down to 30 Hz and
+  # clamps below that; the state box and the +-qddot limits still apply
+  # underneath. Measured achieved rates were 26-56 Hz, so 10 covers the range
+  # with the worst case clamped rather than silently uncompensated.
+  slew_dt_ratio_max: 10.0
+
   # Torque-rate: encoded as QP linear constraint — NOT post-dynamics clip [N·m/tick]
   # TODO[LEGACY]: read by NO code — the comment above claims it is a QP constraint; the QP has no torque row | confidence: high | superseded-by: iso_tau_rate_max (qddot_to_torque, post-dynamics) | flagged: 2026-09-01
   # STILL DEAD, deliberately. The live torque-rate limit is `iso_tau_rate_max`

@@ -595,6 +595,8 @@ CBF_PARAM_SPEC = {
     'state_box_relax_s': ('float', dict(positive=True, maximum=1.0)),
     'slew_box_enabled': ('bool', dict()),
     'max_qddot_delta': ('float', dict(positive=True, maximum=100.0)),
+    'slew_rate_compensation': ('bool', dict()),
+    'slew_dt_ratio_max': ('float', dict(minimum=1.0, maximum=100.0)),
     'diag_vel_ratio_thr': ('float', dict(minimum=0.0)),
     'osqp_max_iter': ('int', dict(positive=True)),
     'qp_row_block': ('int', dict(minimum=1, maximum=256)),

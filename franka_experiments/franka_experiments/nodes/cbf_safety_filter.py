@@ -341,6 +341,12 @@ class CBFSafetyFilter(Node):
         self._cap_warned = False
         self._last_diag_t = 0.0
         self._last_tick_t = None
+        # Sim-time stamp of the previous _qp_tick, for the slew-box rate
+        # compensation. Separate from _last_tick_t, which is perf_counter
+        # and measures EXECUTOR health; the jerk bound is physical, so it
+        # has to be measured on the same clock the plant advances on.
+        self._last_tick_sim = None
+        self._diag_slew_delta_eff = P.max_qddot_delta
         self._tick_count = 0
         self._priority_set = False
         self._gap_warn_thr_ms = P.tick_gap_warn_factor * 1000.0 * self._dt_qp
@@ -914,6 +920,7 @@ class CBFSafetyFilter(Node):
         if js is None:
             return
         now = self._now()
+        delta_eff = self._slew_delta(now)
 
         # ── STEP 0: the ISO layer's stop, above every other branch ──────
         # Ahead of the staleness policy on purpose: when the independent monitor
@@ -1310,7 +1317,7 @@ class CBFSafetyFilter(Node):
         if P.slew_box_enabled:
             self._box_lb[:NV], self._box_ub[:NV] = apply_slew_limit(
                 self._box_lb[:NV], self._box_ub[:NV],
-                self._qddot_prev, P.max_qddot_delta)
+                self._qddot_prev, delta_eff)
         if float(np.max(self._diag_vel_ratio)) > P.diag_vel_ratio_thr:
             self.get_logger().info(
                 f'VELHI t={now:.3f} n_c={n_c} '
@@ -1325,7 +1332,7 @@ class CBFSafetyFilter(Node):
         # ── STEP 6: publish, then report ────────────────────────────────
         if P.slew_box_enabled:
             np.subtract(qddot_safe, self._qddot_prev, out=self._diag_slew_step)
-            np.greater(np.abs(self._diag_slew_step), P.max_qddot_delta - 1e-6,
+            np.greater(np.abs(self._diag_slew_step), delta_eff - 1e-6,
                        out=self._diag_slew_bite)
         if self._brake_authority_fault(qddot_safe, n_active):
             fault = 1.0
@@ -1337,6 +1344,38 @@ class CBFSafetyFilter(Node):
                      qddot_nom, slack, solve_ms, res)
 
     # ── QP tick helpers ──────────────────────────────────────────────────
+
+    def _slew_delta(self, now: float) -> float:
+        """Per-tick acceleration step that holds the JERK bound constant.
+
+        ``max_qddot_delta`` bounds the change in q̈ per tick, so the jerk it
+        imposes is ``max_qddot_delta * achieved_rate`` — not ``qp_rate_hz``.
+        Whenever the executor misses ticks the bound silently tightens: at
+        300 Hz requested and 36 Hz achieved the designed 150 rad/s³ became
+        18 rad/s³, and nothing reported it (OPEN_ISSUES.md S6).
+
+        Scaling the step by the MEASURED interval keeps the physical bound at
+        ``max_qddot_delta * qp_rate_hz`` at any achieved rate. A tick that
+        arrived late really did have longer to change the acceleration, so the
+        larger step is the physically correct one, not a relaxation.
+
+        The ratio is capped by ``slew_dt_ratio_max`` so a single long stall (GC
+        pause, scheduler gap, a paused simulator) cannot authorise an unbounded
+        step; below that rate the bound simply stays tight, as before. The
+        first tick, and any non-positive interval (a sim clock that jumps
+        backwards on reset), fall back to the nominal value.
+        """
+        P = self.P
+        prev, self._last_tick_sim = self._last_tick_sim, now
+        if not P.slew_rate_compensation:
+            self._diag_slew_delta_eff = P.max_qddot_delta
+            return P.max_qddot_delta
+        if prev is None or now <= prev:
+            self._diag_slew_delta_eff = P.max_qddot_delta
+            return P.max_qddot_delta
+        ratio = min((now - prev) / self._dt_qp, P.slew_dt_ratio_max)
+        self._diag_slew_delta_eff = P.max_qddot_delta * ratio
+        return self._diag_slew_delta_eff
 
     def _watch_tick_gap(self) -> None:
         """Warn when the executor did not come back on time."""
