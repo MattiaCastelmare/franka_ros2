@@ -1,6 +1,8 @@
 # Complete technical and mathematical guide to franka_experiments
 
-**Source audit date:** 30 October 2026; independently re-audited after commit `bc279b3`, and completed by a continuation audit on the same date whose record is Chapter 15.9. **Scope:** the current working tree and the relevant hardware/simulation dependencies. Git history, the original source fingerprints, and fresh implementation reads were checked together; Chapter 15 records the re-audit identity and verification limits. This is a reconstruction of implemented behavior, with mathematical derivations and a static technical assessment. It is not a claim that the system has been validated on a physical robot.
+**Current kinematics/dynamics revision: 3 November 2026.** The main CBF now uses exact rigid-offset Jacobian derivatives and configuration-defined interpolation derivatives. The corrected kinematic quantities reach the active HOCBF/QP and optional ISO control-point speed consumers. The current Python dynamics paths also restore Coriolis/centrifugal torque using `data.nle - data.g`. Independent checks of the actual sourced ROS Pinocchio **4.0.0** binding establish a full symmetric mass matrix and converter agreement with RNEA minus gravity. Older claims about triangular mass storage or a currently omitted velocity torque do not describe this revision. Current equations, implementation boundaries, numerical evidence and reproduction commands are in Chapters 2, 7, 10, 13 and **15.11**. Earlier dated audit records and fingerprints are retained as historical evidence, not descriptions of the corrected implementation.
+
+**Source audit history:** 30 October 2026; independently re-audited after commit `bc279b3`, completed by a continuation audit on the same date whose record is Chapter 15.9, and **brought forward to 2 November 2026** by a second continuation whose record is Chapter 15.10. That second pass covers the work done on 31 October and 1 November 2026: the `tangential_bias` instrumentation (commit `1311e55`), the Cartesian **go-around** bias and the **approach gate** on the two covariance margins, and the retuning of `d_safe` (0.15 → 0.10 m) and `max_coast_s` (0.167 → 0.8 s). Every number in this guide that those four changes move has been recomputed rather than annotated, and Chapter 15.10 lists what moved. A **fifth** change landed on 2 November 2026 itself and is of a different kind: the framework can now be run *without* the machinery that has grown around its barrier, as an ordinary experimental condition rather than as a revert. That distinction — a minimal HOCBF against the complete framework — is stated as mathematics in Chapter 7.8, as a harness and a first partial measurement in Chapter 12.7, and recorded in Chapter 15.10.7. **Scope:** the current working tree and the relevant hardware/simulation dependencies. Git history, the original source fingerprints, and fresh implementation reads were checked together; Chapter 15 records the re-audit identity and verification limits. This is a reconstruction of implemented behavior, with mathematical derivations and a static technical assessment. It is not a claim that the system has been validated on a physical robot.
 
 ## Reading map and evidence conventions
 
@@ -96,7 +98,7 @@ The launch merges `{**_LAUNCH_DEFAULTS, **_BRINGUP_DEFAULTS}`. Thus the inspecte
 
 `load_cbf_config` in [utils/config.py](../franka_experiments/utils/config.py) reads every field in `CBF_PARAM_SPEC` from the YAML and validates ROS overrides. Missing required fields fail initialization. Declaring a field does not establish that it changes the algorithm: several declared fields are retained but unused by the current acceleration filter.
 
-The two sets are **not** the same size, and the difference is exactly where the legacy keys live. `CBF_PARAM_SPEC` has **201** entries; `fr3_control.yaml`'s `params:` block has **221** keys. Every one of the 201 is present in the YAML, so `load_cbf_config` cannot fail for a missing field against the shipped file. The **20** surplus keys were traced to their actual readers:
+The two sets are **not** the same size, and the difference is exactly where the legacy keys live. `CBF_PARAM_SPEC` has **215** entries; `fr3_control.yaml`'s `params:` block has **235** keys. Every one of the 215 is present in the YAML, so `load_cbf_config` cannot fail for a missing field against the shipped file. (Both counts rose by 14 on 1 November 2026, when the go-around bias and the margin approach gate were added; the surplus below is unchanged, because every new key was added to the spec and to the YAML together.) The **20** surplus keys were traced to their actual readers:
 
 | Surplus `params:` key | Who actually reads it |
 |---|---|
@@ -127,6 +129,10 @@ The torque launch explicitly overrides these important YAML defaults:
 | Multi-obstacle count per control point | 1 | 2 |
 | Outrun evasion | false | false |
 | ISO master, independent monitor, evidence logger | false | false |
+
+Two features added on 1 November 2026 are deliberately **absent** from that table, and the absence is the point: `margin_gate_on_approach` (Chapter 7.4) and `enable_go_around` (Chapter 9.3) are `true` in `fr3_control.yaml` itself, and no launch file mentions either name, so they are on in *every* composition that reads the shipped control YAML — the bare torque stack, the Gazebo stack of Chapter 1.6, bag replay and the fake-hardware test launches alike. A reader who inspects only `_cbf_parameters` in the launch to find out what is enabled will miss both.
+
+Since 2 November 2026 there is a **fourth route** into layer 3, and it is deliberately narrow. The torque launch declares `cbf_param_overrides`, a single string of the form `key=value;key=value`; `_cbf_param_overrides` splits it, parses each value with `yaml.safe_load` so `false`/`0.0`/`8` arrive as bool/float/int rather than as strings, and appends the resulting dictionary **after** every other parameter dictionary in `_cbf_parameters`, so it wins. It exists because many `CBF_PARAM_SPEC` keys have no launch argument of their own — `enable_go_around`, `retreat_cap_enabled`, `state_governor_enabled`, the whole $v_o$ conditioning group — and an experiment that must turn one off would otherwise have to edit the installed `fr3_control.yaml`, which changes what the *next* run reads. The route performs no validation itself: `declare_from_spec` in the node type-checks and bounds-checks every key and refuses to start on one it does not know, so a typo is a startup failure rather than a silent no-op. Empty — the default, and the value in every launch in this repository — yields `[]`, leaving the parameter list as it was before the argument existed. Two cautions follow. It is an ablation hatch, not an operating interface: a value passed this way is invisible to anyone reading `fr3_control.yaml` or the launch's own argument list, and is recorded only in the run manifest. And the "empty changes nothing" property is guarded only by the golden snapshot of `test_torque_stack_external_plant_off_identical.py`, which cannot be collected without the `launch` package (Chapter 15.10.3). Chapter 12.7 describes the harness that uses it.
 
 The temporary perception override enables tracking only when requested; a false launch flag does not forcibly disable tracking in a user-supplied YAML that already enables it. The configured depth rate is updated from the profile string, then processing-rate estimators can retune measurement-count gates.
 
@@ -354,7 +360,15 @@ $$
 \tag{2.3}
 $$
 
-This is not a spatial Jacobian whose linear part is already referred to the world origin.
+This is not a spatial Jacobian whose linear part is already referred to the world origin. For a frame with world pose $(R,o)$, the conventions are:
+
+| Pinocchio convention | Reference point and axes | Velocity components |
+|---|---|---|
+| `LOCAL` | Moving frame origin, moving axes | $[R^\top v_o;R^\top\omega]$ |
+| `LOCAL_WORLD_ALIGNED` (LWA) | Moving frame origin, world axes | $[v_o;\omega]$ |
+| `WORLD` | World-origin point of the spatial velocity field, world axes | $[v_o+o\times\omega;\omega]$ |
+
+Thus $J^{\rm LWA}=\operatorname{diag}(R,R)J^{\rm LOCAL}$ and $J_v^{\rm LWA}=J_v^{\rm WORLD}-[o]_\times J_\omega^{\rm WORLD}$. The current numerical audit checks these conversions to $1.40\times10^{-15}$. `getFrameJacobianTimeVariation(...,LWA)` differentiates the requested frame-origin Jacobian; an additional rigid point offset must still be differentiated by its caller. Spatial acceleration and classical position acceleration are different quantities; the independent acceleration checks use `getFrameClassicalAcceleration`, not the linear part of spatial acceleration alone.
 
 ### 2.2 More than one robot model
 
@@ -400,14 +414,25 @@ $$
 \tag{2.6}
 $$
 
-The exact derivative is (2.6), but `CBFKinematics.point_jacobian` actually returns only
+**Current rigid-point implementation.** `CBFKinematics.point_jacobian` now implements all of (2.6). After `update(q,qdot,with_jdot=True)`, it obtains the world-aligned angular velocity from `getFrameVelocity(...,LOCAL_WORLD_ALIGNED)` and evaluates
+
+```python
+Jp = Jv - skew(r) @ Jw
+Jpd = Jvd - skew(r) @ Jwd - skew(np.cross(omega, r)) @ Jw
+```
+
+The local offset is fixed but $r$ rotates in world axes. Adding this term once in the rigid helper also corrects its existing self-collision consumers; it is not added a second time in the HOCBF RHS. `point_jacobian_pos` keeps its original position-only interface. `prepare_frame_cache` remains a no-op. Configured point definitions are cached separately as frame IDs, weights and optional fingertip offsets; per-state derivatives come from the current Pinocchio data.
+
+For comparison, the **pre-fix** helper returned
+
 $$
-\dot J_{p,\rm code}=\dot J_v-[r]_\times\dot J_\omega.
+\dot J_{p,\rm legacy}=\dot J_v-[r]_\times\dot J_\omega.
 \tag{2.6a}
 $$
-It omits the rotating-offset term $-[\omega_E\times r]_\times J_\omega$. A body-fixed local offset is generally *not fixed in world axes*, so the source comment “exact for fixed r” does not make this exact for a point on a rotating link. The separate OSCBF obstacle helper has the same omission. `prepare_frame_cache` is a no-op; there is no active per-control-point derivative cache in this snapshot.
 
-Most perception control points are **interpolations of two frame origins**, not fixed offsets on the segment's end link:
+Its complete rigid-point acceleration error, legacy minus exact, is $-\omega\times(\omega\times r)$. The main helper no longer has that error. The **separate** obstacle helper in `cbf_OSCBF_filter.py` still has expression (2.6a); the two implementations must not be conflated.
+
+Most perception points are **interpolations of two frame origins**:
 
 $$
 p_c=(1-\lambda)p_0+\lambda p_1,\quad
@@ -416,41 +441,45 @@ J_c=(1-\lambda)J_0+\lambda J_1,\quad
 \tag{2.7}
 $$
 
-$\lambda$ is a fixed dimensionless sampling fraction. This derivative follows by linearity. **The current main filter does not implement (2.7):** it calls `point_jacobian(fid, ob.pr)` and treats the published point as a rigid offset of `ob.link`, the segment's end link. The same rigid-offset assumption is used by the velocity filter and monitor. The re-audit establishes the discrepancy for the current FR3 layout below, rather than leaving it as a generic possibility.
+Here $\lambda$ is a fixed dimensionless sample fraction and $J_0,J_1$ are translational LWA origin Jacobians. **The main filter now implements (2.7)** through `CBFKinematics.configure_control_points` and `control_point_jacobian`. It does not assume that the point is attached to the segment's end frame or even that the configured frames are consecutive. Non-EE weights are $(k+1)/(n+1)$; EE weights are $(k+1)/n$. The final EE sample is a different point type: perception replaces its origin interpolation with $p_8+0.10R_8e_z$. Its Jacobians use the exact rigid helper, including when there is only one EE sample.
 
-**Verification for the configured FR3 points.** Consider the points between the origins immediately before and after revolute joint $j$. The origin on the joint axis does not translate when only $q_j$ changes. Neither does its parent origin. Therefore (2.7) gives $\partial p_c/\partial q_j=0$. The rigid-end-link construction instead gives the joint-$j$ column
+`configure_control_points_from_node` reads `robot_config_path`, defaulting to the installed `fr3_complete.yaml`. The torque launch forwards `robot_config_yaml` to the filter, optional monitor and evidence logger; replay reuses the filter parameter builder. Perception's generated override file changes tracking/depth settings, not these point definitions. Custom launch compositions must use the same robot geometry configuration for all consumers.
+
+The constructor passes `kin.control_point_jacobian` explicitly to `ConstraintBuilder`. A labelled obstacle uses that callback; generic unlabelled obstacles or callers without the callback retain the rigid-point interface. Labels remain the publisher's per-end-link sample identities in `(seg_idx,cp_idx)` order. `fr3_link7#0.1` and `fr3_link7#0` select the same point; the suffix denotes another obstacle, not another geometric sample. Unknown configured labels raise `KeyError`. `control_point_jacobian(label,with_jdot=False)` returns `(J,None)` for the monitor/evidence speed path after `update(...,with_jdot=False)`.
+
+**Why the old end-frame model failed.** For consecutive origins on either side of revolute joint $j$, both origins and their interpolation are stationary when only $q_j$ changes. The legacy rigid-end-frame model instead assigned
 
 $$
-J_{\mathrm{rigid},j}=z_j\times(p_c-p_j)
+J_{\mathrm{legacy},j}=z_j\times(p_c-p_j)
 =(1-\lambda)z_j\times(p_{j-1}-p_j),\qquad
-J_{\mathrm{true},j}=0.
+J_{c,j}=0,
 \tag{2.7a}
 $$
 
-Here $z_j\in\mathbb R^3$ is the unit rotation axis expressed in base axes, and $p_j,p_{j-1}\in\mathbb R^3$ are the relevant frame origins in metres. All ancestor-joint columns agree: both origins undergo that ancestor's rigid motion, and the cross product is linear in position. The erroneous end-joint column has magnitude
+with magnitude
 
 $$
-\|J_{\mathrm{rigid},j}-J_{\mathrm{true},j}\|
+\|J_{\mathrm{legacy},j}-J_{c,j}\|
 =(1-\lambda)\|z_j\times(p_{j-1}-p_j)\|.
 \tag{2.7b}
 $$
 
-The transverse origin offsets in [fr3/kinematics.yaml](../../franka_description/robots/fr3/kinematics.yaml) are $0.0825$ m at joints 4 and 5 and $0.088$ m at joint 7. The two sample fractions are $1/3,2/3$. Joint 6's adjacent origins coincide; `fr3_link8` is fixed relative to link 7. Thus this is a present discrepancy for six points, rather than a hypothetical concern about an arbitrary robot.
+Ancestor columns agreed by linearity. The FR3's transverse offsets are 0.0825 m at joints 4 and 5 and 0.088 m at joint 7, with weights $1/3,2/3$. Joint-6 origins coincide and link8 is fixed to link7. The old discrepancies and corrected finite-difference residuals are therefore:
 
-An independent NumPy FK reconstruction using those YAML placements, local-$z$ joint axes and the **actual executed body of `define_control_points`** gave the following centered-difference comparison at $q=[0,-0.7,0,-2.35,0,1.57,0.7]^\top$ rad, with perturbation $\epsilon=10^{-6}$ rad. The numerical derivative was $J_{\mathrm{FD},:j}=[p_c(q+\epsilon e_j)-p_c(q-\epsilon e_j)]/(2\epsilon)$; $e_j$ is joint-space unit vector $j$.
+| Published point | Pre-fix $\|J_{\rm legacy}-J_c\|_F$ [m/rad] | Corrected max $\|J-J_{\rm FD}\|_F$ [m/rad] | Model now used |
+|---|---:|---:|---|
+| `fr3_link4#0`, `#1` | 0.055 / 0.0275 | $7.862\times10^{-11}$ / $9.651\times10^{-11}$ | Origin interpolation |
+| `fr3_link5#0`, `#1` | 0.055 / 0.0275 | $1.204\times10^{-10}$ / $1.658\times10^{-10}$ | Origin interpolation |
+| `fr3_link6#0`, `#1` | Numerical zero | $1.648\times10^{-10}$ each | Collocated-origin interpolation |
+| `fr3_link7#0`, `#1` | 0.0586667 / 0.0293333 | $1.894\times10^{-10}$ / $2.097\times10^{-10}$ | Origin interpolation |
+| `fr3_link8#0`, `#1` | Numerical zero | $2.113\times10^{-10}$ / $2.666\times10^{-10}$ | Fixed-link origin interpolation |
+| `fr3_link8#2` | Numerical zero | $2.741\times10^{-10}$ | Rigid fingertip replacement |
 
-| Published point | $\|J_{\mathrm{rigid}}-J_{\mathrm{FD}}\|_F$, m/rad | Source of difference |
-|---|---:|---|
-| `fr3_link4#0`, `fr3_link5#0` | 0.055 each | End-joint column, $\lambda=1/3$ |
-| `fr3_link4#1`, `fr3_link5#1` | 0.0275 each | End-joint column, $\lambda=2/3$ |
-| `fr3_link7#0` | 0.0586667 | End-joint column, $\lambda=1/3$ |
-| `fr3_link7#1` | 0.0293333 | End-joint column, $\lambda=2/3$ |
-| `fr3_link6#0`, `fr3_link6#1` | $<8\times10^{-11}$ each | Collocated origins |
-| `fr3_link8#0`, `#1`, `#2` | $<7\times10^{-11}$ each | Fixed-link interpolation/tool offset |
+The corrected check covers 53 state/velocity cases and all eleven points (583 comparisons), with nonzero angular motion, single-joint motion and zero velocity. Maximum Jdot FD residual is $4.063\times10^{-10}$ m/(rad·s); complete acceleration residual is $8.459\times10^{-8}$ m/s² against second position differences and $1.230\times10^{-15}$ m/s² against independent Pinocchio classical accelerations. Analytic actual-point acceleration error falls from a sampled 1.152505 m/s² to $2.289\times10^{-16}$ m/s². These are numerical consistency results, not physical avoidance measurements. Exact commands and tolerances are in [KINEMATICS_FIX_VALIDATION.md](../../KINEMATICS_FIX_VALIDATION.md) and §15.11.
 
-This checks the geometry and rigid-point formula independently of Pinocchio; it does not validate a particular installed Pinocchio binding or TF stream. Along a general normal $n$, the barrier's acceleration coefficient error is $n^\top(J_{\mathrm{rigid}}-J_c)$, so its effect can have either sign or vanish for a particular normal. A false end-joint coefficient lets the QP believe that rotating that joint moves an interpolated point which is actually stationary under that joint. Differentiating the wrong point model more accurately would not fix this first-derivative mismatch.
+For the current consecutive-link layout, the parent attachment is also mathematically equivalent to the interpolation and was independently checked. The implementation deliberately uses the weighted-origin form, which also handles nonconsecutive configurations. Correcting only (2.6a) would have differentiated the wrong point for the six legacy mismatches. The older velocity-filter node was not migrated and retains its own end-frame assumption; the optional ISO consumers were migrated.
 
-The separate missing term in (2.6a) also matters for genuinely rigid offsets. For a hypothetical one-axis rotation with constant $\omega=[0,0,1]^\top$ rad/s and instantaneous $r=[1,0,0]^\top$ m, the frame origin and axis have zero derivatives. Equation (2.6a) then predicts zero offset drift, whereas $\omega\times(\omega\times r)=[-1,0,0]^\top$ m/s². This example isolates the omitted centripetal contribution; it is not a measured FR3 acceleration.
+The mathematical point definition is now consistent, but time alignment is still separate: the callback differentiates that definition at current $q$, while the normal and wire distance may refer to an older captured image. Neither the interpolation fix nor the rigid transport term updates that measured geometry in time.
 
 ### 2.4 Coordinate conversion for “front” trajectories
 
@@ -482,19 +511,24 @@ $$
 
 Gravity is omitted from outgoing Franka motion torque by design; the local hardware wrapper sends a `franka::Torques` command and does not itself add $g$. Gravity compensation is a Franka interface/firmware assumption, not a calculation in `RtTorqueController`. A generic simulator with gravity enabled needs its own compensation behavior; physics alone does not supply a compensating motor torque.
 
-There is a material difference between (2.10) and the actual Python conversion in this checkout. `QddotToTorqueNode._compute_tau` computes `computeAllTerms`, copies `data.M` into `_M_arm`, and uses `data.C @ qdot_full`. The local Pinocchio 3.4.0 headers inspected at `/opt/openrobots/include/pinocchio/algorithm/compute-all-terms.hxx` show that this routine fills the upper mass-matrix blocks, `nle`, `g`, Jacobians and their variation, but does **not** fill `data.C`; `data.hxx` initializes `C` to zero. The converter neither symmetrizes $M$ nor calls a Coriolis-matrix routine.
+`QddotToTorqueNode._compute_tau` calls `computeAllTerms`, copies the arm block of `data.M`, and now obtains the gravity-free velocity torque from `data.nle - data.g`. This preserves the full-model arm/finger index mapping and the existing gravity-excluded public interface. The change fixes the earlier use of `data.C @ qdot_full`: `computeAllTerms` leaves that matrix zero in the tested binding, although it computes the required vectors `nle` and `g`.
 
-Thus the verified program is
+Under **Pinocchio 4.0.0**, loaded from `/opt/ros/humble/lib/python3.10/site-packages/pinocchio/__init__.py`, the copied arm mass matrix is already **full and symmetric**. Its norm difference from a matrix reconstructed by independent RNEA unit-acceleration probes is at most $4.491\times10^{-14}$ kg·m² over 54 cases. The older incomplete-upper-triangle diagnosis is not reproduced in this runtime. The current computation is
 
 $$
-\tau_{\rm Python}=\widetilde M_{\rm copied}u+
-C_{\rm stored}\dot q,
+\tau_{\rm Python}=M_{\rm arm}u+
+(\operatorname{nle}(q_{\rm full},\dot q_{\rm full})-g(q_{\rm full}))_{\rm arm}
+=M_{\rm arm}u+c_{\rm arm}.
 \tag{2.11}
 $$
 
-where the tilde emphasizes the storage actually copied, not the mathematically completed mass matrix. In a fresh data object under that local implementation, $C_{\rm stored}=0$, and the lower triangular mass entries are not filled by this call. The same pattern occurs in `PentagonTorqueCommander` and `_RobotDynamics` in OSCBF. By contrast, `PentagonQddotCommander._compute_tau_des` explicitly symmetrizes $M$ and adds `data.nle`, so its logged desired torque includes gravity and is not identical to `torque_cmd`. The C++ alternative `CBFTorqueController` uses RNEA minus generalized gravity, avoiding this particular storage issue.
+With inactive finger velocities/accelerations, an independent reference is $(\operatorname{rnea}(q_{\rm full},\dot q_{\rm full},u_{\rm full})-g(q_{\rm full}))_{\rm arm}$. The corrected converter agrees within **$4.458\times10^{-14}$ N·m** over 54 states; the archived earlier converter's maximum error was **3.554182 N·m**, equal to the omitted $c$ to numerical precision. These checks use the converter's hand-enabled nine-coordinate model with neutral fingers; they do not establish equivalence to the physical robot or the modified Gazebo inertia.
 
-This finding is based on caller and local library source. It does not identify which Pinocchio build a separate ROS container or installed robot deployment actually loads; that must be checked in the deployment environment.
+For example, with $q=[.2,-.6,.3,-2.1,-.2,1.8,.5]^\top$, $\dot q=[.8,-.7,.6,-.5,.4,-.3,.2]^\top$, and $u=[.2,-.1,.3,-.2,.4,-.3,.1]^\top$, the old discrepancy norm was **1.858156 N·m**. The corrected result is at floating-point residual scale. Nonzero velocity is necessary to expose this defect; testing only static states would miss it.
+
+`PentagonTorqueCommander` and OSCBF's `_RobotDynamics.update` now also form `nle - g`, using `np.subtract(...,out=...)` in their preallocated full-model buffers before arm selection. Their complete caller-specific loops were not numerically replayed by this converter probe. This dynamics repair does not repair OSCBF's separate obstacle-point derivative. `PentagonQddotCommander._compute_tau_des` instead adds `data.nle` to the mass term: its **diagnostic** torque includes gravity and differs intentionally from outgoing motion torque. The separate C++ `CBFTorqueController` already uses RNEA minus generalized gravity.
+
+No explicit Coriolis matrix is needed when only $C\dot q$ is required. For another Pinocchio version, validate both the completed mass matrix and the nonlinear velocity torque against RNEA rather than assuming storage behavior. See §15.11 for source identities, before/after measurements and reproduction commands. Production changes were read, not made, during this documentation task.
 
 ### 2.6 Reconstructing the loaded rigid-body mathematics
 
@@ -803,7 +837,7 @@ It reports coverage and the fraction $r<-g_{\rm gate}$. These are depth-directio
 | link6 → link7 | `fr3_link7#0,#1` | $1/3,2/3$ | 0.05 m |
 | link7 → link8 | `fr3_link8#0,#1,#2` | $1/3,2/3$, then $p_8+0.10R_8e_z$ | 0.05 m |
 
-Thus there are eleven points, with spheres around them for obstacle-distance purposes. This is a sampled approximation to arm volume, not exact continuous capsule distance. Neither mesh masking nor visual capsule rendering adds missing safety constraints for the unsampled proximal links or gaps between spheres.
+Thus there are eleven points, with spheres around them for obstacle-distance purposes. Their positions, labels and ordering are unchanged by the 3 November correction. The CBF now resolves those same definitions through `configure_control_points` / `control_point_jacobian`: origin interpolation for the ordinary samples and a rigid offset only for the final fingertip. The end-link label identifies a segment and does not assert rigid attachment to that end frame. This is a sampled approximation to arm volume, not exact continuous capsule distance. Neither mesh masking nor visual capsule rendering adds missing safety constraints for the unsampled proximal links or gaps between spheres.
 
 ### 4.2 Image buffering and processing order
 
@@ -1070,10 +1104,28 @@ Candidates are sorted by $d_M$, track index, and cluster index, then greedily ma
 Durations are converted using `frames_for= max(minimum,round(duration×rate))`. At nominal 90 Hz:
 
 - Confirmation window $0.056$ s → 5 frames, required hits $round(0.6×5)=3$.
-- Coast $0.167$ s → 15 frames.
+- Coast $0.8$ s → 72 frames.
 - Self-detection history $0.667$ s → 60, confirm $0.167$ s → 15, release $0.5$ s → 45.
 
-At 30 Hz the current 0.056 s window is floored to three frames with two hits, not the older five-frame/three-hit tuning described in some tests/comments.
+At 30 Hz the current 0.056 s window is floored to three frames with two hits, not the older five-frame/three-hit tuning described in some tests/comments; the coast is 24 frames there.
+
+**The coast was lengthened on 1 November 2026, from 0.167 s to 0.8 s, and this is a behavioural change rather than a re-expression of the same duration.** The stated reason in the YAML is that 0.167 s is shorter than the time an obstacle spends hidden inside the robot's own exclusion mask (Chapter 4.4), so the track died mid-approach and, in the YAML's words, "the CBF lost its row with the obstacle still there". That phrasing is loose and worth unpacking, because the mechanism is not the one it suggests. A distance row comes from depth pixels, not from a track: while the obstacle is inside the mask there is no row to lose, and when it re-emerges there is a row again either way. What the coast actually preserves is the **track annotation** on that row. If the track died, the re-emerging obstacle starts a new tentative track that must re-confirm and whose `frames_seen` restarts near zero, so for the next $\approx0.27$ s — `obstacle_velocity_min_frames` $=8$ for the two covariance margins, $round(0.265\times90)=24$ measurements for the signed tracked velocity — the row runs with **no** uncertainty margin, **no** latency margin, **no** standoff and the residual estimator instead of the tracker in $\dot h$, exactly while the obstacle is closest. A 0.8 s coast carries the mature track across the occlusion so those terms survive it. It is a fix to the conditioning of the row, not to the existence of the row. The YAML records a 72-run comparison at `d_safe` 0.10 m in the DIAG Gazebo scene with full depth perception (4 obstacle types × 3 seeds):
+
+| Tracker | `max_coast_s` | Contacts | Worst $h$ | P95 jerk | Max jerk |
+|---|---:|---:|---:|---:|---:|
+| `kf` | 0.167 | 3/12 (25%) | $-0.092$ m | 35.9 | 83.8 |
+| `imm` | 0.167 | 3/12 (25%) | $-0.096$ m | 34.2 | 105.2 |
+| `kf` | 0.8 | 1/12 (8%) | $-0.094$ m | 41.0 | 179.8 |
+| `imm` | 0.8 | 1/24 (4%) | $-0.053$ m | 28.3 | 76.3 |
+
+Read as evidence rather than as a result, this says that the longer coast removes most of the contacts while `imm_enabled` is what keeps the residual one shallow and the motion smooth: `kf` with the long coast is the row carrying the 180 m/s³ jerk peak, and `imm` with the *short* coast is described in the YAML as the worst configuration tested, because a track that dies and is reborn presents a position jump that the filter differentiates into a phantom obstacle velocity. The YAML does not define its columns; they were matched to the harness that produces them, `simexp/closed_loop.py`, whose docstring fixes all three. **"Worst gap" is `min_h`, which is $h=\text{true surface gap}-d_{\rm safe}$ over the true per-control-point geometry at 1 kHz — not the gap itself.** Read correctly the table says something different from what the column heading suggests: a worst $h$ of $-0.092$ m at $d_{\rm safe}=0.10$ m is a true surface clearance of $+8$ mm, deep inside the barrier but not a touch, and `contact` is the separate column counting runs in which the gap itself went negative. So the long coast cuts the **frequency** of contact from 25% to 4–8% while leaving the worst barrier excursion essentially unchanged for `kf` ($-0.092\to-0.094$ m); only `imm` with the long coast improves the worst case as well, to $-0.053$ m. That is a sharper and more specific claim than "fewer contacts", and it is the one the numbers support. The jerk columns are `jerk_p99` and `jerk_max` in **rad/s³**, computed as $\lVert\Delta\ddot q_{\rm safe}\rVert/\Delta t$ over consecutive `/NS_1/qddot_safe` messages — a seven-joint **norm**, so the slew box of (8.23) bounds them at $\sqrt7(0.5)/\Delta t\approx397$ rad/s³ at 300 Hz, not at 150, and the 179.8 outlier is inside that bound rather than evidence of a violated limit.
+
+These remain **simulation** numbers from the external Gazebo composition of Chapter 1.6, with its own perception fidelity (Chapter 12.7). They are not hardware measurements, the three 12-run cells and the one 24-run cell are not a balanced design, and no interval is given. They are recorded here because they are the only stated justification for the value, not because they establish it.
+
+Two consequences follow, and neither is resolved in this tree.
+
+1. **The association gate is no longer sized to the coast.** `gate_max_m` is 0.5 m, chosen as "what a limb covers in one coast" when the coast was 0.167 s. At 0.8 s that sentence is false by nearly a factor of five: 0.5 m now corresponds to 0.63 m/s of unobserved travel rather than about 3 m/s. The YAML states this explicitly and leaves the value alone because no mis-association appeared in those 72 runs. It should be re-derived before this configuration reaches hardware. A long coast behind an unchanged gate is precisely the condition in which a reappearing track is matched to the wrong cluster, and (5.12)'s Mahalanobis test does not independently prevent it, because the coasted covariance has been growing under (5.5) for the whole 0.8 s and the ellipsoid it defines is correspondingly permissive.
+2. **A shipped-configuration test now fails on it.** `test_rate_scaling.py::test_the_shipped_config_states_durations` asserts `trk['max_coast_s'] == 0.167` against the live YAML. It needs only PyYAML and NumPy, so this is a genuine, reproducible failure of one of the repository's own guards rather than an artefact of the audit host; Chapters 13.1 and 15.10 record it.
 
 `ObstacleTrackPipeline` annotates only tracks associated to current clusters and confirmed by the manager. Multi-component rows use exact component labels when available; otherwise a surface point is matched to the nearest confirmed cluster centroid whose enclosing sphere plus 0.05 m tolerance contains it. A coasted confirmed track can remain internally alive without annotating a current distance point. Message covariance blocks are flattened row-major $3\times3$ matrices.
 
@@ -1269,7 +1321,7 @@ $$
 \tag{6.14}
 $$
 
-with $d_s=0.15$ m. It reads the geometric obstacle minimum from `cbf_status[4]`; it does not freeze phase on QP activity or use tracking error. Except for explicit ISO hold, it retains a nonzero phase floor. With stale/missing status it restores full target phase rate, while the downstream CBF can independently brake. This coupling can produce growing reference error during a safety-channel outage.
+with $d_s=0.10$ m, so the two thresholds are `governor_r_full`$\cdot d_s=0.15$ m and `governor_r_stop`$\cdot d_s=0.08$ m; like the zone ladder, this governor is configured in ratios and follows $d_{\rm safe}$ automatically. It reads the geometric obstacle minimum from `cbf_status[4]`; it does not freeze phase on QP activity or use tracking error. Except for explicit ISO hold, it retains a nonzero phase floor. With stale/missing status it restores full target phase rate, while the downstream CBF can independently brake. This coupling can produce growing reference error during a safety-channel outage.
 
 ### 6.5 Six-dimensional resolved-acceleration control
 
@@ -1413,7 +1465,9 @@ That control-point list is **not** the robot-side geometry of Chapter 4.1, and t
 | Placement | Interpolated along segment **axes** between consecutive frame origins, plus a tool tip at $0.1$ m along $z$ of `fr3_link8` | One per body: `fr3_link3`…`fr3_link7` and `fr3_hand` (mapped to `robot_link: fr3_link8`) |
 | Radius | $0.05$ m for every segment | $0.09,0.09,0.09,0.08,0.07,0.13$ m |
 
-The barrier the robot enforces and the geometry the policy observes therefore sample the arm differently and inflate it differently, while both use $d_{\rm safe}=0.15$ m. This is a property of the training interface, not a defect in either file; it does mean that "trained behind the same barrier" is a statement about the gains and $d_{\rm safe}$, not about identical sphere geometry.
+The barrier the robot enforces and the geometry the policy observes therefore sample the arm differently and inflate it differently. This is a property of the training interface, not a defect in either file; it does mean that "trained behind the same barrier" is a statement about the gains and $d_{\rm safe}$, not about identical sphere geometry.
+
+**And since 1 November 2026 the two no longer agree on $d_{\rm safe}$ either.** `config/fr3_control.yaml` carries `0.10`; `franka_rl/config.yaml` still carries `0.15`. The last thing the two sides had in common is therefore gone, so a deployed policy is acting behind a barrier 5 cm closer than the one every episode of its training placed it behind — including the episode-start precondition `h = d − d_safe ≥ 0` that the sim config builds its initial states from. The three tests written to catch exactly this report `skipped`, for the directory-name reason of Chapter 13.1, so nothing in the repository currently says so out loud except `SAFETY.md`'s deviation D2.
 
 The nearest surface is converted into an assumed sphere center by
 $$
@@ -1507,9 +1561,9 @@ c_i=n_i^\top\dot J_{p,i}\dot q.
 \tag{7.7}
 $$
 
-It uses $d_i=$ `LinkDistance.distance`, not the norm of the point pair, and starts with $h_i^{\rm raw}=d_i-d_s$. The normal is recomputed from `ob.pr-ob.ph`. Rows are dropped if $d_i>1.2$ m, confidence below 0.2, the frame is unresolved, point separation below $10^{-8}$ m, or leverage $\|a_i\|<0.05$ m/rad. Nonfinite row values are dropped. The 0.10 m activation margin and 0.05 m hysteresis parameters are **not** the main acceleration-row activation rule; that gate belongs to the velocity alternative.
+It uses $d_i=$ `LinkDistance.distance`, not the norm of the point pair, and starts with $h_i^{\rm raw}=d_i-d_s$. The normal is recomputed from `ob.pr-ob.ph`. The node configures `kin` from the same robot geometry file as perception and supplies its point callback to the builder. A labelled perception obstacle uses `control_point_jacobian(ob.cp_label)`; only generic/unlabelled callers without that identity use `point_jacobian(fid,ob.pr)`. Consequently both the row coefficient and the drift now describe the configured interpolation/fingertip function. Rows are dropped if $d_i>1.2$ m, confidence below 0.2, the frame is unresolved, point separation below $10^{-8}$ m, or leverage $\|a_i\|<0.05$ m/rad. Nonfinite row values are dropped. The 0.10 m activation margin and 0.05 m hysteresis parameters are **not** the main acceleration-row activation rule; that gate belongs to the velocity alternative.
 
-The main drift $c_i$ uses the approximate rigid-offset Jacobian derivative (2.6a), and omits both $\dot n^\top v_{\rm rel}$ and $-n^\top a_h$. Tracked acceleration is used in one margin prediction, not subtracted in (7.7). At the faster QP tick, the implemented bound is
+The main drift $c_i$ now uses the configured point's exact kinematic Jacobian derivative: (2.7) for interpolation, (2.6) for the fingertip. It still omits both $\dot n^\top v_{\rm rel}$ and $-n^\top a_h$. Tracked acceleration is used in one margin prediction, not subtracted in (7.7). At the faster QP tick, the implemented bound is
 
 $$
 b_{{\rm rhs},i}=
@@ -1525,6 +1579,8 @@ a_iu+m_is_{g(i)}\ge-b_{{\rm rhs},i}.
 $$
 
 Here `con.A` stacks $a_i$, `con.jdot_qdot` stores $c_i$, `con.h_bar` stores the conditioned margin, `con.v_obs` stores the selected scalar velocity, and `build_row_rhs` computes (7.8). The signs in (7.9) are crucial: a negative barrier and negative closing derivative make the upper bound more negative and demand positive separating acceleration.
+
+The kinematic corrections affect these actual solver inputs. If $E_J=J_{\rm legacy}-J_c$ and $E_{\dot J}=\dot J_{\rm legacy}-\dot J_c$, and geometry, margins, gains and conditioned obstacle velocity are held fixed, then $a_{\rm legacy}-a_c=n^\top E_J$. With lower-bound convention $a u+m s\ge b_{\rm lower}=-b_{\rm rhs}$, the corresponding difference is $b_{{\rm lower},\rm legacy}-b_{{\rm lower},c}=-k_1n^\top E_J\dot q_{\rm filt}-n^\top E_{\dot J}\dot q$. The rigid transport correction alone changes the bound, while the interpolation correction changes both the matrix and bound. The updated audit checks the real builder and OSQP assembly against independent references in 24 solvable cases; fixing these quantities does not remove soft slack or guarantee realized plant acceleration.
 
 $\dot q_{\rm filt}$ is an old-weight EMA used only in the barrier velocity term and tangential-direction fallback; the hard box and fallback braking use raw measured velocity. Its reference coefficient is 0.6 per 100 Hz tick, rescaled to $0.6^{100/300}\approx0.843$ per 300 Hz tick. The drift and geometry remain from the 50 Hz rebuild. No normal or margin derivative is recomputed at the 300 Hz rate.
 
@@ -1546,12 +1602,13 @@ State is not a new measured surface. A retained low gap can keep a barrier activ
 The final stored barrier is
 
 $$
-\bar h=h_{\rm geom}-m_{\rm brake}-m_{\rm velcov}
--m_{\rm latency}-m_{\rm range}-m_{\rm standoff}.
+\bar h=h_{\rm geom}-m_{\rm brake}
+-w_g\,m_{\rm velcov}-w_g\,m_{\rm latency}
+-m_{\rm range}-m_{\rm standoff},
 \tag{7.11}
 $$
 
-Only enabled/gated terms are present:
+where $w_g\in[0,1]$ is the approach gate derived below; before 1 November 2026 it was identically one. Only enabled/gated terms are present:
 
 **Velocity braking/feedforward, off by default.** For conditioned positive obstacle approach $v_o$,
 $$
@@ -1581,6 +1638,28 @@ m_{\rm latency}=\min\{\max(n^\top\delta p,0)
 \tag{7.15}
 $$
 Equation (7.14) is covariance propagation for $p+T_bv$; it omits acceleration covariance/cross-covariances and process noise even though the mean prediction includes acceleration. `latency_t_blind` is a configured constant, **not** the current capture-to-command age. The raw track vector is used; the scalar deadband and median do not rescale that vector.
+
+**Approach gate on those two margins, added 1 November 2026, on.** Both terms above are built from a *covariance*, and a tracker covariance never reaches zero. Ungated, they therefore subtract a permanent, speed-independent distance from $\bar h$ even when the obstacle is bolted to the floor. The YAML records the measured size of that permanent subtraction as about 6 cm — roughly 3.5 cm of $m_{\rm velcov}$ plus 2.7 cm of $m_{\rm latency}$ — observed in the DIAG Gazebo scene and in both IRIM hardware sessions. A permanent 6 cm is equivalent to running at an effective $d_s$ of 0.21 m where the configuration said 0.15 m, and at 0.16 m where it now says 0.10 m — in the second case the margins would be 60% of the barrier they are supposed to protect. The visible consequence is not a stopped robot but a pushed one: once $\bar h<0$ the $k_0\bar h$ term of (7.8) demands positive separating acceleration, so the arm backs away from an obstacle that is not moving.
+
+`margin_gate_on_approach` multiplies both margins — and only those two — by a smoothstep of the **conditioned closing speed**:
+
+$$
+w_g=S\!\left(\min\!\left(\frac{v_o}{v_{\rm ref}},1\right)\right),
+\qquad S(x)=x^2(3-2x),\qquad
+v_{\rm ref}=\texttt{margin\_gate\_ref\_speed}=0.15\ {\rm m/s}.
+\tag{7.15a}
+$$
+
+`_approach_weight` in `cbf_state_rows.py` is this function. A static obstacle gives $w_g=0$ and both covariance margins vanish; at or above $v_{\rm ref}$ they apply in full; in between the transition is $C^1$, so no tick sees a step in $\bar h$.
+
+Four properties of the implementation are worth stating because none of them is obvious from the parameter name.
+
+* **$v_o$ here is the post-median conditioned scalar of Chapter 7.6, not the signed raw projection of (7.22).** It is the same number the standoff (7.17) uses, deliberately so: one physical quantity, one filter. It is nonnegative by construction, so a *receding* obstacle gates the margins off exactly as a stationary one does.
+* **The gate therefore inherits the deadband.** $v_o$ has already had `obstacle_velocity_track_deadband` $=0.15$ m/s subtracted. Since $v_{\rm ref}$ is also 0.15 m/s, the margins reach full size only at a raw normal closing speed of about $0.30$ m/s, and an obstacle approaching at $0.15$ m/s raw receives $w_g=0$ — no covariance margin at all. The two constants happening to be equal makes this easy to misread; they are independent keys and the composition, not either value alone, sets the engagement speed.
+* **It gates the margin, not the estimate.** The old-weight EMA on $m_{\rm velcov}$ (`uncertainty_margin_alpha`) is applied *before* the multiplication, and `_unc_ema` stores the **ungated** result, so when an obstacle starts moving the margin is already at its correct size and rises with $w_g$ rather than having to refill a smoother from zero. The latency margin has no smoother; it is gated straight after its `latency_margin_max` clamp.
+* **`diag_hunc`/`diag_hlat` report the gated numbers.** Both are updated after the multiplication, so the `hunc=` and `hlat=` fields of the CBFDIAG line are what was actually removed from $\bar h$. The companion `gate=` field is narrower than it looks; Chapter 12.1 states exactly what it does and does not cover.
+
+The gate is an admission that these margins were priced against the wrong variable. A covariance margin is supposed to insure against *where the obstacle may be*, which is a question about position uncertainty, and scaling it by closing speed makes it insure against *how fast it may arrive* instead. That is the right trade for a workspace the arm has to share with a static scene, and it is the stated motivation; it is not a tightening of the uncertainty argument, and a static obstacle whose position estimate is genuinely poor now receives no covariance margin at all. The sensor-range margin (7.16), which prices the depth pixel rather than a track, is deliberately **not** gated.
 
 **Raw stereo range margin, off.** Stereo disparity $\delta=fb/Z$ implies $Z=fb/\delta$, so first-order uncertainty propagation gives
 $$
@@ -1658,7 +1737,7 @@ h_{{\rm pen},i}=-\Delta v_{\max}\frac{k_{1,i}}{k_{0,i}},
 $$
 At zero commanded separating acceleration and negligible drift, equality of the unclipped barrier would ask for $a\dot q=v_o-(k_0/k_1)\bar h$. Capping the negative $k_0$ argument bounds its extra equilibrium separating speed above obstacle speed by 0.25 m/s. In the base gains, $h_{\rm pen}=-0.105$ m. This moderates aggressive retreat inside a heavily inflated barrier, but weakens the original distance inequality; it is not exact recovery enforcement for $\bar h$.
 
-The zone ladder schedules gains from **geometric** $d_i$, not $\bar h_i+d_s$. With $d_s=0.15$ m, boundaries hold/priority/active/notice are 0.0375/0.075/0.15/0.225 m, blend width 0.03 m. For the first three boundaries $b_j$, define smoothstep $S_j=S((d-b_j+w/2)/w)$, where $S(z)=3z^2-2z^3$ clipped to $[0,1]$. The partition is
+The zone ladder schedules gains from **geometric** $d_i$, not $\bar h_i+d_s$. Every boundary is a configured **multiple** of $d_s$ (`zone_r_hold/priority/active/notice` $=0.25/0.5/1.0/1.5$, `zone_blend_r` $=0.2$), evaluated in `ladder_from_params`, so the whole ladder follows the barrier whenever $d_s$ is retuned. With the current $d_s=0.10$ m, boundaries hold/priority/active/notice are 0.025/0.05/0.10/0.15 m and the blend width is 0.02 m. (They were 0.0375/0.075/0.15/0.225 m with blend 0.03 m while $d_s$ was 0.15 m; this is the single largest knock-on of the 1 November retune, because it moves the distance at which the task is suppressed as well as the distance at which the gains stiffen.) `ladder_from_params` raises if $d_s\le0$ with the ladder enabled, and warns if the blend is wider than the narrowest rung. For the first three boundaries $b_j$, define smoothstep $S_j=S((d-b_j+w/2)/w)$, where $S(z)=3z^2-2z^3$ clipped to $[0,1]$. The partition is
 $$
 [w_h,w_p,w_a,w_n]=[1-S_0,\ S_0-S_1,\ S_1-S_2,\ S_2].
 \tag{7.24}
@@ -1670,7 +1749,64 @@ k_1=[14,14,10.5,7],\quad
 m_{\rm zone}=[0.25,0.5,1,1].
 \tag{7.25}
 $$
-The notice boundary itself is reported and used as a scale reference; it does not remove rows beyond 0.225 m. Beyond the last transition, notice gains persist until the separate row horizon. Decreasing the slack coefficient $m_{\rm zone}$ makes the same physical violation require a larger family slack and thus cost more, as derived in Chapter 9.
+The notice boundary itself is reported and used as a scale reference; it does not remove rows beyond $d_{\rm notice}=0.15$ m. Beyond the last transition, notice gains persist until the separate row horizon. Decreasing the slack coefficient $m_{\rm zone}$ makes the same physical violation require a larger family slack and thus cost more, as derived in Chapter 9.
+
+### 7.8 The minimal HOCBF, and what the complete framework adds to it
+
+Chapters 7.1–7.7 describe one barrier with a great deal of machinery around it, and the machinery is easy to mistake for the mathematics. Since 2 November 2026 the barrier can be run *without* that machinery — not by reverting source, but by selecting an ordinary experimental condition (Chapter 12.7) — so the distinction can be stated exactly instead of argued.
+
+**The minimal row.** For control point $i$ and the obstacle selected for it, with $d_i$ the surface gap perception publishes and $\hat v_{o,i}$ the tracked obstacle velocity,
+
+$$
+h_i=d_i-d_s,\qquad
+\dot h_i=n_i^\top\!\left(J_{p,i}\dot q-\hat v_{o,i}\right),\qquad
+\ddot h_i+k_1\dot h_i+k_0h_i\ge0,
+\tag{7.26}
+$$
+
+with the **scalar** gains $k_0=$ `k0_cbf` $=25.0\ {\rm s^{-2}}$, $k_1=$ `k1_cbf` $=10.5\ {\rm s^{-1}}$ and $d_s=$ `d_safe` $=0.10$ m. Expanded through (7.7) this is precisely the implemented pair (7.8)–(7.9) with $\dot q_{\rm filt}\to\dot q$, $h^{k_0}\to h$, $v_h^{\rm used}\to n^\top\hat v_o$, $b_{\rm ff}\to0$ and the per-row gains replaced by those two scalars. Nothing else is on the row. This is the formulation a reader of Chapter 7.2 would write down, and it is what the `minimal` condition runs.
+
+**The complete framework is (7.26) with five substitutions.** Every mechanism of Chapters 7.3–7.7 enters as a replacement of one symbol in (7.26) rather than as a different inequality, which is exactly why both can share one row assembly, one objective, one solver and one fallback ladder:
+
+$$
+h\to\bar h\ \text{(7.11)},\quad
+\dot q\to\dot q_{\rm filt},\quad
+\hat v_o\to v_h^{\rm used}\ (\S7.5),\quad
+(k_0,k_1)\to(k_{0,i},k_{1,i})\ \text{(7.25)},\quad
+h\to h^{k_0}\ \text{(7.23)}\ \text{in the }k_0\text{ term alone}.
+\tag{7.27}
+$$
+
+Enumerated, with the switch that removes each one:
+
+| Addition | Chapter | What it substitutes in (7.26) | Removed by |
+|---|---|---|---|
+| Recovery-only barrier EMA | 7.4 | $h$ follows the measurement down at once and up on an old-weight EMA | `cbf_h_recovery_alpha` $=0$ |
+| Velocity-covariance margin $m_{\rm velcov}$ | 7.4 | subtracted from $h$ | `uncertainty_margin` |
+| Latency margin $m_{\rm latency}$ | 7.4 | subtracted from $h$ | `latency_compensation` |
+| Speed-proportional standoff $m_{\rm standoff}$ | 7.4 | subtracted from $h$ | `velocity_standoff` |
+| Approach gate $w_g$ | 7.4, (7.15a) | multiplies the two covariance margins by $S(\min(v_o/v_{\rm ref},1))$ | `margin_gate_on_approach` |
+| Velocity EMA into the $k_1$ term | 7.3 | $\dot q\to\dot q_{\rm filt}$, in that term only | `cbf_hdot_filter_alpha` $=0$ |
+| $v_o$ conditioning: median, deadband, residual floor, normal-rotation and identity guards, fast-track trust | 7.5, 7.6 | $n^\top\hat v_o\to v_h^{\rm used}$ | `obstacle_velocity_median`, `obstacle_velocity_median_s`, `obstacle_velocity_residual_floor`, `obstacle_velocity_normal_guard`, `obstacle_identity_guard`, `obstacle_velocity_fast_trust` |
+| Zone ladder | 7.7 | scalar $(k_0,k_1,m_{\rm zone})$ become the per-row convex combinations (7.24)–(7.25), and the task is faded | `zone_ladder` |
+| Retreat cap | 8.4 | an additional row family | `retreat_cap_enabled` |
+| Link-speed caps | 8.5 | an additional row family | `link_speed_rows_enabled` |
+| State governor | 9.3 | attenuates the nominal before the QP sees it | `state_governor_enabled` |
+| Tangential steering bias | 9.3 | moves $q_{\rm qp}$ | `cbf_tangential_gain` $=0$ |
+| Lateral evasion | 9.3 | moves $q_{\rm qp}$ | `lateral_evasion` |
+| Livelock escape | 9.3 | moves $q_{\rm qp}$ | `livelock_escape` |
+| Cartesian go-around | 9.3 | moves $q_{\rm qp}$ and cuts the inward component of the task push | `enable_go_around` |
+
+The table has a seam in it worth naming. The first ten entries change the **constraint**: each can make the admissible set smaller or larger, and the last two of them add whole row families the solver must satisfy or pay for. The last five change only the **objective** — Chapter 9.3's invariant is that a governor or a bias moves $q_{\rm qp}=[-u_{\rm target};0_6]$ and can never relax a row. One entry straddles, which matters when reading an ablation: the zone ladder schedules the gains *and* cuts the task priority, so turning it off moves both sides at once. So "what the framework adds to the barrier" is really two different additions — a tightened, scheduled, filtered version of the same inequality, and a set of preferences expressed inside whatever that inequality still allows — and only the first kind can change what the filter will refuse to do.
+
+**What both arms keep, and why.** The hard per-joint position/velocity/acceleration box (8.6), the $\ddot q$ slew box (8.7), joint-limit rows (8.1), self-collision rows (8.2), singularity rows (8.3), `multi_obstacle_k`, $d_s$, $k_0$/$k_1$, every `rho_slack`, the 13-variable objective (9.1), the solver and its fallback ladder (9.4), and the entire perception chain of Chapters 4–5. These are actuator and self-protection constraints, not obstacle avoidance; removing them would let a minimal arm fail for reasons that have nothing to do with the barrier — `cbf_state_rows.py`'s own header records the hardware event the joint-limit rows exist to prevent, in which a collapsed per-joint box left `dq_ort` $=10.9$ rad/s² of commanded acceleration dumped orthogonally to anything the barrier was asking for — so an experiment that varies them is a different experiment.
+
+**Two of the five margins of (7.11) are already absent from the baseline.** `enable_velocity_feedforward` (the quadratic braking margin) and `enable_sensor_range_uncertainty` (the sensor-range margin) are `false` in `fr3_control.yaml` and are set by no launch file, so (7.11) carries **three** live tightening terms, not five, in the shipped configuration and therefore in both arms. The `minimal` condition lists both among the things it removes; those two overrides are no-ops. This changes nothing about what either arm runs, and it does change what a comparison between them can be said to be about.
+
+**The minimal arm is not the bare barrier either.** Three things survive it and should not be read as part of the contrast. The bounded depth push (7.23) is governed by `retreat_excess_speed_max` $=0.25$ m/s, which no condition overrides, so the $k_0$ argument is still saturated on both sides. $d_i$ is the *conditioned* distance of Chapters 4.4–4.6, carrying robot-mask dilation and the asymmetric distance EMA of the perception side, not a geometric gap. And obstacle rows remain **relaxable** against the shared `rho_slack` $=1000$, so neither arm enforces (7.26) as a hard constraint. What the condition removes is the obstacle barrier's conditioning and its objective shaping, not the filter.
+
+**One consequence for reading the diagnostics.** The obstacle family slack is *not* comparable between the two arms, because it prices two different rows. In the minimal arm the recovery EMA is off as well, so $\bar h=h_{\rm raw}=d_i-d_s$ and $s_{\rm obs}>0$ means the measured gap itself went inside $d_s$. In the complete framework $\bar h$ is tightened by up to three margins, so the same $s_{\rm obs}$ can occur with the geometric gap still comfortably outside $d_s$ — relaxing a conditioned barrier is not the same event as entering the real one. Only truth-derived clearance (Chapter 12.7, `min_h` from `truth.npz`) compares across the arms without reinterpretation.
+
 
 ## 8. Other safety rows, speed caps, and the admissible acceleration box
 
@@ -1811,13 +1947,14 @@ V_{\rm sc}=\min(V_{\max},\max(d_{\rm sc},0)/T_{\rm react}),
 \quad V_{\max}=1.3\ {\rm m/s},\quad T_{\rm react}=0.2\ {\rm s}.
 \tag{8.16}
 $$
-The obstacle version uses the same linear clearance law with
+The obstacle version uses the same linear clearance law, but with a blind time derived from $d_{\rm safe}$ rather than fixed:
 $$
 T_{\rm obs}=d_{\rm safe}/V_{d_{\rm safe}}
-=0.15/1.0=0.15\ {\rm s},\quad
-V_{\rm obs}=\min(1.3,\max(d_{\rm obs},0)/0.15).
+=0.10/1.0=0.10\ {\rm s},\quad
+V_{\rm obs}=\min(1.3,\max(d_{\rm obs},0)/0.10).
 \tag{8.17}
 $$
+`obstacle_link_speed_cap` is explicit about the price of this coupling: lowering $d_{\rm safe}$ lets a point approach proportionally closer **and faster**, and once $d_{\rm safe}/V_{d_{\rm safe}}$ falls below the fixed `link_speed_reaction_s` $=0.2$ s the obstacle cap is the looser of the two laws. At the current $d_{\rm safe}=0.10$ m it already is: $T_{\rm obs}=0.10$ s is half the self-collision reaction time, so for the same clearance this row permits twice the speed it permits on the self-collision side. That is a deliberate consequence of the 1 November retune and not a separate tuning decision — it followed automatically from $d_{\rm safe}$, which is exactly why it is easy to miss.
 The builder takes the restrictive applicable cap. Its global minimum self-collision gap is applied to candidate points; it does not identify a separate self-collision gap for each monitored point.
 
 The exact future constraint $\|J_p(\dot q+Tu)\|\le V$ would be a second-order cone under frozen $J_p$. The code instead fixes $\hat v=v/\|v\|$ and constrains the current direction:
@@ -1977,7 +2114,7 @@ Here $u^{\rm lo},u^{\rm hi}\in\mathbb R^7$ are final box bounds, not OSQP's comp
 
 ### 9.3 What the target acceleration actually contains
 
-The target is not always the received `qddot_nom`. Before solving, the node can apply a state governor, a zone task governor, tangential encouragement, lateral evasion, outrun evasion, and a livelock escape bias. These alter the objective's center; they do not create additional hard safety constraints. Their effects survive only to the extent permitted by the QP, the soft-row penalties, and the command executor.
+The target is not always the received `qddot_nom`. Before solving, the node can apply a state governor, a zone task governor, tangential encouragement, the Cartesian **go-around** of 1 November 2026, lateral evasion, outrun evasion, and a livelock escape bias. They are applied in that order, each to the output of the one before, so the go-around reads a nominal that the two governors have already attenuated and the tangential bias has already modified. These alter the objective's center; they do not create additional hard safety constraints. Their effects survive only to the extent permitted by the QP, the soft-row penalties, and the command executor.
 
 #### State and zone governors
 
@@ -2013,6 +2150,89 @@ The symbols map to source constants as $0.15=$ `_TB_BLEND_FRAC`, $0.05=$ `_TB_DR
 **Instrumentation (added 30 October 2026).** `tangential_bias` now takes an optional `diag` dict out-parameter, filled through a single `_tb_diag` helper on **every** exit path including the three early returns, so a disengaged tick reports zeros rather than leaving stale values for `logging_utils`' `getattr(..., 0.0)` reads to misreport as "the steering never fired". It records the number of rows whose contribution was nonzero, the pre-cap and post-cap bias norms, $\eta$ and $w$ of the **largest contributor** (which need not be the closest row: a near row whose tangent plane holds no sideways command contributes nothing), and that row's link label. The out-parameter form was chosen over a second return value because the published contract — exactly `np.zeros_like(qddot_nom)` when nothing is engaged — is what lets the caller EMA the result.
 
 The computation is unchanged by this: the added `n_rows`/`best` bookkeeping never feeds `bias`, and the cap still divides by the same norm, now named `raw_norm` and reused. The filter reports $\lVert$ post-EMA bias $\rVert$ as `diag_tan` rather than the function's return, because with $\alpha=0.9$ the two differ by roughly 100 ms of history and the arm is moved by the former. `ConstraintBuilder` declares and resets the `diag_tan*` fields in **both** `__init__` and `build()`, so a value surviving from a previous rebuild cannot be read as this tick's. The mathematics of (9.10) is untouched; only its observability changed. 23 unit tests in `test_cbf_tangential_bias.py` cover it and pass in this environment.
+
+#### Go-around: sliding along the obstacle instead of only backing off
+
+[go_around.py](../franka_experiments/utils/go_around.py), added 1 November 2026 and enabled by `enable_go_around`, exists because of a measurement and a structural argument that the previous bias could not answer.
+
+**The structural argument.** With one active row $a^\top u\ge b$, the QP of (9.2)–(9.3) returns the Euclidean projection of $u_{\rm target}$ onto that halfspace's boundary when the row binds, so the correction $u^*-u_{\rm target}$ is **parallel to $a=n^\top J_p$** — exactly along the normal, i.e. straight away from the obstacle. Nothing in the optimization prefers a path *around* anything. The module's docstring reports that in the DIAG Gazebo scene 72–98% of the measured path deviation near an obstacle lay along $\hat n$ regardless of how the barrier margins were set, which is what that algebra predicts. Chapter 9.3's tangential bias was the first attempt at a remedy and is structurally unable to finish the job: (9.10) *amplifies* $Q_iu_{\rm nom}$, the sideways component the command already has, so it vanishes precisely when the task heads straight at the obstacle — the $\eta_i\to0$ regime named above.
+
+**What this one does instead.** It works in Cartesian space at a single point: the control point of the obstacle row with the **smallest conditioned barrier** $\bar h$. `ConstraintBuilder.build` records that row as `ConstraintSnap.around_geom` $=(\bar h,J_p,\hat n,\ell)$, selected inside the same finiteness guard that appends the row itself, and `None` when the flag is off or no obstacle row survived. Two consequences of that choice: the selection is by $\bar h$ and not by geometric gap, so a distant fast obstacle carrying large margins can outrank a near static one; and $J_p$ is now the obstacle row's configured-point Jacobian, so the go-around inherits the corrected interpolation/fingertip definition of Chapter 2.3. Its geometric and time-alignment assumptions remain separate.
+
+Write $P_\perp=I_3-\hat n\hat n^\top$, $v=J_p\dot q_{\rm cbf}$, $a_{\rm task}=J_pu_{\rm nom}$, and let $T_h=$ `go_around_horizon_s` $=0.3$ s. The tangential **intent** of the task is
+
+$$
+\iota=P_\perp\!\left(v+T_ha_{\rm task}\right)\in\mathbb R^3 ,
+\tag{9.10a}
+$$
+
+the sideways part of where the point will be heading one look-ahead from now.
+
+*Engagement.* A rate-limited smoothstep of barrier depth,
+
+$$
+w^{\rm tgt}=S\!\left(\frac{M-\bar h}{M}\right),\qquad
+w\leftarrow\operatorname{clip}\!\left(w+\operatorname{clip}(w^{\rm tgt}-w,\pm\rho\,\Delta t),0,1\right),
+\tag{9.10b}
+$$
+
+with $M=$ `go_around_engage_margin` $=0.15$ m and $\rho=4\ {\rm s^{-1}}$ a module default rather than a ROS parameter. $w^{\rm tgt}=0$ whenever geometry is absent. Note that $M$ is compared against the **conditioned** $\bar h$, not the geometric gap, so every margin of (7.11) advances engagement. At the conditioning of the Chapter 14 walkthrough — 0.1296 m of margins at $d_s=0.10$ m — $\bar h$ reaches $0.15$ m while the published wire gap is still $0.15+0.10+0.1296\approx0.38$ m, more than twice the engage margin's face value.
+
+*Side, chosen once.* A separate latch `engaged` is set when $\bar h<M$ and cleared only when geometry is lost or $\bar h>$ `go_around_release_factor` $\cdot M=0.225$ m; clearing discards the side. While engaged, the kept side $\hat t$ is maintained, never re-rolled:
+
+$$
+\hat t\leftarrow\frac{P_\perp\hat t}{\lVert P_\perp\hat t\rVert},\qquad
+\hat t\leftarrow\frac{P_\perp\big[(1-\beta)\hat t+\beta\,\iota/\lVert\iota\rVert\big]}
+{\lVert\cdot\rVert}\ \ \text{iff}\ \ \lVert\iota\rVert\ge t_{\min}\ \text{and}\ \iota^\top\hat t>0,
+\qquad\beta=\min\!\left(\frac{\Delta t}{\tau_{\rm turn}},1\right).
+\tag{9.10c}
+$$
+
+The first step re-projects the side as $\hat n$ rotates while the arm wraps around the obstacle; the second lets it turn toward the task's intent with $\tau_{\rm turn}=$ `go_around_turn_tau` $=1$ s. The guard $\iota^\top\hat t>0$ means an intent on the **opposite** side is ignored: the side can turn, never flip. On first engagement, or after a release, `_pick_side` chooses it — $\hat t=\iota/\lVert\iota\rVert$ when $\lVert\iota\rVert\ge t_{\min}=0.03$ m/s, and otherwise, the **head-on** case, the leading left-singular vector of $P_\perp J_p$ projected back onto the tangent plane, signed by $\operatorname{sign}(\hat t^\top P_\perp v)$. That fallback is the answer to the $\eta_i\to0$ weakness: where the task offers no sideways component at all, the module takes the tangential direction **the arm can move fastest in**, and reports it through the `head_on` diagnostic.
+
+*Push.* A plain two-sided proportional speed loop on the tangential speed $v_t=\hat t^\top v$:
+
+$$
+a_t=w\operatorname{clip}\!\big(k_g(v_{\rm ref}-v_t),\ -a_{\max},\ a_{\max}\big),
+\tag{9.10d}
+$$
+
+$v_{\rm ref}=$ `go_around_speed` $=0.25$ m/s, $k_g=$ `go_around_gain` $=3\ {\rm s^{-1}}$, $a_{\max}=$ `go_around_max_accel` $=2.5$ m/s². In the ideal double integrator and with $w=1$ this is $\dot v_t=k_g(v_{\rm ref}-v_t)$, a first-order approach with time constant $1/k_g=0.333$ s, linear while $\lvert v_{\rm ref}-v_t\rvert\le a_{\max}/k_g=0.833$ m/s. The YAML records why those numbers and not larger ones: gain 8 with a one-sided clip oscillated at about 2 Hz, and the module docstring reports $\pm0.2$ m/s swings along the obstacle at that frequency from a first version that re-chose the side every tick. The two-sidedness matters — the loop *brakes* an over-fast slide as readily as it drives a slow one.
+
+*Mapping to joints.* Both Cartesian demands go through damped least squares with $\lambda=$ `go_around_damping` $=0.05$ m:
+
+$$
+\mathrm{DLS}(x)=J_p^\top\big(J_pJ_p^\top+\lambda^2I_3\big)^{-1}x,
+\tag{9.10e}
+$$
+
+the stationary point of $\tfrac12\lVert J_pu-x\rVert^2+\tfrac12\lambda^2\lVert u\rVert^2$. The bias is $\mathrm{DLS}(a_t\hat t)$, norm-capped at `go_around_max_bias` $=8$ rad/s².
+
+*Task push-in cut.* Separately, with $a_{\rm in}=\hat n^\top a_{\rm task}$,
+
+$$
+u_{\rm cut}=\begin{cases}
+\mathrm{DLS}\big(-w\,c_p\,a_{\rm in}\,\hat n\big),& a_{\rm in}<0,\\
+0,&\text{otherwise},\end{cases}
+\qquad c_p=\texttt{go\_around\_push\_cut}=1.
+\tag{9.10f}
+$$
+
+At full engagement this removes the component of the *task's own* acceleration that drives the point into the obstacle, leaving its tangential part untouched — so the task stops pressing the arm against the barrier while the go-around slides it past. The cancellation is approximate, not exact: $\lambda>0$ means $J_p\,\mathrm{DLS}(x)\ne x$, and the unit test accepts the residual inward acceleration below $0.02$ m/s² against a commanded $-1$ m/s².
+
+*Rate limit.* Finally the returned bias moves by at most $\dot u_{\max}\Delta t$ per tick, $\dot u_{\max}=$ `go_around_max_jerk` $=10$ rad/s³, i.e. $0.0333$ rad/s² per 300 Hz tick. This is the module's outermost smoother and the one that dominates: the weight ramp $\rho=4\ {\rm s^{-1}}$ needs $0.25$ s to go from 0 to 1, while traversing the full $8$ rad/s² cap at the jerk limit takes $0.8$ s.
+
+The node adds **both** returns to the target, $u_{\rm nom}\leftarrow u_{\rm nom}+u_{\rm bias}+u_{\rm cut}$, and copies `w`, `vt` and `head_on` plus the bias norm onto the builder for the CBFDIAG line (Chapter 12.1).
+
+**Scope and limits: one property that bounds the damage, and four that bound the claim.**
+
+1. **It is an objective bias, exactly like (9.10).** It enters only $q_{\rm qp}=[-u_{\rm target},0_6]^\top$. No row, bound, gain or slack coefficient is touched, so it cannot loosen a barrier; the worst a wrong side can do is cost tracking error and make the QP work against it.
+2. **It is single-row.** The chosen $\hat t$ is tangent to *one* obstacle's normal. Unlike the livelock escape, which projects its direction onto the nullspace of up to four nearby rows through (9.14), nothing here checks that sliding along the closest obstacle does not drive the arm into the second-closest, into a self-collision row, or into the acceleration box. With `multi_obstacle_k=2` and several control points that is a reachable configuration, and the QP's only recourse is to refuse the bias.
+3. **Its reference speed is not derived from anything.** $0.25$ m/s is a configured slide speed, not a function of the obstacle's speed, the gap, or the time available to clear it. There is no argument in the source that completing the traverse at this speed is feasible before the obstacle arrives, and no termination condition other than $\bar h$ leaving the release margin.
+4. **The head-on fallback optimizes mobility, not clearance.** The leading singular vector of $P_\perp J_p$ is the tangential direction the arm can accelerate hardest in. That it is also a direction that gets *around* this obstacle, rather than one that merely rakes along it toward a worse configuration, is not established by the construction.
+5. **It fades on perception loss, but an order of magnitude more slowly than the tangential bias does.** The tangential bias is hard-gated on `n_c > 0` — the source comment calls that gate load-bearing, because on a stale-perception or frozen-state tick `con` still holds the last snapshot and an ungated call "would steer sideways off stale geometry at exactly the moment the filter has decided it is blind", leaving braking pure. The go-around is called on *every* tick; blindness reaches it as `Jp=None`, which zeroes the target and lets both $w$ and the bias decay at their rate limits. That is a genuine fade and the behaviour is tested, but the time constants differ sharply: the tangential EMA removes its bias with a $\approx0.1$ s geometric decay, whereas the go-around bias decays **linearly** at $0.0333$ rad/s² per tick — up to $0.8$ s from the cap. For that interval the published target is a braking command plus a sideways acceleration computed from geometry the filter has already rejected. It is bounded, decaying and on the objective only, so it cannot defeat a row; it is nevertheless an inconsistency between two neighbouring mechanisms that were written to the same stated principle, and Chapter 13.1 records it.
+
+**Test coverage.** `test/test_go_around.py` has six tests, all passing in the audit environment (it needs only NumPy): zero outside the engage margin, the jerk bound honoured over 200 ticks, the side not flipping under 100 ticks of opposite intent, release only past $1.5M$, the inward task push removed while the tangential part survives, and a full fade-out over 300 blind ticks. They pin the smoothness and latching contract. They do **not** test the composition with the QP, the multi-obstacle case of point 2, or any claim about clearance.
 
 #### Lateral evasion
 
@@ -2135,13 +2355,15 @@ $$
 $$
 with gravity omitted because the lower-level Franka interface is treated as compensating gravity. Under exact modeling/execution, substituting into $M\ddot q+c=\tau_{\rm motion}$ yields $\ddot q=u$. This cancellation is the reason an acceleration-space barrier can be translated into effort at all. Friction, unmodeled payload, rate limiting, actuator limits, and downstream feedback break that equality.
 
-The implementation instead copies `data.M` after `pin.computeAllTerms` and multiplies `data.C @ qdot_full`. As established in Chapter 2 from the locally installed Pinocchio 3.4.0 headers, `computeAllTerms` fills the mass matrix's upper triangular storage and `nle` but does not compute `data.C`; a new data object's `C` is initialized to zero. This function neither symmetrizes `M` nor calls `computeCoriolisMatrix`. For that implementation, its actual algebra is
+The current implementation copies the arm mass matrix after `pin.computeAllTerms` and forms `data.nle - data.g`. It no longer relies on the unpopulated `data.C` matrix. Thus
+
 $$
-\tau_{\rm py}=M_{\rm stored,arm}u+C_{\rm stored,arm}\dot q
-\quad\text{with potentially triangular }M_{\rm stored},\ C_{\rm stored}=0.
+\tau_{\rm py}=M_{\rm arm}u+(\operatorname{nle}-g)_{\rm arm}
+=M_{\rm arm}u+c_{\rm arm}.
 \tag{10.2}
 $$
-Do not silently replace (10.2) with (10.1) when interpreting this code. The exact deployed Python binding/library version remains a runtime verification item. The commander's diagnostic torque separately symmetrizes $M$ and adds `nle`, so a plot of that nominal diagnostic is not a measurement of (10.2).
+
+The actual ROS Pinocchio 4.0.0 check establishes a full symmetric $M$ and agreement with RNEA minus gravity to $4.458\times10^{-14}$ N·m over 54 states. The pre-correction converter omitted $c$, with a maximum sampled torque discrepancy of 3.554182 N·m. At matching state/model and with exact gravity-compensated execution, (10.2) now provides the cancellation required by (10.1). Transport delay, feedback, torque limiting and model mismatch remain separate realization errors. In particular the nominal diagnostic torque adds `nle` and includes gravity; it must not be substituted for motion torque on a gravity-compensated interface.
 
 `_limit_and_report` always computes an effort-clipped candidate and a torque-increment-limited candidate, but applies them **only if its own** `iso_enabled` is true. Otherwise it publishes the original torque and only reports saturation flags. Effort bounds come from `franka_description`; the rate increment is
 $$
@@ -2221,6 +2443,8 @@ Python process timers specify desired frequencies, not deadlines. The main filte
 
 Single-thread BLAS environment variables reduce oversubscription. They do not eliminate Python's GIL, NumPy/SciPy allocations, ROS serialization, DDS queueing, perception load, garbage collection, solver tail latency or logging overhead. `RealtimeBuffer` and preallocated C++ state improve separation of ROS callbacks from `update`; they do not make the entire sensor-to-command pipeline hard real time. Static inspection cannot establish worst-case latency.
 
+The post-fix DIAG bag reviewed on 3 November supplies a concrete execution counterexample to treating the timer targets as achieved rates: recorded safe acceleration averages 23.7 Hz in simulation time against a 300 Hz target, and torque-command gaps reach 219 ms against the controller's 100 ms freshness limit. The controller logs repeated HOLD transitions even though the CBF reports no solver failures and its upstream fault flag stays zero. This identifies a downstream delivery/freshness problem not represented by a successful QP status. It does not establish its CPU/GIL/solver root cause, nor that the kinematic changes caused it; see §15.11.4.
+
 ### 10.4 Optional ISO-named separation calculations
 
 [iso_ssm.py](../franka_experiments/utils/iso_ssm.py) contains useful explicit calculations. The code's names refer to ISO-related modes, but the repository's own monitor states it is non-safety-rated. No normative standard text or certified protective-stop implementation was available for this audit. The following derives the **implemented model**, not a certification claim.
@@ -2248,7 +2472,7 @@ v_{\rm cap}=\operatorname{clip}\left(
 $$
 with nonpositive/invalid cases handled as zero in the helper. In particular, nonfinite $d$, including $+\infty$, is not interpreted as unlimited safe distance by this helper.
 
-Configured defaults are $T_r=0.1$ s, $a_s=1$ m/s², $v_h=2$ m/s, $C=0.85$ m, $Z_d=0.06$ m, $Z_r=0.01$ m, hence $D_0=0.92$ m. The ordinary $d_{\rm safe}=0.15$ m and link-speed $1.3$ m/s are incompatible with the ISO master initialization checks. Simply enabling the master with the untouched defaults raises an error; it is not an alternative safety certificate for the ordinary 15 cm mode.
+Configured defaults are $T_r=0.1$ s, $a_s=1$ m/s², $v_h=2$ m/s, $C=0.85$ m, $Z_d=0.06$ m, $Z_r=0.01$ m, hence $D_0=C+Z_d+Z_r=0.92$ m. The ordinary $d_{\rm safe}$ and link-speed $1.3$ m/s are incompatible with the ISO master initialization checks: `_iso_configure` **raises** `ValueError` rather than clamping when $d_{\rm safe}<D_0$ or when `link_speed_max` exceeds $v_{\rm PFL}$, on the explicit reasoning that a ceiling which silently moves when it cannot be met reads like a guarantee and is not one. The margin is not close. $d_{\rm safe}$ was 0.15 m and is now 0.10 m, against a floor of 0.92 m, so the 1 November retune changes the size of the gap and nothing about the verdict: this cell cannot perform conformant SSM at any distance it actually works at, and `test_iso_dsafe_floor.py` encodes that as an assertion on the shipped YAML, with a docstring warning that the test going green means either $d_{\rm safe}$ was raised above the floor or $C$ was lowered without the detection-capability measurement that alone justifies it. (That docstring still names "$d_{\rm safe} = 0.15$ m" as the shipped value and is now stale by one revision; the assertion it guards reads the live file and is unaffected.) Simply enabling the master with the untouched defaults raises; it is not an alternative safety certificate for the ordinary mode.
 
 The PFL helper uses a linear spring contact model: $F_{\max}$ is force in N, $k$ is contact stiffness in N/m, and $m_r,m_h$ are robot/human effective masses in kg. Let reduced mass $\mu=(m_r^{-1}+m_h^{-1})^{-1}$; equate kinetic energy and spring energy, $\tfrac12\mu v^2=\tfrac12kx^2$, with $F=kx$. Then
 $$
@@ -2274,7 +2498,7 @@ When the filter receives a latched stop under its master mode, it drops ordinary
 
 The master also supervises an empty-scene run after recently observing a near obstacle and monitors low achieved braking authority. The latter is estimated by projecting measured acceleration onto the commanded braking direction; sustained insufficient projection can set a fault. It does not identify a formal lower bound on Cartesian deceleration. The optional reduced TCP mode selects a link8 candidate from `spd_pts`; as explained above, no accepted obstacle points can mean no reduced-speed row.
 
-The monitor is a separate process, but shares non-safety-rated camera measurements, model assumptions, ROS transport, host scheduling and power. Its point-Jacobian path, like the main filter, treats published points as rigid link offsets; their velocity conditioning and constraint evaluations still differ. These channels are neither equivalent numerical implementations nor a demonstrated independent safety architecture.
+The monitor is a separate process, but shares non-safety-rated camera measurements, model assumptions, ROS transport, host scheduling and power. Its control-point speed path now uses `control_point_jacobian(label,with_jdot=False)`, as does the evidence logger. Both load `robot_config_path`; their rigid TCP-origin calculations remain distinct. This removes the old interpolation/attachment mismatch, while their velocity conditioning and constraint evaluations still differ. These channels are neither equivalent numerical implementations nor a demonstrated independent safety architecture.
 
 ### 10.6 Gazebo effort realization and the modified plant model
 
@@ -2354,7 +2578,7 @@ a=n^\top J_p,\quad \dot h+\gamma h\ge0
 \ \Longrightarrow\ a v_c\ge-\gamma h.
 \tag{11.1}
 $$
-The node uses the **published** normalized direction, the published robot point as a rigid offset of its named link, and no obstacle velocity term. It shares the rigid-offset assumption of the current main filter, without reconstructing interpolation derivatives. A moving obstacle would require $a v_c-n^\top v_o\ge-\gamma h$; that contribution is absent here.
+The node uses the **published** normalized direction, the published robot point as a rigid offset of its named link, and no obstacle velocity term. Unlike the corrected main acceleration filter, this older velocity node still does not reconstruct interpolation derivatives. A moving obstacle would require $a v_c-n^\top v_o\ge-\gamma h$; that contribution is absent here.
 
 `select_gamma` in [cbf_utils.py](../franka_experiments/utils/cbf_utils.py) implements
 $$
@@ -2426,7 +2650,7 @@ $$
 \tfrac12\|A_o\delta\tau\|^2+\tfrac12\rho s^2.
 \tag{11.9}
 $$
-Expansion gives $P=\operatorname{diag}(P_\tau,\rho)$ and $q=[-P_\tau\tau_{\rm nom};0]$, exactly `_OSCBFQPBuilder.build_cost`. The weights $w_j,w_o$ are **squared** in this objective because they multiply the maps before $A^\top A$. Defaults are both 1, $\rho=1000$. The regularized $N^\top$ is not an exact nullspace projector; operational inertia and all subsequent identities also require a correct symmetric mass matrix, which this implementation's stored-$M$/stored-$C$ path does not establish (Chapter 2).
+Expansion gives $P=\operatorname{diag}(P_\tau,\rho)$ and $q=[-P_\tau\tau_{\rm nom};0]$, exactly `_OSCBFQPBuilder.build_cost`. The weights $w_j,w_o$ are **squared** in this objective because they multiply the maps before $A^\top A$. Defaults are both 1, $\rho=1000$. The regularized $N^\top$ is not an exact nullspace projector; operational inertia and the cancellation identities require a correct symmetric positive-definite mass matrix and nonlinear velocity torque. `_RobotDynamics.update` now uses `nle - g`; the Pinocchio 4.0.0 converter check in Chapter 2 establishes full symmetric mass storage in that binding. This is not a numerical validation of the entire OSCBF loop or its separate obstacle kinematics.
 
 The QP uses one shared slack $0\le s\le10^8$, $A_{\rm cbf}\tau+s\ge b_{\rm cbf}$, and hard effort limits $[87,87,87,87,12,12,12]$ N m. It does not enforce the main filter's acceleration box, position-dependent firmware velocity envelope, or torque slew box.
 
@@ -2498,7 +2722,7 @@ The old torque calculation has the same unsymmetrized-$M$/uncomputed-$C$ concern
 2. If the setpoint is stale but `qddot_safe` is fresh, command is $\operatorname{rnea}(q,\dot q,u_{\rm safe})-g(q)$.
 3. If both are stale, use a last-position hold/damping expression.
 
-The first path has priority even when a fresh safe acceleration exists. A commander publishing nominal `q_des_state` can therefore **bypass the Python safety result** if connected to this alternative plugin. Default local PD gains are zero, the damping fallback defaults to `[20,20,20,20,10,10,10]`, and timeout is 0.1 s. An optional acceleration LPF is applied only when its configured retention is positive. The sample-period estimator uses a $0.85/0.15$ EMA on accepted 5 ms–0.5 s intervals. This executor does use RNEA, avoiding the Python stored-$M$/stored-$C$ conversion issue, but it is not selected by the default torque stack.
+The first path has priority even when a fresh safe acceleration exists. A commander publishing nominal `q_des_state` can therefore **bypass the Python safety result** if connected to this alternative plugin. Default local PD gains are zero, the damping fallback defaults to `[20,20,20,20,10,10,10]`, and timeout is 0.1 s. An optional acceleration LPF is applied only when its configured retention is positive. The sample-period estimator uses a $0.85/0.15$ EMA on accepted 5 ms–0.5 s intervals. This executor does use RNEA, already providing the gravity-free inverse-dynamics calculation now also implemented by the corrected Python converter, but it is not selected by the default torque stack.
 
 ### 11.6 Generic older acceleration QP
 
@@ -2602,7 +2826,14 @@ v_{\rm obs,conditioned},v_{\rm obs,signed}].
 $$
 Its publisher is `CBFSafetyFilter._publish_status`. Index 4, not index 0, is the obstacle minimum read by the commander's phase governor. Index 3 counts negative barriers across families; it is not literally a unique control-point count. Indices 5–8 prefer a fresh monitor message; otherwise they derive from the filter's own builder/geometry. Indices 9–10 are per-rebuild maxima from different conditioning paths, not necessarily the velocity at the closest obstacle. In this snapshot `diag_v_obs` is assigned before the median, despite its post-conditioning description; index 9 can differ from the scalar actually used for caps/margins. Index 10 records signed tracked branches only. Index 1 compares heterogeneous family slack units.
 
-The physical violation for row $i$ is $\max(0,-r_i-a_i u)$; the relaxed violation is $\max(0,-r_i-a_i u-m_i s_{g(i)})$. Small relaxed residual can coexist with large physical violation. The active numerical status publisher uses (12.1); the rich per-row diagnostics are primarily text emitted by `logging_utils.format_cbf_diag`: geometry, gains, margins, filtering, velocity, slack, timing and execution estimates. Since 30 October 2026 that line also carries the tangential steering, which until then was computed, EMA'd onto $u_{\rm nom}$ and never reported at all: `tan=<applied>/<raw>` (post-EMA norm over the same tick's pre-cap norm, so `raw > applied` is `cbf_tangential_max_bias` biting and needs no separate flag), `ntan` (rows contributing a nonzero term), `tanrow` (largest contributor's link) and `tanmix` ($\eta$ of that row — see Chapter 9.3). These are a bias on the QP's **cost**, never a row, so none of them can weaken a barrier. They remain text, not CSV columns: the `ExperimentLogger` schema is unchanged by this addition. `rtd_debug.py` contains wall-time stage statistics, frame traces, heartbeat/freeze checks, queue/memory monitoring and thread dumps; these are not formal timing bounds.
+The physical violation for row $i$ is $\max(0,-r_i-a_i u)$; the relaxed violation is $\max(0,-r_i-a_i u-m_i s_{g(i)})$. Small relaxed residual can coexist with large physical violation. The active numerical status publisher uses (12.1); the rich per-row diagnostics are primarily text emitted by `logging_utils.format_cbf_diag`: geometry, gains, margins, filtering, velocity, slack, timing and execution estimates. Since 30 October 2026 that line also carries the tangential steering, which until then was computed, EMA'd onto $u_{\rm nom}$ and never reported at all: `tan=<applied>/<raw>` (post-EMA norm over the same tick's pre-cap norm, so `raw > applied` is `cbf_tangential_max_bias` biting and needs no separate flag), `ntan` (rows contributing a nonzero term), `tanrow` (largest contributor's link) and `tanmix` ($\eta$ of that row — see Chapter 9.3). These are a bias on the QP's **cost**, never a row, so none of them can weaken a barrier. They remain text, not CSV columns: the `ExperimentLogger` schema is unchanged by this addition.
+
+Two more groups were added on 1 November 2026, and both need their exact scope stated before a log is read as evidence:
+
+* `ga=<applied>/<w>/<vt>/<head>` is the go-around of Chapter 9.3 — the norm of the **post-rate-limit** bias actually added in rad/s², the engagement weight $w$ of (9.10b), the signed tangential speed $v_t=\hat t^\top v$ in m/s, and the head-on flag that says the side came from the singular-vector fallback rather than from the task's intent. `vt` is the field to watch: the loop's whole purpose is to drive it to `go_around_speed`, so a $w$ near one with $v_t$ stuck near zero is the mechanism engaged and not achieving anything — either the QP is refusing the bias or the DLS map cannot produce that Cartesian direction at this configuration. `head=1` with a nonzero `ga` is the case the module exists for, the one where `tanmix` is simultaneously near zero.
+* `gate=<w_g>` is the approach gate of (7.15a) — **and it reports only part of what the gate did.** `diag_gate_w` is lowered inside the `enable_uncertainty_margin` branch alone. The identical weight is applied to the latency margin a few lines later without touching the diagnostic, so with `enable_uncertainty_margin` false and `enable_latency_compensation` true the line prints `gate=1.00` while the latency margin is in fact being scaled to zero by a static obstacle. In the torque launch both flags are on and the field is then correct, because the two branches compute the same $w_g$ from the same $v_o$; the caveat bites only in a configuration that enables one and not the other. `hunc=` and `hlat=` are both post-gate, so the subtraction they report is always the real one.
+
+The reset discipline differs between these two groups, and the difference is visible in a log. The `diag_ga*` fields are declared in `ConstraintBuilder.__init__` **and** zeroed at the top of `build()`, like the `diag_tan*` group; the node then rewrites them on every QP tick on which `enable_go_around` is set, including the fading ticks. `diag_gate_w` is set only in `build()` and has no `__init__` declaration, which is why `format_cbf_diag` reads it through `getattr(..., 1.0)` — a line emitted before the first successful rebuild prints the neutral `1.00` rather than raising. Since `build()` runs at 50 Hz and the QP at 300 Hz in a different callback group, a rebuild landing between two QP ticks can also make one line report `ga=0.000` for a tick on which the bias was in fact nonzero. These are diagnostic-integrity properties, not control properties, but they decide whether a CBFDIAG trace can be used as evidence about either mechanism. `rtd_debug.py` contains wall-time stage statistics, frame traces, heartbeat/freeze checks, queue/memory monitoring and thread dumps; these are not formal timing bounds.
 
 `ExperimentLogger._write_manifest` writes an `experiment_log/2` schema manifest with git revision/dirty flag, sampled topics, rate and TCP identity. It does not freeze all source contents and all live ROS parameter overrides. A bag/manifest alone can therefore be insufficient to reconstruct a dirty experimental run; the logger does not take a complete per-node source/parameter snapshot.
 
@@ -2655,7 +2886,7 @@ The exact YAML snapshots and key inventory are in Chapter 15. The table below su
 
 | Parameter family / keys | Meaning, units, use and established or expected effect |
 |---|---|
-| `d_safe` | m; subtracted from wire surface gap in `ConstraintBuilder.build`. Increasing it shifts every obstacle barrier inward by that amount and changes zone boundaries and obstacle speed-cap scale. Larger demand may increase slack or conflict with comfort/state rows. |
+| `d_safe` | m; subtracted from the wire surface gap in `ConstraintBuilder.build` ($h_{\rm raw}=d-d_s$). It is the single most coupled number in the configuration, and **it was lowered from 0.15 to 0.10 m on 1 November 2026**. Changing it moves, simultaneously: every obstacle barrier (by the difference); all four zone-ladder boundaries and the blend width, which are multiples of it (Chapter 7.7), hence the gap at which the task is attenuated and suspended; the obstacle link-speed blind time $T_{\rm obs}=d_s/V_{d_s}$ and therefore the speed permitted at a given clearance (8.17); and the ISO floor check, which refuses to start with `iso_enabled` when $d_s<C+Z_d+Z_r$ (Chapter 10.4 — it already refused at 0.15 and still refuses at 0.10). It does **not** move `retreat_cap_engage_gap`, `cbf_tangential_engage_margin` or `go_around_engage_margin`, which are absolute metres; lowering $d_s$ therefore widens the ratio between those engagement distances and the barrier. Larger $d_s$ may increase slack or conflict with comfort/state rows; smaller $d_s$ trades measured clearance for workspace and, through (8.17), for speed. |
 | `k0_cbf,k1_cbf` | s$^{-2}$, s$^{-1}$; coefficients of $h,\dot h$ in the acceleration row. Their polynomial is $\lambda^2+k_1\lambda+k_0$. Positive coefficients stabilize the associated equality, but do not alone prove invariance with soft rows, sampling, uncertain dynamics or invalid initial HOCBF state. |
 | `rho_slack*` | Six positive numerical penalties in (9.2); larger penalty discourages that family's shared worst violation and can worsen conditioning. Finite penalties allow violations and do not establish strict priorities. |
 | `cbf_obstacle_horizon,min_confidence,cbf_min_leverage` | m, dimensionless score, point-Jacobian row norm; filters in `ConstraintBuilder`. Raising horizon includes earlier/farther rows; raising confidence/leverage thresholds removes rows. Leverage depends on units and geometry. Removal reduces computation but also coverage. |
@@ -2689,6 +2920,8 @@ The exact YAML snapshots and key inventory are in Chapter 15. The table below su
 | `retreat_cap_*` / `retreat_excess_speed_max` | Speeds m/s, depth gain s$^{-1}$, obstacle gain dimensionless, gap m, horizon s. (8.14)–(8.15) cap retreat; excess-speed setting floors the negative barrier in only the $k_0h$ term. That floor weakens recovery at deep penetration rather than preserving the original HOCBF. |
 | `link_speed_rows_enabled,link_speed_max,link_speed_reaction_s,link_speed_v_at_d_safe,link_speed_horizon_s,link_speed_activate_frac` | Gate; m/s; s; m/s; s; fraction. Clearance-to-speed slope and directional future-speed approximation, (8.16)–(8.18). Tightening these can conflict with rapid collision escape. |
 | `state_governor_enabled,state_governor_directional,governor_qdot_band,governor_sigma_band,governor_sc_band,governor_resume_s,governor_envelope_margin` | Gates; rad/s, scaled singular value, m, s, fraction. Objective governor in `state_governor.py`, not new hard constraints. Larger bands suppress activity earlier; longer resume delays task recovery. |
+| `margin_gate_on_approach,margin_gate_ref_speed` | Gate; m/s. Scales `uncertainty_margin` and `latency_compensation_terms` by $S(\min(v_o/v_{\rm ref},1))$, (7.15a). Raising $v_{\rm ref}$ demands a faster approach before either margin applies, i.e. a *looser* barrier for slow obstacles; lowering it toward zero recovers the pre-1-November always-on behaviour. Remember that $v_o$ is already deadbanded by `obstacle_velocity_track_deadband`, so the effective raw closing speed for full margin is roughly the sum of the two keys. Affects no other margin and no row coefficient. |
+| `enable_go_around,go_around_engage_margin,go_around_speed,go_around_gain,go_around_max_accel,go_around_max_bias,go_around_horizon_s,go_around_damping,go_around_turn_tau,go_around_release_factor,go_around_max_jerk,go_around_push_cut` | Gate; m on the **conditioned** $\bar h$; m/s slide speed; s$^{-1}$ loop gain; m/s² Cartesian cap; rad/s² joint-bias norm cap; s look-ahead; m DLS damping; s side-turn constant; dimensionless release ratio; rad/s³ bias slew; fraction of the inward task push removed. Chapter 9.3 derives (9.10a)–(9.10f). `go_around_speed` and `go_around_gain` set the loop's target and its $1/k_g=0.333$ s time constant; `go_around_max_jerk` is the binding smoother at $0.0333$ rad/s² per 300 Hz tick and also sets the fade-out time after perception loss. Raising the gain past about 8 reproduced a ~2 Hz limit cycle on the recorded configuration. Objective-only: none of these can relax a row, and all of them can cost tracking error. |
 | `cbf_tangential_gain,cbf_tangential_engage_margin,cbf_tangential_filter_alpha,cbf_tangential_max_bias` | Dimensionless amplification, m, reference-rate old retention, rad/s² norm cap. `tangential_bias` changes objective direction; it can increase excursions around an obstacle. The gain carries its own source caveat — `0.5`, “halved from the v1 default … still UNTUNED, re-validate” — and until 30 October 2026 there was no log field to tune it against; the `tan`/`ntan`/`tanrow`/`tanmix` fields of Chapter 12.1 are now that evidence. Note that raising the gain cannot make the mechanism act where $Q_iu_{\rm nom}$ has vanished (Chapter 9.3); in that regime it amplifies the drift fallback instead. |
 | `enable_lateral_evasion,lateral_evasion_gain,lateral_evasion_max_bias,lateral_evasion_authority,lateral_evasion_engage_ratio,lateral_evasion_v_min` | Gate; rad/s² amplitude and cap; authority fraction; stopping-distance ratio; m/s direction threshold. Larger urgency/gain favors sideways acceleration, with no independent trajectory/constraint proof. |
 | `enable_outrun_evasion,outrun_evasion_margin,outrun_evasion_ramp_start,outrun_evasion_accel,outrun_evasion_gain,outrun_evasion_v_ref,outrun_evasion_v_min,outrun_evasion_max_bias,outrun_evasion_filter_alpha,outrun_evasion_engage_gap,outrun_evasion_v_avail_floor` | Gate; fractions; m/s² task acceleration; gain; m/s scales; rad/s² joint norm cap; retention; m gap; m/s support floor. Equations (9.12)–(9.13). Disabled in bare launch. |
@@ -2726,8 +2959,8 @@ All following keys are under [fr3_complete.yaml](../config/fr3_complete.yaml); v
 | `tracking.enabled` | Enables cluster-track annotation. Bare YAML false, torque launch true. Distances can exist without tracks. |
 | `tracking.cluster_voxel_m,cluster_min_points,cluster_depth_jump_m,cluster_max_radius_m,max_clusters,cluster_contains_tol_m` | m, count, m, m, count, m; downsampling, connectivity, shape rejection and surface-to-cluster matching, Chapters 5.1 and 5.4. More aggressive rejection removes track evidence without necessarily removing geometry rows. |
 | `tracking.q_jerk,sigma_meas_m,sigma_v0` | White-jerk covariance intensity (state process model; m²/s⁵), measurement standard deviation m, initial velocity standard deviation m/s. Greater process intensity increases responsiveness/covariance; greater measurement noise reduces trust in each position update. Covariance is a model estimate, not automatically calibrated uncertainty. |
-| `tracking.gate_mahalanobis,gate_max_m` | Dimensionless innovation-distance gate and m Euclidean cap. Wider gates reduce track fragmentation but increase wrong associations. The implemented sorted-greedy assignment remains one-to-one; it is not Hungarian optimization. |
-| `tracking.max_tracks,evict_stale_tentative,confirm_window_s,confirm_hits_frac,max_coast_s` | Count, gate, s, fraction, s. Capacity/birth/death policies; longer confirmation delays motion evidence, longer coasting preserves identity but can retain stale hypotheses. |
+| `tracking.gate_mahalanobis,gate_max_m` | Dimensionless innovation-distance gate and m Euclidean cap. Wider gates reduce track fragmentation but increase wrong associations. The implemented sorted-greedy assignment remains one-to-one; it is not Hungarian optimization. These two gates are **not independent of the coast**: the Euclidean cap was derived as one coast of limb travel and has not been re-derived since `max_coast_s` quadrupled, while the Mahalanobis gate loosens by construction as a coasted covariance grows under (5.5). Chapters 5.4 and 13.1 state the consequence. |
+| `tracking.max_tracks,evict_stale_tentative,confirm_window_s,confirm_hits_frac,max_coast_s` | Count, gate, s, fraction, s. Capacity/birth/death policies; longer confirmation delays motion evidence, longer coasting preserves identity but can retain stale hypotheses. `max_coast_s` moved 0.167 → 0.8 s on 1 November 2026 to survive the interval an obstacle spends inside the robot exclusion mask; Chapter 5.4 carries the comparison that motivated it and the two obligations it leaves open. Lengthening the coast trades identity continuity against the age of the hypothesis a surviving track carries: the row itself still comes from this frame's depth pixels, but at 0.8 s the velocity, covariance and maturity annotating it may have been propagated through most of a second with no measurement. |
 | `tracking.imm_enabled,imm_ballistic_sigma_a0,imm_gravity_mps2,imm_mode_transition_stay_prob,imm_initial_mode_prob` | Gate; m/s² initial sigma; gravity vector m/s²; probabilities. They specify model priors/mixing, not a hard ballistic acceleration during all predictions. Stay probability close to one resists rapid mode changes. |
 | `tracking.self_detection.enabled,window_s,motion_min_m,offset_tol_m,confirm_s,release_s` | Gate, s, m, m, s, s; near-rigid robot/track offset evidence. Motion threshold avoids inferring attachment from a stationary robot; annotation rejection does not delete the safety distance row. |
 | `tracking.calibration_check.enabled,period_s,baseline_m,tolerance_m` | Gate, s, m or null, m; depth-vs-model residual diagnostic. Null baseline does not supply a calibrated correction. This check warns, rather than fitting a new extrinsic transform inside the safety loop. |
@@ -2800,7 +3033,7 @@ u_{\rm nom}=J^\#(a_*-\dot J\dot q)-6(I_7-J^\#J)\dot q.
 \tag{12.13}
 $$
 
-To obtain the DLS solution, minimize $\tfrac12\|Ju-(a_*-\dot J\dot q)\|^2+\tfrac12\lambda^2\|u\|^2$; its stationary equation $(J^\top J+\lambda^2I_7)u=J^\top(a_*-\dot J\dot q)$ yields the equivalent $J^\#$ form. With translational $J$ in m/rad, $\lambda=0.05$ has the same numerical length-per-angle scale; this is a regularized task least-squares construction, not a dimensionless physical stiffness. Null damping coefficient 6 has units s$^{-1}$. For nonzero damping $I-J^\#J$ is not an exact nullspace projector, so the damping can affect task acceleration. `FlangeKinematics` passes the frame origin itself to `point_jacobian`; its offset $r=0$ avoids the rotating-offset omission for this **nominal flange** task. That does not fix interpolated obstacle rows.
+To obtain the DLS solution, minimize $\tfrac12\|Ju-(a_*-\dot J\dot q)\|^2+\tfrac12\lambda^2\|u\|^2$; its stationary equation $(J^\top J+\lambda^2I_7)u=J^\top(a_*-\dot J\dot q)$ yields the equivalent $J^\#$ form. With translational $J$ in m/rad, $\lambda=0.05$ has the same numerical length-per-angle scale; this is a regularized task least-squares construction, not a dimensionless physical stiffness. Null damping coefficient 6 has units s$^{-1}$. For nonzero damping $I-J^\#J$ is not an exact nullspace projector, so the damping can affect task acceleration. `FlangeKinematics` passes the frame origin itself to `point_jacobian`; its offset $r=0$ is a frame-origin task and needs no offset transport contribution. Its generic helper now includes that contribution for nonzero rigid offsets too. The main interpolated obstacle rows are corrected separately through the configured-point callback.
 
 There is no commander's local stale-state rejection or local acceleration clipping in this scenario law: it can continue republishing a command computed from its cached state. The ordinary CBF's independent state/nominal freshness checks and acceleration box remain downstream. Cartesian traces are published only for Cartesian scenarios. This law must not be confused with the six-dimensional path tracking of Chapter 6.
 
@@ -2818,6 +3051,10 @@ $$
 $$
 
 $c_0,v_0,g_o\in\mathbb R^3$ have units m, m/s, m/s², $A$ is metres, $a$ a normalized direction and $T>0$ seconds. The default ballistic gravity is $[0,0,-9.81]^\top$ m/s², a **scenario** value distinct from the effort plugin's $-9.8$ gravity. Ballistic expressions follow by integrating constant acceleration twice; oscillatory velocity follows by differentiating the sine. The plugin rejects a zero axis/nonpositive period for oscillation and unknown laws.
+
+Three `pentagon:` scenarios were added on 31 October and 1 November 2026 and are worth naming, because they change what the harness can exercise rather than only adding cells. `pentagon_sweep` replaces the pursuit ball in the multi-pass role: pursuit converges onto the flange and then rides with it, which reads as a ball stuck to the end effector and keeps the same control point closest for the whole episode, whereas the sweep runs a 6 cm ball along a fixed diagonal through the workspace every 10 s at a 0.314 m/s peak, so one pass travels past the forearm and up to the wrist and the **closest control point changes during the run**. That is the input the per-label state of Chapters 7.4–7.6 — the barrier EMA, the uncertainty EMA, the standoff EMA, the identity and normal guards — is keyed on, and a scenario that never changes label does not test any of it. `pentagon_multi_static` and `pentagon_multi_mixed` are the first scenarios with **two** spheres, which is what `multi_obstacle_k=2` and the 24-row extras budget of Chapter 4.7 were written for and what the single-row go-around of Chapter 9.3 is least equipped for. Note that the `oscillate` law was unreachable from the Python side until commit `2d87ab6`: `resolve()` dropped `axis`, `amplitude` and `period` when building the obstacle spec, so a scenario naming it would have produced a stationary ball at $p_0$, and `obstacle_laws` raised on the name. Both sides are wired now, with the Python mirror normalizing the axis as the plugin's `Configure` does — so a pre-`2d87ab6` run of an oscillating scenario is not comparable with a current one.
+
+A **GUI-only safety halo** was added to `gz_world.py` at the same time. `FR3_SAFETY_HALO=<metres>` draws a translucent shell of radius $R_j+$ that value around every obstacle — the region the barrier is holding clear — for screen recordings and demonstrations. It is made invisible to the depth sensor by Gazebo's visibility mechanism rather than by a perception-side filter: the halo visual carries `visibility_flags = 1` and `configure_world` writes `visibility_mask = 0xFFFFFFFF ^ 1` into the depth camera, and Gazebo renders a visual for a camera only when the bitwise AND is nonzero. Perception, clustering, tracking and every derived metric are therefore byte-identical with the halo on and off, which is the property that makes it admissible in a figure at all; the environment variable is unset in every batch run. The claim rests on that one bit, so a change to either constant, or a renderer that ignores the mask, would silently turn a presentation overlay into a 10 cm obstacle inflation seen only by the camera.
 
 Pursuit uses a different, discrete law. Read the target flange position $p_f$ from Gazebo's entity/component model, form $d=p_f-c_k$, and choose $v_k=Vd/\|d\|$ for $\|d\|>10^{-9}$ m, otherwise zero. Its explicit update is
 
@@ -2873,6 +3110,38 @@ Longer gaps are excluded from rate checks. The label `torque_rate_clipped` recor
 
 **Remaining logger/harness incompatibility.** The launch still sets global `truth_topic=/sim/truth/cp_gaps` and `truth_n_cp=11` for scenarios, but the current [ExperimentLogger](../franka_experiments/nodes/experiment_logger.py) no longer declares/reads those parameters, subscribes to truth or appends truth CSV columns. Its ordinary run manifest remains implemented. The truth node/bag/NPZ provide separate truth artifacts; a single logger row does not now contain that proposed alignment. `test_experiment_logger_truth_off_identical.py` still calls deleted `_truth_fields`/`truth_cb` and expects truth columns, so that test describes an obsolete API. Runtime handling of undeclared launch overrides depends on ROS parameter construction, but there is no executable truth logging path in this logger. No source or test was changed to conceal the mismatch.
 
+**The minimal-vs-full ablation harness.** The experiment behind Chapter 7.8 lives in `franka_simulation_experiments/sim_runs/exp_minimal_vs_full_20261102/`, and the two arms are ordinary `conditions.yaml` entries: **no source file was edited to produce either of them**, and the baseline is reproduced by name rather than by revert. Running it needs two blocks that conditions could not previously express, because `test_conditions.py` pins the *global* `cbf:` block to `launch_defaults.yaml` — the Gazebo default must be what a bare hardware launch runs, so an arm defined by running different flags cannot express itself there. `resolve()` therefore accepts, per condition:
+
+* `cbf:` — overrides the global flag block key by key, and **raises** on a key the global block does not already define, so a misspelt flag cannot become a silently dead override that reads exactly like a live one;
+* `cbf_params:` — `fr3_control.yaml` keys with no launch argument at all, emitted as the single `cbf_param_overrides` argument of Chapter 1.2 and handed to `cbf_safety_filter` as ordinary ROS parameters, so the installed YAML is never edited and the next run is unaffected.
+
+Precedence runs global `cbf:` < condition `cbf:` < `--set`, and both blocks land in `toggles`, so `run_manifest.json` records the whole arm. `params_arg` sorts keys, which makes the override string, the cell name and the manifest stable. Neither block, nor the launch-side parser, is covered by any test; `test_conditions.py` still checks only the four original conditions. The batch additionally snapshots `config/arms_resolved.json` — the exact launch arguments, ROS overrides, resolved perception and dirty-tree state each arm ran with — which is the artifact to read rather than the YAML, because the YAML will move.
+
+The design is six scenarios $\times$ two arms $\times$ three seeds $=36$ cells, at one obstacle class per row of the scenario table above plus the two new two-sphere scenes. Both arms sit on the same `kf` perception stack (cluster + constant-velocity `KalmanTrack`, `obstacle_velocity_source: tracker`, IMM and prediction off), the same scene, the same commander and the same seeds; `enable_go_around` is `false` in **both**, since it is the newest mechanism and the one with no A/B evidence, so leaving it on would confound the barrier comparison with it.
+
+**Status, and why the batch cannot yet be read as a result.** As of this audit the batch is **incomplete**: `batch.log` records 18 of 36 cells and ends in `Terminated` — the run was killed during the nineteenth, whose directory exists with no `cell_result.json` in it. `cells.csv` holds those 18 rows, of which 17 scored; `approach_hold__full__gz__s1` timed out after 411 s and is the one `ok=False`. Only **eight scenario/seed pairs** therefore have both arms. `score_extra.py` (CBF activation fraction, deviation from nominal, joint and EE speed), `make_plots.py` and `make_videos.py` have not been run: there is no `metrics.csv`, no `summary.md` and `plots/` and `videos/` are empty.
+
+**The experimental control on the QP rate did not hold.** `qp_rate_hz` is pinned to 100.0 in both arms precisely because the loop is compute-bound and the complete framework builds roughly twice the rows, so the two arms would otherwise miss a 300 Hz target by different amounts. `run_gz_scenarios.py` gained `--filter-cpu` for the same reason. This batch was launched without it, and the pin on the *target* did not produce a common *achieved* rate:
+
+| Scenario, seed | QP rate, `full` | QP rate, `minimal` | $\min h$, `full` | $\min h$, `minimal` | $h<0$ duration, `full` | `minimal` |
+|---|---:|---:|---:|---:|---:|---:|
+| `pentagon_on_path` s0 | 91.2 Hz | 99.9 Hz | $+0.010$ | $-0.018$ | 0.00 s | 2.02 s |
+| `pentagon_on_path` s1 | 43.1 Hz | 98.3 Hz | $+0.008$ | $-0.038$ | 0.00 s | 2.81 s |
+| `pentagon_multi_static` s0 | 88.6 Hz | 99.9 Hz | $-0.004$ | $-0.076$ | 0.26 s | 9.73 s |
+| `pentagon_multi_static` s1 | 31.3 Hz | 99.7 Hz | $-0.011$ | $-0.073$ | 0.91 s | 9.19 s |
+| `pentagon_multi_mixed` s0 | 75.8 Hz | 100.0 Hz | $+0.014$ | $-0.018$ | 0.00 s | 2.26 s |
+| `approach_hold` s0 | 52.6 Hz | 100.0 Hz | $-0.031$ | $-0.040$ | 0.72 s | 0.81 s |
+| `pentagon_crossing` s0 | 58.6 Hz | 99.8 Hz | $-0.175$ † | $-0.015$ | 1.30 s | 0.52 s |
+| `pentagon_pursuer` s0 | 34.6 Hz | 99.8 Hz | $-0.166$ † | $-0.177$ † | 3.71 s | 9.67 s |
+
+$\min h$ is metres of true surface gap **beyond** $d_s$, as Chapter 5.4 and `simexp/closed_loop.py` define it, so a negative value is an incursion into the barrier and † marks the three cells that reached `contact` (true gap below zero). The contamination is not symmetric and its direction must be tracked term by term:
+
+* **Clearance.** The complete framework ran at a third to a half of the minimal arm's rate and still held more clearance in **seven of the eight** pairs, the exception being `pentagon_crossing`, where it was worse by 16 cm. A lower control rate can only hurt the arm that suffers it, so the clearance ordering is *conservative* — it understates the complete framework.
+* **Smoothness and the reflex monitor.** These are contaminated in the opposite direction and are not interpretable at all. `jerk_p99` is $\|\Delta\ddot q_{\rm safe}\|/\Delta t$ and the slew box bounds the numerator at `max_qddot_delta` $=0.5$ rad/s² per **tick**, so a slower arm reports a mechanically smaller jerk from the same constant. The three `full` cells that failed the reflex monitor — `pentagon_on_path` s1, `pentagon_multi_static` s1 and `pentagon_pursuer` s0, with 105, 112 and 61 trips — are the three slowest cells in the whole batch (43.1, 31.3, 34.6 Hz), and their torque-rate clip counts (249, 452, 252 against the minimal arm's 16, 100, 25) are what sparse command updates look like to a 1 kHz plant.
+* **Slack.** Not comparable across arms at all, for the reason given in Chapter 7.8: `slack_obs` prices a conditioned barrier on one side and a geometric one on the other. The numbers reflect that: on the two-sphere scenes `full` reports `slack_obs` between 5.3 and 5.6 where `minimal` reports 0.33 to 0.85, while on `pentagon_on_path` and `pentagon_pursuer` the ordering is the other way round. Reading either ordering as "this arm violated more" is a category error.
+
+What the eight pairs therefore support is narrow and worth stating as such: with one obstacle on the path or two balls in the scene, the minimal barrier of (7.26) spent seconds inside $d_s$ where the complete framework spent fractions of a second or none, and on a crossing obstacle the ordering reversed. They do not support a claim about smoothness, about intervention frequency, or about any scenario at more than two seeds: only `pentagon_on_path` and `pentagon_multi_static` have two paired seeds, and `approach_hold`, `pentagon_crossing`, `pentagon_multi_mixed` and `pentagon_pursuer` have one each. Completing the batch, and completing it with `--filter-cpu`, is what would turn this into evidence. Note finally that `--filter-cpu` is deliberately absent from `cell_name()` — it is a harness setting, the same for every cell — so re-running a batch into the *same* directory with pinning on returns the cached unpinned cells rather than re-running them; a pinned repeat needs a fresh `--batch-dir`.
+
 The newly audited simulation parameters with direct mathematical effects are summarized here; scene/scenario values are resolved per run rather than universal hardware defaults:
 
 | Parameter/source | Default or configured value | Units and effect |
@@ -2888,7 +3157,7 @@ The newly audited simulation parameters with direct mathematical effects are sum
 | Supervisor `warmup_s,start_lead_s` | 2, 0.25 | s of simulation time; continuous message readiness and start announcement lead |
 | Supervisor `duration_s,start_offset_s` | Scenario/launch value; seeded offset | s; episode duration and phase offset, not dynamics gains |
 | Reflex `rate_max,vel_tol,max_gap_s` | 999.999, 0.001, 0.0025 | N·m/s, rad/s, s; passive event classification and admissible differencing interval |
-| `filter_cpu`, `rt_pin_cpu` in this composition | Empty | Host affinity requests disabled unless explicitly selected; not a mathematical clock rate |
+| `filter_cpu`, `rt_pin_cpu` in this composition | Empty | Host affinity requests disabled unless explicitly selected; not a mathematical clock rate. `run_gz_scenarios.py --filter-cpu <n>` sets `filter_cpu` for every cell of a batch, to stop a compute-bound QP loop turning a row-count difference into a rate difference |
 
 ## 13. Technical assessment and verification limits
 
@@ -2898,9 +3167,9 @@ These findings follow from current executable source. “Potential” identifies
 
 | Finding | Evidence | Mathematical/practical consequence |
 |---|---|---|
-| Python dynamics conversion does not establish full $M$ or $C\dot q$ | `QddotToTorqueNode._compute_tau`; local Pinocchio `compute-all-terms.hxx` / `data.hxx` | Stored upper-triangular mass data and uncomputed `C` can invalidate $\ddot q=u$. Same issue affects old torque nominal and OSCBF's model inverse. |
-| Incomplete rigid-offset Jacobian derivative | `CBFKinematics.point_jacobian` and OSCBF obstacle helper | Missing $-[\omega\times r]_\times J_\omega$; angular motion of an offset can create unmodeled drift. |
-| Six configured control points have an incorrect end-joint Jacobian column | `define_control_points` versus `ConstraintBuilder.build → point_jacobian(fid,ob.pr)`; (2.7a)–(2.7b) and finite differences | Interpolated origins are treated as a point fixed to the end link. Measured formula errors are 0.0275–0.0587 m/rad, so the QP can assign separating authority to a joint that does not move that point. |
+| Python dynamics velocity torque restored | `QddotToTorqueNode._compute_tau`, `PentagonTorqueCommander`, `_RobotDynamics.update`; §15.11 | Current callers use `nle - g`. The converter agrees with RNEA minus gravity to $4.458\times10^{-14}$ N·m over 54 states, versus 3.554182 N·m maximum earlier error. Full symmetric mass storage is verified for ROS Pinocchio 4.0.0. |
+| Rigid-offset derivative corrected in the shared helper; separate OSCBF omission remains | `CBFKinematics.point_jacobian`; §2.3 and the distinct OSCBF obstacle helper | The main helper now includes $-[\omega\times r]_\times J_\omega$ and passes FD/classical-acceleration checks. OSCBF's independently implemented obstacle derivative was not migrated. |
+| Six-point interpolation mismatch corrected in the main CBF and optional ISO consumers | `configure_control_points` / `control_point_jacobian` → builder callback; (2.7) | Legacy 0.0275–0.0587 m/rad false columns on links 4/5/7 are eliminated. All eleven samples match position FD to $2.741\times10^{-10}$ m/rad. The older velocity alternative still uses end-frame offsets. |
 | Barrier is not the exact smooth distance function differentiated by the row | `DistanceEngine`, h recovery/margins, `build_row_rhs` | Radius/image dilation, zero clipping, nearest-pixel switches and dynamic margins have omitted derivatives. Standard smooth HOCBF invariance cannot be invoked wholesale. |
 | HOCBF omits normal and obstacle-acceleration drift | `ConstraintBuilder.build`, (7.7) | Missing normal term is locally nonnegative for a fixed exact point pair; missing obstacle acceleration and other geometry terms have no generally conservative sign. |
 | State envelope can lose to slew continuity | `apply_slew_limit` after `position_velocity_accel_box` | In a disjoint case final box leaves the state-derived interval, postponing required braking. |
@@ -2919,7 +3188,13 @@ These findings follow from current executable source. “Potential” identifies
 | Raw tracker velocity can bypass ordinary denoising | Signed `v_hdot` branch and latency prediction | Median/deadband protection of one scalar does not imply every barrier tightening is filtered. |
 | Kalman covariance is not an empirical coverage guarantee | Isotropic measurement model, jerk prior, association/IMM | $k\sigma$ margins are model-based; occlusion, wrong association, self returns and changing visible surfaces can be strongly non-Gaussian. |
 | Velocity diagnostic is updated before its advertised final filtering | `ConstraintBuilder.build`, `diag_v_obs` assignment before `_obs_vmed` | Status index 9 is not a reliable exact log of the post-median scalar consumed by every margin/cap. |
-| Policy auto-discovery retains an old directory name, and the parity tests skip because of it | `find_sim_root` searches `franka_sim`; current source directory is `franka_rl`; `test_rl_policy.py` skip guards all route through the same helper | Empty model defaults can fail to find the existing sibling training checkout; use explicit paths to identify a policy. The quieter consequence is that **9 of 44 tests in `test_rl_policy.py` skip rather than run** — the observation-layout mirror, the `ObsSpec`-from-config check, three `franka_sim`↔`fr3_control.yaml` configuration-mirror tests, the shield-parity classification and the commander smoke test. The checks meant to catch training/deployment contract drift report `skipped`, not `failed`. `franka_rl/` already holds `config.yaml`, `envs/obs_layout.py`, `export_onnx.py` and `models/` at the expected relative paths, so only the directory name differs; the parity it would assert currently holds by hand (`d_safe: 0.15` and identical `joint_limits` rows on both sides) but is machine-unverified. |
+| Policy auto-discovery retains an old directory name, and the parity tests skip because of it | `find_sim_root` searches `franka_sim`; current source directory is `franka_rl`; `test_rl_policy.py` skip guards all route through the same helper | Empty model defaults can fail to find the existing sibling training checkout; use explicit paths to identify a policy. The quieter consequence is that **9 of 44 tests in `test_rl_policy.py` skip rather than run** — the observation-layout mirror, the `ObsSpec`-from-config check, three `franka_sim`↔`fr3_control.yaml` configuration-mirror tests, the shield-parity classification and the commander smoke test. The checks meant to catch training/deployment contract drift report `skipped`, not `failed`. `franka_rl/` already holds `config.yaml`, `envs/obs_layout.py`, `export_onnx.py` and `models/` at the expected relative paths, so only the directory name differs. **As of 1 November 2026 the parity no longer holds, and the silence is the point:** `config/fr3_control.yaml` now carries `d_safe: 0.10` while `franka_rl/config.yaml` still carries `0.15`, so the deployed barrier stands 5 cm closer than the one every exported policy was trained against — and the three configuration-mirror tests written to catch exactly this report `skipped`. The divergence is real but its consequence is not established here: whether an RL nominal trained at 0.15 m behaves acceptably under a 0.10 m barrier is a runtime question, and the `joint_limits` rows still agree. Renaming the directory, or passing an explicit sim-config path, turns the three skips back into a failing test that names the number. The package's own `SAFETY.md` (deviation D2) reached the same conclusion independently and earlier, which is corroboration rather than a second source. |
+| A shipped-configuration test contradicts the shipped configuration | `test_rate_scaling.py::test_the_shipped_config_states_durations` asserts `max_coast_s == 0.167`; `fr3_complete.yaml` carries `0.8` since 1 November 2026 | The **only other** non-environmental failure in the suite besides the private-attribute one above, and it needs nothing but PyYAML and NumPy, so it fails on any host. The guard exists to stop the duration keys drifting silently; the retune moved the value without moving the guard, so the guard now reports the intended change as a defect and will mask the next unintended one. Either the assertion or the value has to move. |
+| The association gate is no longer sized to the coast it was derived from | `gate_max_m: 0.5` in `fr3_complete.yaml`, justified as one coast of limb travel at `max_coast_s: 0.167`; the coast is now 0.8 s | 0.5 m now corresponds to 0.63 m/s of unobserved travel instead of about 3 m/s. The YAML states the caveat and leaves the value. A track coasted for 0.8 s has, by (5.5), a covariance large enough to make (5.12)'s Mahalanobis admission permissive, so the Euclidean gate is doing more of the work precisely as its own derivation expires. No mis-association appeared in the 72 runs cited, which is evidence and not a bound. |
+| The go-around steers off geometry the filter has already rejected, for up to 0.8 s | `cbf_safety_filter._qp_tick`: `tangential_bias` is hard-gated on `n_c > 0`, `go_around_step` is called unconditionally with `Jp=None` | Both mechanisms fade when perception goes stale or the state freezes, but at very different rates: the tangential EMA decays in about 0.1 s, the go-around bias decays **linearly** at `go_around_max_jerk`$\cdot\Delta t = 0.0333$ rad/s² per tick, i.e. up to 0.8 s from its 8 rad/s² cap. For that interval the published target is a braking command plus a decaying sideways acceleration derived from the last snapshot. It is bounded, monotone and objective-only, so it cannot defeat a row; it nonetheless contradicts the stated principle — written in the source next to the tangential gate — that braking paths stay pure. |
+| The go-around is tangent to one row and checks no other | `ConstraintSnap.around_geom` holds a single $(\bar h,J_p,\hat n,\ell)$; `go_around_step` has no nullspace projection | Unlike the livelock escape, which projects onto the nullspace of up to four nearby rows through (9.14), nothing verifies that sliding along the closest obstacle does not drive the arm into the second-closest, a self-collision pair, or the acceleration box. With `multi_obstacle_k=2`, eleven control points and the new two-sphere scenarios, that configuration is reachable. The QP's only recourse is to refuse the bias, which costs tracking rather than safety. |
+| The approach gate's diagnostic covers one of the two margins it gates | `ConstraintBuilder.build`: `diag_gate_w` is updated inside the `enable_uncertainty_margin` branch only; the latency branch applies the same weight without touching it | With `enable_uncertainty_margin` false and `enable_latency_compensation` true, the CBFDIAG line prints `gate=1.00` while the latency margin is in fact scaled to zero by a static obstacle. Both flags are on in the torque launch, where the field is correct because both branches compute the same $w_g$. `hunc=`/`hlat=` are post-gate and always report the real subtraction. |
+| A covariance margin is now priced against closing speed rather than position uncertainty | `margin_gate_on_approach`, (7.15a) | The gate removes a measured ~6 cm permanent tightening against static obstacles, which is its purpose and a real improvement in workspace. The cost is categorical: a *stationary* obstacle whose position estimate is genuinely poor now receives no covariance margin at all, because the gate reads $v_o$ and not $P_{pp}$. The deadband composition makes the engagement speed roughly 0.30 m/s of raw normal closing, not the 0.15 m/s the key's name suggests. |
 | Recovery quintic does not enforce zero terminal velocity for nonzero initial velocity | `singularity_recovery.quintic_coeffs`, (6.24) | Settling can introduce a reference velocity discontinuity; increasing duration cannot repair the endpoint condition. |
 | Older torque orientation error has sign/frame discrepancy | `PentagonTorqueCommander._tick`, (11.15) | Positive local sine-error feedback differs from restoring world-frame angular feedback. |
 | Runtime feedback changes QP acceleration | `RtTorqueController::update`, (10.7) | A valid $u$ row need not hold for actual joint/Cartesian acceleration. Torque fading is coupled through $M^{-1}$. |
@@ -2946,22 +3221,25 @@ These findings follow from current executable source. “Potential” identifies
 | Calibration node now reads a private rclpy attribute, and the repository's own guard fails | `HandEyeEyeInHandNode.__init__` line 200 uses `self._parameters`; `test_node_self_references` fails on it | `rclpy.node.Node._parameters` is private, so the parameter-snapshot expression is coupled to the installed rclpy build rather than to a public API. This is the **only** non-environmental failure in the whole test suite and is reproducible in one command. The previous form, `get_parameters_by_prefix('')`, was public. |
 | `motion_source:=none` is accepted but undocumented, and does not gate MoveIt | `torque_control_stack.launch.py`: validator accepts three values, `DeclareLaunchArgument` help text lists two; `start_move_group` evaluated independently of `motion_source` | Behaviour is correct — the `else` branch builds a `pentagon_qddot_commander` description for `none` as well, and it is simply never appended to `actions`, so the discarded object is inert. But the argument is discoverable only from the source, and with `motion_source:=none` plus default arguments `move_group` still starts while the "does not use move_group" advisory fires only for `rl`. The Gazebo composition is unaffected: `gz_cbf_stack.launch.py` passes `start_move_group:='false'`. |
 | Retained joint-limit table's effort column contradicts the robot description | `fr3_control.yaml` `joint_limits:` column 5 is `500.0` for all seven joints; `franka_description/robots/fr3/joint_limits.yaml` gives 87 N·m (joints 1–4) and 12 N·m (joints 5–7) | No active consumer enforces the column — `cbf_OSCBF_filter` takes `tau_max` from `oscbf_params.yaml`, which carries the correct `[87,87,87,87,12,12,12]` — so nothing commands 500 N·m. It is still a number in a safety-adjacent table that is roughly 5.7× and 42× the physical limits, and `rl_policy.joint_limits_mismatch` *compares* it: `franka_rl/config.yaml` carries the same `500.0`, so the two agree with each other while both disagree with the robot, and a sim config corrected to the physical limits would be reported as the mismatch. |
+| The two ablation arms did not run at the same control rate | `sim_runs/exp_minimal_vs_full_20261102/cells.csv`, `qp_rate_hz`: `full` achieved 31.3–91.2 Hz against `minimal`'s 98.3–100.0 Hz, with both arms pinned to the same 100 Hz target | The condition definition names the rate an experimental control and the harness gained `--filter-cpu` to enforce it, but the batch was launched without pinning, so the control did not hold. Every rate-derived metric is contaminated in a known direction: `jerk_p99` scales as $1/\Delta t$ because the slew box bounds the numerator per tick, and the three `full` cells that failed the reflex monitor are the three slowest cells in the batch. Clearance is the one metric whose contamination runs *against* the complete framework, so the $\min h$ ordering of Chapter 12.7 is conservative; the smoothness and reflex comparison is not interpretable. |
+| Two of the terms the ablation removes are already off in the baseline | `fr3_control.yaml` carries `enable_velocity_feedforward: false` and `enable_sensor_range_uncertainty: false`; no launch file sets either; `config/arms_resolved.json` shows `minimal` overriding both to `false` | The quadratic braking margin and the sensor-range margin are in neither arm, so (7.11) has three live tightening terms rather than five on both sides and those two overrides are no-ops. What each arm runs is unaffected; what the comparison can be said to be *about* is. |
+| The new parameter route into the safety filter has no test | `_cbf_param_overrides` in `torque_control_stack.launch.py`, and `params_arg` plus the condition merge in `simexp/conditions.py`, are matched by no assertion in either package's test tree; `test_conditions.py` still checks only the four original conditions | Values are `yaml.safe_load`ed and the node's `declare_from_spec` bounds-checks every key, so a bad override is a refusal to start rather than a silent wrong value — the exposure is small. The unguarded property is the one the launch docstring claims: that an empty override leaves the parameter list byte-identical. Its only guard is the golden snapshot of `test_torque_stack_external_plant_off_identical.py`, which cannot be collected without `launch` and is one of the 13 collection errors of §15.10.3. |
 
-The first three findings are especially relevant to a PhD defense: they distinguish the mathematical robot used in the derivation from the actual quantities computed in code. A defensible statement is that the framework implements a useful sampled, softened acceleration safety heuristic with substantial perception/actuation safeguards; the source alone does not establish exact whole-body forward invariance for the physical FR3.
+The first three rows record the corrected main-path kinematics and dynamics while identifying separate legacy kinematic implementations. They distinguish the mathematical robot used in a derivation from the quantities actually computed in code. A defensible statement is that the framework implements a useful sampled, softened acceleration safety heuristic with substantial perception/actuation safeguards; the source alone does not establish exact whole-body forward invariance for the physical FR3.
 
 ### 13.2 What static analysis cannot determine
 
 The checkout cannot establish actual extrinsic accuracy, depth noise distribution, USB/driver FPS, installed-model equivalence, payload/inertia correctness, network/RT scheduling reliability, physical collision clearance between samples, or achieved acceleration/stopping authority. It also cannot establish that a ROS installation launches the same dirty source as this checkout. Existing experimental numbers in reports/papers are historical claims unless reproduced against identified logs and configuration; they were not silently promoted to verified runtime facts here.
 
-The local library inspection is deliberately version-qualified. The Python environment used for this audit has no Pinocchio binding and no ROS installation, while local C++ Pinocchio headers exist. An actual deployed binding may differ; identifying that version is necessary to resolve the dynamics-storage issue conclusively for a particular run.
+The original host-only audit used local C++ headers without a Python Pinocchio/ROS binding. The 3 November update uses the existing sourced Docker ROS environment and identifies Pinocchio 4.0.0 explicitly. This resolves the mass-storage question for that environment, reproduces the earlier missing velocity torque, and verifies the corrected converter; it does not identify the model, version, payload or execution timing of another deployment.
 
-Two dependency versions in the audit environment are worth recording because they bear on code paths rather than only on test collection. OSQP here is **1.1.1**; `accept_iterate` and `box_only_solve` still work under it (verified by calling the latter directly) but reach `osqp.constant(...)` and `res.info.status_val`, which 1.x reports as `PendingDeprecationWarning: Direct access to osqp status values will be deprecated`, so a release completing that deprecation would break the acceptance ladder of Chapter 9.4. NumPy here is **2.4.2**, in which `np.trapz` was removed; one repository test still calls it. Separately, `qpsolvers` is absent, and the velocity and OSCBF filters need a `qpsolvers`/`osqp` pair that resolves a non-empty `available_solvers`, so neither alternative path was exercised. Chapter 15.9 carries the full environment of record.
+Two dependency versions in the **earlier host-only audit environment** are worth recording because they bear on code paths rather than only on test collection. OSQP here is **1.1.1**; `accept_iterate` and `box_only_solve` still work under it (verified by calling the latter directly) but reach `osqp.constant(...)` and `res.info.status_val`, which 1.x reports as `PendingDeprecationWarning: Direct access to osqp status values will be deprecated`, so a release completing that deprecation would break the acceptance ladder of Chapter 9.4. NumPy here is **2.4.2**, in which `np.trapz` was removed; one repository test still calls it. Separately, `qpsolvers` is absent, and the velocity and OSCBF filters need a `qpsolvers`/`osqp` pair that resolves a non-empty `available_solvers`, so neither alternative path was exercised. Chapter 15.9 carries that historical environment; §15.11 records the newer ROS Python/Pinocchio/OSQP environment.
 
 ### 13.3 Appropriate evidence for validating the implementation
 
-Chapter 2.3 performs this first-derivative comparison for every configured control point using independent NumPy FK. Further validation should repeat it against the installed Pinocchio/TF stream and compare $J_p\dot q$ with the time derivative of the **same** `define_control_points` geometry. Compare $\dot J_p\dot q$ with the derivative along $q(t)=q_0+t\dot q$. At a stable nearest-point correspondence, compare finite-difference gap derivatives to the complete chain-rule expression, then separately quantify nearest-pixel/mask switching. These checks separate geometry mismatch from sensor noise.
+The corrected main point model has now been checked against the actual Pinocchio binding, perception position finite differences and classical acceleration over all eleven samples (§2.3, §15.11). Continue to check the same point function when configuration changes. At a stable nearest-point correspondence, separately compare finite-difference gap derivatives to the complete chain rule and quantify nearest-pixel/mask switching. Correct point derivatives do not make filtered, delayed camera distances an exact smooth barrier.
 
-For dynamics, compare the converter's torque with `rnea(q,v,u)-g(q)`, check mass symmetry explicitly, and compare $C v$ with `nonLinearEffects(q,v)-g(q)` under the exact installed version/model. For execution, record actual final effort/state and verify (10.9), including command/measurement time alignment; software feedforward logs alone are insufficient.
+The current dynamics probe compares the production converter with `rnea(q,v,u)-g(q)`, checks mass symmetry and independent RNEA mass columns, and isolates $C v$ against `nonLinearEffects(q,v)-g(q)`. It verifies the corrected converter under ROS Pinocchio 4.0.0 against an independent inverse-dynamics reference with a $10^{-12}$ N·m tolerance; this documentation task did not change production code. The archived earlier result preserves the missing-$c$ evidence. For execution, record actual final effort/state and verify (10.9), including command/measurement time alignment; software feedforward logs alone are insufficient.
 
 For the QP, independently reconstruct $(P,q,\mathcal A,l,b)$, check family ordering/signs, inspect physical and relaxed residuals at the **published** acceleration, and exercise infeasible/exception/stale/never-received branches. A double-integrator scenario validates the algebra under that plant; it does not validate torque realization. No physical controller or robot was started during this documentation task.
 
@@ -2969,7 +3247,7 @@ For the QP, independently reconstruct $(P,q,\mathcal A,l,b)$, check family order
 
 ### 14.1 Scenario and evidence boundary
 
-Consider the ordinary torque launch: analytic nominal, tracker, signed obstacle velocity, standoff, covariance/latency margins, zone ladder, lateral evasion and livelock enabled; ISO master disabled. Real-hardware controller manager targets 1000 Hz, main QP 300 Hz, geometry builder 50 Hz, and camera requests 90 Hz. The path defaults to a circle centered at $[0.4,0,0.45]$ m, radius $0.25$ m, cycle $6$ s.
+Consider the ordinary torque launch: analytic nominal, tracker, signed obstacle velocity, standoff, covariance/latency margins **with the approach gate of (7.15a)**, zone ladder, lateral evasion, livelock and the go-around of Chapter 9.3 enabled; ISO master disabled. The configuration is the one shipped on 2 November 2026, i.e. $d_{\rm safe}=0.10$ m. Real-hardware controller manager targets 1000 Hz, main QP 300 Hz, geometry builder 50 Hz, and camera requests 90 Hz. The path defaults to a circle centered at $[0.4,0,0.45]$ m, radius $0.25$ m, cycle $6$ s.
 
 **All measured states, image pixels, covariances, Jacobians and scalar command values below are hypothetical.** Only the configuration values are repository values. The example reduces the QP to one effective obstacle row and one nonbinding retreat row to make the optimization exactly reconstructible. It is not a real recorded trial or a numerical verification of an actual FR3 configuration.
 
@@ -2983,7 +3261,7 @@ a_d=P''(s)\dot s^2+P'(s)\ddot s.
 $$
 At full governor scale $\sigma=1$, these are consistent with the unscaled timing signals apart from discrete integration. For $\sigma<1$, use the implementation discrepancy in Chapter 6.4 rather than interpreting them as exact derivatives of the reference position. FK supplies $p,R,J,\dot J$; equations (6.15)–(6.21) form the nominal seven-joint acceleration. Suppose its effective target after startup/governors/biases is $u_{\rm target}=[0.4,0,\ldots,0]$ rad/s² for this tick. Hypothesize state margins are comfortable, no self-collision/joint/singularity row is activated, lateral directions have no effective bias, and no livelock has accumulated. These assumptions isolate the obstacle calculation; normally the target has all the terms in Chapter 9.
 
-At the eventual 0.30 m obstacle gap, the phase governor is outside its full-speed threshold $1.5d_{\rm safe}=0.225$ m, so it requests full nominal phase speed. This does not prevent the derivative-based barrier from activating for a sufficiently fast approach.
+At the eventual 0.30 m obstacle gap, the phase governor is outside its full-speed threshold `governor_r_full`$\cdot d_{\rm safe}=1.5(0.10)=0.15$ m, so it requests full nominal phase speed. This does not prevent the derivative-based barrier from activating for a sufficiently fast approach.
 
 ### 14.3 Depth image, geometry, and tracking
 
@@ -3000,67 +3278,71 @@ With stable history, no residual-floor increase, and no identity/rotation reset,
 
 ### 14.4 Barrier and derivative quantities at rebuild
 
-`CBFSafetyFilter._on_distances` receives the stamped message, parses points/covariances, and checks timestamp plausibility. Assume it is 20 ms old, safely within the plausibility window. `_update_constraints → ConstraintBuilder.build` resolves the frame and computes its **implemented rigid-offset** $J_p,\dot J_{p,\rm code}$.
+`CBFSafetyFilter._on_distances` receives the stamped message, parses points/covariances, and checks timestamp plausibility. Assume it is 20 ms old, safely within the plausibility window. `_update_constraints → ConstraintBuilder.build` resolves the configured label and computes its matching interpolation or rigid-tip $J_p,\dot J_p$ through the callback of Chapter 2.3.
 
 Suppose
 $$
 a=n^\top J_p=[0.5,0,\ldots,0]\ {\rm m/rad},\quad
 a\dot q=a\dot q_{\rm cbf}=0.1\ {\rm m/s},\quad
-c=n^\top\dot J_{p,\rm code}\dot q=0.02\ {\rm m/s^2}.
+c=n^\top\dot J_p\dot q=0.02\ {\rm m/s^2}.
 \tag{14.3}
 $$
 This row passes the leverage floor $0.05$. All smoothers are assumed settled to the stated values.
 
-The raw barrier is $h_{\rm geom}=0.30-0.15=0.15$ m. Velocity standoff is $0.25\ {\rm s}\times0.25\ {\rm m/s}=0.0625$ m. Velocity covariance margin is $2(0.05)(0.2)=0.0200$ m. The fixed 85 ms latency prediction gives
+The raw barrier is $h_{\rm geom}=0.30-0.10=0.20$ m. Velocity standoff is $0.25\ {\rm s}\times0.25\ {\rm m/s}=0.0625$ m.
+
+The two covariance margins are now gated by (7.15a). The conditioned closing speed is $v_o=0.25$ m/s and $v_{\rm ref}=0.15$ m/s, so $\min(v_o/v_{\rm ref},1)=1$ and $w_g=S(1)=1$: **this obstacle is approaching fast enough that the gate is fully open and both margins apply at full size.** The gate is invisible in this tick's arithmetic by construction — it is written for the static case, not this one. The velocity covariance margin is $w_g\cdot2(0.05)(0.2)=0.0200$ m, and the fixed 85 ms latency prediction gives
 $$
 \begin{split}
 \Delta p_n&=0.4(0.085)=0.0340\ {\rm m},\\
 \sigma_{\rm pred}&=\sqrt{0.005^2+0.085^2(0.05)^2}
 =0.00656220\ {\rm m},\\
-m_{\rm latency}&=0.0340+2(0.00656220)=0.0471244\ {\rm m}.
+m_{\rm latency}&=w_g\left[0.0340+2(0.00656220)\right]=0.0471244\ {\rm m}.
 \end{split}
 \tag{14.4}
 $$
 Neither margin reaches its own cap, and the two caps are different numbers: the standoff is bounded by `velocity_standoff_max` $=0.35$ m and the latency prediction by `latency_margin_max` $=0.25$ m. Range-noise and braking/feedforward margins are disabled. Therefore
 $$
-\bar h=0.15-0.0625-0.0200-0.0471244
-=0.0203756\ {\rm m},\qquad
+\bar h=0.20-0.0625-0.0200-0.0471244
+=0.0703756\ {\rm m},\qquad
 \dot h_{\rm used}=0.1-0.4=-0.3\ {\rm m/s}.
 \tag{14.5}
 $$
-The positive raw gap alone would look comfortable; velocity and latency substantially reduce the conditioned margin. The moving obstacle closes faster than the robot separates.
+The positive raw gap alone would look comfortable; velocity and latency remove $0.1296$ m — nearly two-thirds of it — from the conditioned margin. The moving obstacle closes faster than the robot separates.
 
-At $d=0.30>0.225$ m the zone ladder retains notice gains $k_0=12\ {\rm s^{-2}},k_1=7\ {\rm s^{-1}}$, slack multiplier $m=1$. The penetration floor does not apply because $\bar h>0$.
+**The same tick with the obstacle at rest, which is what the gate was added for.** Set $n^\top v_h=0$ and keep every covariance. Then $v_o=0$, so $w_g=0$ and the standoff is zero too, giving $\bar h=h_{\rm geom}=0.20$ m and $\dot h_{\rm used}=+0.1$ m/s; the row's RHS is $7(0.1)+12(0.20)+0.02=+3.12$ m/s², a comfortable positive number demanding nothing. Ungated — the behaviour before 1 November 2026 — the two margins would still have been $0.0200$ m and $2\sqrt{0.005^2+0.085^2(0.05)^2}=0.0131$ m, because a covariance does not vanish when a velocity does, so $\bar h$ would have been $0.1669$ m against a stationary object at a 30 cm gap. At this distance that is merely pessimistic. Closer in it is not: the YAML reports the measured permanent subtraction on hardware as about 6 cm (3.5 cm of $m_{\rm velcov}$, 2.7 cm of $m_{\rm latency}$, both larger than this walkthrough's hypothetical covariances), which drives $\bar h$ negative at any geometric gap below $d_{\rm safe}+0.06$ m and makes $k_0\bar h<0$ command separation from something that is not moving.
+
+At $d=0.30$ m, well outside $d_{\rm notice}=1.5(0.10)=0.15$ m, the zone ladder retains notice gains $k_0=12\ {\rm s^{-2}},k_1=7\ {\rm s^{-1}}$, slack multiplier $m=1$. The penetration floor does not apply because $\bar h>0$. The go-around of Chapter 9.3 **is** engaged on this tick — $\bar h=0.0704$ m is inside its $0.15$ m engage margin — but its contribution is a bias on $u_{\rm target}$ in directions orthogonal to $n$, so it does not enter the scalar reduction below; the example assumes the joint-1 component of that bias is negligible, as it assumes for the lateral and livelock biases.
 
 ### 14.5 QP construction and exact reduced solution
 
 `build_row_rhs` computes
 $$
-r=7(-0.3)+12(0.0203756)+0.02
-=-1.8354929\ {\rm m/s^2}.
+r=7(-0.3)+12(0.0703756)+0.02
+=-1.2354929\ {\rm m/s^2}.
 \tag{14.6}
 $$
 Thus the obstacle inequality in the 13-variable problem is
 $$
--0.5u_1-s_{\rm obs}\le-1.8354929
+-0.5u_1-s_{\rm obs}\le-1.2354929
 \quad\Longleftrightarrow\quad
-0.5u_1+s_{\rm obs}\ge1.8354929.
+0.5u_1+s_{\rm obs}\ge1.2354929.
 \tag{14.7}
 $$
-The hard static joint-1 acceleration ceiling is 6 rad/s². Suppose the current state envelope does not tighten it and the preceding acceleration was 3.5 rad/s². Slew bounds give $3.0\le u_1\le4.0$. This demonstrates a settled avoidance tick, not its first onset from zero.
+The hard static joint-1 acceleration ceiling is 6 rad/s². Suppose the current state envelope does not tighten it and the preceding acceleration was 2.5 rad/s². Slew bounds give $2.0\le u_1\le3.0$. This demonstrates a settled avoidance tick, not its first onset from zero.
 
 The retreat cap is
 $$
-V_r=\min(1.1,0.05+0.25+1.1\,\bar h/0.15)
-=0.4494210\ {\rm m/s}.
+V_r=\min\left(1.1,\ 0.05+0.25+1.1\operatorname{clip}(\bar h/0.15,0,1)\right)
+=0.05+0.25+1.1(0.4691706)=0.8160877\ {\rm m/s}.
 \tag{14.8}
 $$
-It imposes $0.5u_1\le(V_r-0.1)/0.15=2.3294735$ m/s², up to its family slack. The solution below satisfies it without slack. Suppose the point's complete measured speed is only 0.1 m/s; its obstacle speed allowance is capped at 1.3 m/s, so the 50% activation condition creates no point-speed row.
+Its engage gap is the absolute `retreat_cap_engage_gap` $=0.15$ m, not a multiple of $d_{\rm safe}$, which is why the larger $\bar h$ of the new configuration releases this cap substantially further than it did at $d_{\rm safe}=0.15$ m. It imposes $0.5u_1\le(V_r-0.1)/0.15=4.7739180$ m/s², up to its family slack; the solution below satisfies it with a wide margin. Suppose the point's complete measured speed is only 0.1 m/s; its obstacle speed allowance is $\min(1.3,0.30/0.10)=1.3$ m/s, so the 50% activation condition creates no point-speed row.
 
 The effective nonconstant objective is
 $$
 \min_{u_1,s\ge0}\tfrac12(u_1-0.4)^2+\tfrac{1000}{2}s^2,
-\quad 0.5u_1+s\ge B,\quad B=1.8354929.
+\quad 0.5u_1+s\ge B,\quad B=1.2354929.
 \tag{14.9}
 $$
 Without a box-active solution, stationarity on the active row gives
@@ -3069,21 +3351,23 @@ u_1-0.4=1000(0.5)s,\quad s=B-0.5u_1,
 $$
 $$
 u_1^*=\frac{0.4+1000(0.5)B}{1+1000(0.5)^2}
-=3.6579539\ {\rm rad/s^2},\qquad
-s^*=\frac{B-0.5(0.4)}{251}=0.00651591\ {\rm m/s^2}.
+=2.4627348\ {\rm rad/s^2},\qquad
+s^*=\frac{B-0.5(0.4)}{251}=0.00412547\ {\rm m/s^2}.
 \tag{14.10}
 $$
-This lies in the slew/static box and below the retreat acceleration upper bound $4.658947$ rad/s², so the assumed inactive bounds are consistent. Other joints/slacks remain zero under the stated decoupling assumptions.
+This lies in the slew/static box and far below the retreat acceleration upper bound $9.5478360$ rad/s², so the assumed inactive bounds are consistent. Other joints/slacks remain zero under the stated decoupling assumptions.
 
-The raw barrier inequality misses its no-slack requirement by $0.00651591$ m/s² even though the QP is solved exactly. This is the intended consequence of a finite slack penalty. If the previous acceleration were zero, the initial slew interval would instead cap $u_1$ at 0.5 and require much larger obstacle slack; a real avoidance onset cannot instantly jump to the settled solution above.
+The raw barrier inequality misses its no-slack requirement by $0.00412547$ m/s² even though the QP is solved exactly. This is the intended consequence of a finite slack penalty. If the previous acceleration were zero, the initial slew interval would instead cap $u_1$ at 0.5 and require much larger obstacle slack; a real avoidance onset cannot instantly jump to the settled solution above.
+
+**What the 1 November retune did to this tick, isolated.** The only input that changed is $d_{\rm safe}$: $0.15\to0.10$ m adds $0.05$ m to $\bar h$, which at the notice gain $k_0=12$ relaxes the row's demand by $12(0.05)=0.6$ m/s². The commanded joint-1 acceleration falls from $3.658$ to $2.463$ rad/s² and the residual slack from $6.5$ to $4.1$ mm/s² — a third less corrective authority spent at the same measured 30 cm gap, against 5 cm less demanded clearance. That is the trade in one number, and it is the trade the whole retune makes everywhere: the arm works closer and pushes less hard. Whether it is the right trade depends on quantities this walkthrough cannot supply — the real distribution of depth error at that range, and the achieved rather than commanded deceleration of (10.9).
 
 ### 14.6 Publication, torque conversion, and physical execution
 
 `_solve` accepts a finite solved iterate, `_publish` emits the seven accelerations and stores them for the next slew interval, and `_publish_status` reports rows/slack/fault/minimum and velocity diagnostics. A solved tick has no solver fault merely because its positive slack relaxes a barrier.
 
-`QddotToTorqueNode._on_qddot_nom` takes the latest state and computes (10.2), then publishes `torque_cmd`. Numerical torque cannot be supplied without an actual $q,\dot q,M$ and installed library. Hypothesizing an arbitrary diagonal mass would hide the important stored-matrix issue, so this walkthrough leaves that operation symbolic.
+`QddotToTorqueNode._on_qddot_nom` takes the latest state and computes (10.2), then publishes `torque_cmd`. Numerical torque cannot be supplied without an actual $q,\dot q,M$ and installed library. Hypothesizing an arbitrary diagonal mass would hide the actual inertia coupling and nonlinear velocity torque in (10.2), so this walkthrough leaves that operation symbolic.
 
-At the next 1 ms RT period, `RtTorqueController::update` integrates the safe acceleration. With unconstrained references, joint 1's desired speed increment is $3.6579539(0.001)=0.00365795$ rad/s. The C++ controller clamps speed/error/position references, gates the feedforward near the velocity envelope, and adds PD torque. Hardware then applies its own rate-limited effort path. The actual acceleration is governed by (10.9), **not guaranteed equal to** 3.6579539. If realization is weaker than requested, actual clearance can decrease faster than the model predicts.
+At the next 1 ms RT period, `RtTorqueController::update` integrates the safe acceleration. With unconstrained references, joint 1's desired speed increment is $2.4627348(0.001)=0.00246273$ rad/s. The C++ controller clamps speed/error/position references, gates the feedforward near the velocity envelope, and adds PD torque. Hardware then applies its own rate-limited effort path. The actual acceleration is governed by (10.9), **not guaranteed equal to** 2.4627348. If realization is weaker than requested, actual clearance can decrease faster than the model predicts.
 
 ### 14.7 Next cycle and possible failures
 
@@ -3129,7 +3413,8 @@ The following complements the inline derivations. Dimensions refer to the seven-
 |---|---|---|---|
 | $q,\dot q$ | Measured arm state, $7+7$ | `JointSnap.q,qdot`; `_q_full,_qdot_full` | `CBFSafetyFilter._on_joint_state`; `JointStateManager` in `kinematics.py` |
 | $T,R,t$ | Frame pose, $SE(3)$ | `data.oMf`, `oMf.translation/rotation` | `CBFKinematics.update`; Pinocchio FK |
-| $J_p,\dot J_{p,\rm code}$ | Rigid-point maps, $3\times7$ | `Jp,Jpd,r_cross,Jv,Jw,Jvd,Jwd` | `CBFKinematics.point_jacobian`, `kinematics.py` |
+| $J_p,\dot J_p$ | Exact rigid-point maps, $3\times7$ | `Jp,Jpd,r,omega,Jv,Jw,Jvd,Jwd` | `CBFKinematics.point_jacobian`, `kinematics.py` |
+| $J_c,\dot J_c$ | Configured interpolation/fingertip maps, $3\times7$ | `_control_points`, frame IDs, weight `t`, optional `offset` | `configure_control_points`; `control_point_jacobian`; `ConstraintBuilder` callback |
 | $p_c$ | Sampled perception control point, $3$ | `cp_positions` / control-point records | `distance_utils.define_control_points` |
 | $d,n,p_r,p_h$ | Gap and selected point geometry, $1,3,3,3$ | `ControlPointResult`, `ld.distance,direction,closest_point_robot,closest_point_human` | `DistanceEngine.compute`; `build_cp_messages` |
 | $m_{\rm dil}$ | Pixel dilation in m | Effective mask margins and selected depth | `MaskBuilder` / `DistanceEngine` |
@@ -3139,7 +3424,7 @@ The following complements the inline derivations. Dimensions refer to the seven-
 | $h_{\rm raw}$ | Wire gap minus safety distance | `h_raw = ob.d - self._P.d_safe` | `ConstraintBuilder.build` |
 | $h_{\rm geom}$ | Asymmetrically recovered barrier | `h,_h_smooth` | `ConstraintBuilder.build` |
 | $a_i$ | Normal Jacobian row, $1\times7$ | `a = n_w @ Jp`; `ConstraintSnap.A` | `ConstraintBuilder.build` |
-| $c_i$ | Approximate drift, scalar | `jdq`; `jdot_qdot` | `ConstraintBuilder.build` / `CBFKinematics` |
+| $c_i$ | Exact configured-point kinematic projection; incomplete full-distance drift, scalar | `jdq = n_w @ (Jpd @ js.qdot)`; `jdot_qdot` | `ConstraintBuilder.build` / configured `CBFKinematics` |
 | $\hat v_o$ | Residual normal obstacle speed | `v_raw,v_prev,_obs_vel` | `ConstraintBuilder._obstacle_speed` |
 | $v_o^{\rm cond}$ | Tracker/residual/median approach scalar | `v_o,_obs_vmed` | `ConstraintBuilder.build/_obstacle_speed_tracked` |
 | $v_o^{\dot h}$ | Selected signed/conditioned derivative scalar | `v_hdot,rows_vobs,con.v_obs` | `ConstraintBuilder.build` |
@@ -3148,6 +3433,10 @@ The following complements the inline derivations. Dimensions refer to the seven-
 | $m_{\rm latency}$ | Fixed-horizon motion/covariance margin | `h_lat` and latency helper outputs | `latency_compensation_terms` |
 | $m_{\rm range}$ | Stereo range-noise margin | `h_rng` | `sensor_range_uncertainty` |
 | $m_{\rm standoff}$ | Speed-proportional distance | `h_std,_stand_ema` | `velocity_standoff` / `ConstraintBuilder.build` |
+| $w_g$ | Approach gate on the two covariance margins, dimensionless | `w_g,gate_on,gate_v,diag_gate_w` | `_approach_weight`; `ConstraintBuilder.build` |
+| $(\bar h,J_p,\hat n,\ell)$ | Closest-row geometry handed to the go-around | `around_best`; `ConstraintSnap.around_geom` | `ConstraintBuilder.build` |
+| $\hat t,w,v_t,a_t$ | Go-around side, weight, tangential speed, Cartesian push | `state.t,state.w,vt,a_t` | `go_around_step` in `go_around.py` |
+| $u_{\rm bias},u_{\rm cut}$ | Go-around joint bias and task push-in cut, $7$ each | `ga_bias,ga_cut,state.bias` | `go_around_step`; `CBFSafetyFilter._qp_tick` |
 | $h_{\rm sc},a_{\rm sc}$ | Self-collision barrier/row | `gap,h,a,jdq` | `SelfCollisionRowBuilder.build` |
 | $h_\sigma,g$ | Singularity barrier/gradient | `sigma,h,a` | `SingularityRowBuilder.sigma/grad_sigma/build` |
 | $h_q^\pm$ | Joint-position barriers | `h_up,h_lo` | `joint_limit_rows` |
@@ -3202,7 +3491,7 @@ topics:
   iso_safety: /NS_1/iso_safety
   safety_reset: /NS_1/safety_reset
 params:
-  d_safe: 0.15
+  d_safe: 0.1
   d_safe_default: 0.15
   iso_enabled: false
   iso_mode: automatic
@@ -3267,6 +3556,20 @@ params:
   cbf_tangential_engage_margin: 0.3
   cbf_tangential_filter_alpha: 0.9
   cbf_tangential_max_bias: 2.0
+  margin_gate_on_approach: true
+  margin_gate_ref_speed: 0.15
+  enable_go_around: true
+  go_around_engage_margin: 0.15
+  go_around_speed: 0.25
+  go_around_gain: 3.0
+  go_around_max_accel: 2.5
+  go_around_max_bias: 8.0
+  go_around_horizon_s: 0.3
+  go_around_damping: 0.05
+  go_around_turn_tau: 1.0
+  go_around_release_factor: 1.5
+  go_around_max_jerk: 10.0
+  go_around_push_cut: 1.0
   qp_smooth_weight: 0.2
   slew_box_enabled: true
   max_qddot_delta: 0.5
@@ -3664,7 +3967,7 @@ tracking:
     period_s: 10.0
     baseline_m: null
     tolerance_m: 0.03
-  max_coast_s: 0.167
+  max_coast_s: 0.8
 sim_obstacle:
   enabled: false
   start_cam:
@@ -4420,16 +4723,20 @@ This index is extracted from the actual AST of node modules and the named declar
 | `accept_translation_mm` | `5.0` | — | 197 |
 | `accept_rotation_deg` | `2.0` | — | 198 |
 
+#### Shared configured-control-point declaration
+
+`configure_control_points_from_node` in [kinematics.py](../franka_experiments/utils/kinematics.py) declares `robot_config_path` for `CBFSafetyFilter`, `ISOSafetyMonitor`, and `ISOEvidenceLogger`. Its default is the installed `franka_experiments/config/fr3_complete.yaml`, resolved through ament. The torque launch supplies `robot_config_yaml`; replay inherits the filter parameter builder. This shared declaration is additional to the direct node-local declarations indexed below. It configures point geometry, not CBF gains or dynamics-model inertia.
+
 #### iso_evidence_logger
 
 [Source](../franka_experiments/nodes/iso_evidence_logger.py). Defaults and validation are declared at the indicated source lines.
 
 | Parameter | Default expression | Validation / declaration options | Line |
 |---|---|---|---|
-| `output_dir` | `resolve_log_dir()` | — | 146 |
-| `run_name` | `'run'` | `allow_empty=True` | 147 |
-| `sample_rate_hz` | `100.0` | `positive=True, maximum=1000.0` | 148 |
-| `tcp_link` | `FR3_TCP_LINK` | — | 150 |
+| `output_dir` | `resolve_log_dir()` | — | 147 |
+| `run_name` | `'run'` | `allow_empty=True` | 148 |
+| `sample_rate_hz` | `100.0` | `positive=True, maximum=1000.0` | 149 |
+| `tcp_link` | `FR3_TCP_LINK` | — | 151 |
 
 #### iso_safety_monitor
 
@@ -4437,7 +4744,7 @@ This index is extracted from the actual AST of node modules and the named declar
 
 | Parameter | Default expression | Validation / declaration options | Line |
 |---|---|---|---|
-| `iso_tcp_link` | `'fr3_link8'` | — | 137 |
+| `iso_tcp_link` | `'fr3_link8'` | — | 139 |
 
 #### pentagon_qddot_commander
 
@@ -4670,7 +4977,7 @@ This index is extracted from the actual AST of node modules and the named declar
 | [cbf_qp.py](../franka_experiments/utils/cbf_qp.py) | Older single-slack acceleration QP with predicted state rows; no main caller, §11.6. Entry points: `CBFQP`. |
 | [cbf_qp_assembly.py](../franka_experiments/utils/cbf_qp_assembly.py) | Native matrix layout, row RHS, padding, tangential target and fallback helpers; §9. Entry points: `build_osqp_A`, `build_osqp_bounds`, `build_row_rhs`, `pad_rows_to_block`, `tangential_bias`, `accept_iterate`, `box_only_solve`, `braking_command`. |
 | [cbf_singularity.py](../franka_experiments/utils/cbf_singularity.py) | Smallest scaled-singular-value finite-difference row; §8.3. Entry points: `SingularityRowBuilder`. |
-| [cbf_state_rows.py](../franka_experiments/utils/cbf_state_rows.py) | Snapshots, obstacle velocity/margins, six-family row construction and self-collision adapter; §7–9. Entry points: `joint_limit_rows`, `retreat_cap_speed`, `retreat_cap_rhs`, `link_speed_cap`, `obstacle_link_speed_cap`, `link_speed_row`, `retreat_speed_available`, `retreat_accel_available`, `retreat_speed_reachable`, `retreat_displacement_reachable`, `velocity_feedforward_terms`, `velocity_standoff`, `uncertainty_margin`, `latency_compensation_terms`, `sensor_range_uncertainty`, `joint_limit_risk_margin`, `risk_slack_weight`, `SelfCollisionRowBuilder`, `build_self_collision_builder`, `JointSnap`, `NomSnap`, `Obstacle`, `ObstacleSnap`, `ConstraintSnap`, `build_optional_row_builders`, `ConstraintBuilder`. |
+| [cbf_state_rows.py](../franka_experiments/utils/cbf_state_rows.py) | Snapshots, obstacle velocity/margins, six-family row construction and self-collision adapter; §7–9. Entry points: `_approach_weight` (module-private, the gate of (7.15a)), `joint_limit_rows`, `retreat_cap_speed`, `retreat_cap_rhs`, `link_speed_cap`, `obstacle_link_speed_cap`, `link_speed_row`, `retreat_speed_available`, `retreat_accel_available`, `retreat_speed_reachable`, `retreat_displacement_reachable`, `velocity_feedforward_terms`, `velocity_standoff`, `uncertainty_margin`, `latency_compensation_terms`, `sensor_range_uncertainty`, `joint_limit_risk_margin`, `risk_slack_weight`, `SelfCollisionRowBuilder`, `build_self_collision_builder`, `JointSnap`, `NomSnap`, `Obstacle`, `ObstacleSnap`, `ConstraintSnap`, `build_optional_row_builders`, `ConstraintBuilder`. |
 | [cbf_utils.py](../franka_experiments/utils/cbf_utils.py) | Compatibility configuration/skew imports and velocity-filter gamma; §11.1. Entry points: `select_gamma`. |
 | [cbf_zones.py](../franka_experiments/utils/cbf_zones.py) | Smooth zone membership, gain/slack schedule, task suppression/recovery; §7.7/9.3. Entry points: `smoothstep`, `ZoneGains`, `ZoneLadder`, `ladder_from_params`. |
 | [config.py](../franka_experiments/utils/config.py) | Package/path YAML resolution, CBF parameter schema, bringup defaults, transforms/log directory. Entry points: `resolve_log_dir`, `load_package_config`, `load_config_file`, `load_extrinsics`, `load_camera_info_yaml`, `load_franka_config_defaults`, `load_launch_defaults`, `load_package_yaml`, `load_franka_joint_limits`, `load_cbf_config`. |
@@ -4678,9 +4985,10 @@ This index is extracted from the actual AST of node modules and the named declar
 | [distance_engine.py](../franka_experiments/utils/distance_engine.py) | Depth candidate selection, CP/segment distances, asymmetric distance filtering; §4. Entry points: `ObstacleHit`, `ControlPointResult`, `ObstacleCloud`, `DistanceEngine`. |
 | [distance_utils.py](../franka_experiments/utils/distance_utils.py) | Projection/ROI, frame transforms, segment and CP construction; §4. Entry points: `point_to_segment_distance_with_projection`, `define_robot_segments`, `compute_closest_distance_from_segments`, `get_robot_segments_from_transforms`, `get_rotation_from_quaternion`, `compute_direction_vector`, `cam_to_base`, `base_to_cam_z`, `compute_roi`, `define_control_points`. |
 | [evasion_direction.py](../franka_experiments/utils/evasion_direction.py) | Joint-box support and sampled lateral outrun direction; §9.3. Entry points: `outrun_ratio`, `blend_weight`, `lateral_direction`, `escape_direction`, `evasion_bias`. |
+| [go_around.py](../franka_experiments/utils/go_around.py) | Cartesian go-around bias at the closest control point: engagement weight, held side with hysteresis, two-sided tangential speed loop, damped-least-squares mapping, task push-in cut and jerk-limited output; §9.3. Added 1 November 2026. Entry points: `GoAroundState`, `go_around_step`. |
 | [handeye_solver.py](../franka_experiments/utils/handeye_solver.py) | SO(3)/SE(3) support, relative-motion initialization, robust nonlinear solve and evaluation; §3. Entry points: `make_T`, `inv_T`, `rotvec`, `from_rotvec`, `angle_deg`, `rotation_distance_deg`, `loop_closure_errors`, `initial_guess`, `refine`, `mad_inlier_mask`, `rotation_axis_sigmas`, `HandEyeResult`, `solve`, `look_at`, `bootstrap_ee_poses`, `orbit_camera_poses`, `sample_orbit_candidates`, `select_diverse_poses`. |
 | [iso_ssm.py](../franka_experiments/utils/iso_ssm.py) | Reaction/braking separation, inverse speed cap, PFL spring-energy calculation; §10.4. Entry points: `stopping_distance`, `protective_separation`, `ssm_speed_cap`, `pfl_speed`. |
-| [kinematics.py](../franka_experiments/utils/kinematics.py) | Xacro/model/indices, joint state manager, frame/point Jacobians, SO(3) logarithm; §2. Entry points: `generate_urdf_from_xacro`, `load_pinocchio_model`, `load_pinocchio_model_from_urdf_path`, `resolve_frame_id`, `resolve_arm_joint_ids`, `compute_ee_fk`, `compute_arm_jacobian`, `transform_ee_to_frame`, `so3_log`, `dls_solve`, `JointStateManager`, `CBFKinematics`, `build_urdf_with_sc`, `build_urdf_no_hand`. |
+| [kinematics.py](../franka_experiments/utils/kinematics.py) | Xacro/model/indices, joint state manager, frame/point Jacobians, SO(3) logarithm and configured interpolation/fingertip derivatives; §2. Entry points: `generate_urdf_from_xacro`, `load_pinocchio_model`, `load_pinocchio_model_from_urdf_path`, `resolve_frame_id`, `resolve_arm_joint_ids`, `compute_ee_fk`, `compute_arm_jacobian`, `transform_ee_to_frame`, `so3_log`, `dls_solve`, `JointStateManager`, `CBFKinematics`, `configure_control_points_from_node`, `build_urdf_with_sc`, `build_urdf_no_hand`. |
 | [launch_support.py](../franka_experiments/utils/launch_support.py) | Generated controller YAML, bringup parameter routing and launch helpers; §1/10/11. Entry points: `resolve_controller_manager_name`, `generate_rt_controllers_yaml`, `write_temp_yaml`, `rviz_config_for_namespace`, `pick_controllers_yaml`, `declare_robot_args`, `declare_rt_blender_args`, `declare_rt_torque_args`, `build_wrapper_log_actions`. |
 | [livelock.py](../franka_experiments/utils/livelock.py) | Joint progress history and stalled-motion escape state machine; §9.3. Entry points: `ProgressWindow`, `LivelockDetector`. |
 | [logging_utils.py](../franka_experiments/utils/logging_utils.py) | Throttling, wall timers and formatted CBF diagnostics; §12. Entry points: `ThrottledLogger`, `vec_to_str`, `PerfTimer`, `format_velocity_summary`, `format_cbf_diag`. |
@@ -4749,7 +5057,9 @@ The package installs top-level launch/config/script files and test launch/config
 
 ### 15.6 Audited source identity
 
-**Identity re-verified by the continuation audit.** The manifest below is current for the working tree as of 30 October 2026 and was re-checked file by file, not inherited. All 261 recorded digests reproduce, and so does the aggregate.
+**Historical manifest, retained unchanged.** The original hashes, aggregate and 2 November delta below identify their dated snapshots. They are not the final 3 November source identity. The scoped kinematics/dynamics refresh records current relevant source hashes in §15.11 without rewriting the older manifest or invalidating its aggregate.
+
+**Identity re-verified twice.** The manifest below is current for the working tree as of 30 October 2026 and was re-checked file by file by the continuation audit, not inherited. The second continuation of 2 November 2026 re-ran the same check: **252 of the 261 recorded digests still reproduce**, the aggregate recomputed from the table's own rows still reproduces, and the nine that moved are tabulated below together with two files that did not exist when the manifest was taken. (The count was 253/261 earlier the same day; `torque_control_stack.launch.py` moved with the ablation harness of §15.10.7 and is the ninth row.) No manifest row was edited, so the published aggregate remains checkable exactly as issued.
 
 The earlier edition of this section named `fc56227d029485f37af4cbe867ac1b26061849f1` as the "final inspected HEAD". **That attribution was wrong and is corrected here.** `fc56227` was the HEAD when the first audit opened, but the hashes below were taken after commit `e9ff7cd` ("back to the 15 Oct CBF, driven by the current Gazebo harness") had already landed, and they therefore identify the tree at
 
@@ -4759,23 +5069,32 @@ bc279b3  franka_experiments docs: complete technical and mathematical guide
 
 This is demonstrable rather than asserted: for every file `e9ff7cd` touched, the recorded digest equals the `bc279b3` blob and differs from the `fc56227` blob. For example `franka_experiments/franka_experiments/nodes/experiment_logger.py` is `3d7ad605…` in the manifest and at `bc279b3`, while at `fc56227` it was `b1e68444…`. The commit identifier was stale; the content fingerprint was not.
 
-**Working-tree state, and a live change during the continuation.** Development continued while this continuation ran, exactly as it did during the first audit. Five source files were modified by that work *after* the manifest below was taken, all of them belonging to one change — the instrumentation of `tangential_bias` described in Chapters 9.3 and 12.1. Their current digests are:
+**Working-tree state: the delta to 2 November 2026.** Development continued through the first audit, through the continuation, and in the two days after it. Three of the five files the continuation tabulated have since moved again, four more and two configuration files have joined them, and two files are new. The table below is the **2 November 2026** delta; the "30 Oct" column is the digest the continuation published, so a reader can tell a file that changed once from one that changed twice.
 
-| Modified after the manifest | Current SHA-256 | What changed |
+| Differs from the manifest | 30 Oct digest (continuation) | Current SHA-256 | What changed |
+|---|---|---|---|
+| `franka_experiments/franka_experiments/utils/cbf_qp_assembly.py` | `68214a89…` | `68214a89b580ad19b664b1c63941751e6e08e27ae5551bafed198960acf968a6` | Unchanged since the continuation. `tangential_bias` gained an optional `diag` dict out-parameter and the `_tb_diag` filler; `n_rows`/`best` bookkeeping; the cap's divisor renamed `raw_norm` and reused |
+| `franka_experiments/test/test_cbf_tangential_bias.py` | `d9210973…` | `d92109732d68704e70867cb69b3e9f8857b1fa7e101817ce19078f55aeb590d9` | Unchanged since the continuation. 16 → 23 tests covering the new diagnostics |
+| `franka_experiments/franka_experiments/utils/cbf_state_rows.py` | `3fecf880…` | `e35f3092d9d3c38d38b9e8780e2a0002d664d2dd2fef0fa1d4100b41d2ee8ac9` | **Changed again.** Adds `_approach_weight`, the gate on `h_unc`/`h_lat` with `diag_gate_w`, `ConstraintSnap.around_geom`, the `around_best` selection inside the finiteness guard, and the `diag_ga*` fields in `__init__` and `build()` |
+| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | `ffc45c18…` | `04f20bdc47851ad283465250b3c6a527df34c45476fbb089d8e6adbc9809bba2` | **Changed again.** Imports `GoAroundState`/`go_around_step`, holds `self._around`, adds STEP 3b′ and copies the four `diag_ga*` fields |
+| `franka_experiments/franka_experiments/utils/logging_utils.py` | `33613863…` | `bb9196955c6ce1cdcdfc70974fa6f08b29ce353392c42db405ad57391ccbb752` | **Changed again.** `format_cbf_diag` emits `ga=` and `gate=` alongside the `tan*` group |
+| `franka_experiments/franka_experiments/utils/config.py` | *(manifest)* | `97c153fece8e375cf9b613f6813392abef6e0f410d7dc9e4af69580ba3c48e5a` | 14 entries added to `CBF_PARAM_SPEC`: the two `margin_gate_*` keys and the twelve `go_around_*`/`enable_go_around` keys, with their ranges |
+| `franka_experiments/config/fr3_control.yaml` | *(manifest)* | `d0703967376b72d379b6094d4d00731607b7a4191602a96d5ecd5bc927c3c189` | `d_safe` 0.15 → 0.10; the 14 new keys and their rationale comments |
+| `franka_experiments/config/fr3_complete.yaml` | *(manifest)* | `067468b136d9db613046dec5ef8bcbcc46141948cb41c9598229f1b47080533b` | `max_coast_s` 0.167 → 0.8, with the 72-run table and the `gate_max_m` caveat |
+| `franka_experiments/launch/torque_control_stack.launch.py` | *(manifest)* | `c8bbe51ef41d8350454cc131f0f5bf07e5dbf869b495f245bf7abe1b02bf9467` | **2 November.** The `cbf_param_overrides` argument and its parser, for the ablation harness of Chapters 1.2, 7.8 and 12.7. The only `franka_experiments` file that change touches |
+
+| New since the manifest | SHA-256 | Role |
 |---|---|---|
-| `franka_experiments/franka_experiments/utils/cbf_qp_assembly.py` | `68214a89b580ad19b664b1c63941751e6e08e27ae5551bafed198960acf968a6` | `tangential_bias` gained an optional `diag` dict out-parameter and the `_tb_diag` filler; `n_rows`/`best` bookkeeping; the cap's divisor renamed `raw_norm` and reused |
-| `franka_experiments/franka_experiments/utils/cbf_state_rows.py` | `3fecf880680be1093ca3b193dfc5c7e2f91c8ed9395378fbe6e986ed473efdc2` | `ConstraintBuilder` declares and resets `diag_tan`, `diag_tan_raw`, `diag_tan_n`, `diag_tan_row`, `diag_tan_mix` in both `__init__` and `build()` |
-| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | `ffc45c1898d10c4452f1a890a3fd4abc74f9cdc59521fd294a2981ea37de23e6` | `_qp_tick` passes `diag=tan_diag` and copies the results onto `self._rows`, reporting the **post-EMA** norm |
-| `franka_experiments/franka_experiments/utils/logging_utils.py` | `336138636c5378c15f17fe044ac20ed15741fa6b89ea1aba25cd20dcd921bde1` | `format_cbf_diag` emits `tan=`, `ntan=`, `tanrow=`, `tanmix=` and documents them |
-| `franka_experiments/test/test_cbf_tangential_bias.py` | `d92109732d68704e70867cb69b3e9f8857b1fa7e101817ce19078f55aeb590d9` | Grew from 16 to 23 tests, covering the new diagnostics |
+| `franka_experiments/franka_experiments/utils/go_around.py` | `e95756b046a2568657b1e8ab37c3f6a3e34a974c0990ba1a041e80c6393c1d75` | The go-around module of Chapter 9.3 |
+| `franka_experiments/test/test_go_around.py` | `251abd82bc9c2ec3382b40d30ae20371054ba9080a5b4d464bb5ff3abb69f01d` | Its six tests |
 
-This continuation re-read all five and re-derived (9.10) against the new body. **The bias computation is unchanged**: the added bookkeeping never feeds `bias`, and the cap still divides by the same quantity. The 23 tests pass here. Chapters 9.3 and 12.1 were updated accordingly; no equation was invalidated. No file was reverted, and nothing in that work was modified by this documentation task.
+Both continuations re-read every file they tabulate. The first re-derived (9.10) against the new `tangential_bias` body and found **the bias computation unchanged**; the second derived (7.15a) and (9.10a)–(9.10f) from the new sources and re-ran every arithmetic consequence of the two retuned constants, which is why Chapters 7.7, 8.5, 10.4, 12.4 and 14 carry different numbers than they did on 30 October. No file was reverted, and nothing in this work was modified by the documentation task.
 
-Apart from those five and this guide, the working tree matches `bc279b3`. The 256 other indexed digests still reproduce, so the aggregate below identifies the pre-change content and the table above identifies the delta — together they pin the tree exactly, which a single re-issued aggregate would not do without discarding the published one.
+Apart from the eleven files above and this guide, the working tree matches `bc279b3` plus commits `1311e55` and `2d87ab6` (the latter touching only `franka_simulation_experiments`, outside the manifest's `franka_experiments` scope; see Chapter 12.7), together with the uncommitted `franka_simulation_experiments` work of §15.10.7, which is also outside that scope. The 252 unchanged indexed digests still reproduce, so the aggregate below identifies the pre-change content and the two tables above identify the delta — together they pin the tree exactly, which a single re-issued aggregate would not do without discarding the published one.
 
 Aggregate SHA-256 of sorted `repository-relative-path + NUL + file-sha256 + newline` records for the 261 files indexed below: `011259ae394cf35383e27b35493b6ac726ab0d4dbb68f9364738ffeb6fa87372`. This identifies source content rather than merely a commit. The guide itself is excluded. It does not identify external ONNX weights, installed ROS binaries, camera firmware, or physical calibration accuracy. The recipe is reproducible exactly as written; this continuation recomputed the aggregate from the table's own rows and obtained the same digest.
 
-**Indexed scope, stated rather than implied.** The 261 entries cover 219 `franka_experiments` paths plus the `franka_description`, `franka_bringup`, `franka_hardware`, `franka_msgs` and `franka_rt_controllers` files on the execution path. Of the 217 tracked `franka_experiments` source files (`.py`, `.yaml`, `.xml`, `.cpp`, `.hpp`, `.msg`, excluding `docs/`), exactly one is **not** indexed:
+**Indexed scope, stated rather than implied.** The 261 entries cover 219 `franka_experiments` paths plus the `franka_description`, `franka_bringup`, `franka_hardware`, `franka_msgs` and `franka_rt_controllers` files on the execution path. Of the 217 tracked `franka_experiments` source files (`.py`, `.yaml`, `.xml`, `.cpp`, `.hpp`, `.msg`, excluding `docs/`) present when the manifest was taken, exactly one is **not** indexed. Two further files have since been created and are likewise outside it; their digests are in the “New since the manifest” table above, and they are `utils/go_around.py` and `test/test_go_around.py`.
 
 | Not in the manifest | SHA-256 | Why |
 |---|---|---|
@@ -5090,11 +5409,17 @@ python -m pytest -q -p no:cacheprovider \
 
 Result: **120 passed, 5 failed** in 16.69 s. All five failures were imports of `real_time_distance` through `test_rate_scaling.py` because `cv2` is absent from the audit Python environment; they were not failed numerical assertions of the implemented filters. Native OSQP emitted deprecation warnings. This is historical evidence from the first audit, not the re-audit test total.
 
-The environment has NumPy/SciPy/OSQP and the local Pinocchio C++ headers, but no Python Pinocchio, OpenCV or sourced ROS runtime. Full ROS/controller tests, a comparison against an executable Pinocchio binding, and hardware experiments were not executed. The re-audit did perform an independent NumPy FK/finite-difference check of the current control-point geometry (Chapter 2.3). No dependencies were installed, no ROS control launch was started, and no robot commands were sent. The reduced numerical example in Chapter 14 was checked independently with NumPy; its closed-form minimizer, slack and inactive-cap assumptions agree.
+**That command no longer reproduces, and the difference is informative.** On 2 November 2026 it gives **119 passed, 6 failed**. Exactly one test crossed, in the direction that matters: `test_rate_scaling.py::test_the_shipped_config_states_durations` went from pass to fail when `max_coast_s` was retuned on 1 November, and unlike the other five it has no `cv2` in its import path. The published 120/5 is retained as the record of what the first audit measured; Chapter 15.10 carries the current numbers.
+
+Those original host-only audit runs had NumPy/SciPy/OSQP and local Pinocchio C++ headers, but no Python Pinocchio, OpenCV or sourced ROS runtime. Their environment/limitations are historical; the newer Docker verification is recorded in §15.11. Full ROS/controller tests, a comparison against an executable Pinocchio binding, and hardware experiments were not executed. The re-audit did perform an independent NumPy FK/finite-difference check of the current control-point geometry (Chapter 2.3). No dependencies were installed, no ROS control launch was started, and no robot commands were sent. The reduced numerical example in Chapter 14 was checked independently with NumPy; its closed-form minimizer, slack and inactive-cap assumptions agree.
 
 To update the document after a source change, first identify the changed source/hash rather than editing theoretical prose from memory. Reconstruct active launch overrides; recheck point definitions and derivatives together; reconstruct QP $P,q,G,l,b$ and family order; follow failure branches through the C++ executor; then update parameter/declaration indexes and the source manifest. Every claimed guarantee should remain attached to its assumptions and to the actual command that reaches the plant.
 
+One rule was added by the second continuation, because it is the rule that change broke. **When a constant moves, find everything that is a multiple of it before editing a word.** `d_safe` is not a parameter, it is a scale: Chapter 12.4's entry lists the four independent quantities that follow it, three of which are *not* named `d_safe`-anything and none of which appears in a diff of the YAML line that moved. A retune of such a constant is not an annotation job; the arithmetic downstream of it has to be recomputed, which is why Chapters 7.7, 8.5, 10.4 and 14 carry new numbers rather than a note saying the old ones were taken at a different value. The companion rule: re-run the repository's own configuration-reading tests, because they are the only mechanism that notices a constant moving out from under an assertion, and in this instance one of them did.
+
 ### 15.9 Continuation re-audit record (30 October 2026)
+
+**Historical record before the 3 November fixes.** Its source excerpts, defect confirmations and environment statements describe that dated audit. Current implementation and runtime verification are in §2.3, §2.5 and §15.11.
 
 This chapter is the record Chapter 15.8 promises. The first audit ended before it could be written; this continuation supplies it. Nothing here is inherited — every number below was produced by a command run against the working tree described in Chapter 15.6, and the commands are given so they can be repeated.
 
@@ -5102,7 +5427,7 @@ This chapter is the record Chapter 15.8 promises. The first audit ended before i
 
 | Claim re-checked | Method | Outcome |
 |---|---|---|
-| Chapter 15.2 configuration dumps | Parse every `#### <file>.yaml` block out of this guide with PyYAML, flatten both it and the live file to leaf paths, diff | **0 differences** across 10 blocks and 470 leaves (`fr3_control` 249, `fr3_complete` 102, `launch_defaults` 89, `camera_EE_extrinsic` 37, `oscbf_params` 21, `camera_extrinsics`/`camera_link_extrinsics`/`ee_tag_extrinsics` 9 each, `fr3_distance` 3, `fake_hw_controller_params` 1) |
+| Chapter 15.2 configuration dumps | Parse every `#### <file>.yaml` block out of this guide with PyYAML, flatten both it and the live file to leaf paths, diff | **0 differences** across 10 blocks and 529 leaves (`fr3_control` 249, `fr3_complete` 102, `launch_defaults` 89, `camera_EE_extrinsic` 37, `oscbf_params` 21, `camera_extrinsics`/`camera_link_extrinsics`/`ee_tag_extrinsics` 9 each, `fr3_distance` 3, `fake_hw_controller_params` 1). *[The per-file counts are the ones this continuation measured and are correct; the total it printed, 470, was an arithmetic slip — those ten numbers sum to 529. Corrected 2 November 2026, when the same script was re-run and reported 543 leaves against the retuned files: 0 differences. See §15.10.]* |
 | Chapter 15.3 parameter index | For each of the 384 table rows, confirm the named parameter literal occurs within ±1 line of the stated source line | **0 mismatches**, 384/384 |
 | Chapter 15.3 completeness | Regex every `declare_parameter`/`declare_*`/`P('…')` call in `nodes/*.py` and diff against the index | No node under-reported. The two absent modules are correct: `cbf_safety_filter` is YAML-driven through `CBF_PARAM_SPEC` (stated in the 15.3 preamble) and `image_rectifier_node` declares no ROS parameters at all |
 | Chapter 2.3, (2.7a)–(2.7b) and its table | Fresh NumPy FK built only from `fr3/kinematics.yaml`, driving the executed body of `define_control_points`, then centred differences at $\epsilon=10^{-6}$ against the analytic rigid-offset Jacobian | **Reproduced exactly.** $\lVert J_{\rm rigid}-J_{\rm FD}\rVert_F$ = 0.055 (`fr3_link4#0`, `fr3_link5#0`), 0.0275 (`#1` of each), 0.0586667 (`fr3_link7#0`), 0.0293333 (`fr3_link7#1`), 0 for the `fr3_link6` and `fr3_link8` points. The per-column breakdown additionally shows the error is confined to **exactly one column**, the segment's end joint, with every ancestor column agreeing to machine precision — the structural statement (2.7a) makes |
@@ -5111,8 +5436,8 @@ This chapter is the record Chapter 15.8 promises. The first audit ended before i
 | Chapter 7.3, (7.8) | Read `build_row_rhs` | Confirmed term for term, including that the cap rows' RHS **overwrites** the barrier expression on the trailing `n_cap` rows and uses raw `qdot`, while the barrier `k1` term uses `qdot_cbf` |
 | The $\dot q_{\rm filt}$ rescaling | `cbf_hdot_filter_alpha: 0.6`, `k_tick = dt_qp/0.01` with `qp_rate_hz: 300.0` | $0.6^{1/3}=0.84343$, as stated |
 | The HOCBF pole claim | $k_0=25$, $k_1=10.5$ | $\alpha_{1,2}=(10.5\mp\sqrt{10.25})/2=3.64919,\ 6.85081\ \mathrm{s^{-1}}$, as stated |
-| Chapter 14, every numeric step | Recompute (14.2)–(14.10) in NumPy from the cited YAML values | **Reproduced to all printed digits**: $m_{\rm dil}=0.02798507$, gap $0.3$, $\bar h=0.02037560$, $r=-1.83549286$, $V_r=0.44942103$ with cap bound $2.32947355$, $u_1^\*=3.65795390$, $s^\*=0.00651591$, $u_1^\*\Delta t=0.00365795$ |
-| Chapter 14's parameter citations | Read each from `fr3_control.yaml` | All confirmed: `velocity_standoff_time_s 0.25`, `latency_t_blind 0.085`, `latency_k_sigma 2.0`, `latency_margin_max 0.25`, `zone_k0_notice 12.0`, `zone_k1_notice 7.0`, `zone_r_notice 1.5` (so $1.5d_s=0.225$ m at `d_safe: 0.15`), `retreat_cap_*` as in (14.8), `retreat_cap_horizon_s 0.15`, `link_speed_max 1.3`, `link_speed_activate_frac 0.5`, `cbf_min_leverage 0.05`, `min_confidence 0.2`, `obstacle_velocity_track_deadband 0.15`, `obstacle_velocity_fast_k_sigma 2.0`, `sensor_range_f_px 428.8`, `max_qddot_delta 0.5` |
+| Chapter 14, every numeric step | Recompute (14.2)–(14.10) in NumPy from the cited YAML values | **Reproduced to all printed digits**: $m_{\rm dil}=0.02798507$, gap $0.3$, $\bar h=0.02037560$, $r=-1.83549286$, $V_r=0.44942103$ with cap bound $2.32947355$, $u_1^\*=3.65795390$, $s^\*=0.00651591$, $u_1^\*\Delta t=0.00365795$. *[These are the values at `d_safe: 0.15`. Chapter 14 was recomputed at `0.10` on 2 November; §15.10.2 carries the current figures.]* |
+| Chapter 14's parameter citations | Read each from `fr3_control.yaml` | All confirmed: `velocity_standoff_time_s 0.25`, `latency_t_blind 0.085`, `latency_k_sigma 2.0`, `latency_margin_max 0.25`, `zone_k0_notice 12.0`, `zone_k1_notice 7.0`, `zone_r_notice 1.5` (so $1.5d_s=0.225$ m at the then-current `d_safe: 0.15`; $0.15$ m at today's `0.10`), `retreat_cap_*` as in (14.8), `retreat_cap_horizon_s 0.15`, `link_speed_max 1.3`, `link_speed_activate_frac 0.5`, `cbf_min_leverage 0.05`, `min_confidence 0.2`, `obstacle_velocity_track_deadband 0.15`, `obstacle_velocity_fast_k_sigma 2.0`, `sensor_range_f_px 428.8`, `max_qddot_delta 0.5` |
 | The retreat-cap formula (14.8) | Read `retreat_cap_speed`'s docstring algebra and parameters | Confirmed, including that the `relief` term is a **ramp** $v_{\max}\operatorname{clip}(\bar h/g_{\rm eng},0,1)$ and that the cap is V-shaped in $\bar h$ with its minimum at the barrier |
 | The joint-1 ceiling of 6 rad/s² | `franka_description/robots/fr3/joint_limits.yaml` `joint1.position_based_velocity_limits.deceleration_limit` | 6.0, and `qddot_max_abs: 10.0` does not tighten it |
 | The armature tensor (10.17)–(10.18) | `gz_robot_description.ARMATURE`; expand $D_i$ | `(0.195,0.195,0.195,0.195,0.074,0.074,0.074)`; $\tfrac12(I_3-zz^\top)+zz^\top=\tfrac12(I_3+zz^\top)$, axial eigenvalue $I_a$, transverse $I_a/2$ |
@@ -5169,7 +5494,7 @@ Three items were established by this continuation and are entered in the Chapter
 
 2. **The `franka_sim`/`franka_rl` name mismatch silently disables the sim↔real parity checks.** Chapter 13.1 already recorded that `find_sim_root` searches for a directory named `franka_sim` while the sibling on disk is `franka_rl`. The continuation quantified the second, quieter consequence: every parity test routes its skip decision through the same `find_sim_root`, so **9 of the 44 tests in `test_rl_policy.py` skip** instead of running — the observation-layout mirror, the `ObsSpec`-from-config check, the `franka_sim`↔`fr3_control.yaml` configuration mirror (three separate tests), the shield-parity classification, and the commander smoke test. The checks that are supposed to catch a training/deployment contract drift are therefore not running at all, and they report `skipped`, not `failed`.
 
-   The mismatch is purely the directory name: `franka_rl/` already contains `config.yaml`, `envs/obs_layout.py`, `export_onnx.py` and `models/` at exactly the paths the code expects under the other name. The parity itself currently *does* hold where it can be checked by hand — `franka_rl/config.yaml` and `config/fr3_control.yaml` both carry `d_safe: 0.15` and the same `joint_limits` rows — but that agreement is at present unverified by any executing test.
+   The mismatch is purely the directory name: `franka_rl/` already contains `config.yaml`, `envs/obs_layout.py`, `export_onnx.py` and `models/` at exactly the paths the code expects under the other name. The parity itself currently *does* hold where it can be checked by hand — `franka_rl/config.yaml` and `config/fr3_control.yaml` both carry `d_safe: 0.15` and the same `joint_limits` rows — but that agreement is at present unverified by any executing test. *[Record as written on 30 October 2026. It was overtaken the following week: `fr3_control.yaml` moved to `d_safe: 0.10` on 1 November and the sibling did not, so the agreement this paragraph describes no longer exists. See Chapters 13.1 and 15.10.]*
 
 3. **`motion_source:=none` is accepted but no longer advertised, and does not gate MoveIt.** In the current [torque_control_stack.launch.py](../launch/torque_control_stack.launch.py) the validator still accepts `pentagon`, `rl` and `none`, while the `DeclareLaunchArgument` help text lists only the first two. The selection block also changed shape: `commander_node` is now built by the `else` branch for **both** `pentagon` and `none`, and the `none` case is handled afterwards by simply not appending it to `actions`. The constructed-and-discarded `Node` description is inert, so behaviour is unchanged. Separately, `start_move_group` is evaluated independently of `motion_source`, and the advisory note about a wasted `move_group` fires only for `rl`; a hardware run with `motion_source:=none` and default arguments therefore still starts `move_group` silently. The Gazebo composition is unaffected because `gz_cbf_stack.launch.py` passes `start_move_group:='false'` explicitly.
 
@@ -5212,3 +5537,277 @@ Development touched five files after the manifest was taken (tabulated in Chapte
 * **Test status.** `test_cbf_tangential_bias.py` grew from 16 to 23 tests and all 23 pass in this environment (it needs only NumPy). The full suite was then re-run and measured, not predicted: **967 passed, 41 failed, 10 skipped, 13 collection errors** — exactly the seven new tests on top of §15.9.2's 960, with the identical failure and error sets, so the change introduces no regression reachable from this environment.
 * **Standing caveat, unchanged.** The bias enters only $q_{\rm qp}=[-u_{\rm target},0_6]^\top$. It cannot add, remove or relax a row, so nothing in Chapter 9.2's row algebra or Chapter 13.1's soft-constraint finding is affected. The gain's own status is also unchanged: `cbf_tangential_gain` is still `0.5`, carrying its own source comment “halved from the v1 default … still UNTUNED, re-validate”, and the new fields are the means to tune it, not evidence that it has been tuned.
 
+
+### 15.10 Second continuation re-audit record (2 November 2026)
+
+**Historical record before the 3 November fixes.** The statements about absent ROS/Pinocchio and unexecuted simulation apply to that continuation, not to the later validation in §15.11.
+
+This chapter does for the week of 31 October – 1 November what Chapter 15.9 did for 30 October. Nothing in it is inherited: every number was produced by a command run against the working tree described in Chapter 15.6, and the commands are given so they can be repeated. Chapter 15.9 is left exactly as it was written, because it is a dated record and not a living description; where it has been overtaken, a bracketed note points here.
+
+#### 15.10.1 What changed in the tree, and why it needed more than an annotation
+
+Four pieces of work landed after the continuation closed. Two are committed, two are in the working tree:
+
+| Change | Where | Character |
+|---|---|---|
+| `tangential_bias` instrumentation | commit `1311e55` (31 Oct) | Already audited in §15.9.6; the commit also carried the guide edition that §15.9 records |
+| `pentagon_sweep`, the two-sphere scenarios, the `oscillate` wiring fix, the GUI-only safety halo | commit `2d87ab6` (31 Oct) and the working tree | `franka_simulation`/`franka_simulation_experiments`; outside the manifest's scope, documented in Chapter 12.7 |
+| Approach gate on the two covariance margins; Cartesian go-around | working tree (1 Nov) | New module, new `ConstraintSnap` field, 14 new parameters, 2 new CBFDIAG field groups |
+| `d_safe` 0.15 → 0.10 m; `max_coast_s` 0.167 → 0.8 s | working tree (1 Nov) | Two numbers, with arithmetic consequences in five chapters |
+
+The last row is the reason this continuation exists rather than a changelog entry. `d_safe` is a **scale**, not a setting: the four zone-ladder boundaries and the blend width are multiples of it, the obstacle link-speed blind time is $d_s/V_{d_s}$, the phase governor's two thresholds are `governor_r_*`$\cdot d_s$, and the ISO floor check compares against it — none of which is visible in the one YAML line that moved. Every affected number in Chapters 7.7, 8.5, 10.4, 12.4 and 14 was recomputed from the source rather than annotated.
+
+#### 15.10.2 What this continuation re-derived independently
+
+| Claim re-checked | Method | Outcome |
+|---|---|---|
+| Chapter 15.2 configuration dumps | The §15.9.1 script, re-run: parse every `#### <file>.yaml` block with PyYAML, flatten guide and live file to leaf paths, diff | First run: **16 differences**, all in two files — `d_safe`, `max_coast_s` and the 14 absent new keys. After the dump was patched: **0 differences across 10 blocks and 543 leaves** (`fr3_control` 263, `fr3_complete` 102, `launch_defaults` 89, `camera_EE_extrinsic` 37, `oscbf_params` 21, the three 9-leaf extrinsics, `fr3_distance` 3, `fake_hw_controller_params` 1) |
+| §15.9.1's own leaf total | Sum its published per-file counts | **Arithmetic slip found**: the ten listed counts sum to 529, not the 470 printed. The per-file numbers are right; only the total was wrong. Corrected in place, with a note |
+| Chapter 15.3 parameter index | The §15.9.1 check, re-run: for each of the 384 rows confirm the named parameter literal occurs within ±1 line of the stated source line | **0 mismatches, 384/384.** The index is unaffected by the week's work: the two modules it omits are still the two it should omit, and `cbf_safety_filter.py` — which did change — is YAML-driven through `CBF_PARAM_SPEC` and has no node-local declarations to index |
+| Chapter 15.6 manifest | Re-hash all 261 indexed files; recompute the aggregate from the table's own rows | **253/261 reproduce.** The aggregate reproduces as `011259ae…` from the unchanged table. The 8 that moved and the 2 new files are tabulated in Chapter 15.6 |
+| Chapter 1.2 parameter counts | Regex `CBF_PARAM_SPEC`'s keys out of `config.py`; load `fr3_control.yaml` with PyYAML; diff both ways | **215 spec entries, 235 `params:` keys**, no spec key absent from the YAML, surplus exactly the same **20** keys §1.2 already tabulates. Both counts rose by 14 and the surplus did not, i.e. every new key was added to both sides |
+| (7.15a), the approach gate | Read `_approach_weight` and both call sites in `ConstraintBuilder.build` | Confirmed: smoothstep of $\min(v_o/v_{\rm ref},1)$, applied to `h_unc` **after** its recovery EMA is stored and to `h_lat` after its clamp; `diag_hunc`/`diag_hlat` updated post-gate; `diag_gate_w` lowered in the uncertainty branch **only**, which is the diagnostic gap reported in Chapters 12.1 and 13.1 |
+| The gate's effective engagement speed | Read `obstacle_velocity_track_deadband` and `margin_gate_ref_speed` | Both `0.15`; $v_o$ is post-deadband, so full margin needs roughly `0.30` m/s of raw normal closing. The two keys are independent and their equality is a coincidence of tuning, not a constraint |
+| (9.10a)–(9.10f), the go-around | Derive from `go_around.py` line by line against the filter's call site | Confirmed term for term, including that `w_rate`$=4\ {\rm s^{-1}}$ and `t_min`$=0.03$ are function defaults and not ROS parameters; that `around_best` selects the smallest **conditioned** $\bar h$ inside the finiteness guard, so it can prefer a distant fast obstacle; that the side may turn but never flip; and that the node adds **both** returned vectors to the target |
+| The go-around's blind behaviour | Read `geom_ok` in `_qp_tick`; compare with the tangential gate | Confirmed as a fade and not a gate. Quantified: $0.0333$ rad/s² per 300 Hz tick, so up to $0.8$ s from the $8$ rad/s² cap, against $\approx0.1$ s for the tangential EMA. Entered in Chapter 13.1 |
+| Chapter 7.7 zone boundaries | Read `ladder_from_params` and `zone_r_*` | Boundaries are `zone_r_*`$\cdot d_s$ and the blend is `zone_blend_r`$\cdot d_s$, so at $d_s=0.10$: hold/priority/active/notice $=0.025/0.05/0.10/0.15$ m, blend $0.02$ m |
+| Chapter 8.5, (8.17) | Read `obstacle_link_speed_cap` | $T_{\rm obs}=d_s/V_{d_s}=0.10$ s, now **half** the fixed `link_speed_reaction_s` $=0.2$ s, so for equal clearance the obstacle cap is the looser law — a consequence of the retune, not a separate decision |
+| Chapter 14.2's governor threshold | Read `pentagon_qddot_commander` lines 359–360 and `fr3_control.yaml` | `governor_r_full`$=1.5$, `governor_r_stop`$=0.8$, both multiplied by `d_safe`, hence $0.15$ m and $0.08$ m |
+| Chapter 14, every numeric step | Recompute (14.2)–(14.10) in NumPy at $d_s=0.10$ with the gate | **Reproduced to all printed digits**: $m_{\rm dil}=0.02798507$, gap $0.3$, $w_g=1$, $\bar h=0.07037559$, $r=-1.23549286$, $V_r=0.81608770$ with cap bound $4.77391799$, $u_1^*=2.46273477$, $s^*=0.00412547$, $u_1^*\Delta t=0.00246273$. The static-obstacle contrast was computed the same way: ungated margins $0.0200+0.0131$ m against a stationary object |
+| The ISO floor, at the new $d_{\rm safe}$ | Read `_iso_configure`'s checks and `test_iso_dsafe_floor.py` | $D_0=C+Z_d+Z_r=0.92$ m and the check **raises** rather than clamps. 0.15 and 0.10 both fail it; the retune changes the size of the gap, not the verdict. The test's own docstring still names 0.15 m as shipped and is stale by one revision; its assertion reads the live file and still passes |
+| `franka_rl` ↔ `fr3_control` parity | Read `d_safe` and `joint_limits` on both sides | **Now divergent**: `0.10` against `0.15`. `joint_limits` still agree (including the `500.0` effort column §15.9.3 flagged). The three tests that would report this are the ones that skip |
+
+#### 15.10.3 Test record
+
+Same host and environment as §15.9.2 — Python 3.13, NumPy 2.4.2, SciPy 1.17.1, OSQP 1.1.1, PyYAML 6.0.3, with `qpsolvers`, `cv2`, `onnxruntime`, `pinocchio` and `rclpy` absent, and no ROS installation.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=franka_experiments:franka_experiments/test \
+python3 -m pytest -q -p no:cacheprovider \
+  franka_experiments/test --continue-on-collection-errors
+```
+
+Result: **972 passed, 42 failed, 10 skipped, 13 collection errors** in 22.50 s, against the continuation's 967 / 41 / 10 / 13. The whole delta is two items and both were accounted for rather than assumed:
+
+| Delta | Cause |
+|---|---|
+| $+6$ passed, $-1$ passed $\Rightarrow+5$ | `test_go_around.py` contributes six new passing tests; one previously passing test now fails |
+| $+1$ failed | `test_rate_scaling.py::test_the_shipped_config_states_durations`, asserting `max_coast_s == 0.167` against a file that now says `0.8` |
+
+The failure and error **sets** are otherwise identical to §15.9.2's, module for module: 13 collection errors from absent `rclpy`/`launch`/`pinocchio`/`qpsolvers`/`cv2`, 13 cv2 failures across `test_rate_scaling`/`test_mask_depth_gate`/`test_trajectory_overlay`, 8 from absent `visualization_msgs`, 14 from `franka_msgs` resolving as a namespace package, 2 order-dependent in `test_multi_obstacle_rows`, 1 `ament_index_python`, 1 `launch`, 1 `np.trapz`, and `test_node_self_references`.
+
+**There are now two non-environmental failures, not one.** `test_node_self_references` (the private `rclpy` attribute, §15.9.3) and the shipped-config duration test. Both reproduce in one command on any host with NumPy and PyYAML. Separately, the §15.8 focused command gives **119 passed, 6 failed** where it gave 120/5, the single crossing being the same test.
+
+Two further checks were run rather than assumed:
+
+* `test_go_around.py` → **6 passed** in isolation. It needs only NumPy.
+* `test_cbf_tangential_bias.py` → **23 passed**, unchanged from §15.9.6.
+
+#### 15.10.4 Findings this continuation added
+
+Six entries were added to the Chapter 13.1 table and one existing entry was rewritten:
+
+1. **The sim↔real `d_safe` parity has actually broken**, and the tests that would say so are the ones the `franka_sim`/`franka_rl` directory-name mismatch causes to skip. §15.9.3 recorded the mismatch as a latent risk and noted that the parity then held by hand; one week later it does not. This is the first instance of that latent risk producing a real, unreported divergence, which is the argument for renaming the directory rather than for documenting the skip again.
+2. **A shipped-configuration test contradicts the shipped configuration.** A guard written to stop the duration keys drifting silently now reports the intended change as a defect, and will therefore mask the next unintended one.
+3. **`gate_max_m` is no longer sized to the coast it was derived from** — a factor of nearly five, acknowledged in the YAML and left in place.
+4. **The go-around steers off rejected geometry for up to 0.8 s**, where the neighbouring tangential bias is hard-gated to zero on the same condition, by a source comment that calls that gate load-bearing.
+5. **The go-around is tangent to one row and checks no other**, unlike the livelock escape's (9.14) nullspace projection, at the moment two-sphere scenarios enter the harness.
+6. **`gate=` reports the gate applied to one of the two margins it gates.**
+
+A seventh observation is recorded in Chapter 13.1 as a property rather than a defect: the approach gate prices a *position*-uncertainty margin against *closing speed*. It buys back a measured ~6 cm of permanently lost workspace, which is a real improvement and the stated motivation; the categorical cost is that a stationary obstacle with a genuinely poor position estimate now receives no covariance margin at all.
+
+#### 15.10.5 What was changed in this guide
+
+| Chapter | Change |
+|---|---|
+| Front matter | Audit date carried forward; the four changes named |
+| 1.2 | Parameter counts 201/221 → 215/235; a note that the two new features are YAML-default-on and appear in no launch |
+| 5.4 | Coast 15 → 72 frames at 90 Hz; the 72-run table, its qualifications, and the two consequences |
+| 7.4 | (7.11) rewritten with $w_g$; new (7.15a) and the gate's four implementation properties |
+| 7.7 | Zone boundaries recomputed; the $d_s$-multiple construction made explicit |
+| 8.5 | (8.17) recomputed; the $T_{\rm obs}<$ `link_speed_reaction_s` consequence stated |
+| 9.3 | New subsection deriving (9.10a)–(9.10f), with five limitations and the test coverage |
+| 10.4 | The ISO floor check described as raising rather than validating; the stale test docstring noted |
+| 12.1 | `ga=` and `gate=` documented, with the diagnostic gap and the reset discipline |
+| 12.4 | `d_safe` entry rewritten as a scale; two new parameter-family rows |
+| 12.7 | The three new scenarios, the `oscillate` wiring fix, the visibility-mask halo |
+| 13.1 | Six new findings; the parity finding rewritten |
+| 14 | Recomputed end to end at $d_s=0.10$, with the static-obstacle contrast and an isolation of what the retune did |
+| 15.1, 15.2, 15.4, 15.6 | Indexes, dumps, inventory and fingerprint delta brought current |
+| 15.8 | The focused command's new result; one rule added on retuning a scale |
+
+No equation that the four changes do not touch was altered, and no claim was promoted from unverified to verified.
+
+#### 15.10.6 What this continuation still did not do
+
+Every limitation in §15.9.5 stands unchanged — no dependency installed, no container started, no ROS node launched, no controller spawned, no robot command issued — and three are now load-bearing in a new way:
+
+* **The 72-run comparison behind `max_coast_s: 0.8` was not reproduced.** It is a simulation result from the Gazebo composition of Chapter 1.6 and it is quoted, with its design stated, as the only available justification for the value. Reproducing it needs the container.
+* **Nothing about the go-around has been exercised against the QP.** Its six unit tests pin smoothness and latching in isolation; the questions that matter — whether a side chosen tangent to one row survives the other rows, whether the slide completes before the obstacle arrives, what the two-sphere scenarios do to it — are closed-loop questions, and the two new multi-obstacle scenarios are the obvious place to ask them.
+* **The $d_{\rm safe}$ retune is unvalidated here in the only sense that matters.** Chapter 14 shows the arithmetic: a third less corrective authority at the same measured gap, against 5 cm less demanded clearance. Whether that trade is sound depends on the real distribution of depth error at that range and on achieved rather than commanded deceleration, (10.9) — neither of which static inspection can supply. The YAML table's own numbers, read against the metric definitions in `simexp/closed_loop.py` (Chapter 5.4), say that **every** configuration tested — including the one adopted — produced contact in at least one run and spent part of every run inside the barrier, with a worst excursion of 5–9 cm. That is a reason to treat the retune as an open experiment rather than a settled setting. Note also what the comparison does and does not argue: it varies the coast and the tracker and so speaks to `max_coast_s`, while $d_{\rm safe}=0.10$ m is a *premise* of all 72 runs, not a finding of them. Nothing in this tree compares 0.15 against 0.10 under a fixed tracker configuration, which is the experiment the retune would need.
+
+One housekeeping item is outstanding and is named so it is not rediscovered: `franka_rl/config.yaml` still carries `d_safe: 0.15`. It was not edited by this documentation task, which changed only this file.
+
+A closing observation about the package's own documentation, because it bears on how the retune should be read. `SAFETY.md` is **not** behind the YAML — it is ahead of it. Its deviation register D1/D2 already described `d_safe = 0.10 m`, and the 0.82 m shortfall against the 0.92 m ISO floor that follows from it, when it was committed on 30 October with `fr3_control.yaml` still at `0.15`. D2 states that the value has moved four times (0.20 → 0.15 → 0.10 → 0.15 → 0.10), tells the reader to check `fr3_control.yaml` rather than quote the file, and independently names the `franka_sim` divergence as "a real divergence between the policy's training envelope and the robot's, not only a failing test" — the same finding this continuation reached from the configuration, arrived at from the safety side and recorded first. Two consequences. The 1 November change is better understood as the YAML catching up with a decision already taken and written down than as a fresh retune. And for the two days in between, the package's safety document and its control configuration disagreed about the single most coupled number in the system, with no mechanism anywhere that would have noticed — which is the same gap, in a different file, as the three parity tests that report `skipped`.
+
+#### 15.10.7 Addendum: the minimal HOCBF against the complete framework (2 November 2026)
+
+This subsection records a change that landed *after* §15.10.1–15.10.6 were written, on the day of the audit itself. It is reported here rather than as a third continuation because nothing in it revises an earlier finding; it adds a capability and a partial measurement.
+
+**What landed.** The repository can now run its obstacle barrier without the machinery that has grown around it, as a selectable condition. The change spans five places in the tree:
+
+| File | Change |
+|---|---|
+| `franka_experiments/launch/torque_control_stack.launch.py` | New `cbf_param_overrides` launch argument and `_cbf_param_overrides` parser; appended last in `_cbf_parameters`, so it wins over every other dictionary. Empty default yields `[]` |
+| `franka_simulation_experiments/scripts/simexp/conditions.py` | Per-condition `cbf:` (checked against the global block, raises on an unknown flag) and `cbf_params:` blocks; `params_arg` wire format; precedence global < condition < `--set` |
+| `franka_simulation_experiments/config/conditions.yaml` | The `full` and `minimal` arms, with the shared substrate and the reasons for it written into the file |
+| `franka_simulation_experiments/scripts/run_gz_scenarios.py`, `simexp/batch.py` | `--filter-cpu` and `--set`; `filter_cpu` deliberately excluded from `cell_name()` |
+| `franka_simulation_experiments/sim_runs/exp_minimal_vs_full_20261102/` | The batch: README, `snapshot_config.py`, `score_extra.py`, `make_plots.py`, `make_videos.py`, `retry_failed.py`, `viz_style.py`, `config/arms_resolved.json`, `cells/`, `cells.csv`, `batch.log` |
+
+Nothing in `franka_experiments` changed except the launch argument, so the Chapter 15.6 manifest moves by one file. The two arms are configuration, not code: the baseline is reproduced by name rather than by revert, which is the property that makes the comparison repeatable after the shipped defaults move again.
+
+**What was verified for this addendum, and how.**
+
+| Claim | Method | Outcome |
+|---|---|---|
+| Every key either arm overrides is a real, in-range `CBF_PARAM_SPEC` key | Parse `CBF_PARAM_SPEC` out of `config.py`; read `config/arms_resolved.json`; check each key's presence, declared type and bounds, and its `fr3_control.yaml` default | **17/17 present and in range** (2 for `full`, 15 for `minimal`). The node would accept the whole string |
+| `full` really is the shipped configuration minus the go-around | Diff `arms_resolved.json`'s `stack_args` for the two arms against the Chapter 1.2 launch-override table | Confirmed; the only non-flag differences are `enable_go_around: false` and `qp_rate_hz: 100.0`, both deliberate |
+| The ablation removes what its description says it removes | Check each `minimal` override against the shipped default it replaces | **Two of them are no-ops.** `enable_velocity_feedforward` and `enable_sensor_range_uncertainty` are already `false` in `fr3_control.yaml` and set by no launch, so the braking and sensor-range margins are in neither arm. Entered in Chapter 13.1 |
+| What the minimal arm actually runs | Read `ConstraintBuilder.build` with the arm's 9 flag overrides and 15 parameter overrides applied | (7.26) exactly, with three qualifications now stated in Chapter 7.8: the (7.23) depth saturation survives (`retreat_excess_speed_max` is overridden by neither arm), $d_i$ is the mask-dilated conditioned distance of Chapters 4.4–4.6, and the rows stay relaxable against `rho_slack` $=1000$ |
+| Zone ladder off leaves well-defined gains | Read the `self._zones is None` path in `ConstraintBuilder.build` | `k0_row`, `k1_row`, `zone_row` and `m_zone` all stay `None` from the snapshot through the node to `build_row_rhs`, which then evaluates the scalar expression it did before the ladder existed; the source states that path is bit-identical |
+| The batch's completeness | Read `batch.log`, `cells.csv` and `cells/` | **18 of 36 cells**, then `Terminated` during the nineteenth; 18 CSV rows, 17 scored, 1 timeout at 411 s, **8 scenario/seed pairs** with both arms. No `metrics.csv`, no `summary.md`, `plots/` and `videos/` empty |
+| Whether the QP-rate control held | `qp_rate_hz` column of `cells.csv`, per arm | **It did not.** `full` 31.3–91.2 Hz against `minimal` 98.3–100.0 Hz, both targeting 100 Hz; the batch was run without `--filter-cpu`. Tabulated in Chapter 12.7 and entered in Chapter 13.1 |
+| Test coverage of the new route | Grep both test trees for `cbf_param_overrides`, `params_arg`, the new condition names | **None.** `test_conditions.py` still checks the four original conditions and pins only the global `cbf:` block. The launch's own identity guard is a golden snapshot that cannot be collected without `launch` |
+
+**What was changed in this guide for it.**
+
+| Chapter | Change |
+|---|---|
+| Front matter | The fifth change named, with pointers to 7.8, 12.7 and here |
+| 1.2 | The fourth configuration route: `cbf_param_overrides`, its validation, and the two cautions |
+| 7.8 | **New.** (7.26), the minimal row; (7.27), the complete framework as five substitutions on it; the fifteen-entry addition table and its constraint/objective seam; what both arms keep; the two margins already off; three things the minimal arm does *not* remove; why obstacle slack is not comparable across the arms |
+| 12.7 | **New block.** The harness, the two per-condition blocks and their precedence, the design, the incomplete status, the rate table with paired $\min h$, and a term-by-term reading of which comparisons survive the contamination |
+| 13.1 | Three new findings: the rate control that did not hold, the two no-op overrides, the untested parameter route |
+
+**What this addendum did not do.** The same limits as §15.10.6 apply — no container, no ROS node, no Gazebo. In particular the batch was **not** completed or re-run, `score_extra.py` and `make_plots.py` were **not** executed, and no cell was re-scored; every number quoted from the experiment was read out of `cells.csv` and `batch.log` as the harness left them. The eight paired cells are reported in Chapter 12.7 as a partial measurement with its contamination stated, not as a result. The experiment that would settle the question is the same batch run to completion, with `--filter-cpu`, into a fresh directory — and, if the contrast is meant to be the one its own description claims, with the two no-op overrides either removed from the arm or made real by turning the corresponding margins on in `full`.
+
+
+### 15.11 Kinematics correction and deployed dynamics verification (3 November 2026)
+
+#### 15.11.1 Scope and implementation status
+
+This update reads the current executable source rather than treating the old guide's defect list as current. Both main-path kinematic fixes are present: the rigid point's rotating-offset derivative, and the configured interpolation/fingertip callback wired into `ConstraintBuilder`. The optional ISO point-speed consumers use that configured geometry too. The original point positions, labels, order, radii, gains, safety distances, objective weights and nominal trajectory are unchanged by these fixes.
+
+The current production converter now uses `nle - g`, as do `PentagonTorqueCommander` and OSCBF's dynamics helper. An initial check captured the earlier `data.C @ v` revision; a second check after re-reading the updated code verifies the corrected method on identical states. Both checks call numerical methods without constructing a ROS node, publishing a command or starting a plant. The full symmetric mass matrix is established for the identified ROS Pinocchio 4.0.0 binding. These are existing production edits documented here, not production edits made by this documentation task.
+
+The [independent kinematic audit](../../KINEMATICS_CRITICAL_ISSUES_VERIFICATION.md) preserves the pre-fix evidence. [KINEMATICS_FIX_VALIDATION.md](../../KINEMATICS_FIX_VALIDATION.md) records the production fixes, per-point results, QP scenarios and before/after regression outcomes. Their archived results are not overwritten by this documentation refresh. The older velocity-filter node and OSCBF's separately implemented obstacle helper remain distinct legacy paths; the main fixes do not silently migrate them.
+
+#### 15.11.2 Kinematic and HOCBF verification
+
+The identified environment is the existing `franka_ros2` Docker container after sourcing `/opt/ros/humble/setup.bash` and `/ros2_ws/install/setup.bash`: Python 3.10.12, Pinocchio 4.0.0, NumPy 1.26.4 and OSQP 0.6.7.post3. The original seven-coordinate no-hand CBF model, 53 state/velocity cases and seed `20261103` are retained. Positions are recomputed using the actual `define_control_points` at every perturbation. The fingertip replacement is evaluated separately from ordinary interpolation.
+
+| Current production check | Maximum residual | Audit tolerance |
+|---|---:|---:|
+| Configured J versus position FD | $2.741\times10^{-10}$ m/rad | $2\times10^{-8}$ |
+| Configured Jdot versus Jacobian FD | $4.063\times10^{-10}$ m/(rad·s) | $2\times10^{-8}$ |
+| Complete acceleration versus second position FD | $8.459\times10^{-8}$ m/s² | $2\times10^{-6}$ |
+| Complete production acceleration versus Pinocchio classical acceleration | $1.230\times10^{-15}$ m/s² | $2\times10^{-12}$ |
+| Rigid helper Jdot versus exact rigid reference | $2.615\times10^{-16}$ m/(rad·s) | $2\times10^{-12}$ |
+
+There are **583 point/state comparisons**. Matrix norms are Frobenius norms and acceleration norms are Euclidean. First/directional FD step is $10^{-6}$; the second position difference uses $2\times10^{-4}$ s along $q(t)=q+t\dot q+\tfrac12t^2u$. A retained step sweep exposes the cancellation error of much smaller second-difference steps. All eleven configured points are covered, including the two previously unaffected coincident-origin samples.
+
+The **24 QP cases** use the actual constraint builder, RHS assembly and OSQP sign convention. Current configured-production matrices, bounds, drift, slack and acceleration solutions agree with independent-reference variants within $2\times10^{-8}$ checks. Maximum computed CBF inequality violation across these numerical solves is $1.34\times10^{-15}$. This is a numerical solver residual after allowing the paid family slack, not a physical safety margin.
+
+For an identical archived link7#0 obstacle case, the false joint-7 coefficient of magnitude 0.0586667 m/rad disappears; the isolated row's lower bound changes from 1.873151 to 1.397483 m/s² and the QP acceleration changes by 0.997367 rad/s² in norm. For the rigid fingertip's head-on case, J is unchanged, the lower bound changes from 3.975868 to 4.172202 m/s², and the QP acceleration changes by 1.849535 rad/s². Head-on tangential velocity is zero at that instant, isolating the offset correction from the separately omitted distance-normal term. These are before/after algebraic comparisons with fixed geometry and objective, not closed-loop safety outcomes.
+
+The prior **kinematics-only** correction run also records **218 focused regression passes** covering kinematics, geometry, HOCBF/QP and ISO utilities, including all four pre-existing control-point derivative tests and fifteen new permanent cases. The isolated synthetic live-node smoke test passed at approximately 288 Hz against a configured 300 Hz rate, with finite outputs, expected stale-input braking and no reported QP failures. At that kinematics-only snapshot, full suites remained **1250 passed / 43 failed / 9 skipped / 1 collection error** for `franka_experiments`, and **137 passed / 10 failed / 1 collection error** for the selected pure simulation suites. Failing test identifiers were present before the fixes; four former kinematics fixture errors were resolved. These suite counts predate the newly observed dynamics edits. This documentation-only refresh does not claim to have rerun the broad suites or validated all three complete dynamics caller loops; its new dynamics result is the isolated 54-state converter check. The archived logs and comparison are in [analysis/kinematics_fix_20261103](../../analysis/kinematics_fix_20261103).
+
+Reproduce the current numerical kinematic check from the host, choosing a new output directory:
+
+```bash
+docker exec franka_ros2 bash -lc '
+  source /opt/ros/humble/setup.bash
+  source /ros2_ws/install/setup.bash
+  export PYTHONPATH=/ros2_ws/src/franka_experiments:$PYTHONPATH
+  cd /ros2_ws/src
+  python3 analysis/kinematics_verification_20261103/verify_kinematics.py \
+    --out analysis/guide_update_20261103/kinematics_reproduction_01
+'
+```
+
+The script now asserts that current production is correct; it does not retain the original assertions expecting defects. A permanent targeted test command, in that same sourced environment, is:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 ROS_DOMAIN_ID=218 python3 -m pytest -q \
+  franka_experiments/test/test_control_point_derivatives.py \
+  franka_experiments/test/test_kinematics_fix_regression.py
+```
+
+#### 15.11.3 Current dynamics result and its independent reference
+
+The read-only [verify_dynamics.py](../../analysis/guide_update_20261103/verify_dynamics.py) calls the actual `QddotToTorqueNode._compute_tau` over the original 53 states plus an explicit nonzero-velocity probe, **54 cases** total. It uses `generate_urdf_from_xacro` / `load_pinocchio_model`, exactly as the converter does: hand enabled, nine coordinates, arm states mapped by joint indices, neutral fingers and zero finger velocities/accelerations. No ROS node or controller is instantiated.
+
+The independent reference is $(\operatorname{rnea}(q,v,a_{\rm full})-g(q))_{\rm arm}$. RNEA with zero velocity and unit accelerations separately reconstructs each arm mass column. The [archived earlier result](../../analysis/guide_update_20261103/dynamics_results.json) identifies converter SHA-256 `61a6ed39bf4b8ab58a51a28d5f7f7e1a97683569c7de09016773570536fbc7b5`; the [corrected result](../../analysis/guide_update_20261103/dynamics_corrected_results.json) identifies `cf86d2d88db337597b94fdf6fb73d13562704601b698bcd829b50cf580b7e7f2`. The source changed during the documentation review; the final guide follows the re-read corrected revision. Both outputs retain all states and torque vectors.
+
+| Comparison over identical 54 cases | Earlier converter | Current converter |
+|---|---:|---:|
+| $\|M-M^\top\|_F$ | 0 | 0 |
+| $\|M-M_{\rm RNEA\ columns}\|_F$ | $4.491\times10^{-14}$ kg·m² | $4.491\times10^{-14}$ kg·m² |
+| Stored $C$ matrix norm | 0 (used incorrectly) | 0 (unused) |
+| Maximum $\|c_{\rm reference}\|$ | 3.554182 N·m | 3.554182 N·m |
+| $\|\tau_{\rm Python}-(\operatorname{rnea}-g)_{\rm arm}\|$ | 3.554182 N·m | $4.458\times10^{-14}$ N·m |
+| $\|\tau_{\rm Python}-M_{\rm RNEA}u\|$ | $1.787\times10^{-14}$ N·m | 3.554182 N·m |
+| $\|\tau_{\rm Python}-M_{\rm RNEA}u-c_{\rm reference}\|$ | omitted term | $3.392\times10^{-14}$ N·m |
+
+The current script asserts mass symmetry, independent mass agreement, RNEA torque agreement and the $Mu+c$ identity to $10^{-12}$ tolerances. This is an isolated **PASS** for converter mathematics in the identified runtime. It is not a full regression run of the dynamics changes, a timing test or a simulation/hardware safety validation. At zero velocity the old discrepancy disappears, which is why nonzero velocities are included.
+
+Model XML SHA-256 is `ceeb38431fc68c13543499882c56dfe68caf68b4baf71e8120e015faf895500c`; binding module is `/opt/ros/humble/lib/python3.10/site-packages/pinocchio/__init__.py`. The modified Gazebo hand/armature model is not this converter's fresh hardware-description model. Other bindings and models require separate checks.
+
+Reproduce with a new output filename:
+
+```bash
+docker exec franka_ros2 bash -lc '
+  source /opt/ros/humble/setup.bash
+  source /ros2_ws/install/setup.bash
+  export PYTHONPATH=/ros2_ws/src/franka_experiments:$PYTHONPATH
+  cd /ros2_ws/src
+  python3 analysis/guide_update_20261103/verify_dynamics.py \
+    --out analysis/guide_update_20261103/dynamics_reproduction_01.json
+'
+```
+
+The gravity convention and full-model arm/finger mapping are preserved. Complete commander/OSCBF loop regression and renewed simulation timing/effort checks remain separate validation work. No production dynamics, gains or controller policy were edited by this documentation task.
+
+#### 15.11.4 What the subsequent DIAG bag does and does not show
+
+The post-fix run `20261103/114032_pentagon_static_baseline_kf_s0` uses the DIAG lab, `condition=kf`, real simulated-camera perception and a static sphere. Its 30 s episode spans simulation time 9.61–39.62 s. A read-only [bag review](../../analysis/diag_bag_review_20261103/diag_final/summary.json) and [diagnostic plot](../../analysis/diag_bag_review_20261103/diag_bag_findings.png) establish:
+
+- Recorded CBF output averages 23.7 Hz in simulation time versus its 300 Hz target; perception averages 29.1 Hz versus 90 Hz. Torque-command gaps reach 219 ms, with repeated 100 ms timeout/HOLD warnings. Median capture-to-recording perception lag is 88 ms. RTF is about 0.58; slow simulation alone is not equivalent to a violated simulated deadline, but the recorded command gaps and HOLD logs are direct execution evidence.
+- The true sampled gap to the scripted sphere reaches 0.06736 m at 21.479 s, below the configured 0.10 m from about 21.198 to 21.841 s. At that approach the CBF's nearest visible-object estimate remains around 0.24 m and the affected point initially reports floor-height obstacle returns. No negative scripted-sphere gap is recorded. The truth archive does not establish clearance to every item of lab furniture.
+- The passive effort monitor flags ten joint-6 samples in three bursts, peaking at 12.206 N·m against its 12 N·m simulated effort check. These are measured simulated effort, not the converter's much smaller joint-6 feedforward alone. No hardware trip is inferred.
+- QP logs report zero solver failures and the CBF fault flag stays zero despite downstream HOLD events; obstacle slack reaches 8.09. Finite solved QP commands do not establish timely delivery, accurate visible geometry or hard barrier satisfaction.
+
+The immediately preceding bare-scene run uses the same corrected kinematics and seed, not a pre-fix executable. It records approximately 46.1 Hz CBF output and 0.09509 m minimum scripted-sphere gap. The contrast changes lab geometry and computational/perception load together; it cannot attribute an improvement or regression to the kinematic fixes. No depth images are recorded in these bags, so the precise visibility/masking/selection cause is unresolved. These bags also do not isolate the earlier dynamics omission as a cause of the observed motion or validate the later dynamics correction. Corrected point derivatives, correct inverse dynamics, perception coverage and achieved command timing are separate requirements.
+
+#### 15.11.5 Scoped current source identity
+
+The following hashes identify the source re-read for this update at HEAD `2d87ab668b256ba903776e7fd9bb44e8c62449fa` plus the existing dirty working tree. They supplement, rather than rewrite, the historical manifest in §15.6. Production code was not changed by the documentation task.
+
+| Relevant current file | SHA-256 |
+|---|---|
+| `franka_experiments/franka_experiments/utils/kinematics.py` | `512b6c2b002252497bb50aa1e6d2c6eeec863a830e402ce0c1737437c3ce0f5e` |
+| `franka_experiments/franka_experiments/utils/cbf_state_rows.py` | `ab7ed221e9efcdfad5e6ace1f99c466171cd7627293b44cd26986517e41a84ec` |
+| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | `cca876866e05ea98877cd54511c23b32f7063808b053cd42d1073bea811c011b` |
+| `franka_experiments/franka_experiments/nodes/qddot_to_torque.py` | `cf86d2d88db337597b94fdf6fb73d13562704601b698bcd829b50cf580b7e7f2` |
+| `franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py` | `bb3f50fdbf2d07d95613610cbc6b408b534c7fd35fd3d4bf8eda5998f387cb69` |
+| `franka_experiments/franka_experiments/nodes/cbf_OSCBF_filter.py` | `90b9d3f6576a9575cb2292123890dae298345529b1dff447b78b9897a5af37aa` |
+| `franka_experiments/franka_experiments/nodes/iso_safety_monitor.py` | `fc66b72aefc997066e9b49215f75ad991cdd3147fd0f749614a868f09355b545` |
+| `franka_experiments/franka_experiments/nodes/iso_evidence_logger.py` | `f9f693a1531025a486bdeec5d35c06b20c9b5d03c8b7438d14ba30c8cae57251` |
+| `franka_experiments/franka_experiments/utils/perception_msgs.py` | `becf854a25b289be32f82c94642a85b1719e617b3382ac62b862d6a1a4b2f2ea` |
+| `franka_experiments/launch/torque_control_stack.launch.py` | `c76579bc2cfbe5f254d5403fdf79aff31a2281e222e3e90f40c8c10a0c44e81c` |
+| `franka_experiments/test/test_kinematics_fix_regression.py` | `efd17823837fe64d7b7e9ace53b2198e3f27a066cd82b4487d02e319bbf8de3e` |
+| `analysis/kinematics_verification_20261103/verify_kinematics.py` | `4e54722d474caa8b55b64a232b08caa89200d6667b5c71031479b5dfb824f32d` |
+| `analysis/guide_update_20261103/verify_dynamics.py` | `dd1f0d0e0c5ff9a434d9a1b4a824a39d056354f08724879ef2ed94a6c67757f9` |
+
+The guide was edited from a task-start copy with its unrelated existing text retained. Mathematical/code links, equation identifiers and these scoped source hashes are checked after the edit. No physical robot commands were issued during this documentation update.

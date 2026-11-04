@@ -2,44 +2,32 @@
 
 [![CI](https://github.com/frankarobotics/franka_ros2/actions/workflows/ci.yml/badge.svg)](https://github.com/frankarobotics/franka_ros2/actions/workflows/ci.yml)
 
-This repository provides a **ROS 2 integration framework for Franka Robotics research robots**, extending the official [`franka_ros2`](https://github.com/frankarobotics/franka_ros2) project with additional tools for:
+A ROS 2 Humble research framework for Franka robots, built on the official
+[`frankarobotics/franka_ros2`](https://github.com/frankarobotics/franka_ros2) project.
+This fork adds CBF safety filters, real-time controllers, Gazebo simulation, and
+MuJoCo-based Safe-RL training with ONNX deployment to the real FR3.
 
-- 🛡 **Control Barrier Function (CBF) safety filters** for real-time collision avoidance
-- 🧪 **Robotics research experiments** on the real FR3
-- 🖥 **Simulation environments** (Gazebo/Ignition + RViz2, and MuJoCo)
-- 🤖 **MoveIt2 motion planning**
-- 🧠 **Safe Reinforcement Learning** with sim-to-real deployment
-- 📦 **Docker-based development environments**
-
-> **This repository is a fork** of the official [frankarobotics/franka_ros2](https://github.com/frankarobotics/franka_ros2).
-> It adds **four research-oriented packages** on top of the upstream codebase:
->
-> | Package | Purpose |
-> |---|---|
-> | **`franka_experiments`** | Two end-to-end CBF safety stacks for the real FR3 (acceleration/torque and velocity): motion generators, HOCBF/OSCBF QP filters, depth-camera human–robot distance estimation, hand–eye calibration |
-> | **`franka_rt_controllers`** | Real-time C++ `ros2_control` controllers running inside the 1 kHz loop: joint-torque executor, joint-velocity executor, and a C++ CBF torque controller |
-> | **`franka_simulation`** | Gazebo (Ignition) + RViz2 + MoveIt2 simulation with four control pipelines (position, velocity, acceleration, torque) plus a CBF/avoidance pipeline |
-> | **`franka_rl`** | Standalone MuJoCo module (no ROS 2) for training a Safe-RL policy against the *same* CBF filter that runs on the robot, exported to ONNX for deployment |
-
-The goal of this fork is to provide a **reproducible robotics research environment** for developing and testing algorithms such as:
-
-- safety-critical control (CBF / QP)
-- motion control and collision avoidance
-- perception-driven control
-- human–robot interaction
-- safe reinforcement learning and sim-to-real transfer
-
-> **Note:** `franka_ros2` is not officially supported on Windows.
+**Start with the [Docker installation](#docker-container-installation)** for a
+consistent environment containing ROS 2, MoveIt2, Gazebo, perception tools, and the
+training stack. ROS 2 does not need to be installed on the host.
 
 ## Table of Contents
+
 - [About](#about)
 - [Research Extensions in This Fork](#research-extensions-in-this-fork)
 - [Caution](#caution)
-- [Setup](#setup)
-  - [Local Machine Installation](#local-machine-installation)
+- [Installation](#installation)
   - [Docker Container Installation](#docker-container-installation)
-    - [Shared workstation: several accounts on one PC](#shared-workstation-several-accounts-on-one-pc)
-      - [First-time setup on a new account](#first-time-setup-on-a-new-account)
+    - [Prerequisites](#docker-prerequisites)
+    - [Clone and configure](#clone-and-configure)
+    - [Option A: Docker Compose](#option-a-docker-compose)
+    - [Option B: VS Code Dev Containers](#option-b-vs-code-dev-containers)
+    - [GUI access: RViz and Gazebo](#gui-access-rviz-and-gazebo)
+    - [Build the workspace](#build-the-workspace)
+    - [Daily workflow](#daily-workflow)
+    - [Data persistence](#data-persistence)
+    - [Shared workstations](#shared-workstations)
+  - [Local Machine Installation](#local-machine-installation)
 - [Test the Setup](#test-the-setup)
 - [franka_experiments](#franka_experiments)
 - [franka_rt_controllers](#franka_rt_controllers)
@@ -48,7 +36,7 @@ The goal of this fork is to provide a **reproducible robotics research environme
 - [Documentation map](#documentation-map)
 - [Troubleshooting](#troubleshooting)
   - [libfranka: UDP receive: Timeout error](#libfranka-udp-receive-timeout-error)
-  - [colcon build fails in libfranka with a permission error](#colcon-build-fails-in-libfranka-with-a-permission-error)
+  - [Build permission errors](#build-permission-errors)
   - [GUI windows never appear](#gui-windows-never-appear)
 - [Contributing](#contributing)
 - [License](#license)
@@ -56,352 +44,396 @@ The goal of this fork is to provide a **reproducible robotics research environme
 
 ## About
 
-The **franka_ros2** project provides the official **ROS 2 interface for Franka Robotics research robots**, built on top of the low-level **libfranka** control library.
+The upstream `franka_ros2` project provides the ROS 2 interface to Franka research
+robots through **libfranka** and **ros2_control**. This fork extends that interface
+for experiments in collision avoidance, perception-driven control, human–robot
+interaction, and safe reinforcement learning.
 
-It enables developers to control Franka robots within the **ROS 2 ecosystem**, providing access to:
-
-- real-time robot control
-- ROS 2 control interfaces
-- integration with the ROS 2 toolchain (RViz2, MoveIt2, Gazebo)
-- modular controllers and hardware abstractions
-
-This repository is a **fork of the official [`frankarobotics/franka_ros2`](https://github.com/frankarobotics/franka_ros2)** project and extends it with additional features aimed at robotics research workflows.
-
-The main additions of this fork include:
-
-- **`franka_experiments`** — CBF safety filters and experiment nodes for the real FR3 (or fake hardware), covering both an acceleration/torque stack and a velocity stack
-- **`franka_rt_controllers`** — real-time C++ `ros2_control` controllers that execute torque and velocity commands in the 1 kHz loop
-- **`franka_simulation`** — Gazebo (Ignition) and RViz2 simulation with MoveIt2 planning, four control pipelines, and an online collision avoidance pipeline
-- **`franka_rl`** — MuJoCo-based Safe-RL training module whose learned policies deploy back onto the ROS 2 torque stack through ONNX
-- a **Docker-based development environment** for reproducible builds
-- additional utilities for robotics experimentation
-
-### Why Docker?
-
-While it is possible to install all dependencies directly on the host system, the **Docker-based workflow** provides several advantages:
-
-- reproducible development environments
-- simplified dependency management
-- reduced risk of library conflicts
-- easier onboarding for new users
-
-For these reasons, **using Docker is the recommended installation method** for this repository.
-The training stack used by `franka_rl` (PyTorch + CUDA, MuJoCo, Gymnasium, Stable-Baselines3, ONNX Runtime, OSQP) lives **only** in the container image, not on the host.
+Docker is the recommended development environment because it keeps ROS, system
+libraries, and Python dependencies together. The Dockerfile also installs the
+`franka_rl` training stack (PyTorch, MuJoCo, Gymnasium, Stable-Baselines3, ONNX
+Runtime, and OSQP) inside the image.
 
 ## Research Extensions in This Fork
 
-This fork extends the official `frankarobotics/franka_ros2` project with additional
-research-oriented extensions. The four additional packages introduced in this fork are:
-
-- **`franka_experiments`** — The main research package. Implements two end-to-end control stacks, both centred on **Control Barrier Function** safety filters that enforce collision avoidance at run time. The **torque stack** works in acceleration space (motion generator → HOCBF QP → inverse dynamics → 1 kHz torque controller); an alternative torque path uses the Operational Space CBF of Morton & Pavone (arXiv:2503.06736). The **velocity stack** works at the kinematic level (velocity commander → velocity-CBF QP → 1 kHz velocity executor). Shared infrastructure includes `real_time_distance`, a depth-camera human–robot distance estimator, plus experiment logging, RViz capsule visualisation, and an AprilTag hand–eye calibration pipeline.
-
-- **`franka_rt_controllers`** — Real-time C++ `ros2_control` plugins that keep the hard deadline out of Python: `rt_torque_controller` (effort interfaces, optional low-pass filter, per-joint clipping; gravity is added by the Franka firmware), `rt_velocity_executor_controller` (velocity interfaces, interpolation, rate limiting, timeout ramp), and `cbf_torque_controller` (inverse dynamics from `qddot_safe` inside the RT loop). No heap allocations, mutexes, or logging in the RT path.
-
-- **`franka_simulation`** — Gazebo (Ignition) + RViz2 simulation of the FR3 with MoveIt2 integration and four selectable control pipelines (position, velocity, acceleration, torque), plus a CBF/avoidance pipeline with a Pinocchio-based online avoidance controller, a velocity-blending CBF-QP, obstacle synchronisation with the MoveIt planning scene, and an optional RealSense + MediaPipe human pose pipeline.
-
-- **`franka_rl`** — Standalone MuJoCo training module with **no ROS 2 dependency**. It reproduces the robot's acceleration-level CBF filter inside a Gymnasium environment, trains a SAC policy that explores *behind the same shield* it will meet on hardware, and exports the actor to ONNX. `rl_policy_commander` in `franka_experiments` replays that ONNX graph on the real robot (`motion_source:=rl`).
-
-Docker support and the `.devcontainer` configuration are also developed in this fork.
+| Package | Purpose | Documentation |
+|---|---|---|
+| `franka_experiments` | CBF torque and velocity stacks, depth-camera distance estimation, experiment logging, and hand–eye calibration | [Package guide](./franka_experiments/README.md) |
+| `franka_rt_controllers` | C++ `ros2_control` plugins for torque and velocity execution in the 1 kHz loop | [Controller overview](#franka_rt_controllers) |
+| `franka_simulation` | Gazebo Fortress, RViz2, and MoveIt2 with position, velocity, acceleration, torque, and avoidance pipelines | [Simulation guide](./franka_simulation/README.md) |
+| `franka_rl` | Standalone MuJoCo Safe-RL training behind a CBF filter, with ONNX export for deployment | [Training guide](./franka_rl/README.md) |
 
 ### Branch structure
 
-This fork follows a clear branching strategy to ensure portability and easy synchronization with the official repository:
-
-- **`humble`**
-  - Mirrors the official upstream branch `frankarobotics/franka_ros2:humble`
-  - Intended to track the upstream branch, although temporary deviations may occur due to libfranka and firmware compatibility requirements
-  - Not intended for custom development in this fork
-
-- **`humble-mattia`** 
-  - Stable branch including additional simulation packages, Docker extensions, and research tooling
-  - This is the **recommended branch for users who want to clone and use this fork**
-  - Actively maintained and periodically rebased/merged with upstream updates
+- **`humble-mattia`** is the recommended branch for this fork. It contains the
+  research packages, simulation tools, and Docker configuration.
+- **`humble`** tracks the upstream Humble branch. It is used for synchronization
+  with Franka Robotics rather than custom development; compatibility adjustments
+  may temporarily differ from upstream.
 
 ## Caution
+
 This package is in rapid development. Users should expect breaking changes and are encouraged to report any bugs via [GitHub Issues page](https://github.com/frankarobotics/franka_ros2/issues).
 
-## Setup
+## Installation
 
-## Franka ROS 2 Dependencies Setup
+Choose **Docker** for the complete development environment, or use the
+[local installation](#local-machine-installation) to manage dependencies directly
+on the host. The commands below target Linux; `franka_ros2` is not officially
+supported on Windows.
 
-This repository contains a `.repos` file that helps you clone the required dependencies for Franka ROS 2.
+### Docker Container Installation
 
-## Prerequisites
+The [Dockerfile](./Dockerfile) installs dependencies; it does **not** compile the
+ROS 2 workspace. [Docker Compose](./docker-compose.yml) mounts your checkout at
+`/ros2_ws/src`, and you build the workspace inside the running container.
 
-## Local Machine Installation
-1. **Install ROS 2 Development environment**
+#### Docker prerequisites
 
-    _**franka_ros2**_ is built upon _**ROS 2 humble**_.
+- **Linux x86-64** host. The image uses ROS 2 Humble on Ubuntu 22.04 and an
+  `amd64` Pinocchio package repository.
+- **Docker Engine** and **Docker Compose 2.30.0 or newer**, with permission to run
+  Docker commands as your account. See the
+  [Engine installation guide](https://docs.docker.com/engine/install/) and
+  [Compose GPU requirements](https://docs.docker.com/reference/compose-file/services/#gpus).
+- **NVIDIA GPU, host driver, and NVIDIA Container Toolkit** for the default
+  configuration, which requests `gpus: all`. Follow NVIDIA's
+  [installation and Docker configuration guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- **A graphical session with X11 or XWayland** for RViz and Gazebo windows. Install
+  `xauth` on the host for the [GUI access procedure](#gui-access-rviz-and-gazebo).
+  Headless workflows can skip that procedure.
 
-    To set up your ROS 2 environment, follow the official _**humble**_ installation instructions provided [**here**](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html).
-    The guide discusses two main installation options: **Desktop** and **Bare Bones**.
-
-    ### Choose **one** of the following:
-    - **ROS 2 "Desktop Install"** (`ros-humble-desktop`)
-      Includes a full ROS 2 installation with GUI tools and visualization packages (e.g., Rviz and Gazebo).
-      **Recommended** for users who need simulation or visualization capabilities.
-
-    - **"ROS-Base Install (Bare Bones)"** (`ros-humble-ros-base`)
-      A minimal installation that includes only the core ROS 2 libraries.
-      Suitable for resource-constrained environments or headless systems.
-
-    ```bash
-    # replace <YOUR CHOICE> with either ros-humble-desktop or ros-humble-ros-base
-    sudo apt install <YOUR CHOICE>
-    ```
-    ---
-    Also install the **Development Tools** package:
-    ```bash
-    sudo apt install ros-dev-tools
-    ```
-    Installing the **Desktop** or **Bare Bones** should automatically source the **ROS 2** environment but, under some circumstances you may need to do this again:
-    ```bash
-    source /opt/ros/humble/setup.sh
-    ```
-
-2. **Create a ROS 2 Workspace:**
-   ```bash
-   mkdir -p ~/franka_ros2_ws/src
-   cd ~/franka_ros2_ws  # not into src
-   ```
-3. **Clone the Repositories:**
-   ```bash
-   git clone --recurse-submodules https://github.com/MattiaCastelmare/franka_ros2.git src
-    ```
-4. **Install the dependencies**
-    ```bash
-    vcs import src < src/franka.repos --recursive --skip-existing
-    ```
-5. **Detect and install project dependencies**
-   ```bash
-   rosdep install --from-paths src --ignore-src --rosdistro humble -y
-   ```
-6. **Build**
-   ```bash
-   # use the --symlinks option to reduce disk usage, and facilitate development.
-   colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
-   ```
-7. **Adjust Enviroment**
-   ```bash
-   # Adjust environment to recognize packages and dependencies in your newly built ROS 2 workspace.
-   source install/setup.sh
-   ```
-
-## Docker Container Installation
-The **franka_ros2** package includes a `Dockerfile` and a `docker-compose.yml`, which allows you to use `franka_ros2` packages without manually installing **ROS 2**. Also, the support for Dev Containers in Visual Studio Code is provided.
-
-For detailed instructions, on preparing VSCode to use the `.devcontainer` follow the setup guide from [VSCode devcontainer_setup](https://code.visualstudio.com/docs/devcontainers/tutorial).
-
-1. **Clone the Repositories:**
-
-    ```bash
-    git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git
-    cd franka_ros2
-    ```
-    `libfranka` and `franka_description` are **not** part of this repository — they are
-    listed in `franka.repos` and pulled in later with `vcs import` (step 6 below), which
-    is why a fresh clone does not contain them. This repo registers no git submodules, so
-    `--recurse-submodules` has no effect here.
-    We provide separate instructions for using Docker with Visual Studio Code or the command line. Choose one of the following options:
-
-    Option A: Set up and use Docker from the command line (without Visual Studio Code).
-
-    Option B: Set up and use Docker with Visual Studio Code's Docker support.
-
-### Option A: using Docker Compose
-
-  2. **Declare your user id and your own Compose project:**
-      ```bash
-      export COMPOSE_PROJECT_NAME=franka_$USER
-      export USER_UID=$(id -u)
-      export USER_GID=$(id -g)
-      ```
-      Add those lines to your `~/.bashrc` so every new shell has them.
-
-      `USER_UID`/`USER_GID` are baked into the image at build time
-      (`Dockerfile:127-128`) and must match the owner of your clone: bind mounts hand
-      the kernel raw numeric uids, with no translation. `COMPOSE_PROJECT_NAME` gives you
-      your own image tag, so that several accounts on one PC do not overwrite each
-      other's image — see
-      [Shared workstation](#shared-workstation-several-accounts-on-one-pc).
-
-      A `.env` file holding the same two variables also works, but only on a
-      single-user machine: shell variables take precedence over `.env`, and a clone
-      shared between accounts would share its `.env` too.
-
-  3. **Build the container:**
-      ```bash
-      docker compose build
-      ```
-  4. **Run the container:**
-      ```bash
-      docker compose up -d
-      ```
-  5. **Open a shell inside the container:**
-      ```bash
-      docker exec -it franka_ros2 /bin/bash
-      ```
-  6. **Clone the latests dependencies:**
-      ```bash
-      vcs import src < src/franka.repos --recursive --skip-existing
-      ```
-  7. **Build the workspace:**
-      ```bash
-      colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
-      ```
-  8. **Build only franka_simulation package:**
-      ```bash
-      colcon build --packages-select franka_simulation --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
-      ```
-  9. **Source the built workspace:**
-      ```bash
-      source install/setup.bash
-      ```
-  10. **When you are done, you can exit the shell and delete the container**:
-      ```bash
-      docker compose down -t 0
-      ```
-
-### Option B: using Dev Containers in Visual Studio Code
-
-  2. **Open Visual Studio Code ...**
-
-        Then, open folder  `franka_ros2`
-
-  3. **Choose `Reopen in container` when prompted.**
-
-      The container will be built automatically, as required.
-
-  4. **Clone the latests dependencies:**
-      ```bash
-      vcs import src < src/franka.repos --recursive --skip-existing
-      ```
-
-  5. **Open a terminal and build the workspace:**
-      The **first** time you build the workspace, on systems with ~32 GB of RAM we recommend parallel execution with four workers:
-        ```bash
-        colcon build --symlink-install --executor parallel --parallel-workers 4 --cmake-args -DCMAKE_BUILD_TYPE=Release
-        ```
-     The **others** time use the following command:
-      ```bash
-      colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
-      ```
-  7. **Source the built workspace environment:**
-      ```bash
-      source install/setup.bash
-      ```
-
-
-### Shared workstation: several accounts on one PC
-
-A machine runs **one Docker daemon**, and images plus container names live in a single
-namespace shared by every account on it. Three facts turn that into a conflict here:
-
-1. The container user's uid is fixed at build time — `Dockerfile:127-128` runs
-   `useradd --uid ${USER_UID}` — so an image built by one account carries that account's
-   uid forever.
-2. Bind mounts do not translate uids. `./:/ros2_ws/src` hands the kernel raw numbers, so
-   the uid inside the container must *numerically equal* the owner of the files on the
-   host.
-3. The Compose project name defaults to the directory name — `franka_ros2` for everybody
-   — so without the variables below every account targets the same image tag and the same
-   container.
-
-The result is a tug-of-war: whoever runs `docker compose build` last wins, and everyone
-else's `colcon build` then fails with permission errors inside `src/`.
-
-**Rule: one clone per account, one Compose project per account.**
-
-#### First-time setup on a new account
-
-Run these once, in order, from a terminal **on your own graphical session** (the last
-point matters for GUI windows — see
-[GUI windows never appear](#gui-windows-never-appear)).
-
-**1. Declare your identity and your own Compose project** — append to `~/.bashrc`, then
-open a new terminal:
+**Host — check Docker and the NVIDIA driver:**
 
 ```bash
-cat >> ~/.bashrc <<'EOF'
-export COMPOSE_PROJECT_NAME=franka_$USER   # your own image tag
-export FRANKA_CONTAINER=franka_$USER       # your own container name
-export USER_UID=$(id -u)
-export USER_GID=$(id -g)
-EOF
+docker info
+docker compose version
+nvidia-smi
 ```
 
-`FRANKA_CONTAINER` defaults to `franka_ros2`, the name every other command in this README
-uses. Exactly one account on the machine may leave it unset; every other account has to
-set it, or `docker compose up` fails with *container name already in use*.
+**Without an NVIDIA GPU:** before starting either workflow, remove `gpus: all`
+and the `NVIDIA_VISIBLE_DEVICES` / `NVIDIA_DRIVER_CAPABILITIES` entries from your
+local `docker-compose.yml`. NVIDIA GPU access and CUDA training will be unavailable;
+GUI rendering will depend on the host graphics setup.
 
-**2. Clone into your own home directory:**
+For **real robot control**, use Docker Engine on Linux and configure the host's
+real-time kernel and robot network according to the
+[Franka documentation](https://frankarobotics.github.io/docs/), including the
+[real-time kernel setup](https://frankarobotics.github.io/docs/doc/libfranka/docs/real_time_kernel.html).
+The container shares the host kernel; building the image does not configure it.
+Simulation and fake hardware do not require a real-time kernel.
+
+#### Clone and configure
+
+**Host — clone into a directory owned by your account:**
 
 ```bash
-git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git \
-  ~/Git/franka_ros2
-cd ~/Git/franka_ros2
+git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git
+cd franka_ros2
+
+export COMPOSE_PROJECT_NAME="franka_${USER}"
+export FRANKA_CONTAINER="franka_${USER}"
+export USER_UID="$(id -u)"
+export USER_GID="$(id -g)"
 ```
 
-**3. Build and start your container:**
+Run the four exports in each host terminal used for this project. If you use this
+checkout regularly, you can add them to `~/.bashrc`. Keep the same values when
+building, starting, or stopping the environment.
+
+`USER_UID` and `USER_GID` set the numeric identity of the image's `user` account at
+build time, so it can write to your mounted checkout. `COMPOSE_PROJECT_NAME`
+separates each account's Compose resources and image tag; `FRANKA_CONTAINER`
+separates the container names. Changing only the project name does not change an
+explicit container name.
+
+Compose also reads UID/GID values from `.env`, but exported shell variables take
+precedence. The VS Code workflow rewrites that file, so keep the four exports as
+your common configuration for both workflows.
+
+Choose **one** of the following ways to start the environment.
+
+#### Option A: Docker Compose
+
+**Host — repository root:**
 
 ```bash
+docker compose config --quiet
 docker compose up -d --build
+docker compose logs -f franka_ros2
 ```
 
-The first build takes a while; later ones reuse the cached apt layer.
+The first image build installs the ROS, perception, and training dependencies and
+can take a while. Later builds reuse unchanged layers. At startup,
+[the entrypoint](./franka_entrypoint.sh) imports missing `libfranka` and
+`franka_description` into the mounted checkout using the versions in
+[`franka.repos`](./franka.repos). Wait for the import to finish; press `Ctrl+C`
+to leave the log viewer while keeping the container running. Existing checkouts
+are skipped rather than updated to newer revisions.
 
-**4. Open a shell inside it:**
+Open a shell:
 
 ```bash
-docker exec -it "$FRANKA_CONTAINER" /bin/bash
+# Host — repository root
+docker compose exec franka_ros2 bash
 ```
 
-**5. Pull the out-of-tree packages and build the workspace** — from inside the container:
+The shell starts as `user` in `/ros2_ws`. Continue with
+[GUI access](#gui-access-rviz-and-gazebo) if needed, then
+[build the workspace](#build-the-workspace).
+
+#### Option B: VS Code Dev Containers
+
+Install VS Code and its **Dev Containers** extension; see the
+[official tutorial](https://code.visualstudio.com/docs/devcontainers/tutorial).
+
+1. Complete [Clone and configure](#clone-and-configure), then launch `code .` from
+   that host terminal so VS Code inherits the exported variables. If VS Code is
+   already running, close its windows before launching it from the configured terminal.
+2. Run **Dev Containers: Reopen in Container** from the Command Palette. VS Code
+   uses the same Compose service and builds the image as needed.
+3. Open an integrated terminal. The workspace folder is `/ros2_ws`, with the
+   checkout under `src/`. Allow the startup dependency import to finish before building.
+4. Complete [GUI access](#gui-access-rviz-and-gazebo) if needed, then follow the
+   shared [workspace build](#build-the-workspace) instructions.
+
+The configuration's `initializeCommand` rewrites the checkout's `.env` with your
+host UID/GID before container creation. It does not set `COMPOSE_PROJECT_NAME` or
+`FRANKA_CONTAINER`; those must still come from the configured host environment.
+
+#### GUI access: RViz and Gazebo
+
+Run this after the container starts and before launching a GUI. Use a host
+terminal in **your active graphical session**, with the same Compose variables
+as above. The X11 socket is already mounted by Compose; the commands below copy
+your session's authorization cookie into the container.
+
+**Host — repository root:**
 
 ```bash
-vcs import src < src/franka.repos --recursive --skip-existing
-colcon build --symlink-install --executor parallel --parallel-workers 24 \
+# If xauth is missing on an Ubuntu/Debian host:
+# sudo apt install xauth
+
+echo "$DISPLAY"
+franka_xauth_file=$(mktemp)
+xauth nlist "$DISPLAY" | sed 's/^..../ffff/' | xauth -f "$franka_xauth_file" nmerge -
+docker compose exec -T franka_ros2 bash -c \
+  'umask 077; cat > /tmp/franka.xauth' < "$franka_xauth_file"
+rm -f "$franka_xauth_file"
+```
+
+`DISPLAY` must be nonempty, and `xauth nlist "$DISPLAY"` must return a cookie.
+If either is missing, see [GUI troubleshooting](#gui-windows-never-appear).
+
+**Container — in each terminal that will launch GUI applications**, including
+VS Code integrated terminals:
+
+```bash
+export XAUTHORITY=/tmp/franka.xauth
+```
+
+Repeat the cookie transfer after recreating the container or logging into a new
+graphical session. Avoid `xhost +local:`, which grants display access to all local
+accounts. If the container has an old `DISPLAY`, use the per-shell override in
+[GUI troubleshooting](#gui-windows-never-appear).
+
+#### Build the workspace
+
+Both Docker workflows use the same build procedure. Interactive Bash terminals
+source `/opt/ros/humble/setup.bash` automatically; source the workspace overlay
+manually after each build and in each new terminal.
+
+**Container — `/ros2_ws`:**
+
+```bash
+cd /ros2_ws
+colcon build --symlink-install --executor parallel --parallel-workers 4 \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-`--recursive` is what fetches libfranka's own submodules. `vcs import` writes into
-`/ros2_ws/src`, which *is* your clone on the host — one more reason the uid inside the
-container has to match its owner. MoveIt and pymoveit2 come from apt inside the image, so
-`extras.repos` is not needed for this flow.
-
-Afterwards, a normal working session is just:
+Four package workers are a starting point, not a memory guarantee: CMake can also
+compile files in parallel within each package. Compose currently limits the
+container to 20 GB of RAM. If compilation runs out of memory, reduce package
+workers and limit compiler jobs for the default Makefile generator, for example:
 
 ```bash
-docker start "$FRANKA_CONTAINER"
-docker exec -it "$FRANKA_CONTAINER" /bin/bash
+# Container — /ros2_ws
+MAKEFLAGS="-j2 -l2" colcon build --symlink-install --parallel-workers 2 \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
+
+The startup import is automatic, so a second manual `vcs import` is normally
+unnecessary. If it failed or was interrupted, retry it before building:
+
+```bash
+# Container — /ros2_ws
+vcs import src < src/franka.repos --recursive --skip-existing
+```
+
+`--recursive` includes libfranka's own submodules. Imported repositories are
+written into your checkout on the host. MoveIt2 and `pymoveit2` are installed in
+the image, so `extras.repos` is not required for this Docker workflow.
+
+**Verify the build** without connecting a robot:
+
+```bash
+# Container — /ros2_ws, after sourcing install/setup.bash
+ros2 pkg prefix franka_bringup
+ros2 pkg prefix franka_simulation
+```
+
+Both commands should print paths under `/ros2_ws/install`. Then run a
+[fake-hardware example](#test-the-setup) to check the launch and GUI setup.
+
+**Optional: rebuild one package** after a successful full build:
+
+```bash
+# Container — /ros2_ws, with the existing overlay sourced
+colcon build --packages-select franka_simulation --symlink-install \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-The clone has to live in your own home directory. Separate Compose projects stop the
-accounts from overwriting each other's image and container, but they do not change file
-ownership: mounting somebody else's clone still leaves your container unable to write
-into `src/`.
+`--packages-select` does not build the selected package's dependencies. For a
+partial build that includes workspace dependencies, use
+`--packages-up-to franka_simulation` instead.
 
-To see what belongs to whom:
+#### Daily workflow
+
+**Host — repository root, with the same four exports:**
 
 ```bash
-docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-docker exec <container> id     # the uid inside must equal the clone owner's uid
-stat -c '%u %n' .              # owner of your clone
+docker compose start
+docker compose exec franka_ros2 bash
 ```
 
-Do not delete another account's image (`franka_<user>-franka_ros2`) to reclaim disk
-space: it is the only image matching their uid.
+**Container — each new terminal:**
 
-# Test the build
+```bash
+source /ros2_ws/install/setup.bash
+# For GUI applications, after transferring the session cookie:
+export XAUTHORITY=/tmp/franka.xauth
+```
+
+When finished, run `exit` to leave the shell. To stop the environment while
+preserving its build, run `docker compose stop` **on the host**. Resume with
+`docker compose start`.
+
+Source edits are visible immediately through the bind mount; rebuild the affected
+packages when required. Rebuild the image with `docker compose up -d --build`
+when its dependencies or build arguments change. If Compose recreates the
+container, rebuild the ROS 2 workspace too.
+
+#### Data persistence
+
+| Container path | Storage | Survives `stop` / `start` | Survives container removal or recreation |
+|---|---|---|---|
+| `/ros2_ws/src` | Your host checkout (bind mount) | Yes | Yes |
+| `/ros2_ws/build`, `/ros2_ws/install`, `/ros2_ws/log` | Container filesystem | Yes | No |
+| Other files outside mounted paths | Container filesystem | Yes | No |
+
+Save experiment outputs, bags, and trained models under the mounted checkout
+(e.g. `/ros2_ws/src/franka_rl/models`) or copy them to the host before removing
+the container. Docker image dependencies remain available in the built image;
+packages installed manually in a running container do not survive its removal.
+
+Use `docker compose down` **on the host** only when you intend to remove the
+container. It leaves the checkout intact but deletes the workspace build and
+any other files stored only in the container. The same loss applies to
+`docker compose up --force-recreate` and Dev Containers rebuilds that replace
+the container.
+
+#### Shared workstations
+
+For accounts using the same Docker daemon, use **one checkout per account**, with
+matching UID/GID and distinct Compose project and container names. The exports in
+[Clone and configure](#clone-and-configure) provide those names automatically.
+
+Separate project names prevent image-tag collisions, but do not change ownership
+of mounted files. Use your own checkout rather than another account's working
+tree. Check the identities with:
+
+```bash
+# Host — repository root
+id
+stat -c 'Checkout owner UID:GID: %u:%g (%n)' .
+docker compose exec franka_ros2 id
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+```
+
+The container user's numeric UID should match the checkout owner's UID. Avoid
+removing images or containers belonging to other accounts. Separate Compose
+projects still share the host network: coordinate simultaneous robot access and
+ROS 2 discovery settings with other users.
+
+### Local Machine Installation
+
+Use this route if you want to manage ROS and all research dependencies on the
+host. The Dockerfile is the dependency reference for the complete environment;
+`rosdep` alone does not reproduce its Python perception and training stack.
+
+1. Install **ROS 2 Humble** using the
+   [Ubuntu installation guide](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html).
+   Choose `ros-humble-desktop` for RViz and desktop tools, or `ros-humble-ros-base`
+   for a minimal installation; install simulation tools separately as needed.
+   Install the development tools and source ROS in your terminal:
+
    ```bash
-   colcon test
+   # Host
+   sudo apt install ros-dev-tools
+   source /opt/ros/humble/setup.bash
    ```
-> Remember, franka_ros2 is under development.
-> Warnings can be expected.
+
+2. Create a workspace, clone this fork, and import its pinned source dependencies:
+
+   ```bash
+   # Host
+   mkdir -p ~/franka_ros2_ws
+   cd ~/franka_ros2_ws
+   git clone -b humble-mattia https://github.com/MattiaCastelmare/franka_ros2.git src
+   vcs import src < src/franka.repos --recursive --skip-existing
+   ```
+
+3. Resolve ROS dependencies. If `rosdep` has not been initialized on the machine,
+   run `sudo rosdep init` once before these commands:
+
+   ```bash
+   # Host — ~/franka_ros2_ws
+   rosdep update
+   rosdep install --from-paths src --ignore-src --rosdistro humble -y
+   ```
+
+   Install the additional system and Python dependencies required by your chosen
+   research packages, using the [Dockerfile](./Dockerfile) as a reference. Preserve
+   its version constraints, especially for OSQP, qpsolvers, and the perception stack.
+
+4. Build and source the workspace:
+
+   ```bash
+   # Host — ~/franka_ros2_ws
+   colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+   source install/setup.bash
+   ```
+
+   Source `/opt/ros/humble/setup.bash` and your workspace's `install/setup.bash`
+   in each new terminal before running ROS commands.
 
 ## Test the Setup
+
+Run these commands in a terminal with the built workspace sourced. For Docker,
+use a container terminal and complete [GUI access](#gui-access-rviz-and-gazebo)
+before examples that open RViz or Gazebo.
+
+### Run package tests
+
+```bash
+# Workspace root: /ros2_ws in Docker, or ~/franka_ros2_ws on the host
+colcon test
+colcon test-result --verbose
+```
+
+See the package test guides for test-specific dependencies and hardware requirements.
 
 ### Run a sample ROS 2 application
 
@@ -419,7 +451,8 @@ If you want to run this example with namespaces, you would need to use the argum
 The main research pipeline of this fork. It needs no real robot to start:
 
 ```bash
-ros2 launch franka_experiments torque_control_stack.launch.py use_fake_hardware:=true
+ros2 launch franka_experiments torque_control_stack.launch.py \
+  use_fake_hardware:=true enable_camera:=false start_real_time_distance:=false
 ```
 
 ### Run the simulation environment (franka_simulation)
@@ -679,19 +712,20 @@ franka_rl/
 └── export_onnx.py        # actor → ONNX, validated against the SB3 policy
 ```
 
-Everything runs **inside the container** (the training stack is in the image, not on the host):
+Run these commands **on the host, from the repository root**, with the same Compose
+variables used during installation. Each command runs the training stack inside the container:
 
 ```bash
 # Train
-docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
+docker compose exec franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
   python3 -m franka_rl.train --exp-name sac_v3 --total-timesteps 2000000'
 
 # Score every checkpoint against the zero-action and random baselines
-docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
+docker compose exec franka_ros2 bash -lc 'cd /ros2_ws/src && MUJOCO_GL=egl \
   python3 -m franka_rl.scripts.compare_checkpoints --model-dir franka_rl/models/sac_v3'
 
 # Export a checkpoint for the robot
-docker exec -it franka_ros2 bash -lc 'cd /ros2_ws/src && \
+docker compose exec franka_ros2 bash -lc 'cd /ros2_ws/src && \
   python3 -m franka_rl.export_onnx --model franka_rl/models/sac_v3/best_model.zip'
 ```
 
@@ -723,72 +757,82 @@ ros2 launch franka_experiments torque_control_stack.launch.py \
 ---
 
 ## Troubleshooting
+
 ### `libfranka: UDP receive: Timeout error`
 
-If you encounter a UDP receive timeout error while communicating with the robot, avoid using Docker Desktop. It may not provide the necessary real-time capabilities required for reliable communication with the robot. Instead, using Docker Engine is sufficient for this purpose.
+Use Docker Engine on Linux for real robot control. Check the host's real-time
+kernel configuration and robot network, including firewall rules for UDP traffic.
+Docker Engine alone does not ensure that the control loop meets its deadlines.
+See Franka's [real-time kernel setup](https://frankarobotics.github.io/docs/doc/libfranka/docs/real_time_kernel.html)
+and [network troubleshooting](https://frankarobotics.github.io/docs/troubleshooting.html).
 
-A real-time kernel is essential to ensure proper communication and to prevent timeout issues. For guidance on setting up a real-time kernel, please refer to the [Franka installation documentation](https://frankarobotics.github.io/docs/installation_linux.html#setting-up-the-real-time-kernel).
+### Build permission errors
 
-### `colcon build` fails in libfranka with a permission error
-
-```
+```text
 CMake Error at .../extract-googletest.cmake:21 (file):
   file problem creating directory: /ros2_ws/src/libfranka/3rdparty/../ex-googletest1234
 ```
 
-The container user cannot write into the mounted source tree, because its uid differs
-from the owner of your clone. libfranka downloads Google Test *into* `src/`
-(`cmake/SetupGoogleTest.cmake`), and `franka_experiments` is an `ament_python` package,
-so `--symlink-install` writes `*.egg-info` there as well — read-only access is not
-enough. Confirm the mismatch:
+This can happen when the image's user UID differs from the owner of the mounted
+checkout. libfranka downloads Google Test into `src/`, and Python packages may
+write `*.egg-info` there during a symlink build, so the source tree must be writable.
+Compare the numeric identities:
 
 ```bash
-docker exec <container> id     # uid inside the container
-stat -c '%u %n' .              # owner of the clone on the host
+# Host — repository root, with this checkout's Compose variables
+id
+stat -c 'Checkout owner UID:GID: %u:%g (%n)' .
+docker compose exec franka_ros2 id
 ```
 
-Then rebuild the image with your own uid:
+For a checkout owned by your account, rebuild the image with your host UID/GID
+and recreate the service. Save any outputs outside `/ros2_ws/src` first: this
+replaces the container and requires rebuilding the workspace.
 
 ```bash
-export COMPOSE_PROJECT_NAME=franka_$USER USER_UID=$(id -u) USER_GID=$(id -g)
-docker rm -f "${FRANKA_CONTAINER:-franka_ros2}"
-docker compose up -d --build
+# Host — repository root; keep the existing project and container names
+export USER_UID="$(id -u)"
+export USER_GID="$(id -g)"
+docker compose up -d --build --force-recreate
 ```
 
-`docker compose down` only removes containers of the *current* project, so a container
-created before you set `COMPOSE_PROJECT_NAME` must be removed by name with
-`docker rm -f`. Recreating the container also wipes `/ros2_ws/build` and
-`/ros2_ws/install`, which live inside the container and not in the mount, so the next
-`colcon build` starts from scratch. See
-[Shared workstation](#shared-workstation-several-accounts-on-one-pc).
+Then repeat [GUI access](#gui-access-rviz-and-gazebo), if needed, and
+[build the workspace](#build-the-workspace). If the identities already match,
+check ownership and write permissions on the affected files, including files
+created by earlier root-owned builds. See [Shared workstations](#shared-workstations).
 
 ### GUI windows never appear
 
-RViz or `rqt_image_view` start without any error, yet no window shows up.
-`docker-compose.yml` captures `DISPLAY` when the container is **created**. On a machine
-with several graphical sessions the stored value can point at another user's screen, and
-the window then opens there. Compare the two:
+Compose captures `DISPLAY` when the container is created. If your graphical
+session changes, the container may still target the old display. Compare the
+values from a host terminal in your active graphical session:
 
 ```bash
-echo $DISPLAY                             # your session, on the host
-docker exec <container> printenv DISPLAY
+# Host — repository root, with this checkout's Compose variables
+echo "$DISPLAY"
+docker compose exec franka_ros2 printenv DISPLAY
+xauth nlist "$DISPLAY"
 ```
 
-If they differ, recreate the container from your active session with
-`docker compose up -d --force-recreate`, or override per command. Overriding also needs
-an X cookie, because a display owned by another session refuses unauthorized clients
-(`Authorization required, but no authorization protocol specified`):
+If the host's `DISPLAY` is empty, use a terminal in a graphical session with X11
+or XWayland. If `xauth` returns no cookie, check the host's `XAUTHORITY` and session
+configuration before proceeding.
+
+Repeat the [cookie transfer](#gui-access-rviz-and-gazebo), then open a shell with
+the current display and authorization file:
 
 ```bash
-: > /tmp/docker.xauth
-xauth nlist "$DISPLAY" | sed -e 's/^..../ffff/' | xauth -f /tmp/docker.xauth nmerge -
-docker cp /tmp/docker.xauth <container>:/tmp/docker.xauth
-docker exec -it -e DISPLAY="$DISPLAY" -e XAUTHORITY=/tmp/docker.xauth <container> /bin/bash
+# Host — repository root
+docker compose exec -e DISPLAY="$DISPLAY" -e XAUTHORITY=/tmp/franka.xauth franka_ros2 bash
 ```
 
-Prefer this to `xhost +local:`, which opens your display to every account on the machine.
-Note also that rqt plugin executables are not on `PATH`: start them with
-`ros2 run rqt_image_view rqt_image_view`, not with the bare command name.
+Inside that shell, source `/ros2_ws/install/setup.bash` before launching ROS
+applications. This updates GUI access for the shell without recreating the
+container or losing the build. In an existing VS Code terminal, export the host's
+current `DISPLAY` value and `XAUTHORITY=/tmp/franka.xauth` before launching a GUI.
+
+For rqt plugins, use `ros2 run rqt_image_view rqt_image_view`; the plugin executable
+may not be on `PATH` as a standalone command.
 
 ## Contributing
 
@@ -803,5 +847,3 @@ All packages of franka_ros2 are licensed under the Apache 2.0 license.
 For questions or support, please open an issue on the [GitHub Issues](https://github.com/frankarobotics/franka_ros2/issues) page.
 
 See the [Franka Control Interface (FCI) documentation](https://frankarobotics.github.io/docs) for more information.
-
-[def]: #docker-container-installation
