@@ -134,10 +134,22 @@ def run_one(batch_dir: str, c: dict, *, timeout_s: float = 400.0) -> dict:
             return json.load(f)
     os.makedirs(rd, exist_ok=True)
     out = dict(cell=c, SIM=True)
-    extra = ({'emulated_fps': f'{c["emulated_fps"]:g}'} if c.get('emulated_fps') else None)
+    extra = {}
+    if c.get('emulated_fps'):
+        extra['emulated_fps'] = f'{c["emulated_fps"]:g}'
+    # Pin cbf_safety_filter to one core, when the caller asked for it. A HARNESS
+    # setting, not a condition: it is the same core for every cell of a batch,
+    # so it is deliberately absent from cell_name(). It exists because the QP
+    # loop is compute-bound in the container and does not miss its target by the
+    # same margin in every arm — the complete framework builds twice the rows of
+    # a minimal one and achieved 65 Hz against a 100 Hz target unpinned, 98 Hz
+    # pinned. An arm comparison in which the arms run at different rates is not
+    # a comparison of the arms (the slew box makes jerk = max_qddot_delta/dt).
+    if c.get('filter_cpu') not in (None, ''):
+        extra['filter_cpu'] = str(c['filter_cpu'])
     rr = runner.run_cell(rd, condition=c['condition'], scenario=c['scenario'], seed=c['seed'],
-                         perception=c['perception'], timeout_s=timeout_s, extra_args=extra,
-                         sets=c.get('sets'))
+                         perception=c['perception'], timeout_s=timeout_s,
+                         extra_args=extra or None, sets=c.get('sets'))
     out.update(wall_s=rr['wall_s'], timed_out=rr['timed_out'], leftovers=rr['leftovers'],
                returncode=rr['returncode'])
     try:

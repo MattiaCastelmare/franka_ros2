@@ -43,6 +43,12 @@ def main():
     ap.add_argument('--rescore', action='store_true',
                     help='re-run the scorers on every cell of --batch-dir (no Gazebo), rebuild the CSV')
     ap.add_argument('--workers', type=int, default=4)
+    ap.add_argument('--filter-cpu', default='',
+                    help='pin cbf_safety_filter to this CPU in every cell (see batch.run_one): '
+                         'the QP loop is compute-bound and an arm that builds more rows misses '
+                         'its target rate by more, which contaminates every rate-derived metric')
+    ap.add_argument('--set', nargs='*', default=[], metavar='KEY=VALUE',
+                    help='per-run overrides applied to every cell (conditions.resolve)')
     ap.add_argument('--report-path', default='')
     a = ap.parse_args()
 
@@ -65,11 +71,20 @@ def main():
     else:
         if not a.scenarios:
             ap.error('--grid or --scenarios')
-        cells = [dict(scenario=s, condition=c, seed=k, perception=p)
+        import yaml as _yaml
+        sets = {}
+        for kv in a.set:
+            k, v = kv.split('=', 1)
+            sets[k.strip()] = _yaml.safe_load(v)
+        cells = [dict(scenario=s, condition=c, seed=k, perception=p,
+                      **({'sets': dict(sets)} if sets else {}))
                  for k in a.seeds for s in a.scenarios for c in a.conditions
                  for p in a.perception]
     if a.max_cells:
         cells = cells[:a.max_cells]
+    if a.filter_cpu:
+        for c in cells:
+            c['filter_cpu'] = a.filter_cpu
     print(f'SIM batch: {len(cells)} cells -> {bd}', flush=True)
     csv_path = batch.run_grid(bd, cells, log=lambda s: print(s, flush=True))
     print(f'SIM batch done -> {csv_path}')
