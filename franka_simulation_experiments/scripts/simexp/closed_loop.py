@@ -42,6 +42,10 @@ FAMILIES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
 LEVELS = ('full', 'box-only', 'brake')     # cbf_qp_assembly.LEVEL_NAMES (test pins it)
 _STAMP = re.compile(r'\[(\d{9,}\.\d+)\]')
 _FB = re.compile(r'fb=\[(\d+), (\d+), (\d+)\]')
+#: cbf_safety_filter._report: cumulative [ticks, joint-ticks] where the slew
+#: box and the hard state box were DISJOINT, i.e. the ticks where
+#: slew_yields_to_state_box decides which box the solver is handed.
+_SLEWCONF = re.compile(r'slewconf=\[(\d+), (\d+)\]')
 
 
 def _wall(line: str) -> float | None:
@@ -59,12 +63,17 @@ def log_window(lines: list[str]) -> tuple[float, float]:
     return (t0 if t0 is not None else -np.inf), (t1 if t1 is not None else np.inf)
 
 
-def fallback_counts(lines: list[str], w0: float, w1: float) -> dict:
-    before, last = np.zeros(3, int), None
+def _cumulative_delta(lines: list[str], w0: float, w1: float, pat, n: int):
+    """Episode delta of a CUMULATIVE counter printed on the filter's log line.
+
+    The counter runs from node start, so the episode's value is the last
+    reading inside the window minus the last reading before it opened.
+    """
+    before, last = np.zeros(n, int), None
     for ln in lines:
         if 'cbf_safety_filter' not in ln:
             continue
-        m = _FB.search(ln)
+        m = pat.search(ln)
         w = _wall(ln)
         if not m or w is None:
             continue
@@ -73,9 +82,26 @@ def fallback_counts(lines: list[str], w0: float, w1: float) -> dict:
             before = v
         if w <= w1:
             last = v
-    if last is None:
+    return None if last is None else (last - before)
+
+
+def fallback_counts(lines: list[str], w0: float, w1: float) -> dict:
+    d = _cumulative_delta(lines, w0, w1, _FB, 3)
+    if d is None:
         return {k: None for k in LEVELS}
-    return {k: int(x) for k, x in zip(LEVELS, last - before)}
+    return {k: int(x) for k, x in zip(LEVELS, d)}
+
+
+def slew_conflict_counts(lines: list[str], w0: float, w1: float) -> dict:
+    """``{'ticks': n, 'joint_ticks': m}`` for the episode, or Nones.
+
+    Nones mean the filter never printed the field, which is what an older bag
+    does — not a measured zero.
+    """
+    d = _cumulative_delta(lines, w0, w1, _SLEWCONF, 2)
+    if d is None:
+        return dict(ticks=None, joint_ticks=None)
+    return dict(ticks=int(d[0]), joint_ticks=int(d[1]))
 
 
 def cbfdiag_capage(lines: list[str], t0: float, t1: float) -> dict:
@@ -189,6 +215,7 @@ def summarize_run(run_dir: str) -> dict:
             lines = f.readlines()
         w0, w1 = log_window(lines)
         out['fallback_levels'] = fallback_counts(lines, w0, w1)
+        out['slew_conflict'] = slew_conflict_counts(lines, w0, w1)
         out['livelock_escapes'] = sum(1 for ln in lines if 'LIVELOCK:' in ln
                                       and (_wall(ln) or -np.inf) >= w0
                                       and (_wall(ln) or np.inf) <= w1)

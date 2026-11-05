@@ -91,6 +91,7 @@ def _flat(c: dict, r: dict) -> dict:
         for k, v in cnt.items():
             causes[k] = causes.get(k, 0) + v
     fl = cl.get('fallback_levels') or {}
+    sc = cl.get('slew_conflict') or {}
     sl = cl.get('slack_max') or {}
     return dict(
         SIM=True, cell=cell_name(c),
@@ -104,6 +105,7 @@ def _flat(c: dict, r: dict) -> dict:
         jerk_p99=cl.get('jerk_p99'), slack_any=cl.get('slack_max_any'),
         **{f'slack_{k}': sl.get(k) for k in closed_loop.FAMILIES},
         fb_box=fl.get('box-only'), fb_brake=fl.get('brake'), escapes=cl.get('livelock_escapes'),
+        slewconf=sc.get('ticks'), slewconf_joints=sc.get('joint_ticks'),
         ee_p95=(cl.get('pentagon') or {}).get('p95_m'),
         rows_hz=cl.get('rows_rate_hz'), rows_lat_p50=cl.get('rows_latency_ms_p50'),
         rows_lat_p95=cl.get('rows_latency_ms_p95'), capage_p50=cl.get('capage_ms_p50'),
