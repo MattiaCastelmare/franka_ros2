@@ -1,0 +1,29 @@
+# SIM regression for the IRIM2 control corrections. These are geometric
+# proxies, not a reproduction of the unmeasured human motions in the bag.
+q0: [0.0, -0.70, 0.0, -2.35, 0.0, 1.57, 0.70]
+flange_q0: [0.328018, 0.0, 0.566007]
+catalog: {}
+pentagon:
+  scenarios:
+    control_clear:
+      T: 18.0
+      obstacles: []
+    control_static:
+      T: 18.0
+      obstacles: [{p0: [0.4, -0.25, 0.45], radius: 0.05, law: static}]
+    control_approach:
+      T: 12.0
+      # Reproducible hand proxy, following the true flange at 0.3 m/s.
+      obstacles: [{p0: [0.4, 0.75, 0.45], radius: 0.05, law: pursuit, speed: 0.3}]
+    control_stick:
+      T: 18.0
+      # A 0.37 m elongated proxy, seven overlapping spheres with one common
+      # translation. It sweeps across the -y point of the circular reference.
+      obstacles:
+        - {p0: [0.65, -0.25, 0.30], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
+        - {p0: [0.65, -0.25, 0.35], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
+        - {p0: [0.65, -0.25, 0.40], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
+        - {p0: [0.65, -0.25, 0.45], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
+        - {p0: [0.65, -0.25, 0.50], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
+        - {p0: [0.65, -0.25, 0.55], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
+        - {p0: [0.65, -0.25, 0.60], radius: 0.035, law: oscillate, axis: [1, 0, 0], amplitude: 0.25, period: 6.0}
