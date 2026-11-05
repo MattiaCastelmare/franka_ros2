@@ -24,3 +24,6 @@ MUJOCO_LOG.TXT
 
 # Claude Code local settings
 .claude/
+
+# Configurazione Docker e Xpra locale per Mac
+/mac_config/
