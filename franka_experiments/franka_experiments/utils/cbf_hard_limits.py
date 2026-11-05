@@ -298,6 +298,8 @@ def apply_slew_limit(
     ub: np.ndarray,
     qddot_prev: np.ndarray,
     delta: float,
+    *,
+    yield_to_state_box: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Intersect (lb, ub) with the continuity box qddot_prev ± delta.
 
@@ -306,10 +308,28 @@ def apply_slew_limit(
     arm cannot track a step (measured trk_err ~9.5 rad/s² after a 2.4x jump in
     dnorm inside one 60 ms window).
 
-    Always returns a non-empty box: where the two boxes are disjoint the
-    result is pinned to the slew edge nearest to the safety box, so the
-    command approaches the (temporarily unreachable) safety bound at the
-    maximum admissible accel rate instead of jumping.
+    Always returns a non-empty box.
+
+    DISJOINT CASES — the slew box YIELDS, it does not win. (lb, ub) is the hard
+    state box: it is what keeps |q̇| inside the limit after one integration step
+    and keeps the position-braking curve feasible. The slew box is a tracking
+    comfort bound. Pinning the result to the slew edge, which is what this did
+    until the safe-fallback work, hands back a command OUTSIDE the state box
+    whenever the required correction is larger than one slew step — and the one
+    case where that happens is a joint already over its velocity limit, i.e.
+    exactly when the recovery must not be deferred. Measured in
+    test/test_safety_failure_policy.py: q̇₀ = 1.005 against a limit of 1.0 needs
+    q̈₀ ≤ −0.5 rad/s² within the 10 ms step, while q̈_prev = 4 and delta = 0.5
+    allowed nothing below +3.5; the old result commanded +3.5, which ACCELERATES
+    into the violation and ends in a firmware joint_velocity_violation reflex.
+    So where the boxes are disjoint the state box is returned verbatim and the
+    jerk bound is broken for that tick, on purpose.
+
+    ``yield_to_state_box=False`` restores the old pinning for A/B measurement
+    only (``slew_yields_to_state_box`` in fr3_control.yaml). It is not a
+    position anyone should ship: the command the node finally emits is clipped
+    into THIS box (``accept_iterate``), so pinning makes the box that is
+    supposed to hold exactly the one that does not.
     """
     lo_s = qddot_prev - delta
     hi_s = qddot_prev + delta
@@ -318,9 +338,16 @@ def apply_slew_limit(
 
     # Disjoint cases: safety box entirely above / below the slew box.
     above = lb > hi_s                # must accelerate up faster than allowed
-    below = ub < lo_s                # must accelerate down faster than allowed
-    lo = np.where(above, hi_s, np.where(below, lo_s, lo))
-    hi = np.where(above, hi_s, np.where(below, lo_s, hi))
+    below = ub < lo_s                # must brake harder than allowed
+    if yield_to_state_box:
+        disjoint = above | below
+        lo = np.where(disjoint, lb, lo)
+        hi = np.where(disjoint, ub, hi)
+    else:
+        # LEGACY: approach the (temporarily unreachable) bound at the maximum
+        # admissible rate instead of jumping, i.e. pin to the nearest slew edge.
+        lo = np.where(above, hi_s, np.where(below, lo_s, lo))
+        hi = np.where(above, hi_s, np.where(below, lo_s, hi))
     return lo, hi
 
 

@@ -143,6 +143,7 @@ _ALL_PARAMS = [
     'start_move_group',
     'motion_source', 'rl_onnx_model', 'rl_sim_config', 'rl_target_xyz',
     'rl_target_sequence', 'rl_action_scale', 'isolation_test', 'external_plant',
+    'cbf_param_overrides',
     'robot_config_yaml', 'torque_command_topic', 'controller_spawner_timeout_s',
     'torque_dynamics_delay_s', 'torque_rtd_delay_s', 'torque_commander_extra_delay_s',
     'torque_world_tf_delay_s', 'torque_camera_tf_delay_s',
@@ -153,6 +154,38 @@ _ALL_PARAMS = [
 
 def _as_bool(x: str) -> bool:
     return str(x).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+
+
+def _cbf_param_overrides(raw: str) -> list:
+    """``'k=v;k=v'`` -> ``[{k: v, ...}]``, or ``[]`` when empty.
+
+    An escape hatch for the ABLATION HARNESS, not for operation. Every knob the
+    stack exposes on purpose has its own launch argument above, with a
+    description and a default in launch_defaults.yaml; this one takes any key of
+    ``utils.config.CBF_PARAM_SPEC`` and hands it to the node as an ordinary ROS
+    parameter, so a run can turn off a mechanism that was never given a flag
+    (``enable_go_around``, ``retreat_cap_enabled``, ``state_governor_enabled``)
+    without editing the installed fr3_control.yaml — i.e. without changing what
+    the NEXT run reads.
+
+    Values are parsed as YAML, so ``false``/``0.0``/``8`` arrive as bool/float/
+    int rather than as strings; the node's own ``declare_from_spec`` then
+    type-checks and bounds-checks every one of them and REFUSES to start on a
+    key it does not know. That is the validation this helper deliberately does
+    not duplicate.
+
+    Empty (the default) returns ``[]``, so the parameter list is byte-identical
+    to the one before this argument existed — which is what
+    test_torque_stack_external_plant_off_identical.py pins.
+    """
+    import yaml
+    out = {}
+    for kv in [x for x in str(raw).replace(',', ';').split(';') if x.strip()]:
+        if '=' not in kv:
+            raise RuntimeError(f'cbf_param_overrides: expected key=value, got {kv!r}')
+        k, v = kv.split('=', 1)
+        out[k.strip()] = yaml.safe_load(v.strip())
+    return [out] if out else []
 
 
 def _speed_ceiling_overrides(p) -> list:
@@ -343,6 +376,7 @@ def _cbf_parameters(p) -> list:
     """
     fps = _profile_fps(p['camera_depth_profile'])
     return [{
+        'robot_config_path':        p['robot_config_yaml'],
         'obstacle_velocity_source': p['obstacle_velocity_source'],
         'enable_lateral_evasion':   _as_bool(p['lateral_evasion']),
         'enable_outrun_evasion':    _as_bool(p['outrun_evasion']),
@@ -380,7 +414,7 @@ def _cbf_parameters(p) -> list:
         # the run. 0.10 m is derived in fr3_control.yaml.
         'obstacle_velocity_identity_jump':
             (0.10 if _as_bool(p['obstacle_identity_guard']) else 0.0),
-    }]
+    }, *_cbf_param_overrides(p.get('cbf_param_overrides', ''))]
 
 
 def _launch_all(context):
@@ -778,6 +812,7 @@ def _launch_all(context):
                 'iso_enabled':         True,
                 'iso_mode':            str(p['iso_mode']),
                 'iso_monitor_enabled': True,
+                'robot_config_path':   p['robot_config_yaml'],
             }, *_speed_ceiling_overrides(p)],
         )
         actions.append(TimerAction(period=float(p['torque_iso_monitor_delay_s']),
@@ -805,6 +840,7 @@ def _launch_all(context):
             parameters=[{
                 'output_dir': str(p['iso_evidence_dir']),
                 'run_name':   str(p['iso_evidence_run_name']),
+                'robot_config_path': p['robot_config_yaml'],
             }, *_speed_ceiling_overrides(p)],
         )
         actions.append(TimerAction(period=float(p['torque_iso_evidence_delay_s']),
@@ -1175,6 +1211,14 @@ def generate_launch_description():
                             'robot_state_publisher, the controller_manager in '
                             '<namespace> and joint_state_broadcaster (the Gazebo '
                             'plant). rt_torque_controller is still spawned here'),
+            DeclareLaunchArgument(
+                'cbf_param_overrides',
+                default_value='',
+                description='Ablation harness only: "key=value;key=value" passed '
+                            'to cbf_safety_filter as ROS parameters, for keys of '
+                            'CBF_PARAM_SPEC that have no launch argument of their '
+                            'own. The node bounds-checks them and refuses to '
+                            'start on an unknown key. Empty = the YAML alone'),
             DeclareLaunchArgument(
                 'rl_onnx_model',
                 default_value=_DEFAULTS.get('rl_onnx_model', ''),

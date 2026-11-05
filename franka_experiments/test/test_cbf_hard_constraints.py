@@ -222,17 +222,27 @@ def test_slew_intersection():
     assert np.allclose(lo, -3.0) and np.allclose(hi, 7.0)
 
 
-def test_slew_pins_when_safety_above():
-    # Safety box demands ≥ 9 but prev+Δ = 7 → pinned at 7 (max admissible rate)
+def test_slew_yields_when_the_state_box_is_entirely_above_it():
+    """The state box wins when the two are disjoint; it used to be pinned.
+
+    Pinning returned prev+Δ = 7 while the state box demanded ≥ 9, i.e. a bound
+    the emitted command is then clipped INTO (accept_iterate) and which sits
+    outside the one constraint that has to hold exactly. The state box is only
+    this far from the current acceleration when the joint is already outside
+    its velocity or position envelope, which is the one moment the recovery
+    must not be deferred by a tracking-comfort bound. See apply_slew_limit and
+    test_safety_failure_policy.py.
+    """
     lo, hi = apply_slew_limit(np.full(_N, 9.0), np.full(_N, 10.0),
                               np.full(_N, 2.0), 5.0)
-    assert np.allclose(lo, 7.0) and np.allclose(hi, 7.0)
+    assert np.allclose(lo, 9.0) and np.allclose(hi, 10.0)
 
 
-def test_slew_pins_when_safety_below():
+def test_slew_yields_when_the_state_box_is_entirely_below_it():
+    """The braking half of the same rule: q̈ ≤ −9 is required, prev−Δ = −3."""
     lo, hi = apply_slew_limit(np.full(_N, -10.0), np.full(_N, -9.0),
                               np.full(_N, 2.0), 5.0)
-    assert np.allclose(lo, -3.0) and np.allclose(hi, -3.0)
+    assert np.allclose(lo, -10.0) and np.allclose(hi, -9.0)
 
 
 def test_slew_never_empty_random():
@@ -243,9 +253,12 @@ def test_slew_never_empty_random():
         prev = rng.uniform(-15, 15, _N)
         lo, hi = apply_slew_limit(lb, ub, prev, 2.0)
         assert np.all(lo <= hi + 1e-12)
-        # And always inside the slew box
-        assert np.all(lo >= prev - 2.0 - 1e-12)
-        assert np.all(hi <= prev + 2.0 + 1e-12)
+        # Always inside the STATE box — that is the hard one. The slew box is
+        # honoured wherever the two overlap, and yields where they do not.
+        assert np.all(lo >= lb - 1e-12) and np.all(hi <= ub + 1e-12)
+        overlap = (lb <= prev + 2.0 + 1e-12) & (ub >= prev - 2.0 - 1e-12)
+        assert np.all(lo[overlap] >= prev[overlap] - 2.0 - 1e-12)
+        assert np.all(hi[overlap] <= prev[overlap] + 2.0 + 1e-12)
 
 
 # ── workspace rows ───────────────────────────────────────────────────────────

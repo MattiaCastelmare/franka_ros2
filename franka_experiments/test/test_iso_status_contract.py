@@ -59,10 +59,22 @@ def test_the_first_five_fields_are_unchanged():
     assert row[:5] == [3.0, 0.1, 0.0, 1.0, 0.25]
 
 
-def test_the_message_carries_eleven_fields():
-    """Append-only: data[9..10] carry the CONDITIONED v_obs the barrier was
-    fed, beside the raw tracker output that is already on the wire."""
-    assert len(_status(_StatusStub())) == 11
+def test_the_message_carries_the_whole_schema_with_the_first_eleven_in_place():
+    """Append-only, and the schema module is the definition of the order.
+
+    data[9..10] carry the CONDITIONED v_obs the barrier was fed, beside the raw
+    tracker output that is already on the wire; data[11..] is the rest of
+    ``STATUS_FIELDS`` (schema version 2), appended when the safe-fallback work
+    made the rung, the timings and the three geometry ages observable. The
+    guarantee is POSITIONAL, not a length: the eleven historical fields keep
+    their indices, which is what every consumer's ``len() >= k`` guard reads.
+    """
+    from franka_experiments.utils.cbf_diagnostics import STATUS_FIELDS
+    assert len(_status(_StatusStub())) == len(STATUS_FIELDS)
+    assert STATUS_FIELDS[:11] == (
+        'n_rows', 'slack_max', 'fault_braking', 'n_violated', 'd_obstacle_min',
+        'ssm_sp_min', 'ssm_vcap_min', 'v_closing_max', 'iso_stop_latched',
+        'v_obs_conditioned', 'v_obs_hdot')
 
 
 def test_the_conditioned_v_obs_comes_from_the_row_builder():

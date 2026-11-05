@@ -396,6 +396,13 @@ CBF_PARAM_SPEC = {
     # fallback ladder reports rather than hides. Diagnostic knob; it changes
     # no gain and adds no avoidance mechanism.
     'obstacle_slack_max': ('float', dict(minimum=0.0)),
+    # Obstacle slack layout: 'family' (one shared quadratic slack, historical)
+    # or 'row_l1' (one linear-priced slack per obstacle row). See fr3_control.yaml.
+    'obstacle_slack_mode': ('str', dict(choices=('family', 'row_l1'))),
+    'rho_slack_l1': ('float', dict(positive=True)),
+    'obstacle_row_slack_eps': ('float', dict(positive=True)),
+    'obstacle_row_slack_slots': ('int', dict(minimum=1, maximum=256)),
+    'obstacle_row_osqp_eps_rel': ('float', dict(positive=True, maximum=1e-2)),
     'rho_slack_self_collision': ('float', dict(positive=True)),
     'rho_slack_joint_limit': ('float', dict(positive=True)),
     'rho_slack_singularity': ('float', dict(positive=True)),
@@ -545,6 +552,7 @@ CBF_PARAM_SPEC = {
     'obstacle_velocity_normal_rot_max': ('float', dict(minimum=0.0, maximum=1.6)),
     'obstacle_velocity_identity_jump': ('float', dict(minimum=0.0, maximum=1.0)),
     'accept_inaccurate_qp': ('bool', dict()),
+    'qp_failure_policy': ('str', dict(choices=('brake', 'box_only'))),
     'accel_box_clip_to_limits': ('bool', dict()),
     'enable_latency_compensation': ('bool', dict()),
     'latency_t_blind': ('float', dict(minimum=0.0, maximum=1.0)),
@@ -594,6 +602,8 @@ CBF_PARAM_SPEC = {
     'cbf_hdot_filter_alpha': ('float', dict(minimum=0.0, maximum=0.95)),
     'state_box_relax_s': ('float', dict(positive=True, maximum=1.0)),
     'slew_box_enabled': ('bool', dict()),
+    'slew_yields_to_state_box': ('bool', dict()),
+    'brake_slew_limited': ('bool', dict()),
     'max_qddot_delta': ('float', dict(positive=True, maximum=100.0)),
     'slew_rate_compensation': ('bool', dict()),
     'slew_dt_ratio_max': ('float', dict(minimum=1.0, maximum=100.0)),

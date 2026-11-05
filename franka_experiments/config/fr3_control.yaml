@@ -206,6 +206,27 @@ params:
   # preallocated default, i.e. unchanged soft behaviour. 0.0 makes the
   # obstacle rows hard (no relaxation) and can render the QP infeasible.
   obstacle_slack_max: 1000000.0
+  # Obstacle slack layout (Option B step 1, CBF_QP_SIMPLIFICATION_ANALYSIS.md).
+  #   family : ONE slack shared by every obstacle row, quadratic price
+  #            0.5*rho_slack*s^2 (the historical behaviour, bit-identical).
+  #   row_l1 : one slack PER obstacle row, LINEAR price rho_slack_l1*s_i
+  #            (+ 0.5*obstacle_row_slack_eps*s_i^2). An l1 penalty is exact:
+  #            its slope at s=0 is rho_slack_l1, so once that exceeds the row's
+  #            dual multiplier the slack is ZERO whenever the row is feasible,
+  #            whatever the quadratic part; and a violated row no longer
+  #            relaxes the other obstacle rows.
+  #   Numerics (measured 2026-11-04, scratchpad grid): OSQP's dual tolerance is
+  #   eps_abs + eps_rel*||q||, and the linear prices sit in q, so the default
+  #   eps_rel=1e-3 let the command drift ~3 rad/s^2 from the nominal with NO
+  #   active row. eps 1e3 (conditioning) + eps_rel 1e-5 gives <0.02 rad/s^2
+  #   error vs a 1e-10 reference at 0.4 ms median; rho 1e3 leaks <=0.03 m/s^2
+  #   (~1 mm at k0=25) on satisfiable rows next to an unsatisfiable one.
+  # Only the 'minimal_l1' simulation condition turns row_l1 on.
+  obstacle_slack_mode: family
+  rho_slack_l1: 1000.0
+  obstacle_row_slack_eps: 1000.0
+  obstacle_row_osqp_eps_rel: 1.0e-5  # OSQP eps_rel in row_l1 mode only
+  obstacle_row_slack_slots: 32   # per-row slack columns; rows beyond fall back to the shared slack
   rho_slack_self_collision: 20000.0  # self-collision rows
   rho_slack_joint_limit: 200.0       # joint-limit rows
   rho_slack_singularity: 2000.0      # singularity row (sigma_min of J)
@@ -591,11 +612,41 @@ params:
   #
   # Encoded as a BOX intersected with the state box, not a post-QP clip: the
   # solver knows about it, so it optimises within the reachable set rather than
-  # having its answer truncated afterwards. Where the slew and state boxes are
-  # disjoint the result is pinned to the slew edge nearest the safety box, so a
-  # temporarily unreachable safety bound is approached at the maximum admissible
-  # rate — the barrier keeps its authority, it just cannot be met in one step.
+  # having its answer truncated afterwards.
   slew_box_enabled: true
+
+  # What happens where the slew box and the hard STATE box are disjoint, i.e.
+  # the state box demands a bigger change in q_ddot than one slew step allows.
+  #   true   the state box is handed back whole and the jerk bound is broken for
+  #          that tick. The default. The state box is what keeps |qdot| inside
+  #          the limit after one integration step and keeps the position braking
+  #          curve feasible, and the emitted command is clipped INTO this box
+  #          (accept_iterate), so pinning makes the one constraint that must
+  #          hold exactly the one that does not. The boxes are only this far
+  #          apart when the joint is already outside its envelope — exactly when
+  #          the recovery must not be deferred.
+  #   false  LEGACY, A/B only: pin to the slew edge nearest the state box, so a
+  #          temporarily unreachable bound is approached at the maximum
+  #          admissible rate. Measured failure: qdot_0 = 1.005 against a limit
+  #          of 1.0 needs qddot_0 <= -0.5 within the 10 ms step, and with
+  #          qddot_prev = 4 and delta = 0.5 this commanded +3.5 — accelerating
+  #          INTO the violation, which the firmware sees as
+  #          joint_velocity_violation.
+  slew_yields_to_state_box: true
+
+  # Does the level-2 BRAKE (qp_failure_policy: brake) obey the jerk bound?
+  #   true   the braking box is the state box intersected with the slew box,
+  #          through the same apply_slew_limit and the same yield rule: where
+  #          the two are disjoint the state box wins and the brake jumps. The
+  #          default. Without it the brake is a closed form that ignores
+  #          max_qddot_delta entirely, and when the QP fails on only SOME ticks
+  #          the command chatters between a slewed QP solution and an unslewed
+  #          brake. Measured with the solver starved to 100 iterations: 32 % of
+  #          ticks failed, interleaved, and the arm thrashed.
+  #   false  the plain state box, i.e. an unslewed brake. The behaviour the
+  #          first Task-1 measurement used; kept for the A/B.
+  # Safety is the same either way: the state box bounds the result in both.
+  brake_slew_limited: true
 
   # [rad/s^2 per tick] PER ACTUAL QP TICK: the jerk bound is max_qddot_delta * qp_rate_hz.
   # 0.5 at 300 Hz = 1.5 at 100 Hz = 150 rad/s^3 (2026-10-07, when qp_rate_hz went 100 -> 300).
@@ -2067,13 +2118,26 @@ params:
   # ── QP fallback ladder (cbf_safety_filter, Phase 3a) ───────────────────────
   # Every CBF row carries a slack, so only the hard box can make the problem
   # infeasible and the box is built non-empty; what remains is OSQP not
-  # FINDING the solution in its budget. That is walked down a ladder instead
-  # of being reported as "no solution": level 0 full problem (a SOLVED_INACCURATE
-  # iterate accepted after clipping into the box when this flag is on),
-  # level 1 the same objective over the box alone (rows dropped for this tick),
-  # level 2 clip(-k_brake*qdot, lb, ub). Levels 1-2 still raise fault_braking
-  # on cbf_status and log which rung fired. See cbf_qp_assembly.
+  # FINDING the solution in its budget. That is answered instead of being
+  # reported as "no solution": level 0 full problem (a SOLVED_INACCURATE
+  # iterate accepted after clipping into the box when this flag is on), then
+  # whatever qp_failure_policy says. The fallback still raises fault_braking on
+  # cbf_status and logs which rung fired. See cbf_qp_assembly.
   accept_inaccurate_qp: true
+
+  # What a FAILED QP answers with.
+  #   brake     level 2, clip(-k_brake*qdot, state_lb, state_ub). The default,
+  #             and the only safe one: the command does not depend on the
+  #             geometry that just failed to produce a solution. The clip uses
+  #             the acceleration + velocity + position braking box BEFORE the
+  #             slew limit, so the jerk bound can never be the reason the arm
+  #             does not stop.
+  #   box_only  LEGACY, for A/B measurement only: level 1, the same objective
+  #             over the hard box alone. That drops every barrier row and so
+  #             emits clip(qddot_nom, box) at the exact tick the safety QP
+  #             failed, with the obstacle that made it infeasible still there.
+  #             Falls through to brake if even that does not solve.
+  qp_failure_policy: brake
 
   # ── The acceleration box never exceeds the joint's authority (Phase 3b) ────
   # The box's feasibility guard collapses onto lb when velocity/position

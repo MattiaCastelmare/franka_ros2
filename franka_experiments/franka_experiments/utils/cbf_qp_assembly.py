@@ -83,6 +83,37 @@ def build_osqp_A(G: Optional[np.ndarray], nv: int,
     return sparse.vstack([cbf, box], format='csc')
 
 
+def build_qp_objective(nv: int, n_family: int, rho_family: dict, *,
+                       n_slot: int = 0, rho_l1: float = 0.0,
+                       eps: float = 0.0) -> Tuple[sparse.csc_matrix, np.ndarray]:
+    """The QP cost ``0.5 xᵀPx + qᵀx`` over ``x = [q̈ (nv); s_family; s_row]``.
+
+    * ``q̈``: identity metric, ``0.5‖q̈ − q̈_ref‖²`` (the node writes
+      ``q[:nv] = −q̈_ref`` every tick).
+    * family slacks: QUADRATIC, ``0.5·ρ_g·s_g²``, one per constraint family
+      (``rho_family`` maps family index -> ρ_g; missing families keep 1.0).
+    * ``n_slot`` per-row obstacle slacks (``obstacle_slack_mode: row_l1``):
+      LINEAR price ``rho_l1·s_i`` through ``q`` plus ``0.5·eps·s_i²`` so OSQP
+      sees a strictly convex problem. An l1 penalty is EXACT: once ``rho_l1``
+      exceeds the row's dual multiplier the optimal slack is zero whenever the
+      row is feasible, unlike the quadratic family slack, which always yields
+      ``s* = r / (1 + ρ‖a‖²) > 0`` against a nominal that pushes into the row.
+
+    With ``n_slot = 0`` this is exactly the historical ``P = diag(1…, ρ_g…)``,
+    ``q = 0``.
+    """
+    nx = nv + n_family + int(n_slot)
+    P_mat = np.eye(nx)
+    for g, rho in rho_family.items():
+        P_mat[nv + g, nv + g] = rho
+    qvec = np.zeros(nx)
+    if n_slot:
+        k0 = nv + n_family
+        P_mat[k0:, k0:] = float(eps) * np.eye(int(n_slot))
+        qvec[k0:] = float(rho_l1)
+    return sparse.csc_matrix(P_mat), qvec
+
+
 def build_osqp_bounds(
     G: Optional[np.ndarray],
     h_qp: Optional[np.ndarray],

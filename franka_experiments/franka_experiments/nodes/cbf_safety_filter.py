@@ -60,6 +60,11 @@ from franka_experiments.utils.cbf_hard_limits import (
     apply_slew_limit,
     position_velocity_accel_box,
 )
+from franka_experiments.utils.cbf_diagnostics import (
+    FAMILIES,
+    STATUS_FIELDS,
+    STATUS_SCHEMA_VERSION,
+)
 from franka_experiments.utils.cbf_zones import ladder_from_params, ZONE_NAMES
 from franka_experiments.utils.go_around import GoAroundState, go_around_step
 from franka_experiments.utils.cbf_qp_assembly import (
@@ -73,6 +78,7 @@ from franka_experiments.utils.cbf_qp_assembly import (
     build_osqp_A,
     build_osqp_bounds,
     build_row_rhs,
+    build_qp_objective,
     pad_rows_to_block,
     tangential_bias,
 )
@@ -96,6 +102,7 @@ from franka_experiments.utils.cbf_state_rows import (
     Obstacle,
     ObstacleSnap,
     build_optional_row_builders,
+    row_slack_slots,
 )
 from franka_experiments.utils.config import (
     load_cbf_config,
@@ -248,18 +255,40 @@ class CBFSafetyFilter(Node):
                 f'ISO SSM speed rows ON: rho_slack_link_speed '
                 f'{P.rho_slack_link_speed:.0f} -> {rho_spd:.0f} '
                 f'(above rho_slack={P.rho_slack:.0f})')
-        P_mat = np.eye(NX)
-        for g, rho in ((G_OBS,  P.rho_slack),
-                       (G_SC,   P.rho_slack_self_collision),
-                       (G_QLIM, P.rho_slack_joint_limit),
-                       (G_SING, P.rho_slack_singularity),
-                       (G_CAP,  P.rho_slack_retreat),
-                       (G_SPD,  rho_spd)):
-            P_mat[NV + g, NV + g] = rho
-        self._P_csc = sparse.csc_matrix(P_mat)
-        self._qvec = np.zeros(NX)
-        self._box_lb = np.concatenate([self._lb, np.zeros(N_SLACK)])
-        self._box_ub = np.concatenate([self._ub, np.full(N_SLACK, 1e6)])
+        # Per-row l1 obstacle slack (obstacle_slack_mode: row_l1): n_slot extra
+        # columns after the six family slacks, each priced LINEARLY by
+        # rho_slack_l1 (through q, set once here and never overwritten: the tick
+        # only writes q[:NV]) plus a tiny quadratic eps for OSQP conditioning.
+        # An l1 penalty is exact: above the row's dual multiplier the slack is
+        # zero whenever the row is feasible. n_slot = 0 in 'family' mode, and
+        # every array below is then exactly the historical one.
+        self._n_slot = row_slack_slots(P)
+        self._n_slack = N_SLACK + self._n_slot
+        self._nx = NX + self._n_slot
+        self._P_csc, self._qvec = build_qp_objective(
+            NV, N_SLACK,
+            {G_OBS:  P.rho_slack,
+             G_SC:   P.rho_slack_self_collision,
+             G_QLIM: P.rho_slack_joint_limit,
+             G_SING: P.rho_slack_singularity,
+             G_CAP:  P.rho_slack_retreat,
+             G_SPD:  rho_spd},
+            n_slot=self._n_slot, rho_l1=P.rho_slack_l1,
+            eps=P.obstacle_row_slack_eps)
+        if self._n_slot:
+            self.get_logger().info(
+                f'obstacle slack: row_l1, {self._n_slot} slots, '
+                f'rho_l1={P.rho_slack_l1:g} eps={P.obstacle_row_slack_eps:g} '
+                f'(family obstacle slack kept only for overflow rows)')
+        self._box_lb = np.concatenate([self._lb, np.zeros(self._n_slack)])
+        self._box_ub = np.concatenate([self._ub, np.full(self._n_slack, 1e6)])
+        # The state box as STEP 4 computes it, BEFORE apply_slew_limit tightens
+        # it in place. This is the box the brake fallback clips into: the slew
+        # bound is a tracking comfort limit and must never be the reason the arm
+        # cannot stop. Seeded with the static limits so the very first tick, and
+        # any early-return path, already has a usable box.
+        self._state_lb = self._lb.copy()
+        self._state_ub = self._ub.copy()
         # Hard-obstacle diagnostic. Only the OBSTACLE family's cap moves;
         # every physical and actuator constraint keeps its slack, so when
         # this makes the QP infeasible the failure is attributable to the
@@ -334,6 +363,16 @@ class CBFSafetyFilter(Node):
         self._diag_vel_bite = np.zeros(NV, dtype=bool)
         self._diag_slew_step = np.zeros(NV)
         self._diag_slew_bite = np.zeros(NV, dtype=bool)
+        # DISJOINT, which is a different thing from the bite above: the bite is
+        # "the emitted command sits on the slew edge", a normal and frequent
+        # state. This is "the slew box and the hard state box do not intersect
+        # at all", i.e. the tick where slew_yields_to_state_box decides which
+        # box is handed to the solver. Counted cumulatively so the batch scorer
+        # can read the A/B off the log line, and published per tick on
+        # /cbf_status (slew_conflict_joints).
+        self._diag_slew_conflict = np.zeros(NV, dtype=bool)
+        self._slew_conflict_ticks = 0
+        self._slew_conflict_joint_ticks = 0
         self._diag_qddot_real = np.zeros(NV)
         self._diag_qdot_prev = self._diag_t_prev = None
         self._diag_cap_age = 0.0
@@ -406,9 +445,16 @@ class CBFSafetyFilter(Node):
         self._status_pub = self.create_publisher(
             Float64MultiArray, topics.get('cbf_status', '/NS_1/cbf_status'), 10)
         self._status_msg = Float64MultiArray()
+        # The eleven historical fields, then the rest of the schema at "not
+        # measured". _publish_status builds the row POSITIONALLY, and this is
+        # the one place that pins its width to cbf_diagnostics.STATUS_FIELDS.
         self._status_msg.data = [0.0, 0.0, 0.0, 0.0, float('inf'),
                                  0.0, float('inf'), 0.0, 0.0,
-                                 0.0, 0.0]
+                                 0.0, 0.0] + [float('nan')] * (
+                                     len(STATUS_FIELDS) - 11)
+        self.get_logger().info(
+            f'/cbf_status schema v{STATUS_SCHEMA_VERSION}, '
+            f'{len(STATUS_FIELDS)} fields (utils/cbf_diagnostics.STATUS_FIELDS)')
 
         # ── ISO layer: the independent monitor's verdict ─────────────────
         # The filter SHAPES; iso_safety_monitor ENFORCES. When it latches, the
@@ -640,19 +686,19 @@ class CBFSafetyFilter(Node):
         try:
             l0, u0 = build_osqp_bounds(None, None, self._box_lb, self._box_ub)
             prob0 = osqp.OSQP()
-            prob0.setup(P=self._P_csc, q=self._qvec, A=build_osqp_A(None, NV, N_SLACK),
+            prob0.setup(P=self._P_csc, q=self._qvec, A=build_osqp_A(None, NV, self._n_slack),
                         l=l0, u=u0, warm_start=True,
                         max_iter=self.P.osqp_max_iter, verbose=False)
             prob0.solve()
 
-            G1 = np.zeros((1, NX)); G1[0, NV + G_OBS] = -1.0   # dummy row
+            G1 = np.zeros((1, self._nx)); G1[0, NV + G_OBS] = -1.0   # dummy row
             h1 = np.array([1.0])
             l1, u1 = build_osqp_bounds(G1, h1, self._box_lb, self._box_ub)
             prob1 = osqp.OSQP()
-            prob1.setup(P=self._P_csc, q=self._qvec, A=build_osqp_A(G1, NV, N_SLACK),
+            prob1.setup(P=self._P_csc, q=self._qvec, A=build_osqp_A(G1, NV, self._n_slack),
                         l=l1, u=u1, warm_start=True,
                         max_iter=self.P.osqp_max_iter, verbose=False)
-            prob1.update(q=self._qvec, l=l1, u=u1, Ax=build_osqp_A(G1, NV, N_SLACK).data)
+            prob1.update(q=self._qvec, l=l1, u=u1, Ax=build_osqp_A(G1, NV, self._n_slack).data)
             prob1.solve()
         except Exception as exc:
             self.get_logger().warn(f'warmup: OSQP path failed: {exc}')
@@ -949,7 +995,7 @@ class CBFSafetyFilter(Node):
             x = box_only_solve(self._P_csc, self._qvec, self._box_lb,
                                self._box_ub, max_iter=P.osqp_max_iter)
             if x is None:
-                x = np.concatenate([qddot_stop, np.zeros(N_SLACK)])
+                x = np.concatenate([qddot_stop, np.zeros(self._n_slack)])
             self._fallback_count[OSQP_LEVEL_BRAKE] += 1
             self._last_level = OSQP_LEVEL_BRAKE
             self._publish(x[:NV])
@@ -1314,10 +1360,26 @@ class CBFSafetyFilter(Node):
             dt=self._dt_qp, relax_dt=P.state_box_relax_s,
             out_lb=self._box_lb[:NV], out_ub=self._box_ub[:NV],
             clip_to_limits=P.accel_box_clip_to_limits, brake_acc=self._brake_acc)
+        # Snapshot the state box BEFORE the slew limit tightens it in place:
+        # this is what the brake fallback in _solve clips into.
+        np.copyto(self._state_lb, self._box_lb[:NV])
+        np.copyto(self._state_ub, self._box_ub[:NV])
         if P.slew_box_enabled:
+            # Measured BEFORE the call, because the call resolves the conflict
+            # one way or the other and the resolved box no longer shows it.
+            np.logical_or(self._box_lb[:NV] > self._qddot_prev + delta_eff,
+                          self._box_ub[:NV] < self._qddot_prev - delta_eff,
+                          out=self._diag_slew_conflict)
+            n_conf = int(np.count_nonzero(self._diag_slew_conflict))
+            if n_conf:
+                self._slew_conflict_ticks += 1
+                self._slew_conflict_joint_ticks += n_conf
             self._box_lb[:NV], self._box_ub[:NV] = apply_slew_limit(
                 self._box_lb[:NV], self._box_ub[:NV],
-                self._qddot_prev, delta_eff)
+                self._qddot_prev, delta_eff,
+                yield_to_state_box=P.slew_yields_to_state_box)
+        else:
+            self._diag_slew_conflict[:] = False
         if float(np.max(self._diag_vel_ratio)) > P.diag_vel_ratio_thr:
             self.get_logger().info(
                 f'VELHI t={now:.3f} n_c={n_c} '
@@ -1326,6 +1388,7 @@ class CBFSafetyFilter(Node):
 
         # ── STEP 5: solve ───────────────────────────────────────────────
         qddot_safe, slack, solve_ms, res, level = self._solve(G, h_qp, n_c, qdot)
+        self._diag_solve_ms = solve_ms
         if level != OSQP_LEVEL_FULL:
             fault = 1.0                     # the barrier was off for this tick
 
@@ -1367,6 +1430,11 @@ class CBFSafetyFilter(Node):
         """
         P = self.P
         prev, self._last_tick_sim = self._last_tick_sim, now
+        # Reported on /cbf_status (tick_gap_ros_s) whatever the compensation
+        # setting: the achieved rate is a pass/fail input for the batch runs,
+        # and it has to be readable off a bag rather than inferred from it.
+        self._diag_tick_gap_ros = (now - prev if prev is not None and now > prev
+                                   else float('nan'))
         if not P.slew_rate_compensation:
             self._diag_slew_delta_eff = P.max_qddot_delta
             return P.max_qddot_delta
@@ -1428,14 +1496,69 @@ class CBFSafetyFilter(Node):
         else:
             np.copyto(self._qdot_cbf, qdot)
 
+    def _brake_box(self):
+        """The box the level-2 brake is clipped into: the state box, optionally
+        intersected with the slew box.
+
+        ``getattr`` throughout: the lightweight node stubs in
+        test/test_safety_failure_policy.py carry neither a previous command nor
+        a slew step, and "no previous command" means there is nothing to be
+        continuous WITH — the plain state box is the right answer there.
+        """
+        lo, hi = self._state_lb, self._state_ub
+        prev = getattr(self, '_qddot_prev', None)
+        delta = getattr(self, '_diag_slew_delta_eff', None)
+        if (getattr(self.P, 'brake_slew_limited', False)
+                and getattr(self.P, 'slew_box_enabled', False)
+                and prev is not None and delta is not None):
+            # yield_to_state_box=True unconditionally: the brake must never be
+            # the command that leaves the state box, whatever the QP box does.
+            lo, hi = apply_slew_limit(lo, hi, prev, float(delta),
+                                      yield_to_state_box=True)
+        return lo, hi
+
     def _solve(self, G, h_qp, n_c, qdot):
         """Push the moving parts into OSQP and solve. Returns (q̈, slack, ms, res).
 
         ``setup()`` only when the row count changes the sparsity pattern;
         otherwise ``update()`` the vectors that move. NEVER returns ``None``:
-        a failed solve walks the fallback ladder in ``cbf_qp_assembly`` (box
-        only, then closed-form braking) and reports which rung answered — the
-        warm-start iterate is discarded so a bad solve cannot seed the next.
+        a failed solve BRAKES (``qp_failure_policy``, below) and reports which
+        rung answered — the warm-start iterate is discarded so a bad solve
+        cannot seed the next.
+
+        ON FAILURE THE ANSWER IS A BRAKE, not the nominal. The old level-1 rung
+        (``box_only_solve``) re-solved the SAME objective over the hard box with
+        the barrier rows removed, i.e. it emitted clip(q̈_nom, box) at the exact
+        tick the safety QP failed — the obstacle that made the QP infeasible is
+        still there, and the command that gets sent is the one the task asked
+        for. Braking on q̇ is the only answer that does not depend on the
+        geometry that just failed to produce a solution. ``qp_failure_policy:
+        box_only`` restores the old ladder for A/B measurement only.
+
+        The brake is clipped into ``_state_lb/_state_ub`` — the acceleration +
+        velocity + position braking box BEFORE the slew limit (STEP 4) — and not
+        into the slew-tightened ``_box_lb/_box_ub``: a slew bound centred on a
+        large previous acceleration can exclude every braking value, and the
+        jerk bound must never be what stops the arm from stopping.
+
+        ``brake_slew_limited`` then puts the jerk bound back WHERE IT FITS. The
+        brake is a closed form, so with the bound off it ignores
+        ``max_qddot_delta`` completely — and when the QP fails on only SOME
+        ticks the command chatters between a slewed QP solution and an unslewed
+        brake, tick after tick. Measured in the first recording of this change
+        (sim_runs/task1_safe_fallback_20261104): the solver starved to 100
+        iterations failed on 32 % of ticks, interleaved, and the arm thrashed.
+        So the braking box is intersected with the slew box through the SAME
+        ``apply_slew_limit`` the QP box uses, with the same yield rule: where
+        the two are disjoint the state box wins and the brake jumps. Safety is
+        unchanged — the state box still bounds the result either way — and only
+        the path between the current acceleration and the braking value is
+        smoothed.
+
+        Solver exceptions from ``update()``/``setup()``/``solve()`` are failures
+        like any other: OSQP raises on a pattern mismatch or a non-finite entry,
+        and an exception escaping here would kill the timer callback and leave
+        the arm running on the last published command forever.
 
         The row count is QUANTISED to ``qp_row_block`` first (see
         ``pad_rows_to_block``): the real n_c changes almost every rebuild, and
@@ -1445,48 +1568,69 @@ class CBFSafetyFilter(Node):
         """
         G, h_qp = pad_rows_to_block(G, h_qp, self.P.qp_row_block)
         n_rows = 0 if G is None else G.shape[0]
+        # Slack layout (family / row_l1). getattr: lightweight test stubs of this
+        # node predate the attributes and mean the historical layout.
+        n_slack = getattr(self, '_n_slack', N_SLACK)
+        n_slot = getattr(self, '_n_slot', 0)
         l, u = build_osqp_bounds(G, h_qp, self._box_lb, self._box_ub)
-        if n_rows != self._prev_nc or self._osqp_prob is None:
-            self._prev_nc = n_rows
-            self._osqp_prob = osqp.OSQP()
-            self._osqp_prob.setup(
-                P=self._P_csc, q=self._qvec, A=build_osqp_A(G, NV, N_SLACK),
-                l=l, u=u, warm_start=True,
-                max_iter=self.P.osqp_max_iter, verbose=False)
-        elif n_rows > 0:
-            self._osqp_prob.update(q=self._qvec, l=l, u=u,
-                                   Ax=build_osqp_A(G, NV, N_SLACK).data)
-        else:
-            self._osqp_prob.update(q=self._qvec, l=l, u=u)
-
+        self._diag_slack[:] = 0.0
+        res, x, why = None, None, ''
         t0 = time.perf_counter()
-        res = self._osqp_prob.solve()
+        try:
+            if n_rows != self._prev_nc or self._osqp_prob is None:
+                self._prev_nc = n_rows
+                self._osqp_prob = osqp.OSQP()
+                # row_l1: the linear slack prices sit in q and OSQP's dual
+                # tolerance scales with ||q||, so eps_rel is tightened there only
+                # (fr3_control.yaml, obstacle_row_osqp_eps_rel). 'family' keeps
+                # OSQP's defaults, i.e. the historical setup call exactly.
+                tol = ({'eps_rel': float(self.P.obstacle_row_osqp_eps_rel)}
+                       if n_slot else {})
+                self._osqp_prob.setup(
+                    P=self._P_csc, q=self._qvec, A=build_osqp_A(G, NV, n_slack),
+                    l=l, u=u, warm_start=True,
+                    max_iter=self.P.osqp_max_iter, verbose=False, **tol)
+            elif n_rows > 0:
+                self._osqp_prob.update(q=self._qvec, l=l, u=u,
+                                       Ax=build_osqp_A(G, NV, n_slack).data)
+            else:
+                self._osqp_prob.update(q=self._qvec, l=l, u=u)
+
+            res = self._osqp_prob.solve()
+            x = accept_iterate(
+                res.x, res.info.status_val, self._box_lb, self._box_ub, NV,
+                solved=osqp.constant('OSQP_SOLVED'),
+                inaccurate=(osqp.constant('OSQP_SOLVED_INACCURATE')
+                            if self.P.accept_inaccurate_qp else -999))
+            if x is None:
+                why = str(res.info.status)
+        except Exception as exc:                       # noqa: BLE001 — see docstring
+            why = f'{type(exc).__name__}: {exc}'
         solve_ms = (time.perf_counter() - t0) * 1e3
 
-        self._diag_slack[:] = 0.0
-        # ── The fallback ladder (cbf_qp_assembly): never "no solution" ──
-        x = accept_iterate(
-            res.x, res.info.status_val, self._box_lb, self._box_ub, NV,
-            solved=osqp.constant('OSQP_SOLVED'),
-            inaccurate=(osqp.constant('OSQP_SOLVED_INACCURATE')
-                        if self.P.accept_inaccurate_qp else -999))
+        # ── On failure: BRAKE. Never the nominal (see the docstring) ────
         level = OSQP_LEVEL_FULL
         if x is None:
             self._qp_fail_count += 1
-            # Level 1: same objective, box only. A projection onto a box; a
-            # fresh instance so the failed warm start is not reused.
-            x = box_only_solve(self._P_csc, self._qvec, self._box_lb, self._box_ub,
-                               max_iter=self.P.osqp_max_iter)
-            level = OSQP_LEVEL_BOX
+            # getattr: lightweight test stubs of this node predate the knob,
+            # and the safe policy is the one they are entitled to.
+            if getattr(self.P, 'qp_failure_policy', 'brake') == 'box_only':
+                # LEGACY, A/B only: same objective over the box alone, i.e. the
+                # nominal clipped. A fresh instance so the failed warm start is
+                # not reused.
+                x = box_only_solve(self._P_csc, self._qvec, self._box_lb,
+                                   self._box_ub, max_iter=self.P.osqp_max_iter)
+                level = OSQP_LEVEL_BOX
             if x is None:
-                # Level 2: closed-form braking inside the tightened box.
-                x = np.concatenate([braking_command(qdot, self._box_lb[:NV],
-                                                    self._box_ub[:NV],
+                # Unbound: test/test_safety_failure_policy.py drives _solve with a
+                # SimpleNamespace stub, which has no methods of its own.
+                lo, hi = CBFSafetyFilter._brake_box(self)
+                x = np.concatenate([braking_command(qdot, lo, hi,
                                                     k_brake=self.P.k_brake),
-                                    np.zeros(N_SLACK)])
+                                    np.zeros(n_slack)])
                 level = OSQP_LEVEL_BRAKE
             self.get_logger().error(
-                f'QP not solved ({res.info.status}) → fallback level {level} '
+                f'QP not solved ({why}) → fallback level {level} '
                 f'({LEVEL_NAMES[level]}) [qp_fail_count={self._qp_fail_count} '
                 f'levels={self._fallback_count}]',
                 throttle_duration_sec=0.5)
@@ -1494,7 +1638,12 @@ class CBFSafetyFilter(Node):
         self._fallback_count[level] += 1
         self._last_level = level
         if n_c > 0 and level == OSQP_LEVEL_FULL:
-            np.copyto(self._diag_slack, x[NV:])
+            np.copyto(self._diag_slack, x[NV:NX])
+            if n_slot:
+                # Report the obstacle family as its worst row, so /cbf_status,
+                # CBFDIAG and the batch scorer read the same column in both modes.
+                self._diag_slack[G_OBS] = max(self._diag_slack[G_OBS],
+                                              float(np.max(x[NX:])))
         return x[:NV], float(self._diag_slack.max()), solve_ms, res, level
 
     def _report(self, now, con, h_qp, n_c, n_active, qdot, qddot_safe,
@@ -1502,13 +1651,18 @@ class CBFSafetyFilter(Node):
         """Solve-time line every 100 ticks, CBFDIAG line on its own throttle."""
         self._tick_count += 1
         if self._tick_count % 100 == 0 or solve_ms > 5.0:
+            # res is None when the solver itself raised (see _solve): there is
+            # no iterate to describe, and this line must not be what takes the
+            # node down on top of it.
             tail = (f'iter={res.info.iter} status={res.info.status} '
                     f'h_norm={float(np.linalg.norm(h_qp)):.2f}'
-                    if n_c > 0 else 'iter=- status=- h_norm=-')
+                    if n_c > 0 and res is not None else 'iter=- status=- h_norm=-')
             self.get_logger().info(
                 f'tick={self._tick_count} n_c={n_c} solve={solve_ms:.2f}ms '
                 f'qddot_nom_norm={float(np.linalg.norm(qddot_nom)):.2f} '
                 f'qp_fails={self._qp_fail_count} fb={self._fallback_count} '
+                f'slewconf=[{self._slew_conflict_ticks}, '
+                f'{self._slew_conflict_joint_ticks}] '
                 f'lock={self._lock_mag:.2f} ' + tail)
         if n_c > 0 and (now - self._last_diag_t) >= self.P.diag_period_s:
             self._last_diag_t = now
@@ -1677,6 +1831,15 @@ class CBFSafetyFilter(Node):
             data[10] v_obs_hdot     [m/s] the signed n̂ᵀv_track of largest
                                     magnitude that entered ḣ (enable_vobs_in_hdot)
 
+        data[11..] is the rest of ``cbf_diagnostics.STATUS_FIELDS`` (schema
+        version 2): the fallback rung, slew conflicts, solve and tick timing,
+        the three geometry ages, per-family slack, and the build wall time. The
+        field ORDER is the schema's, and that module is the single definition of
+        it — every consumer reads the row by zipping against ``STATUS_FIELDS``.
+        Appending stays safe for the positional consumers (frame_grabber,
+        rl_policy_commander, experiment_logger, pentagon_qddot_commander): all
+        of them index behind a ``len() >= k`` guard.
+
         The MONITOR's numbers win when its message is fresh: it is the channel
         that decides, and publishing the filter's own opinion next to a monitor
         that disagrees would make the log unreadable at exactly the moment it
@@ -1715,11 +1878,47 @@ class CBFSafetyFilter(Node):
         # builder's own diagnostics, and they hold whatever the last rebuild
         # saw until the next one replaces them.
         rows = self._rows
-        self._status_msg.data = [float(n_c), slack, fault, float(n_act), d_obs,
-                                 float(s_p), float(v_cap), float(v_cls),
-                                 float(latched),
-                                 float(getattr(rows, 'diag_v_obs', 0.0)),
-                                 float(getattr(rows, 'diag_vobs_hdot', 0.0))]
+        # ── data[11..]: the SCHEMA tail (utils/cbf_diagnostics.STATUS_FIELDS) ──
+        # Every field here answers a question that was previously answerable
+        # only from a log line, i.e. not at all off a bag: which rung answered
+        # this tick, how long the solve took, how late the tick was, and — the
+        # three ages — how old the geometry the command was computed from
+        # actually is. The last point is the one that needed a contract: the
+        # node holds a 50 Hz constraint snapshot while newer distance frames
+        # keep arriving, so `_obs` is NOT the frame the rows came from.
+        # `con.capture_stamp` is, and the two ages differ by exactly the
+        # staleness that OPEN_ISSUES F5 is about.
+        #
+        # NaN is "not measured" throughout (see the module docstring), which is
+        # what the early-return paths in _qp_tick report: they publish a status
+        # row without ever reaching the solve.
+        nan = float('nan')
+        now = self._now()
+        obs, js = getattr(self, '_obs', None), getattr(self, '_js', None)
+        sl = getattr(self, '_diag_slack', None)
+        conf = getattr(self, '_diag_slew_conflict', None)
+        self._status_msg.data = [
+            float(n_c), slack, fault, float(n_act), d_obs,
+            float(s_p), float(v_cap), float(v_cls), float(latched),
+            float(getattr(rows, 'diag_v_obs', 0.0)),
+            float(getattr(rows, 'diag_vobs_hdot', 0.0)),
+            float(getattr(self, '_last_level', OSQP_LEVEL_FULL)),
+            float(np.count_nonzero(conf)) if conf is not None else nan,
+            float(getattr(self, '_diag_solve_ms', nan)),
+            float(getattr(self, '_diag_tick_gap_ros', nan)),
+            now - float(js.stamp) if js is not None else nan,
+            now - float(getattr(con, 'capture_stamp', nan)) if con is not None else nan,
+            now - float(obs.stamp) if obs is not None else nan,
+            now - float(getattr(con, 'built_stamp', nan)) if con is not None else nan,
+            # Per-family slack of the emitted command. The residuals that would
+            # go beside them (cbf_diagnostics.family_violations) need the QP's
+            # own G/rhs in decision-vector layout, which the tick does not keep;
+            # they stay NaN until the single-rate rebuild makes that cheap.
+            *(float(sl[g]) if sl is not None and g < len(sl) else nan
+              for g in range(len(FAMILIES))),
+            *(nan for _ in range(2 * len(FAMILIES))),
+            float(getattr(con, 'build_wall_ms', nan)) if con is not None else nan,
+        ]
         self._status_pub.publish(self._status_msg)
 
     def _now(self) -> float:

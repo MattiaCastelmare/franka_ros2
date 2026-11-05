@@ -29,6 +29,8 @@ Everything here is pure numpy plus the caller's kinematics object; no ROS.
 
 from __future__ import annotations
 
+import time
+
 from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
@@ -1321,6 +1323,19 @@ _LOCK_MAX_ROWS = 3
 CAP_H_SENTINEL = 1.0e3
 
 
+def row_slack_slots(P) -> int:
+    """Number of per-row obstacle slack columns appended after the family slacks.
+
+    0 in the default ``obstacle_slack_mode: family`` (decision vector width NX,
+    the historical layout); ``obstacle_row_slack_slots`` in ``row_l1``. Shared by
+    the row builder (width of G) and the node (width of P, q and the box), so the
+    two can never disagree about the layout.
+    """
+    if str(getattr(P, 'obstacle_slack_mode', 'family')) != 'row_l1':
+        return 0
+    return int(getattr(P, 'obstacle_row_slack_slots', 0))
+
+
 # ── Immutable snapshots (atomic-swap shared state) ───────────────────────────
 
 class JointSnap(NamedTuple):
@@ -1498,6 +1513,21 @@ class ConstraintSnap(NamedTuple):
                            # or no obstacle row was built. Consumed by the QP
                            # tick's go-around bias (utils.go_around); the
                            # geometry is frozen at this rebuild like every row.
+    # ── provenance: how old this snapshot is, and what it cost ──────────────
+    # Published on /cbf_status so the age of the geometry a command came from is
+    # readable off a bag. `t_dist` above is the RECEIPT time of that frame;
+    # these three are the capture time, the build time and the build cost, which
+    # is what a staleness argument actually needs (OPEN_ISSUES F5). NaN means
+    # the snapshot was built by something that does not fill them (a test
+    # harness), never a measured zero.
+    capture_stamp: float = float('nan')
+                           # [s] ObstacleSnap.t_cap of the depth frame this
+                           # geometry was computed from — NOT the newest frame
+                           # the node holds.
+    built_stamp:   float = float('nan')
+                           # [s] node clock when this snapshot was built.
+    build_wall_ms: float = float('nan')
+                           # [ms] wall time ConstraintBuilder.build took.
 
 
 
@@ -1751,6 +1781,7 @@ class ConstraintBuilder:
         # identity signal never fired and the threshold is wrong.
         # See _obstacle_identity_changed.
         self.diag_ident_reset = 0
+        self.diag_slot_overflow = 0   # obstacle rows sharing the family slack (row_l1)
 
     # ── Rate-dependent gates ────────────────────────────────────────────────
 
@@ -1787,6 +1818,7 @@ class ConstraintBuilder:
     def build(self, js, obs, now):
         if now - obs.stamp > self._P.distance_timeout:
             return None
+        _t_build = time.perf_counter()
 
         # with_jdot=True: also run computeJointJacobiansTimeVariation so that
         # point_jacobian() can return J̇p — needed for the J̇q̇ term of d̈
@@ -2645,7 +2677,11 @@ class ConstraintBuilder:
         # is −1; the other slack columns stay 0, so a row can never be relaxed
         # by another family's slack.
         grp   = np.asarray(rows_group, dtype=np.intp)
-        G     = np.zeros((n_c, NX))
+        # Per-row l1 obstacle slack (obstacle_slack_mode: row_l1) appends
+        # obstacle_row_slack_slots columns after the six family slacks; the
+        # node prices them linearly. 'family' (default) keeps width NX.
+        n_slot = row_slack_slots(self._P)
+        G     = np.zeros((n_c, NX + n_slot))
         G[:, :NV] = -A
         # Slack column. Phase 2 replaces the literal −1.0 with −1/wᵢ on obstacle
         # rows, which is the WHOLE of the weighted-slack change: NX, P, N_SLACK,
@@ -2753,10 +2789,26 @@ class ConstraintBuilder:
         # factor never exceeds 1.
         if m_zone is not None:
             m_row = m_zone if m_row is None else m_row * m_zone
+        slack_col = NV + grp
+        self.diag_slot_overflow = 0
+        if n_slot:
+            # Obstacle row k (in row order) owns slack column NX + k. Rows past
+            # the last slot keep the shared family column, so the QP stays
+            # feasible; the overflow is counted and logged, never silent.
+            idx_o = np.flatnonzero(grp == G_OBS)
+            k_own = min(idx_o.size, n_slot)
+            slack_col = slack_col.copy()
+            slack_col[idx_o[:k_own]] = NX + np.arange(k_own)
+            self.diag_slot_overflow = int(idx_o.size - k_own)
+            if self.diag_slot_overflow:
+                self._log.warn(
+                    f'{self.diag_slot_overflow} obstacle row(s) beyond '
+                    f'obstacle_row_slack_slots={n_slot} share the family slack',
+                    throttle_duration_sec=2.0)
         if m_row is None:
-            G[np.arange(n_c), NV + grp] = -1.0
+            G[np.arange(n_c), slack_col] = -1.0
         else:
-            G[np.arange(n_c), NV + grp] = -m_row
+            G[np.arange(n_c), slack_col] = -m_row
         # Phase-1 RHS feedforward, scattered onto the OBSTACLE rows by family
         # rather than by position, so it stays correct if the row builders are
         # ever reordered. None when the flag is off: the QP tick then skips the
@@ -2818,7 +2870,12 @@ class ConstraintBuilder:
                                     outrun_v,
                                     lock_dir,
                                     k0_row, k1_row, zone_row, h_pen_row,
-                                    around_geom=around_best)
+                                    around_geom=around_best,
+                                    capture_stamp=float(getattr(obs, 't_cap',
+                                                                obs.stamp)),
+                                    built_stamp=float(now),
+                                    build_wall_ms=(time.perf_counter()
+                                                   - _t_build) * 1e3)
 
     def _escape_row(self, ob, a: np.ndarray, Jp: np.ndarray, h: float,
                     v_obs: float, qdot: np.ndarray):

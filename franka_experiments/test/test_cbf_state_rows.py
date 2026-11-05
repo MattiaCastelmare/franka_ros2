@@ -464,19 +464,28 @@ def test_slew_box_is_never_empty_even_when_disjoint():
         assert np.all(lo <= hi + 1e-12), 'slew must never invert the box'
 
 
-def test_slew_walks_toward_an_unreachable_bound_at_max_rate():
-    """Disjoint case: approach the safety bound, do not jump to it."""
-    lb = np.full(NV, 10.0)          # safety box demands >= +10
+def test_slew_hands_back_an_unreachable_state_box_rather_than_walking_to_it():
+    """Disjoint case: the state box is returned whole, jerk bound broken.
+
+    Walking toward it one Δ per tick — which is what this asserted until the
+    safe-fallback work — spends three ticks emitting a command the state box
+    forbids, and the state box is the constraint that keeps the firmware reflex
+    from firing (accept_iterate clips the iterate into it). A box this far from
+    the current acceleration means the joint is already outside its velocity or
+    position envelope; the jerk bound is the thing that gives way, on purpose.
+    """
+    lb = np.full(NV, 10.0)          # state box demands >= +10
     ub = np.full(NV, 12.0)
     prev = np.zeros(NV)             # but we are at 0
     lo, hi = apply_slew_limit(lb, ub, prev, DELTA)
-    assert np.allclose(lo, DELTA) and np.allclose(hi, DELTA), \
-        'must pin to the slew edge nearest the safety box'
-    # Next tick it advances another DELTA, and so on until it arrives.
-    lo2, _ = apply_slew_limit(lb, ub, lo, DELTA)
-    assert np.allclose(lo2, 2 * DELTA)
-    lo3, _ = apply_slew_limit(lb, ub, lo2, DELTA)
-    assert np.allclose(lo3, 10.0), 'arrives at the safety bound, not past it'
+    assert np.allclose(lo, 10.0) and np.allclose(hi, 12.0), \
+        'the state box is hard; the slew box yields where they are disjoint'
+    # And once the overlap exists again, the slew bound is back in force: from
+    # q̈_prev = 8 the window is [8-Δ, 8+Δ] = [3, 13], whose intersection with
+    # the state box is [10, 12] on the low side and CUT by the slew edge
+    # nowhere — so take a Δ small enough to bite.
+    lo2, hi2 = apply_slew_limit(lb, ub, np.full(NV, 8.0), 3.0)
+    assert np.allclose(lo2, 10.0) and np.allclose(hi2, 11.0)
 
 
 def test_slew_disabled_reproduces_the_plain_state_box():
