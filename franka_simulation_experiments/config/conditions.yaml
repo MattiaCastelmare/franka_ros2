@@ -46,6 +46,19 @@ conditions:
     obstacle_tracking: true
     obstacle_velocity_source: tracker
     perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+  kf100:
+    # kf, with the ONLY difference being the requested QP rate. Exists to
+    # separate "asks for a rate the machine can hold" from "has fewer CBF
+    # features", which `minimal` changes at once: minimal asks for 100 Hz,
+    # held 99.97, tracked 31 mm and stayed clear, while kf asks for the
+    # fr3_control.yaml default of 300 Hz and was measured holding 42-120 Hz
+    # across seeds of one configuration. See OPEN_ISSUES.md S6.
+    description: kf, with qp_rate_hz pinned to 100 (rate isolation for S6)
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+    cbf_params:
+      qp_rate_hz: 100.0
   imm:
     description: as kf, with the IMM (generic + ballistic) track
     obstacle_tracking: true
@@ -56,3 +69,236 @@ conditions:
     obstacle_tracking: true
     obstacle_velocity_source: tracker
     perception: {tracking: {enabled: true, imm_enabled: true, prediction: {enabled: true}}}
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # ABLATION ARMS (Nov 2026): the complete framework against a minimal HOCBF
+  # ═════════════════════════════════════════════════════════════════════════
+  # Both arms sit on the SAME perception stack (kf: cluster + constant-velocity
+  # KalmanTrack, obstacle_velocity_source tracker) and the SAME substrate, so
+  # the only thing that varies is the obstacle barrier and the machinery that
+  # has grown around it.
+  #
+  # SHARED, ON IN BOTH, deliberately NOT part of the ablation:
+  #   the hard per-joint position/velocity/acceleration box, the q̈ slew box,
+  #   joint-limit rows, self-collision rows, singularity rows,
+  #   multi_obstacle_k, d_safe, k0_cbf/k1_cbf, every rho_slack, qp_rate_hz,
+  #   the solver and its fallback ladder.
+  # Those are actuator and self-protection constraints. Removing them would let
+  # the minimal arm fail for reasons that have nothing to do with obstacle
+  # avoidance — cbf_state_rows.py's header records the dq_ort = 10.9 rad/s²
+  # blowup that the joint-limit rows exist to fix — and an experiment that
+  # varies them is a different experiment.
+  #
+  # go_around is OFF IN BOTH ARMS. It is the newest mechanism and the one with
+  # no A/B evidence, so isolating the barrier means it is in neither.
+
+  full:
+    description: >
+      BASELINE. The complete framework exactly as a bare hardware launch runs
+      it (the global cbf: block = launch_defaults.yaml), minus go_around.
+      Five velocity-derived terms live (tracker source, vobs in hdot,
+      uncertainty margin, latency compensation, velocity standoff) plus the
+      zone ladder, the state governor, lateral evasion, livelock escape, the
+      tangential bias, the retreat caps, the link-speed caps, the approach gate
+      on both covariance margins, and the asymmetric h EMA.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+    cbf_params:
+      enable_go_around: false
+      # EXPERIMENTAL CONTROL, identical in both arms. At the shipped target of
+      # 300 Hz neither arm reaches it in this container and they do not miss it
+      # by the same amount: full achieved 110 Hz and minimal 196 Hz on the same
+      # cell, because minimal builds 11 rows where full builds 22 and the OSQP
+      # setup cost follows n_c. That is not a difference in control quality, but
+      # it CONTAMINATES every rate-derived number — the slew box bounds ‖Δq̈‖ at
+      # max_qddot_delta = 0.5 rad/s² per TICK, so the reported jerk ceiling is
+      # 0.5/dt: 55 rad/s³ at 110 Hz against 98 at 196 Hz, from one shared
+      # constant. 100 Hz is a rate both arms hold with margin, and it is the
+      # rate every per-tick constant in fr3_control.yaml is defined at.
+      qp_rate_hz: 100.0
+
+  minimal:
+    description: >
+      Minimal HOCBF. h = d_measured - d_safe, hdot = n^T(Jp qdot - v_o) with
+      v_o the tracked obstacle velocity projected on the contact normal
+      (signed, enable_vobs_in_hdot), and one row per control point and cluster
+      enforcing hddot + k1 hdot + k0 h >= 0 with the SAME k0/k1 and d_safe as
+      full. No distance margin beyond d_safe, no uncertainty or latency
+      tightening and so no approach gate to apply to them, no speed-proportional
+      standoff, no braking margin, no gain scheduling, no task fade, no steering
+      or escape bias, no rate-cap row families, and no filtering on h or on the
+      qdot that feeds k1.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+    # Launch-argument flags, over the global cbf: block.
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      qp_failure_policy: brake             # Task 1, shipped default
+      slew_yields_to_state_box: true       # Task 1, shipped default
+      brake_slew_limited: true
+
+  # Option B step 1 (CBF_QP_SIMPLIFICATION_ANALYSIS.md, 2026-11-04): minimal,
+  # with the obstacle slack changed from ONE shared quadratic slack to one
+  # LINEAR (l1, exact-penalty) slack per obstacle row. Everything else is
+  # byte-for-byte the minimal arm, so minimal vs minimal_l1 isolates the slack.
+  minimal_l1:
+    description: >
+      minimal + per-row l1 obstacle slack (obstacle_slack_mode row_l1,
+      rho_slack_l1 = 1e3). Otherwise identical to minimal:
+      Minimal HOCBF. h = d_measured - d_safe, hdot = n^T(Jp qdot - v_o) with
+      v_o the tracked obstacle velocity projected on the contact normal
+      (signed, enable_vobs_in_hdot), and one row per control point and cluster
+      enforcing hddot + k1 hdot + k0 h >= 0 with the SAME k0/k1 and d_safe as
+      full. No distance margin beyond d_safe, no uncertainty or latency
+      tightening and so no approach gate to apply to them, no speed-proportional
+      standoff, no braking margin, no gain scheduling, no task fade, no steering
+      or escape bias, no rate-cap row families, and no filtering on h or on the
+      qdot that feeds k1.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+    # Launch-argument flags, over the global cbf: block.
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+
+
+
+  # Task 1 of OSCBF_ALIGNMENT_PLAN.md, as an A/B arm. The safe fallback and the
+  # slew yield are the new DEFAULTS (they are a safety fix, not a feature), so
+  # the arm that needs spelling out is the OLD one. minimal_l1 vs this isolates
+  # the two knobs and nothing else: every other key below is minimal_l1's,
+  # copied verbatim.
+  minimal_l1_legacy_fallback:
+    description: >
+      minimal_l1 with the PRE-Task-1 failure behaviour restored, for the
+      before/after comparison only. qp_failure_policy box_only: a failed QP
+      re-solves the same objective over the hard box alone, i.e. it drops every
+      barrier row and emits the clipped nominal at the tick the safety QP
+      failed. slew_yields_to_state_box false: where the slew box and the hard
+      state box are disjoint the result is pinned to the slew edge instead of
+      handing back the state box, so the emitted command can sit outside the
+      box that keeps the firmware reflex from firing.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+    cbf:
+      uncertainty_margin: false
+      latency_compensation: false
+      velocity_standoff: false
+      zone_ladder: false
+      lateral_evasion: false
+      livelock_escape: false
+      obstacle_velocity_normal_guard: false
+      obstacle_identity_guard: false
+      vobs_in_hdot: true
+    cbf_params:
+      enable_go_around: false
+      margin_gate_on_approach: false
+      enable_velocity_feedforward: false
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false
+      retreat_cap_enabled: false
+      link_speed_rows_enabled: false
+      cbf_tangential_gain: 0.0
+      cbf_h_recovery_alpha: 0.0
+      cbf_hdot_filter_alpha: 0.0
+      obstacle_velocity_residual_floor: false
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0
+      rho_slack: 1000.0
+      obstacle_slack_max: 1000000.0
+      obstacle_slack_mode: row_l1
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # ── THE ONLY TWO DIFFERENCES from minimal_l1 ──
+      qp_failure_policy: box_only
+      slew_yields_to_state_box: false
+      brake_slew_limited: true

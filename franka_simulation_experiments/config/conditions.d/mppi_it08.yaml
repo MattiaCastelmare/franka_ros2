@@ -1,0 +1,57 @@
+# SIM iteration 8: project rollout accelerations through perceived HOCBF rows.
+# All sampler/cost parameters match the pre-I7 baseline; only shielding changes.
+conditions:
+  mppi_it08:
+    description: SIM iteration 8, shielded HOCBF rollouts, kf flags
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking:
+        enabled: true
+        imm_enabled: false
+        prediction:
+          enabled: false
+    shaper:
+      samples: 4
+      steps: 17
+      dt: 0.03
+      knots: 5
+      futures: 2
+      aggregation: cvar
+      risk_weight: 40.0
+      cbf_weight: 80.0
+      shielded_rollouts: true
+      shield_iterations: 8
+      backend: cuda
+    commander_params:
+      qddot_safe_topic: /NS_1/qddot_task
+  mppi_it08_plain:
+    description: SIM iteration 8, shielded HOCBF rollouts, kf_plain flags
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking:
+        enabled: true
+        imm_enabled: false
+        prediction:
+          enabled: false
+    cbf:
+      lateral_evasion: false
+      outrun_evasion: false
+      livelock_escape: false
+      zone_ladder: false
+      velocity_standoff: false
+    shaper:
+      samples: 4
+      steps: 17
+      dt: 0.03
+      knots: 5
+      futures: 2
+      aggregation: cvar
+      risk_weight: 40.0
+      cbf_weight: 80.0
+      shielded_rollouts: true
+      shield_iterations: 8
+      backend: cuda
+    commander_params:
+      qddot_safe_topic: /NS_1/qddot_task
