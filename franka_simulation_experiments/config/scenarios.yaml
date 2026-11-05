@@ -173,6 +173,50 @@ pentagon:
       T: 12.0
       obstacles: [{p0: [0.40, -0.85, 0.62], radius: 0.06, law: linear,
                    v0: [0.0, 0.3, 0.0]}]
+    pentagon_lateral_osc:                # pentagon_lateral, but the ball SWEEPS BACK AND FORTH
+      # Same encounter geometry as pentagon_lateral -- the ball runs along y in
+      # the path plane x = 0.40 at z = 0.62, so its line cuts the commanded
+      # circle at y = +/- sqrt(0.25^2 - 0.17^2) = +/- 0.183 -- but with
+      # law: oscillate instead of linear, so it does not leave after one pass.
+      # pentagon_lateral crosses the circle only between t = 2.2 and 3.4 s of a
+      # 12 s run, which makes "was it an encounter at all" a timing lottery
+      # (see pentagon_lateral_y's note). This one traverses the chord band SIX
+      # times in 24 s, in alternating directions, so every arm meets the ball
+      # several times per run and from both sides.
+      #
+      # p0 IS THE CENTRE of the oscillation, not a starting point: for
+      # law: oscillate the plugin and simexp.obstacle_laws both evaluate
+      # p(t) = p0 + axis_hat * amplitude * sin(2 pi t / period + phase).
+      # The centre is therefore offset to y = -0.35 rather than put at y = 0:
+      # measured on the TRUE control points at q0, a centre at (0.40, 0, 0.62)
+      # sits 42 mm INSIDE the arm, and enforce_start_clearance would (correctly)
+      # shove it out and silently change the geometry.
+      #
+      # phase_deg: -90 makes the law -cos, so THE BALL IS BORN AT THE FAR END,
+      # p0 - axis * amplitude = y -0.95, which is 0.842 m clear of the arm at
+      # q0 and further out than pentagon_lateral's own p0. It then sweeps in,
+      # crosses the path, and comes back. Without the phase the ball is born at
+      # the centre of its swing, i.e. 0.247 m from the arm and already halfway
+      # through its approach -- a spawn right next to the robot, with no
+      # approach to observe. start_shift in run_manifest_sim.json must still be
+      # an empty list: re-check it if you edit p0, the amplitude or the phase.
+      #
+      # y sweeps [-0.95, +0.25]: the far end is out clear of the workspace and
+      # the near end (+0.25) is just past the second chord crossing, so the
+      # ball fully exits the path on both sides. Peak speed
+      # amplitude * 2 pi / period = 0.377 m/s, the same order as
+      # pentagon_lateral's 0.3 m/s and above lateral_evasion_v_min = 0.15, so
+      # the velocity-derived terms engage. One encounter per half period = one
+      # every 5 s; T = 60 s gives 12 of them, which is what makes a single run
+      # a rate rather than an anecdote. Ask for fewer with duration_s:=.
+      #
+      # scene: diag is stated (pentagon_lateral inherits the catalog default
+      # 'rig'): the DIAG lab is the environment this programme measures in.
+      scene: diag
+      T: 60.0
+      obstacles: [{p0: [0.40, -0.35, 0.62], radius: 0.06, law: oscillate,
+                   axis: [0.0, 1.0, 0.0], amplitude: 0.60, period: 10.0,
+                   phase_deg: -90.0}]
     pentagon_pursuer:                    # a hand following the flange at 0.3 m/s
       T: 12.0
       obstacles: [{p0: [0.4, 0.75, 0.45], radius: 0.05, law: pursuit, speed: 0.3}]
@@ -200,6 +244,35 @@ pentagon:
       obstacles: [{p0: [0.40, -0.25, 0.45], radius: 0.05, law: static},
                   {p0: [0.60, 0.0, 0.50], radius: 0.05, law: oscillate,
                    axis: [0.0, 1.0, 0.0], amplitude: 0.35, period: 12.0}]
+
+    pentagon_two_static:                 # TWO fixed balls, both of them avoidable
+      # pentagon_multi_static is the older two-ball entry and is NOT this: its
+      # first ball sits at (0.40, -0.25, 0.45), which is ON the commanded circle
+      # (nearest path point 0.000 m, undisturbed surface gap -0.100 m). As
+      # pentagon_static_baseline's note says, a barrier filter bends the
+      # commanded acceleration, it does not plan a detour, so an obstacle ON the
+      # path demands a 0.15 m excursion the filter has no means to construct: it
+      # measures braking, and the margin violation it produces says nothing
+      # about how well the arm avoids.
+      #
+      # This entry is pentagon_pos_p1 + pentagon_pos_p2 at once: both balls 0.15
+      # m in FRONT of the path plane (x = 0.55), off the -y and +y vertices of
+      # the circle, mirrored. Each is the baseline's own geometry, so each has
+      # an undisturbed surface gap of +0.050 m -- half of d_safe, a plain
+      # violation of the margin yet nowhere near contact -- and each is escaped
+      # by ~0.05 m of retreat along -x, back toward the robot, where nothing is
+      # in the way. Both balls are therefore avoidable, and a margin violation
+      # here IS about the controller.
+      #
+      # Why two and not one: the hand meets them in opposite halves of the lap,
+      # so the run exercises what a single ball cannot -- multi_obstacle_k = 2
+      # (both clusters enter the QP), and minimal_l1's per-row l1 slack, whose
+      # whole point is that one bad obstacle row no longer loosens the other.
+      # T = 60 s is 10 laps of the 6 s circle = 20 encounters.
+      scene: diag
+      T: 60.0
+      obstacles: [{p0: [0.55, -0.25, 0.45], radius: 0.05, law: static},
+                  {p0: [0.55, 0.25, 0.45], radius: 0.05, law: static}]
 
 # ── Ball-throw speed sweep, as approach_envelope.py builds its cells ──────────
 # A ball of R_BALL aimed at the flange centre along +y, constant velocity:
@@ -262,3 +335,10 @@ tests:
       - {p0: [1.00, -0.80, 0.60], radius: 0.05, law: linear, v0: [0.0, 0.30, 0.05]}
       - {p0: [1.20, 0.80, 1.20], radius: 0.05, law: ballistic, v0: [-0.20, -0.10, 1.50]}
       - {p0: [0.40, 1.10, 0.60], radius: 0.05, law: pursuit, speed: 0.10}
+      # oscillate, with a phase: the ONLY place the plugin's sine and
+      # simexp.obstacle_laws' sine are checked against each other on a running
+      # Gazebo (test_phase4_obstacles.py). phase_deg != 0 on purpose -- at 0 a
+      # dropped phase term would be invisible. Appended, so pursuit stays at
+      # index 3 for test_pursuit_is_euler_on_the_true_flange.
+      - {p0: [1.10, 0.40, 1.00], radius: 0.05, law: oscillate,
+         axis: [0.0, 1.0, 0.0], amplitude: 0.30, period: 4.0, phase_deg: -90.0}

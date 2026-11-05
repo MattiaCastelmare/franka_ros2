@@ -137,6 +137,7 @@ def resolve(name: str, seed: int = 0, cfg: dict | None = None, depth_rate_hz: fl
                     axis=list(o.get('axis', (1.0, 0.0, 0.0))),
                     amplitude=float(o.get('amplitude', 0.0)),
                     period=float(o.get('period', 0.0)),
+                    phase_deg=float(o.get('phase_deg', 0.0)),
                     park=bool(o.get('park', True)))
         obstacles.append(spec)
     nominal = dict(sc.get('nominal', {'law': 'joint_pd'}))
@@ -151,13 +152,29 @@ def resolve(name: str, seed: int = 0, cfg: dict | None = None, depth_rate_hz: fl
                 start_offset_s=start_offset, jitter_m=jitter)
 
 
+def _spawn(spec: dict) -> np.ndarray:
+    """Where the obstacle is BORN: p(0) of its law, which is not always ``p0``.
+
+    It is ``p0`` for static, linear and ballistic (p(0) = p0 identically) and
+    for pursuit (which integrates from p0; ``obstacle_laws.position`` cannot
+    evaluate it without the target). An oscillate with ``phase_deg`` != 0 is the
+    exception: it is born at p0 + axis * amplitude * sin(phase), e.g. at the far
+    end of the swing for -90. The clearance rule below is about where a
+    trajectory STARTS, so it has to ask the law, not read p0.
+    """
+    if spec.get('law') == 'oscillate':
+        from .obstacle_laws import position
+        return position(spec, 0.0)
+    return np.asarray(spec['p0'], float)
+
+
 def check_start(resolved: dict, cps: list, d_safe: float) -> dict:
-    """True gap of every control point to every obstacle at p0; refuse h < 0 at start."""
+    """True gap of every control point to every obstacle at p(0); refuse h < 0 at start."""
     from .truth_geometry import surface_gaps
     obs = resolved['obstacles']
     if not obs:
         return {'ok': True, 'min_gap': None}
-    g = surface_gaps(cps, [o['p0'] for o in obs], [o['radius'] for o in obs])
+    g = surface_gaps(cps, [_spawn(o) for o in obs], [o['radius'] for o in obs])
     return {'ok': bool(g.min() >= d_safe), 'min_gap': float(g.min()), 'd_safe': d_safe}
 
 
@@ -173,17 +190,23 @@ def enforce_start_clearance(resolved: dict, cps: list, d_safe: float,
     offending obstacle moves radially away from its nearest control point by
     ``d_safe - gap + margin``. The move is recorded in ``start_shift``; every
     other obstacle is untouched.
+
+    Measured at ``_spawn(o)`` = p(0), not at p0: for a phase-shifted oscillate
+    those differ. ``p0`` is still what moves, which is the right handle either
+    way -- every law is p0 + f(t), so translating p0 translates the WHOLE
+    trajectory rigidly and the spawn moves by the same delta.
     """
     from .truth_geometry import surface_gaps
     out = copy.deepcopy(resolved)
     out['start_shift'] = []
     P = np.array([c['point'] for c in cps])
     for o in out['obstacles']:
-        g = surface_gaps(cps, [o['p0']], [o['radius']])[:, 0]
+        spawn = _spawn(o)
+        g = surface_gaps(cps, [spawn], [o['radius']])[:, 0]
         i = int(np.argmin(g))
         if g[i] >= d_safe:
             continue
-        n = np.asarray(o['p0'], float) - P[i]
+        n = spawn - P[i]
         n /= np.linalg.norm(n)
         delta = (d_safe - g[i] + margin) * n
         o['p0'] = (np.asarray(o['p0'], float) + delta).tolist()

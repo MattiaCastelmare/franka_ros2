@@ -1,17 +1,23 @@
 """Phase 4: ScenarioObstacles holds the law at the physics rate; ground truth reaches the log.
 
-SLOW: one Gazebo run of tests.p4_laws (four obstacles, one per law, away from
+SLOW: one Gazebo run of tests.p4_laws (five obstacles, one per law, away from
 the arm), ~25 s wall. Data: the 1 kHz truth poses the system publishes
 (/sim/truth/obstacle_poses[_vel], in the run's bag), truth.npz, and the
 experiment_logger CSV.
 
-* static / linear / ballistic: every pose and velocity after the start equals
-  the analytic law to 1e-6 m (the system evaluates it per step, no integrator);
+* static / linear / ballistic / oscillate: every pose and velocity after the
+  start equals the analytic law to 1e-6 m (the system evaluates it per step, no
+  integrator). The oscillate obstacle carries a non-zero ``phase_deg``, which is
+  what makes this the agreement test for the phase: the plugin's C++ sine and
+  simexp.obstacle_laws' numpy sine are the sim and the truth of one motion, and
+  nothing else compares them;
 * pursuit: equals explicit Euler on the TRUE flange (truth.npz) to 2 mm.
   The residual comes from sampling the flange at joint-state stamps instead of
   inside the physics step;
 * before the start every parked obstacle is out of view (z = -20 m); the first
-  pose after the start is p0 + v·(<= 2 ms): a birth, not a teleport;
+  pose after the start is p(0) + v·(<= 2 ms): a birth, not a teleport. p(0) is
+  the law's, not p0 -- a phase-shifted oscillate is born at the end of its
+  swing;
 * experiment_logger carries finite truth_* columns (truth_topic is set by the
   sim launch; default-off in the logger).
 """
@@ -70,7 +76,7 @@ def test_the_start_time_is_the_supervisors(run):
     assert run['t0'] == pytest.approx(run['man']['episode']['t_start_sim'], abs=1e-9)
 
 
-@pytest.mark.parametrize('k', [0, 1, 2])
+@pytest.mark.parametrize('k', [0, 1, 2, 4])
 def test_analytic_laws_hold_exactly(run, k):
     L = run['L']
     spec = run['specs'][k]
@@ -102,7 +108,8 @@ def test_pursuit_is_euler_on_the_true_flange(run):
     assert err.max() < 0.002, err.max()
 
 
-def test_parked_before_and_born_at_p0_without_a_teleport(run):
+def test_parked_before_and_born_at_p_of_zero_without_a_teleport(run):
+    L = run['L']
     before = run['tp'] < run['t0'] - 0.001
     assert before.any()
     np.testing.assert_allclose(run['P'][before][:, :, 2], -20.0, atol=1e-9)
@@ -112,7 +119,13 @@ def test_parked_before_and_born_at_p0_without_a_teleport(run):
         v = np.linalg.norm(spec.get('v0', [0, 0, 0])) + spec.get('speed', 0.0)
         if spec['law'] == 'ballistic':
             v += 9.81 * 0.002
-        jump = float(np.linalg.norm(run['P'][i, k] - np.asarray(spec['p0'])))
+        # p(0) == p0 for every law but a phase-shifted oscillate, which is born
+        # at the end of its swing; bound its first step by the peak speed.
+        if spec['law'] == 'oscillate':
+            v += spec['amplitude'] * 2.0 * np.pi / spec['period']
+        birth = (np.asarray(spec['p0'], float) if spec['law'] == 'pursuit'
+                 else L.position(spec, 0.0))
+        jump = float(np.linalg.norm(run['P'][i, k] - birth))
         jumps.append(jump)
         assert jump <= v * 0.002 + 1e-9, (k, jump)
     _record(run, 'first_step_jump_m', jumps)

@@ -204,7 +204,10 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
 
     Each spec: ``name, radius, law (static|linear|ballistic|pursuit|oscillate),
     p0`` and, per law, ``v0``, ``gravity``, ``speed``, ``axis`` + ``amplitude``
-    + ``period``; ``park`` (default True). The pursuit target is the flange:
+    + ``period`` + ``phase_deg``; ``park`` (default True). ``phase_deg`` shifts
+    the oscillation's sine, so it decides where the ball is BORN: 0 starts it at
+    ``p0`` (the centre of the swing), -90 at ``p0 - axis * amplitude`` (the far
+    end, sweeping in). The pursuit target is the flange:
     fr3_link7 + 0.107 m along its z, because Gazebo lumps the fixed fr3_link8
     into fr3_link7.
     """
@@ -219,6 +222,7 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
             f'<axis>{_fmt(o.get("axis", (1, 0, 0)))}</axis>'
             f'<amplitude>{float(o.get("amplitude", 0.0)):.9g}</amplitude>'
             f'<period>{float(o.get("period", 0.0)):.9g}</period>'
+            f'<phase_deg>{float(o.get("phase_deg", 0.0)):.9g}</phase_deg>'
             f'<park>{"true" if o.get("park", True) else "false"}</park>'
             f'<park_at>{_fmt(o.get("park_at", PARK_AT))}</park_at>'
             '</obstacle>')

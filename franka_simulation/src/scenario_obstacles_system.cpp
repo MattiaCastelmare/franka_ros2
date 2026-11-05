@@ -11,11 +11,18 @@
 //   pursuit    p <- p + speed * (target - p)/|target - p| * dt
 //              with target = the TRUE flange pose read from the ECM in the same
 //              step, i.e. cbf_scenarios.Sphere.step(dt, flange)
-//   oscillate  p(t) = p0 + axis * amplitude * sin(2 pi t / period)      (exact)
+//   oscillate  p(t) = p0 + axis * amplitude * sin(2 pi t / period + phase)  (exact)
 //              A ball sweeping back and forth across the robot's path: it passes
 //              the plane through p0 twice per period, at peak speed
 //              amplitude * 2 pi / period. <axis> is normalised here, so the
 //              amplitude is always metres along it.
+//              <phase_deg> (degrees, default 0) shifts the sine's argument, which
+//              is what decides WHERE THE BALL IS BORN: at 0 it starts at p0, the
+//              CENTRE of the swing, which for a centre near the arm means it
+//              spawns next to the robot. At -90 the law is -cos and it starts at
+//              p0 - axis * amplitude, the far end, and sweeps in. simexp's
+//              obstacle_laws.position/velocity carry the same term; the two are
+//              the sim and the truth of one motion and must not disagree.
 //
 // Before the episode starts the obstacles are PARKED out of view (unless
 // <park>false</park>). The start time arrives as a sim time on a gz topic
@@ -84,7 +91,7 @@ struct Obstacle
   std::string law{"static"};
   Vector3d p0, v0, gravity{0, 0, -9.81}, park{0, 0, -20}, axis{1, 0, 0};
   double speed{0.0};
-  double amplitude{0.0}, period{0.0};
+  double amplitude{0.0}, period{0.0}, phase{0.0};   // phase in RADIANS
   bool use_park{true};
   ignition::gazebo::Entity entity{ignition::gazebo::kNullEntity};
   Vector3d p, v;   // pursuit state, and the last commanded position / velocity
@@ -122,6 +129,7 @@ public:
       ob.axis = ParseVec(o->Get<std::string>("axis", "1 0 0").first, {1, 0, 0});
       ob.amplitude = o->Get<double>("amplitude", 0.0).first;
       ob.period = o->Get<double>("period", 0.0).first;
+      ob.phase = o->Get<double>("phase_deg", 0.0).first * M_PI / 180.0;
       ob.p = ob.p0;
       ob.v = Vector3d::Zero;
       if (ob.law != "static" && ob.law != "linear" && ob.law != "ballistic" &&
@@ -195,8 +203,8 @@ public:
           ob.v = ob.v0 + ob.gravity * t;
         } else if (ob.law == "oscillate") {
           const double w = 2.0 * M_PI / ob.period;
-          p = ob.p0 + ob.axis * (ob.amplitude * std::sin(w * t));
-          ob.v = ob.axis * (ob.amplitude * w * std::cos(w * t));
+          p = ob.p0 + ob.axis * (ob.amplitude * std::sin(w * t + ob.phase));
+          ob.v = ob.axis * (ob.amplitude * w * std::cos(w * t + ob.phase));
         } else {   // pursuit: the same time origin as the analytic laws
           if (!target) {
             target = Target(ecm);
