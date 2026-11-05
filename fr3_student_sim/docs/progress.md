@@ -149,3 +149,108 @@ To also open the graph windows, run this in the same terminal:
 ```bash
 ros2 run fr3_student_sim plot_run "$latest_circle_log"
 ```
+
+### Straight approach with directional mass minimization
+
+A separate experiment has been added in
+`students/straight_mass_minimization/controller.py`. It controls the three
+coordinates of `fr3_fingertip`; the gripper orientation is free. Its reference
+and mass objective are separate modules,
+`straight_line_reference.py` and `mass_objective.py`, and its parameters are
+in `config/straight_mass_minimization.yaml`. The circular controllers and
+their configurations are unchanged.
+
+The runner now passes the controller an independent copy of the selected
+wall's static `point` and `normal` through `self.params['wall_geometry']`.
+This is the only infrastructure change for the new experiment. The wall
+object, its true force and the collision-detector output are not supplied to
+the controller. Wall position, orientation and launch defaults are unchanged.
+
+The reference starts from the configured initial fingertip position and
+moves along the straight direction $s=-n$, where $n$ is the wall's unit
+outward normal in the robot base frame. With the current vertical wall this
+is the base $+x$ direction. A 0.5 s smooth ramp increases the speed from zero
+to 0.02 m/s. The reference crosses the wall plane at that speed, then brakes
+smoothly over a further 0.001 m and holds the endpoint for 0.2 s. The
+controller then sets `done` at its scheduled end time, about 4.5 s with the
+current wall geometry. The launch's default `duration` remains 20 s as an
+upper bound. This stop is independent of collision detection and
+actual contact. The speed and penetration settings describe the reference,
+not guaranteed values of the robot's actual contact speed or penetration.
+
+The controller keeps Cartesian tracking, nullspace velocity damping and the
+mass-gradient torque as explicit contributions. Here $J$ is the $3\times7$
+position Jacobian, $M$ the joint inertia matrix, and $c$ the Coriolis and
+centrifugal torque vector:
+
+$$
+\begin{aligned}
+a &= \ddot{p}_{\mathrm{ref}}
+   + K_d\left(\dot{p}_{\mathrm{ref}}-J\dot q\right)
+   + K_p\left(p_{\mathrm{ref}}-p\right), \\
+N &= I-J^{\dagger}J, \\
+\ddot q_{\mathrm{track}} &=
+   J^{\dagger}\left(a-\dot J\dot q\right)-k_N N\dot q, \\
+\tau_{\mathrm{track}} &= M\ddot q_{\mathrm{track}}+c(q,\dot q), \\
+m(q,n) &= \frac{1}{n^\top J M^{-1}J^\top n}, \\
+\bar J &= M^{-1}J^\top\left(JM^{-1}J^\top\right)^{-1}, \\
+N_\tau &= I-J^\top\bar J^\top, \\
+\tau_{\mathrm{mass}} &= -k_m N_\tau\nabla_q m(q,n), \\
+\tau &= \tau_{\mathrm{track}}+\tau_{\mathrm{mass}}, \\
+\ddot q_{\mathrm{cmd}} &=
+   \ddot q_{\mathrm{track}}+M^{-1}\tau_{\mathrm{mass}}.
+\end{aligned}
+$$
+
+The existing Pinocchio model evaluates mass in the fixed wall-normal
+direction at the controlled fingertip. The gradient uses symmetric finite
+differences with a step of $10^{-4}$ rad; it is neither normalized nor
+clipped. Each update evaluates mass 15 times: once at the current configuration
+and twice per joint for the gradient. This runtime cost has not been measured.
+The mass gain starts at `mass_minimization.gain: 0.01`
+[N m rad/kg], and `tracking.kd_nullspace` remains 4 [1/s]. For positive-definite
+$M$ and full-row-rank $J$, the torque projector satisfies
+$JM^{-1}\tau_{\mathrm{mass}}=0$ before saturation. The runner applies its
+existing saturation to the requested total torque; gravity remains compensated
+by the simulator. No additional posture, joint-limit or contact control is introduced.
+
+The new user signals are saved automatically and displayed by the existing
+plot command: `user_mass_kg`, `user_mass_gradient`, `user_tau_mass`,
+`user_normal_speed` and `user_normal_speed_ref`. Normal speed is positive
+towards the wall, along $s=-n$. `user_tau_mass` is the requested mass
+contribution before saturation of the total torque; it is not a separate
+measurement of applied torque. `user_qdd_command` contains the total requested
+acceleration, and the tracking, nullspace and observer signals remain logged.
+
+Setting `mass_minimization.gain` to zero in the same YAML removes only the
+mass torque, providing the straight-tracking-and-damping baseline for a future
+comparison. The mass objective does not guarantee decreasing mass throughout
+the run, avoidance of joint limits or a reduction of contact force.
+
+### Run the straight mass-minimization controller
+
+Inside the container, build once to install the added files:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=straight_mass_minimization/controller.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/straight_mass_minimization.yaml \
+  run_name:=straight_mass_minimization \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true
+```
+
+After the run, save the tracking and observer figures for its latest log:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+latest_straight_log=$(ls -t runs/straight_mass_minimization_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_straight_log" --no-show
+```
