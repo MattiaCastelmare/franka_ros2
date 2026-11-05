@@ -217,6 +217,50 @@ pentagon:
       obstacles: [{p0: [0.40, -0.35, 0.62], radius: 0.06, law: oscillate,
                    axis: [0.0, 1.0, 0.0], amplitude: 0.60, period: 10.0,
                    phase_deg: -90.0}]
+    pentagon_lateral_y:                  # LEFT-TO-RIGHT sweep, pure +/-y
+      # The commanded path is a CIRCLE IN THE yz PLANE (fr3_control.yaml:
+      # path_center_xyz [0.4, 0, 0.45], path_radius 0.25, plane 'yz'), so every
+      # commanded point has x = 0.40 exactly. That is what makes a pure-y sweep
+      # a clean test of stepping aside: a ball at fixed (x, z) sweeping in y
+      # sits at centre distance |x - 0.40| from the whole path, the escape is a
+      # pure -x retraction, and y and z can stay EXACTLY on the circle. The
+      # escape direction is also perpendicular to v_obs, which is the direction
+      # lateral_evasion and outrun_evasion are built to find.
+      #
+      # Why these three numbers:
+      #   x = 0.48  -> undisturbed surface gap = 0.08 - 0.06 - 0.05 = -0.030 m.
+      #               NEGATIVE on purpose: a controller that does not move
+      #               collides, so zero contacts actually means something. The
+      #               escape is cheap -- x <= 0.37 is already contact-free,
+      #               x <= 0.27 restores the full d_safe.
+      #   z = 0.25  -> on the circle (|0.25 - 0.45| < 0.25), so it crosses at
+      #               y = +/-0.150, four times per period, 12 times in 24 s, at
+      #               0.333 m/s (above lateral_evasion_v_min = 0.15). Low
+      #               because the arm PARKS high: at q0 the hand sits at
+      #               (0.32, 0, 0.47) and the links fill z = 0.47..0.68.
+      #               Ball bottom is z = 0.19, clear of the table top at z = 0.
+      #   together  -> gap to the nearest control point at q0 is +0.162 >=
+      #               d_safe, so enforce_start_clearance leaves p0 ALONE.
+      #
+      # That last line is the whole point of this comment. The first version of
+      # this scenario used p0 [0.40, 0, 0.45], which is where the hand already
+      # is at q0 -- it started 0.028 m INSIDE fr3_link8#2, and the clearance
+      # check (correctly) shoved it 0.129 m out to x = 0.527. The ball then
+      # swept past at 0.097 m from the path instead of through it, every arm
+      # cleared it by ~0.06 m, and the scenario could not tell the arms apart.
+      # If you edit p0, re-check start_shift in run_manifest_sim.json: it must
+      # be an empty list.
+      #
+      # The two scenarios this replaces, and why neither can answer it:
+      # pentagon_lateral crosses the circle only between t = 2.2 and 3.4 s, so
+      # whether it is an encounter at all is a timing lottery and the hand is
+      # usually elsewhere. pentagon_sweep does meet the arm, but its ball DWELLS
+      # inside the commanded path for 13 of its 30 s, so no controller can both
+      # track the task and keep clearance -- its contacts measure whether the
+      # arm abandons the task, not whether it avoids.
+      T: 24.0
+      obstacles: [{p0: [0.48, 0.0, 0.25], radius: 0.06, law: oscillate,
+                   axis: [0.0, 1.0, 0.0], amplitude: 0.45, period: 8.0}]
     pentagon_pursuer:                    # a hand following the flange at 0.3 m/s
       T: 12.0
       obstacles: [{p0: [0.4, 0.75, 0.45], radius: 0.05, law: pursuit, speed: 0.3}]
@@ -244,7 +288,6 @@ pentagon:
       obstacles: [{p0: [0.40, -0.25, 0.45], radius: 0.05, law: static},
                   {p0: [0.60, 0.0, 0.50], radius: 0.05, law: oscillate,
                    axis: [0.0, 1.0, 0.0], amplitude: 0.35, period: 12.0}]
-
     pentagon_two_static:                 # TWO fixed balls, both of them avoidable
       # pentagon_multi_static is the older two-ball entry and is NOT this: its
       # first ball sits at (0.40, -0.25, 0.45), which is ON the commanded circle
@@ -273,6 +316,52 @@ pentagon:
       T: 60.0
       obstacles: [{p0: [0.55, -0.25, 0.45], radius: 0.05, law: static},
                   {p0: [0.55, 0.25, 0.45], radius: 0.05, law: static}]
+
+    # ── Static-position sweep (2026-11-04, sim_runs/ball_position_sweep_20261104) ──
+    # One 5 cm static ball per scenario, DIAG lab. Path: circle x=0.40, centre
+    # (y 0, z 0.45), r 0.25.
+    pentagon_pos_p1:                    # in front of the right side of the path (= pentagon_static_baseline)
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.55, -0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_pos_p2:                    # in front of the left side (mirror of p1)
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.55, 0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_pos_p3:                    # in front of the top of the path
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.55, 0.0, 0.7], radius: 0.05, law: static}]
+    pentagon_pos_p4:                    # farther in front: nominal path only grazes the margin
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.6, -0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_pos_p5:                    # ON the path, right side (= pentagon_on_path position)
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.4, -0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_pos_p6:                    # ON the path, bottom of the circle
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.4, 0.0, 0.2], radius: 0.05, law: static}]
+    pentagon_pos_p7:                    # BEHIND the path (robot side), near forearm/elbow
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.25, -0.25, 0.45], radius: 0.05, law: static}]
+    pentagon_occl_o1:                   # OCCLUSION: ball on the camera ray to the path's
+      # right point (camera at (1.99, 0.03, 1.08) base frame, sim extrinsics), 0.85 of
+      # the way from camera to (0.40, -0.25, 0.45). From the camera the hand passes
+      # BEHIND it; in 3D the path stays ~0.24 m (centres) from it, so no avoidance is
+      # actually needed. Flacco depth-space A/B, sim_runs/flacco_depth_space_20261104.
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.639, -0.208, 0.544], radius: 0.05, law: static}]
+    pentagon_pos_p8:                    # far from the path (front-left, low): control case
+      # (the circle centre was rejected: at Q0 the hand starts near it, so the
+      # ball would begin inside the barrier and be shifted 12 cm by the catalog)
+      scene: diag
+      T: 30.0
+      obstacles: [{p0: [0.65, 0.45, 0.30], radius: 0.05, law: static}]
 
 # ── Ball-throw speed sweep, as approach_envelope.py builds its cells ──────────
 # A ball of R_BALL aimed at the flange centre along +y, constant velocity:
