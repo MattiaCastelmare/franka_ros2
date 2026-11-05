@@ -1,0 +1,4 @@
+# Generalized momentum observer. Scalars apply to all joints; seven values
+# configure the joints separately. Neither setting changes the tracking law.
+gain: 30.0       # K_O [1/s]
+threshold: 0.1   # detection when any |r_i| exceeds this value [N m]

@@ -1,0 +1,13 @@
+# Same initial pose, circle and Cartesian gains as circle_tracking.yaml.
+# For students/circle_tracking/controller_nullspace_damping.py only.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
+
+circle:
+  radius: 0.04
+  period: 8.0
+  ramp: 1.0
+
+tracking:
+  kp_position: 100.0
+  kd_position: 20.0
+  kd_nullspace: 4.0  # [1/s] starting value; zero recovers the minimal controller

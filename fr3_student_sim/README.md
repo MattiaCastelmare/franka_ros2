@@ -11,7 +11,8 @@ file**. You do not need to know ROS 2: you write a `Controller` class
 | **Your controller** | `students/my_controller.py` | **write it** (the only code you edit) |
 | Examples | `students/examples/`: `zero_torque.py` (the arm floats), `joint_pd.py` (joint PD), `cartesian_pd.py` (the fingertip follows the circle with a Cartesian "spring") | read, run, copy from |
 | Task parameters | `config/task.yaml`: start pose, circle (4 cm, 8 s), gains of your 3R study. Reaches your controller as `self.params`; add your own keys | edit |
-| The wall | `config/wall.yaml`: plane at x = 0.62 m facing the robot, `k_e` = 20000 N/m, `b_e` = 15 N s/m (your 3R wall was `k_e` = 1500) | edit |
+| The wall | `config/wall.yaml`: vertical plane at x = 0.6397 m, `k_e` = 20000 N/m, `b_e` = 15 N s/m | edit |
+| Collision monitoring | `config/observer.yaml`: momentum-observer gain and per-joint residual thresholds | configure |
 | Robot model | `self.robot` (`fr3_student_sim/fr3_model.py`): kinematics, M, C, g, effective mass of the **simulated** robot | call it |
 | Plots and contact facts | `ros2 run fr3_student_sim plot_run <log>` | run it |
 | Many experiments in one go | `ros2 run fr3_student_sim run_batch <file>`, example in `config/batch_example.yaml` | run it |
@@ -20,11 +21,15 @@ file**. You do not need to know ROS 2: you write a `Controller` class
 What the package does for you at every run: starts Gazebo with the FR3,
 **compensates gravity** (as the real robot does), moves the arm to the start pose
 (about 2 s, until it is at rest), calls your `update` at 1 kHz, clips your torques to the FR3 limits, applies
-the wall force, stops the robot safely if something goes wrong, and saves a log.
+the wall force, monitors collisions independently of the tracking law, stops
+the robot safely if something goes wrong, and saves a log.
 
 The scene: at the start pose the tool points horizontally at the wall (+x),
 fingertip at (0.56, 0, 0.50) m in the robot base frame (x forward, z up). The circle
-lies in the vertical x-z plane, starts there, and its far side is 2 cm inside the wall.
+lies in the vertical x-z plane and starts there. The wall is vertical, with
+outward normal (-1, 0, 0), at x = 0.6397 m: 0.1 mm closer to the robot than
+the previous position at x = 0.6398 m. The desired circle reaches x = 0.64 m,
+giving a nominal 0.3 mm overlap at its farthest point.
 
 ## 1. Run it
 
@@ -57,12 +62,51 @@ and the log is saved in `fr3_student_sim/runs/` (whatever folder you launch from
 stops a run early (the log is still saved). Edits to your controller work at the
 next launch (no rebuild).
 
+The circle experiment has two separately selectable controllers:
+
+| Variant | Controller in `students/circle_tracking/` | Task configuration |
+|---|---|---|
+| Minimal position tracking | `controller.py` | `config/circle_tracking.yaml` |
+| Position tracking with nullspace velocity damping | `controller_nullspace_damping.py` | `config/circle_tracking_nullspace_damping.yaml` |
+
+The damping variant reuses the minimal controller and adds only
+`qdd_null = -kd_nullspace * (I - J_pinv @ J) @ dq`, contributing
+`M(q) @ qdd_null` to its torque. The trajectory, Cartesian gains and observer
+are the same. Its configuration starts with `kd_nullspace: 4.0` [1/s]; zero
+recovers the minimal command. It logs `dq_null` and `qdd_null` in addition to
+the existing signals, with `qdd_command` containing the total requested
+acceleration. Damping does not impose a desired posture or enforce joint limits.
+
+After building the package to install the new files, choose one command:
+
+```bash
+# Minimal reference controller:
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking.yaml \
+  run_name:=circle_minimal wall:=true
+
+# Variant with nullspace damping:
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_nullspace_damping.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_nullspace_damping.yaml \
+  run_name:=circle_nullspace_damping wall:=true
+```
+
+The run names give the log files distinct prefixes. Each log already records
+the selected controller path and task parameters. For a comparison, keep
+wall/observer settings, initial pose, trajectory and Cartesian gains equal
+and change only the controller variant. New control laws get separate files;
+gain changes belong in configuration files.
+
 Options (`name:=value` after the launch command):
 
 | option | default | meaning |
 |---|---|---|
 | `controller` | `my_controller.py` | file in `students/` (or an absolute path); `none` = only the robot, no controller (it floats and drifts) |
 | `wall` | `true` | the wall on/off |
+| `observer` | `true` | momentum observer and collision detector on/off; monitoring only |
+| `observer_config` | `config/observer.yaml` | observer gain and residual thresholds |
 | `duration` | `20.0` | [s] length of the run |
 | `stop_at_detachment` | `false` | end the run when the fingertip first leaves the wall |
 | `task_config`, `wall_config` | `config/…` | other parameter files (e.g. one per experiment) |
@@ -143,14 +187,48 @@ from fr3_student_sim.plot_run import load_run
 run = load_run('runs/xxx.npz')
 run['t'], run['q'], run['dq']       # time, joint state (true values, without noise)
 run['tau']                          # your torque after clipping (run['tau_cmd'] before)
+run['tau_applied']                  # actuator torque acting over the sample interval,
+                                    # delayed and clipped; gravity compensated, wall excluded
 run['p'], run['v']                  # fingertip position, velocity
 run['F_n'], run['delta']            # wall force [N], penetration [m]; run['contact'] 0/1
 run['tau_wall']                     # TRUE external joint torque of the wall (J^T F): compare
                                     # it with what your controller estimates
 run['hand_depth']                   # how deep the hand body is in the wall (should stay ~0)
+run['residual'], run['residual_norm'] # seven signed joint residuals and their Euclidean norm
+run['momentum'], run['momentum_estimate'] # measured and observed M(q) dq
+run['collision_joints']             # per-joint threshold flags
+run['collision_detected']           # any joint over threshold
+run['detection_event'], run['detection_times'] # onset samples and timestamps
+run['residual_threshold']           # configured thresholds [N m], seven values
 run['user_speed']                   # everything you put in self.log
 run['meta']                         # all the parameters of the run
 ```
+
+With monitoring enabled, `plot_run` also saves `<log>_observer.png`: seven
+residual panels with positive/negative thresholds, the residual norm and a
+detection timeline. Event times are marked on the figures and printed.
+
+The observer and detector live in `momentum_observer.py` and
+`collision_detector.py`, separately from the controller. The observer is
+initialized with `p_hat = M(q) dq` at the first RUN sample and uses simulation
+timestamps with implicit Euler integration. Its input is the actuator command
+after clipping, averaged over the elapsed interval with the simulator's 1 ms
+transport delay. It never reads the true wall force or `tau_wall`.
+
+The full momentum equation is `p_hat_dot = tau_motor + C.T @ dq - g + r`,
+`r = K_O @ (p - p_hat)`. Since the simulator adds gravity compensation, the
+implemented equivalent is `p_hat_dot = tau_applied + C.T @ dq + r`.
+`coriolis_matrix` supplies Pinocchio's matrix with `Mdot = C + C.T`; using
+`C @ dq` in its place would be incorrect. `/joint_states.effort` is a
+transmitted wrench rather than separate actuator-command telemetry and is
+not used as the observer input.
+
+Configure `gain` [1/s] and `threshold` [N m] in `config/observer.yaml`; each
+accepts a scalar or seven values. Defaults are 30 and 0.1. A collision is
+reported when any `abs(residual[i]) > threshold[i]`; it does not stop or
+modify the controller. These settings target the nominal simulation; noise,
+friction or model errors require checking the free-motion residual before
+selecting thresholds for an experiment.
 
 ## 4. Your project
 

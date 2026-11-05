@@ -33,6 +33,9 @@ ARGS = {
                         '(empty = config/task.yaml)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
+    'observer': ('true', 'Enable momentum observer and collision detection (monitoring only)'),
+    'observer_config': ('', 'Observer gain and residual thresholds YAML '
+                            '(empty = config/observer.yaml)'),
     'stop_at_detachment': ('false', 'End the run when the tool first leaves the wall'),
     'duration': ('20.0', '[s] run length after the settle phase'),
     'control_rate': ('1000.0', '[Hz] how often Controller.update is called (<= 1000)'),
@@ -133,6 +136,7 @@ def _launch(context):
         controller = os.path.join(share, 'students', controller)
     task_cfg = a['task_config'] or os.path.join(share, 'config', 'task.yaml')
     wall_cfg = a['wall_config'] or os.path.join(share, 'config', 'wall.yaml')
+    observer_cfg = a['observer_config'] or os.path.join(share, 'config', 'observer.yaml')
     with open(task_cfg) as f:
         task = yaml.safe_load(f) or {}
     with open(wall_cfg) as f:
@@ -184,6 +188,7 @@ def _launch(context):
                      'joint_friction': on('joint_friction'),
                      'task_config': task_cfg, 'wall_config': wall_cfg,
                      'wall_enabled': on('wall'),
+                     'observer_enabled': on('observer'), 'observer_config': observer_cfg,
                      'stop_at_detachment': on('stop_at_detachment'), 'duration': float(a['duration']),
                      'control_rate': float(a['control_rate']),
                      'log_dir': a['log_dir'] or runs_dir(),

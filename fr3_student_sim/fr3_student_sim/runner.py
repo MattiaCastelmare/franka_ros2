@@ -13,6 +13,9 @@ At every ``/joint_states`` message (1 kHz, simulation time) it:
            holds the robot with joint damping, and exits if ``exit_on_done``.
 
 Gazebo adds g(q) to whatever is published (as the real robot does).
+An independent momentum observer and threshold detector monitor the delayed,
+clipped actuator torque; they never change the tracking command. The virtual
+wall torque is kept out of the observer input.
 Optional realism: Gaussian noise on the q, dq the controller sees (``noise_q``,
 ``noise_dq``); the log and the wall always use the true state. The runner also
 warns when the hand body (not only the fingertip) goes into the wall.
@@ -27,7 +30,6 @@ import signal
 import sys
 import time
 import traceback
-from collections import deque
 from datetime import datetime
 
 import numpy as np
@@ -38,9 +40,12 @@ from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
+from fr3_student_sim.applied_torque import AppliedTorqueHistory
 from fr3_student_sim.body_check import body_depth
+from fr3_student_sim.collision_detector import CollisionDetector
 from fr3_student_sim.controller_base import StudentController
 from fr3_student_sim.fr3_model import DQ_MAX, Q_MAX, Q_MIN, TAU_MAX, FR3Model
+from fr3_student_sim.momentum_observer import GeneralizedMomentumObserver
 from fr3_student_sim.robot_description import ARM_JOINTS
 from fr3_student_sim.wall import Wall
 
@@ -91,6 +96,7 @@ class Runner(Node):
             'log_dir': 'runs', 'run_name': '', 'exit_on_done': True, 'wall_enabled': True,
             'stop_at_detachment': False, 'noise_q': 0.0, 'noise_dq': 0.0, 'seed': 0,
             'mass_error': 0.0, 'joint_friction': False,
+            'observer_enabled': True, 'observer_config': '',
         }
         for k, v in P.items():
             self.declare_parameter(k, v)
@@ -120,6 +126,13 @@ class Runner(Node):
 
         cls = load_controller_class(self.controller_path)
         self.ctrl = cls(self.robot, self.params, self.dt_ctrl)
+        self.observer_enabled = bool(g('observer_enabled'))
+        observer_config = _load_yaml(g('observer_config'))
+        self.observer = (GeneralizedMomentumObserver(
+            self.robot, observer_config.get('gain', 30.0)) if self.observer_enabled else None)
+        self.detector = (CollisionDetector(observer_config.get('threshold', 0.1))
+                         if self.observer_enabled else None)
+        self.observer_rows = []
 
         self.pub = self.create_publisher(Float64MultiArray, '/fr3_effort_controller/commands', 10)
         self.sub = self.create_subscription(JointState, '/joint_states', self._on_js,
@@ -128,8 +141,9 @@ class Runner(Node):
         self.t0_sim = None
         self.t_last_ctrl = -np.inf
         self.tau_ctrl = np.zeros(7)
-        self.pub_hist = deque([np.zeros(7)] * 64, maxlen=64)   # student torque per sample
-        self.n_since_ctrl = 0
+        self.torque_history = AppliedTorqueHistory(delay=LATENCY_SAMPLES * 1e-3)
+        self.last_sample_time = None
+        self.last_control_time = None
         self.tau_raw = np.zeros(7)
         self.ctrl_ms = 0.0
         self.rows = []
@@ -139,6 +153,7 @@ class Runner(Node):
         self.get_logger().info(
             f'controller={self.controller_path}  duration={self.duration}s  '
             f'rate={1 / self.dt_ctrl:.0f}Hz  wall={"on" if self.wall.enabled else "off"}  '
+            f'observer={"on" if self.observer_enabled else "off"}  '
             f'realism={self.realism}  log={self.log_path}')
 
     # ── main loop ─────────────────────────────────────────────────────────────
@@ -150,6 +165,10 @@ class Runner(Node):
         q = np.array([msg.position[i] for i in idx])
         dq = np.array([msg.velocity[i] for i in idx])
         t_sim = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
+        previous_sample_time = self.last_sample_time
+        if previous_sample_time is not None and t_sim <= previous_sample_time:
+            return
+        self.last_sample_time = t_sim
 
         if self.phase == 'WAIT':
             self.phase, self.t_settle0, self.q_found = 'SETTLE', t_sim, q.copy()
@@ -161,13 +180,14 @@ class Runner(Node):
             q_ref = self.q_found + (3 * u ** 2 - 2 * u ** 3) * (self.q_goal - self.q_found)
             tau_hold = HOLD_KP * (q_ref - q) - HOLD_KD * dq
             self._publish(tau_hold)
-            self.pub_hist.append(tau_hold)
+            self.torque_history.record(t_sim, tau_hold)
             elapsed = t_sim - self.t_settle0
             err, speed = np.max(np.abs(q - self.q_goal)), np.max(np.abs(dq))
             settled = err < SETTLED_Q and speed < SETTLED_DQ
             if elapsed >= self.settle_time and (settled or
                                                 elapsed >= self.settle_time + SETTLE_TIMEOUT):
                 self.phase, self.t0_sim, self.wall_t0 = 'RUN', t_sim, time.monotonic()
+                self.last_control_time = t_sim
                 (self.get_logger().info if settled else self.get_logger().warn)(
                     f'RUN started after {elapsed:.1f} s of settling: |q - initial_q| = '
                     f'{err:.4f} rad, |dq| = {speed:.4f} rad/s'
@@ -178,20 +198,26 @@ class Runner(Node):
             return
 
         t = t_sim - self.t0_sim
+        # The command acting on this interval was already clipped before being
+        # recorded. It excludes the wall, and gravity cancels the plugin's g(q).
+        tau_applied = self.torque_history.mean(previous_sample_time, t_sim)
+        q_m = q + self.noise_q * self.rng.standard_normal(7)
+        dq_m = dq + self.noise_dq * self.rng.standard_normal(7)
+        if self.observer_enabled:
+            try:
+                self._observe(t, q_m, dq_m, tau_applied)
+            except Exception:
+                self.get_logger().error(traceback.format_exc())
+                self._finish('exception in momentum observer')
+                return
         reason = self._safety(q, dq)
-        self.n_since_ctrl += 1
         if not reason and t >= self.t_last_ctrl + self.dt_ctrl - 1e-6:
             self.t_last_ctrl = t
             # what acted on the robot over the samples since the last update
-            n = min(self.n_since_ctrl, len(self.pub_hist) - 1 - LATENCY_SAMPLES)
-            hist = list(self.pub_hist)
-            self.ctrl.tau_applied = np.mean(
-                hist[len(hist) - LATENCY_SAMPLES - n:len(hist) - LATENCY_SAMPLES], axis=0)
-            self.n_since_ctrl = 0
+            self.ctrl.tau_applied = self.torque_history.mean(self.last_control_time, t_sim)
+            self.last_control_time = t_sim
             try:
                 c0 = time.perf_counter()
-                q_m = q + self.noise_q * self.rng.standard_normal(7)       # what a sensor gives
-                dq_m = dq + self.noise_dq * self.rng.standard_normal(7)
                 tau = np.asarray(self.ctrl.update(t, q_m, dq_m), float).reshape(7)
                 self.ctrl_ms = 1e3 * (time.perf_counter() - c0)
                 if not np.all(np.isfinite(tau)):
@@ -211,7 +237,7 @@ class Runner(Node):
         F, f_n, delta, v_n = self.wall.contact(p, v)
         tau_wall = Jc.T @ F
         self._publish(self.tau_ctrl + tau_wall)
-        self.pub_hist.append(self.tau_ctrl.copy())
+        self.torque_history.record(t_sim, self.tau_ctrl)
         if self.wall.enabled and len(self.rows) % 5 == 0:
             self.hand_depth = body_depth(self.robot, q, self.wall)
             if (not self.hand_warned and self.hand_depth > 0.005
@@ -222,7 +248,7 @@ class Runner(Node):
                     f'wall, but the wall only pushes the fingertip. Keep the tool pointing at the '
                     f'wall (e.g. control the orientation too). Logged as hand_depth.')
         self.rows.append(np.concatenate([
-            [t], q, dq, self.tau_raw, self.tau_ctrl, tau_wall, p, v, F,
+            [t], q, dq, self.tau_raw, self.tau_ctrl, tau_applied, tau_wall, p, v, F,
             [f_n, delta, v_n, float(f_n > 0), self.hand_depth, self.ctrl_ms,
              time.monotonic() - self.wall_t0]]))
 
@@ -233,6 +259,23 @@ class Runner(Node):
             reason = 'duration reached'
         if reason:
             self._finish(reason)
+
+    def _observe(self, t, q, dq, tau_applied):
+        residual = self.observer.update(t, q, dq, tau_applied)
+        detected, event = self.detector.update(residual)
+        residual_norm = float(np.linalg.norm(residual))
+        self.observer_rows.append({
+            'residual': residual, 'residual_norm': residual_norm,
+            'momentum': self.observer.momentum.copy(),
+            'momentum_estimate': self.observer.momentum_estimate.copy(),
+            'collision_detected': detected, 'detection_event': event,
+            'collision_joints': self.detector.joints.copy(),
+        })
+        if event:
+            joints = (np.flatnonzero(self.detector.joints) + 1).tolist()
+            self.get_logger().info(
+                f'collision detected at t={t:.4f} s: joints={joints}, '
+                f'|r|={residual_norm:.4f} N m')
 
     def _safety(self, q, dq) -> str:
         bad_q = np.where((q < Q_MIN + Q_MARGIN) | (q > Q_MAX - Q_MARGIN))[0]
@@ -261,7 +304,7 @@ class Runner(Node):
             self.get_logger().warn('nothing to save')
             return
         cols, k, out = [('t', 1), ('q', 7), ('dq', 7), ('tau_cmd', 7), ('tau', 7),
-                        ('tau_wall', 7), ('p', 3), ('v', 3), ('F', 3), ('F_n', 1),
+                        ('tau_applied', 7), ('tau_wall', 7), ('p', 3), ('v', 3), ('F', 3), ('F_n', 1),
                         ('delta', 1), ('v_n', 1), ('contact', 1), ('hand_depth', 1), ('ctrl_ms', 1),
                         ('wall_clock', 1)], 0, {}
         for name, n in cols:
@@ -276,12 +319,23 @@ class Runner(Node):
                 if key in d:
                     arr[i0:nxt[0]] = np.asarray(d[key], float)
             out['user_' + key] = arr
+        if self.observer_rows:
+            for key in self.observer_rows[0]:
+                out[key] = np.asarray([row[key] for row in self.observer_rows[:len(R)]])
+            out['residual_threshold'] = self.detector.threshold.copy()
+            out['detection_times'] = out['t'][out['detection_event']]
         meta = {'controller': self.controller_path, 'params': self.params,
                 'wall': {'point': self.wall.point.tolist(), 'normal': self.wall.normal.tolist(),
                          'stiffness': self.wall.stiffness, 'damping': self.wall.damping,
                          'enabled': self.wall.enabled},
                 'control_rate': 1.0 / self.dt_ctrl, 'duration': self.duration,
                 'realism': self.realism,
+                'observer': {'enabled': self.observer_enabled,
+                             'gain': self.observer.gain.tolist() if self.observer_enabled else None,
+                             'threshold': self.detector.threshold.tolist()
+                             if self.observer_enabled else None,
+                             'torque_signal': 'applied actuator torque, gravity compensated',
+                             'command_delay_s': self.torque_history.delay},
                 'stop_reason': self.stop_reason}
         np.savez(self.log_path, meta=json.dumps(meta), **out)
         t, wc = out['t'], out['wall_clock']
