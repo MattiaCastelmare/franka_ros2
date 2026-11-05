@@ -20,10 +20,10 @@ docker info --format '{{.ServerVersion}}'
 
 ## 2. Avvia i container e collega Xpra
 
-Sempre nel **Terminale del Mac**, dalla cartella della repository, esegui lo [script di connessione](../.devcontainer/connect-xpra.sh). Lo script avvia i servizi Docker del progetto e collega il client grafico sul Mac. Quando va a buon fine, entra nel container.
+Sempre nel **Terminale del Mac**, dalla cartella della repository, esegui lo script di connessione nella cartella locale `mac_config`. Lo script avvia i servizi Docker del progetto e collega il client grafico sul Mac. Quando va a buon fine, entra nel container.
 
 ```bash
-bash .devcontainer/connect-xpra.sh
+bash mac_config/connect-xpra.sh
 docker exec -it franka_ros2 bash
 ```
 
@@ -54,22 +54,22 @@ Il robot segue la traiettoria circolare senza parete. `gui:=true` apre Gazebo tr
 
 ```bash
 ls -lt fr3_student_sim/runs
-docker compose stop
+docker compose -f mac_config/docker-compose.yml stop
 ```
 
-`docker compose stop` conserva i container, i volumi di compilazione e la configurazione Xpra. I risultati `.npz` sono nella cartella `fr3_student_sim/runs` della repository sul Mac.
+`docker compose -f mac_config/docker-compose.yml stop` conserva i container, i volumi di compilazione e la configurazione Xpra. I risultati `.npz` sono nella cartella `fr3_student_sim/runs` della repository sul Mac.
 
 ## Se Gazebo non compare
 
 Se il terminale mostra `RUN started` e la finestra manca, apri **un secondo terminale sul Mac**, torna nella cartella del punto 1 e verifica il collegamento grafico.
 
 ```bash
-bash .devcontainer/connect-xpra.sh
-docker compose ps
+bash mac_config/connect-xpra.sh
+docker compose -f mac_config/docker-compose.yml ps
 tail -n 30 "$HOME/Library/Logs/Franka-Xpra/client.log"
 ```
 
-`docker compose ps` deve mostrare entrambi i servizi attivi, `franka_ros2` e `xpra_proxy`. Nel log del client, `Attached to xpra server` indica che Xpra si è collegato. Se la prova è già terminata, rilanciala dal punto 3. Per esaminare Gazebo, il launch stampa il percorso di `gazebo.log` nel container. Nella stessa cartella trovi `gazebo_gui.log`.
+`docker compose -f mac_config/docker-compose.yml ps` deve mostrare entrambi i servizi attivi, `franka_ros2` e `xpra_proxy`. Nel log del client, `Attached to xpra server` indica che Xpra si è collegato. Se la prova è già terminata, rilanciala dal punto 3. Per esaminare Gazebo, il launch stampa il percorso di `gazebo.log` nel container. Nella stessa cartella trovi `gazebo_gui.log`.
 
 ## Se aggiungi, rimuovi o rinomini file del pacchetto
 
