@@ -1,15 +1,18 @@
-# FR3 fingertip near (0.56, 0, 0.50) m, tool directed along base +X.
+# Parameters for students/circle_tracking/controller.py (minimum-norm tracking).
+# Start angles [rad], fr3_joint1..7: fingertip near (0.56, 0, 0.50) m,
+# with the tool initially directed along base +X.
 # Only the fingertip position is controlled; orientation is free.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
 # Vertical x-z circle. Start at its -x point with zero initial velocity.
 # The center is initial fingertip position + [radius, 0, 0].
+# With the period/ramp below, the first +x extreme is at t = 4.5 s of RUN.
 circle:
   radius: 0.04       # [m]
   period: 8.0        # [s] at cruise speed, following the startup ramp
   ramp: 1.0         # [s] smooth angular-velocity ramp
 
-# Cartesian acceleration PD: kp [1/s^2], kd [1/s].
+# Cartesian acceleration PD: kp [1/s^2], kd [1/s]; no nullspace damping.
 # The simulator compensates gravity; the controller must not add g(q).
 tracking:
   kp_position: 100.0

@@ -1,6 +1,7 @@
-# Extra parameters for the controller_manager inside Gazebo. The controller
-# TYPES (and update_rate: 1000 Hz) come from franka_gazebo_bringup's
-# franka_gazebo_controllers.yaml, which the FR3 URDF already loads.
+# Extra parameters for the effort controller inside Gazebo's controller_manager.
+# Controller types and update_rate = 1000 Hz come from franka_gazebo_bringup's
+# franka_gazebo_controllers.yaml, already loaded by the FR3 URDF.
+# Joint order below matches the seven entries of each commanded torque vector.
 fr3_effort_controller:
   ros__parameters:
     joints:

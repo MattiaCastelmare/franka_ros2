@@ -42,10 +42,9 @@ from std_msgs.msg import Float64MultiArray
 
 from fr3_student_sim.applied_torque import AppliedTorqueHistory
 from fr3_student_sim.body_check import body_depth
-from fr3_student_sim.collision_detector import CollisionDetector
+from fr3_student_sim.collision_monitor import CollisionMonitor
 from fr3_student_sim.controller_base import StudentController
 from fr3_student_sim.fr3_model import DQ_MAX, Q_MAX, Q_MIN, TAU_MAX, FR3Model
-from fr3_student_sim.momentum_observer import GeneralizedMomentumObserver
 from fr3_student_sim.robot_description import ARM_JOINTS
 from fr3_student_sim.wall import Wall
 
@@ -125,14 +124,14 @@ class Runner(Node):
             g('log_dir'), f'{name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.npz')
 
         cls = load_controller_class(self.controller_path)
-        self.ctrl = cls(self.robot, self.params, self.dt_ctrl)
-        self.observer_enabled = bool(g('observer_enabled'))
-        observer_config = _load_yaml(g('observer_config'))
-        self.observer = (GeneralizedMomentumObserver(
-            self.robot, observer_config.get('gain', 30.0)) if self.observer_enabled else None)
-        self.detector = (CollisionDetector(observer_config.get('threshold', 0.1))
-                         if self.observer_enabled else None)
-        self.observer_rows = []
+        # Share only static geometry, never the wall object or its true forces.
+        controller_params = dict(self.params)
+        controller_params['wall_geometry'] = {
+            'point': self.wall.point.tolist(), 'normal': self.wall.normal.tolist(),
+        }
+        self.ctrl = cls(self.robot, controller_params, self.dt_ctrl)
+        self.collision_monitor = CollisionMonitor.from_yaml(
+            self.robot, g('observer_config'), enabled=bool(g('observer_enabled')))
 
         self.pub = self.create_publisher(Float64MultiArray, '/fr3_effort_controller/commands', 10)
         self.sub = self.create_subscription(JointState, '/joint_states', self._on_js,
@@ -153,7 +152,7 @@ class Runner(Node):
         self.get_logger().info(
             f'controller={self.controller_path}  duration={self.duration}s  '
             f'rate={1 / self.dt_ctrl:.0f}Hz  wall={"on" if self.wall.enabled else "off"}  '
-            f'observer={"on" if self.observer_enabled else "off"}  '
+            f'observer={"on" if self.collision_monitor.enabled else "off"}  '
             f'realism={self.realism}  log={self.log_path}')
 
     # ── main loop ─────────────────────────────────────────────────────────────
@@ -203,13 +202,14 @@ class Runner(Node):
         tau_applied = self.torque_history.mean(previous_sample_time, t_sim)
         q_m = q + self.noise_q * self.rng.standard_normal(7)
         dq_m = dq + self.noise_dq * self.rng.standard_normal(7)
-        if self.observer_enabled:
-            try:
-                self._observe(t, q_m, dq_m, tau_applied)
-            except Exception:
-                self.get_logger().error(traceback.format_exc())
-                self._finish('exception in momentum observer')
-                return
+        try:
+            message = self.collision_monitor.update(t, q_m, dq_m, tau_applied)
+            if message is not None:
+                self.get_logger().info(message)
+        except Exception:
+            self.get_logger().error(traceback.format_exc())
+            self._finish('exception in momentum observer')
+            return
         reason = self._safety(q, dq)
         if not reason and t >= self.t_last_ctrl + self.dt_ctrl - 1e-6:
             self.t_last_ctrl = t
@@ -260,23 +260,6 @@ class Runner(Node):
         if reason:
             self._finish(reason)
 
-    def _observe(self, t, q, dq, tau_applied):
-        residual = self.observer.update(t, q, dq, tau_applied)
-        detected, event = self.detector.update(residual)
-        residual_norm = float(np.linalg.norm(residual))
-        self.observer_rows.append({
-            'residual': residual, 'residual_norm': residual_norm,
-            'momentum': self.observer.momentum.copy(),
-            'momentum_estimate': self.observer.momentum_estimate.copy(),
-            'collision_detected': detected, 'detection_event': event,
-            'collision_joints': self.detector.joints.copy(),
-        })
-        if event:
-            joints = (np.flatnonzero(self.detector.joints) + 1).tolist()
-            self.get_logger().info(
-                f'collision detected at t={t:.4f} s: joints={joints}, '
-                f'|r|={residual_norm:.4f} N m')
-
     def _safety(self, q, dq) -> str:
         bad_q = np.where((q < Q_MIN + Q_MARGIN) | (q > Q_MAX - Q_MARGIN))[0]
         if bad_q.size:
@@ -319,23 +302,14 @@ class Runner(Node):
                 if key in d:
                     arr[i0:nxt[0]] = np.asarray(d[key], float)
             out['user_' + key] = arr
-        if self.observer_rows:
-            for key in self.observer_rows[0]:
-                out[key] = np.asarray([row[key] for row in self.observer_rows[:len(R)]])
-            out['residual_threshold'] = self.detector.threshold.copy()
-            out['detection_times'] = out['t'][out['detection_event']]
+        out.update(self.collision_monitor.export_log(out['t']))
         meta = {'controller': self.controller_path, 'params': self.params,
                 'wall': {'point': self.wall.point.tolist(), 'normal': self.wall.normal.tolist(),
                          'stiffness': self.wall.stiffness, 'damping': self.wall.damping,
                          'enabled': self.wall.enabled},
                 'control_rate': 1.0 / self.dt_ctrl, 'duration': self.duration,
                 'realism': self.realism,
-                'observer': {'enabled': self.observer_enabled,
-                             'gain': self.observer.gain.tolist() if self.observer_enabled else None,
-                             'threshold': self.detector.threshold.tolist()
-                             if self.observer_enabled else None,
-                             'torque_signal': 'applied actuator torque, gravity compensated',
-                             'command_delay_s': self.torque_history.delay},
+                'observer': self.collision_monitor.metadata(self.torque_history.delay),
                 'stop_reason': self.stop_reason}
         np.savez(self.log_path, meta=json.dumps(meta), **out)
         t, wc = out['t'], out['wall_clock']

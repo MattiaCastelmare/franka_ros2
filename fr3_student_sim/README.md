@@ -99,6 +99,57 @@ wall/observer settings, initial pose, trajectory and Cartesian gains equal
 and change only the controller variant. New control laws get separate files;
 gain changes belong in configuration files.
 
+### Straight approach with directional mass minimization
+
+`students/straight_mass_minimization/controller.py` is a separate position-only
+experiment, with free orientation, its own reference and mass-objective modules,
+and `config/straight_mass_minimization.yaml`. It keeps Cartesian acceleration
+tracking and nullspace damping, then adds the dynamically projected torque
+`tau_mass = -gain * (I - J.T @ Jbar.T) @ mass_gradient`, where
+`Jbar = M^-1 @ J.T @ (J @ M^-1 @ J.T)^-1`.
+
+The runner supplies only a copy of the configured wall point and normal through
+`self.params['wall_geometry']`. The reference moves towards that plane along
+the inward normal (currently +x): 0.5 s startup, 0.02 m/s reference speed at
+the plane, smooth braking over 1 mm of reference penetration, then a 0.2 s
+hold. It ends on schedule through `Controller.done`, about 4.5 s with the
+current wall; the default launch `duration: 20.0` remains an upper bound.
+Collision detection does not trigger this stop. Actual contact
+speed and penetration can differ from the reference.
+
+The initial mass gain is 0.01 [N m rad/kg]; the central-difference gradient
+step is `1e-4` rad, requiring 15 mass evaluations per update. Set
+`mass_minimization.gain: 0.0` in the same YAML for a
+future comparison with straight tracking and damping alone. The objective
+does not guarantee decreasing mass, joint-limit avoidance or lower contact force.
+
+Build once for the new files, then launch inside the container:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=straight_mass_minimization/controller.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/straight_mass_minimization.yaml \
+  run_name:=straight_mass_minimization \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true
+
+cd /ros2_ws/src/fr3_student_sim
+latest_straight_log=$(ls -t runs/straight_mass_minimization_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_straight_log" --no-show
+```
+
+The existing log and plots include `user_mass_kg`, `user_mass_gradient`,
+`user_tau_mass`, `user_normal_speed` and `user_normal_speed_ref`.
+`user_tau_mass` is requested before the total torque is clipped;
+`user_qdd_command` includes tracking, damping and the mass contribution.
+The controller uses no true external force. Existing monitoring and safety
+stops remain active; the circular controllers, wall and launch defaults are unchanged.
+
 Options (`name:=value` after the launch command):
 
 | option | default | meaning |
@@ -208,12 +259,25 @@ With monitoring enabled, `plot_run` also saves `<log>_observer.png`: seven
 residual panels with positive/negative thresholds, the residual norm and a
 detection timeline. Event times are marked on the figures and printed.
 
-The observer and detector live in `momentum_observer.py` and
-`collision_detector.py`, separately from the controller. The observer is
-initialized with `p_hat = M(q) dq` at the first RUN sample and uses simulation
-timestamps with implicit Euler integration. Its input is the actuator command
-after clipping, averaged over the elapsed interval with the simulator's 1 ms
-transport delay. It never reads the true wall force or `tau_wall`.
+`CollisionMonitor` in `collision_monitor.py` coordinates the observer and
+detector independently of ROS and the tracking controller. It loads the
+existing observer YAML, owns both instances, collects their samples, returns
+detection-onset messages, and exports the existing NPZ fields and observer
+metadata. On interruption, it exports only the samples corresponding to saved
+plant rows. The mathematical implementations remain in `momentum_observer.py`
+and `collision_detector.py`.
+
+The runner calls the monitor for every RUN measurement and handles its
+messages and exceptions. It retains ROS communication, simulation time and
+phases, measurement noise, actuator history and delay alignment, controller
+execution, torque clipping, safety stops and file I/O. No separate ROS node,
+launch argument or plotting change is needed.
+
+The observer is initialized with `p_hat = M(q) dq` at the first RUN sample
+and uses simulation timestamps with implicit Euler integration. The runner
+supplies actuator torque after clipping, averaged over the elapsed interval
+with the simulator's 1 ms transport delay. The monitor adds no delay or
+gravity term and never reads the true wall force or `tau_wall`.
 
 The full momentum equation is `p_hat_dot = tau_motor + C.T @ dq - g + r`,
 `r = K_O @ (p - p_hat)`. Since the simulator adds gravity compensation, the

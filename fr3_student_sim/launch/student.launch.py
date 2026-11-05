@@ -106,7 +106,7 @@ def _quiet_process(cmd, log_path, name):
 
 
 def _wall_sdf(wall: dict) -> str:
-    """A thin visual-only box whose +x face lies on the wall plane (no collision:
+    """A thin visual-only box whose local -x face lies on the wall plane (no collision:
     the force comes from the runner's spring-damper model)."""
     n = np.asarray(wall['normal'], float)
     n /= np.linalg.norm(n)

@@ -1,4 +1,10 @@
-# Generalized momentum observer. Scalars apply to all joints; seven values
-# configure the joints separately. Neither setting changes the tracking law.
+# Configuration loaded by CollisionMonitor for the observer and detector.
+# Positive scalars apply to all joints; seven positive values configure
+# fr3_joint1..7 separately. The monitor updates at every RUN joint-state sample,
+# independently of the controller's control_rate, and never changes its torque.
+# Torque input is reconstructed from clipped actuator command history with the
+# simulator's fixed 1 ms delay; gravity is compensated and wall torque excluded.
+# Detection flags/events report threshold exceedance; they do not stop the run.
+# observer:=false makes monitoring a no-op; this YAML is still read at startup.
 gain: 30.0       # K_O [1/s]
 threshold: 0.1   # detection when any |r_i| exceeds this value [N m]
