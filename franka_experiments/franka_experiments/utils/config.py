@@ -567,6 +567,13 @@ CBF_PARAM_SPEC = {
     'velocity_feedforward_min_frames': ('int', dict(minimum=1, maximum=100)),
     'enable_vobs_in_hdot': ('bool', dict()),
     'vobs_hdot_max': ('float', dict(positive=True, maximum=10.0)),
+    # Curvature term of ḧ (OSCBF_ALIGNMENT_PLAN.md Task 2). The radius is an
+    # UPPER bound on the obstacle's radius of curvature, so a LARGER value is
+    # the conservative one (bigger ρ_c → smaller κ → tighter row); the clamp
+    # bounds how much of the row κ can ever relax.
+    'enable_curvature_term': ('bool', dict()),
+    'curvature_obstacle_radius': ('float', dict(minimum=0.0, maximum=10.0)),
+    'curvature_kappa_max': ('float', dict(minimum=0.0, maximum=50.0)),
     'enable_velocity_standoff': ('bool', dict()),
     # Ranges WIDENED (2.0 -> 5.0 s, 1.0 -> 2.0 m) so the ISO parameterisation
     # fits inside them: with iso_enabled the filter sets time_s = T_r + v_h/a_s

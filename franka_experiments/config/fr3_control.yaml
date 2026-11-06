@@ -1748,6 +1748,41 @@ params:
   # up the RHS (k1 * 2.0 = 21 at k1 = 10.5).
   vobs_hdot_max: 2.0
 
+  # ── Curvature term of hddot (cbf_safety_filter) ───────────────────────────
+  # The row enforces hddot + k1*hdot + k0*h >= 0 with
+  #     hddot = a^T qddot + n_hat^T(Jpdot qdot) + kappa,
+  #     kappa = n_hatdot^T v_rel = ||(I - n n^T) v_rel||^2 / rho_c >= 0,
+  # i.e. the part of hddot produced by the ROTATION of the contact normal while
+  # the arm slides AROUND an obstacle. Our rows used to omit it, which
+  # over-constrains exactly the tangential motion we want: at a perpendicular
+  # relative speed of 0.3 m/s and rho_c = 0.15 m it is 0.6 m/s^2, larger than
+  # k0*h at h = 2 cm. cbfpy and oscbf obtain it by autodiff; here it is written
+  # out for the locally-spherical case. The obstacle's own acceleration term
+  # (-n^T a_o) is deliberately left out, as in both references.
+  #
+  # kappa RELAXES the row, so OVERestimating it is unsafe. Guards:
+  #   * rho_c = d_centre + curvature_obstacle_radius, the parameter being an
+  #     UPPER bound on the obstacle's curvature radius (a flat wall is
+  #     rho_c -> infinity, kappa -> 0, the conservative limit);
+  #   * only rows of a CONFIRMED track with a velocity vector get a kappa
+  #     (same gate as enable_vobs_in_hdot); untracked rows, self-collision and
+  #     joint-limit rows get 0;
+  #   * a hard clamp, and 0 for anything non-finite.
+  #
+  # OFF by default: flags-off rows are bit-identical (regression-tested).
+  enable_curvature_term: false
+
+  # [m] UPPER bound on the radius of curvature of the obstacle surface, added
+  # to the measured centre distance to form rho_c. 0.30 m is a torso/limb-scale
+  # bound; the simulated ball is 0.06 m, and a run that knows its obstacle can
+  # say so in its condition. LARGER is safer.
+  curvature_obstacle_radius: 0.30
+
+  # [m/s^2] clamp on kappa. 2.0 is the same order as k0*h at a 8 cm gap
+  # (25 * 0.08 = 2.0), so a dirty track cannot relax a row by more than the
+  # barrier itself is asking for.
+  curvature_kappa_max: 2.0
+
   # ── Speed-proportional standoff (cbf_safety_filter) ────────────────────────
   #   d_safe_eff = d_safe + min(velocity_standoff_time_s * v_app, _max)
   #

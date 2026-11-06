@@ -112,6 +112,13 @@ class P:
     velocity_standoff_time_s = 0.20
     velocity_standoff_max = 0.20
     velocity_standoff_alpha = 0.8
+    # curvature term of ḧ (Task 2) — OFF by default, so every existing test
+    # keeps the pre-curvature RHS it was written against.
+    enable_curvature_term = False
+    enable_vobs_in_hdot = False
+    vobs_hdot_max = 2.0
+    curvature_obstacle_radius = 0.30
+    curvature_kappa_max = 2.0
     # uncertainty
     enable_uncertainty_margin = False
     uncertainty_k_sigma = 2.0

@@ -203,6 +203,18 @@ conditions:
     # fr3_control.yaml keys with no launch argument, passed to the node as ROS
     # parameters (cbf_param_overrides) so the installed YAML is never edited.
     cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
       enable_go_around: false              # off in both arms
       margin_gate_on_approach: false       # nothing left to gate
       enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
@@ -302,3 +314,77 @@ conditions:
       qp_failure_policy: box_only
       slew_yields_to_state_box: false
       brake_slew_limited: true
+
+  # Task 2 of OSCBF_ALIGNMENT_PLAN.md: minimal_l1 + the CURVATURE term of ḧ.
+  # The row's ḧ was aᵀq̈ + n̂ᵀJ̇ₚq̇; it is now aᵀq̈ + n̂ᵀJ̇ₚq̇ + κ with
+  #     κ = n̂̇ᵀv_rel = ||(I − n̂n̂ᵀ)v_rel||² / ρ_c,   ρ_c = d_centre + r_obs,
+  # so the bound becomes aᵀq̈ ≥ −k1·ḣ − k0·h̄ − ċ − κ. κ ≥ 0, so it RELAXES the
+  # row by exactly the part of ḧ that sliding AROUND the obstacle produces for
+  # free — which is the motion the old row charged the arm for.
+  #
+  # Only rows of a confirmed, moving track get a κ (same gate as
+  # vobs_in_hdot), it is clamped, and ρ_c uses an UPPER bound on the obstacle's
+  # curvature radius, so every approximation errs toward a tighter row.
+  #
+  # minimal_l1 vs this isolates the term and nothing else: every other key
+  # below is minimal_l1's, copied verbatim.
+  minimal_l1_curv:
+    description: >
+      minimal_l1 + the curvature term of hddot (enable_curvature_term, kappa =
+      ||(I - n n^T) v_rel||^2 / rho_c, rho_c = d_centre + 0.06 m, clamped at
+      2.0 m/s^2). Otherwise identical to minimal_l1: minimal HOCBF with
+      h = d_measured - d_safe, hdot = n^T(Jp qdot - v_o), per-row l1 obstacle
+      slack, no margins, no gain scheduling, no biases, no rate-cap rows.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
+    cbf:
+      uncertainty_margin: false
+      latency_compensation: false
+      velocity_standoff: false
+      zone_ladder: false
+      lateral_evasion: false
+      livelock_escape: false
+      obstacle_velocity_normal_guard: false
+      obstacle_identity_guard: false
+      vobs_in_hdot: true       # KEPT: kappa needs the track's 3D velocity
+    cbf_params:
+      enable_go_around: false
+      margin_gate_on_approach: false
+      enable_velocity_feedforward: false
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false
+      retreat_cap_enabled: false
+      link_speed_rows_enabled: false
+      cbf_tangential_gain: 0.0
+      cbf_h_recovery_alpha: 0.0
+      cbf_hdot_filter_alpha: 0.0
+      obstacle_velocity_residual_floor: false
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0
+      rho_slack: 1000.0
+      obstacle_slack_max: 1000000.0
+      obstacle_slack_mode: row_l1
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # ── THE ONLY THREE DIFFERENCES from minimal_l1 ──
+      enable_curvature_term: true
+      # [m] UPPER bound on the obstacle's curvature radius. Every pentagon
+      # scenario's ball is r = 0.05-0.06 m and that is known here, so the sim
+      # uses 0.06 (an upper bound on all of them) instead of the shipped 0.30 m
+      # torso-scale bound. A LARGER value is the conservative one (bigger
+      # rho_c -> smaller kappa), so 0.06 is the TIGHTEST honest choice for
+      # these scenes and the strongest test of the term: any over-relaxation it
+      # can cause will show up here.
+      curvature_obstacle_radius: 0.06
+      curvature_kappa_max: 2.0

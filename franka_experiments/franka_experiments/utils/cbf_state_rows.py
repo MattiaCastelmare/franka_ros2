@@ -1507,6 +1507,21 @@ class ConstraintSnap(NamedTuple):
                            # speed is v_obs + (k0/k1)·|h̄|; flooring |h̄| at
                            # dv·k1/k0 bounds the part that does NOT come from
                            # the obstacle's own speed to dv. See build_row_rhs.
+    kappa: Optional[np.ndarray] = None
+                           # (n_c,) [m/s²] the CURVATURE term of ḧ,
+                           # κᵢ = ṅ̂ᵢᵀv_rel,ᵢ = ‖(I−n̂n̂ᵀ)v_rel‖²/ρ_c ≥ 0, or
+                           # None when enable_curvature_term is off. None (not
+                           # a zeros array) so the QP tick skips the add and
+                           # stays bit-identical to the pre-curvature build.
+                           # Enters the RHS exactly like jdot_qdot — same sign,
+                           # same place — because ḧ = aᵀq̈ + n̂ᵀJ̇ₚq̇ + κ, and the
+                           # HOCBF row is aᵀq̈ ≥ −k₁ḣ − k₀h̄ − ċ − κ.
+                           # Nonzero only on OBSTACLE rows of a CONFIRMED,
+                           # moving track: κ RELAXES the row, so claiming it
+                           # without evidence of the obstacle's velocity — or
+                           # on a surface whose true ρ_c is larger than
+                           # assumed — would be unsafe. Zero on
+                           # self-collision, joint-limit and rate-cap rows.
     around_geom: Optional[tuple] = None
                            # (h̄, Jp (3,nv), n̂ (3,), label) of the CLOSEST
                            # obstacle row, or None when enable_go_around is off
@@ -1748,6 +1763,10 @@ class ConstraintBuilder:
         # into ḣ this rebuild (signed, m/s), and on how many rows.
         self.diag_vobs_hdot = 0.0
         self.diag_vobs_hdot_n = 0
+        # enable_curvature_term: largest κ = ṅ̂ᵀv_rel [m/s²] that went into a
+        # row this rebuild, and on how many rows. 0.0/0 with the flag off.
+        self.diag_kappa = 0.0
+        self.diag_kappa_n = 0
         self.diag_hstand = 0.0      # largest speed-proportional standoff [m]
         # Tangential steering (cbf_qp_assembly.tangential_bias), set by the
         # FILTER after build() because it needs the assembled rows. Declared in
@@ -1860,6 +1879,11 @@ class ConstraintBuilder:
         # Scattered onto the full-length vector via grp == G_OBS at the end, so
         # it survives any future reordering of the row builders.
         obs_bff: list[float] = []
+        # Curvature term κ of ḧ, same per-OBSTACLE-row-in-append-order contract
+        # as obs_bff and scattered the same way. Always filled (0.0 with the
+        # flag off); whether the SNAPSHOT carries it is decided once, by the
+        # flag, at the end of build().
+        obs_kappa: list[float] = []
         # Zone ladder: the MEASURED surface gap of each obstacle row, same
         # per-OBSTACLE-row-in-append-order contract as obs_bff. The measured
         # gap and not the tightened h̄, because the zone boundaries are a
@@ -1905,6 +1929,16 @@ class ConstraintBuilder:
         self.diag_vobs_hdot_n = 0
         vobs_in_hdot = bool(getattr(self._P, 'enable_vobs_in_hdot', False))
         vobs_hdot_max = float(getattr(self._P, 'vobs_hdot_max', 2.0))
+        # ── Curvature term of ḧ (enable_curvature_term) ─────────────────────
+        # Read once per rebuild, like every other flag: the row loop must not
+        # pay a getattr per obstacle. `curv_r_obs` is an UPPER bound on the
+        # obstacle's radius of curvature and `curv_kap_max` the clamp on κ —
+        # both are safety-directed, see the per-row block below.
+        curv_on = bool(getattr(self._P, 'enable_curvature_term', False))
+        curv_r_obs = float(getattr(self._P, 'curvature_obstacle_radius', 0.30))
+        curv_kap_max = float(getattr(self._P, 'curvature_kappa_max', 2.0))
+        self.diag_kappa = 0.0      # largest κ put into a row this rebuild
+        self.diag_kappa_n = 0      # how many rows carried a nonzero κ
         self.diag_hstand = 0.0
         # Tangential steering (cbf_qp_assembly.tangential_bias), set by the
         # FILTER after build() because it needs the assembled rows. Declared in
@@ -2371,6 +2405,66 @@ class ConstraintBuilder:
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
             jdq = float(n_w @ (Jpd @ js.qdot))          # scalar ċᵢ
 
+            # ── κᵢ: the CURVATURE term of ḧ (enable_curvature_term) ─────────
+            # ḧ is not aᵀq̈ + ċ. The normal itself rotates, and the full second
+            # derivative of the gap is
+            #     ḧ = n̂ᵀ(J̇ₚq̇ + Jₚq̈) + ṅ̂ᵀv_rel − n̂ᵀa_o,    v_rel = Jₚq̇ − v_o.
+            # For a locally spherical obstacle of curvature radius r_o seen
+            # from a control point at centre distance ρ_c,
+            #     ṅ̂ = (I − n̂n̂ᵀ)v_rel / ρ_c   ⇒   κ = ṅ̂ᵀv_rel
+            #                                      = ‖(I − n̂n̂ᵀ)v_rel‖²/ρ_c ≥ 0,
+            # so the HOCBF row becomes aᵀq̈ ≥ −k₁ḣ − k₀h̄ − ċ − κ: κ sits in the
+            # RHS exactly where ċ does. Omitting it makes the filter brake (or
+            # push outward) while the arm slides AROUND an obstacle, which is
+            # the one motion we want: at v⊥ = 0.3 m/s and ρ_c = 0.15 m it is
+            # 0.6 m/s², larger than k₀h̄ at h̄ = 2 cm. cbfpy and oscbf get this
+            # term for free from autodiff; we write it out.
+            #
+            # The obstacle's own acceleration term −n̂ᵀa_o is deliberately NOT
+            # included (the references omit it too): a_vec is the tracker's
+            # second derivative and the noisiest thing it publishes, and the
+            # term carries no sign guarantee.
+            #
+            # SAFETY. κ ≥ 0 RELAXES the row, so overestimating it is unsafe,
+            # and κ is overestimated whenever ρ_c is underestimated. Three
+            # guards, all one-directional:
+            #  1. ρ_c = d_ctr + curvature_obstacle_radius, with the parameter an
+            #     UPPER bound on the obstacle's radius of curvature. d_ctr is
+            #     the control-point AXIS to obstacle-surface-point distance, so
+            #     it already carries the robot capsule radius and perception's
+            #     dilation margin — both of which only make ρ_c larger, i.e.
+            #     κ smaller. A flat wall or a room surface has ρ_c → ∞ and
+            #     therefore κ → 0, which is the conservative limit this
+            #     formula degrades to on its own.
+            #  2. Only rows of a CONFIRMED track with a velocity vector get a
+            #     κ at all — the same evidence gate as enable_vobs_in_hdot.
+            #     An untracked row, a row whose track is too young, a
+            #     self-collision row and a joint-limit row all keep κ = 0.
+            #  3. A hard clamp at curvature_kappa_max, and 0 for anything
+            #     non-finite.
+            # Note κ depends on v_rel only through its component PERPENDICULAR
+            # to n̂, and the clamp enable_vobs_in_hdot applies to v_hdot is on
+            # the NORMAL component — so the two uses of the track velocity are
+            # consistent by construction: substituting the clamped normal part
+            # leaves (I − n̂n̂ᵀ)v_rel untouched.
+            #
+            # LIMITATION: like ċ, κ is quadratic in q̇ but is frozen at this
+            # 50 Hz rebuild's q̇, while the QP refreshes aᵀq̇ at its own rate.
+            # It therefore goes stale faster than the k₁ term. Task 5 of
+            # OSCBF_ALIGNMENT_PLAN.md (single-rate geometry) is where it moves
+            # to the QP rate.
+            kap_i = 0.0
+            if (curv_on and ob.v_vec is not None
+                    and (ob.frames_seen >= self._min_frames_eff or fast)):
+                v_rel = Jp @ js.qdot - np.asarray(ob.v_vec, dtype=np.float64)
+                v_perp = v_rel - n_w * float(n_w @ v_rel)
+                rho_c = d_ctr + curv_r_obs
+                if rho_c > 1e-6:
+                    kap_i = float(v_perp @ v_perp) / rho_c
+                if not np.isfinite(kap_i) or kap_i < 0.0:
+                    kap_i = 0.0
+                kap_i = min(kap_i, curv_kap_max)
+
             if np.all(np.isfinite(a)) and np.isfinite(h) and np.isfinite(jdq):
                 rows_a.append(a)
                 rows_h.append(h)
@@ -2386,6 +2480,11 @@ class ConstraintBuilder:
                     if abs(v_hdot) > abs(self.diag_vobs_hdot):
                         self.diag_vobs_hdot = v_hdot
                 obs_bff.append(b_ff_i)
+                obs_kappa.append(kap_i)
+                if kap_i > 0.0:
+                    self.diag_kappa_n += 1
+                    if kap_i > self.diag_kappa:
+                        self.diag_kappa = kap_i
                 obs_dz.append(float(ob.d))
                 # Criticality weight from the barrier value that ACTUALLY goes
                 # into the QP — i.e. after the Phase-1 braking tightening, so
@@ -2827,6 +2926,26 @@ class ConstraintBuilder:
                     f'obstacle rows vs {len(obs_bff)} feedforward terms',
                     throttle_duration_sec=2.0)
                 b_ff = None
+        # ── Curvature term κ, scattered onto the OBSTACLE rows ──────────────
+        # Same by-family scatter as b_ff, and for the same reason. None when
+        # the flag is off, so the QP tick's RHS expression is bit-identical to
+        # the pre-curvature build — that is what the flags-off regression
+        # asserts. A row-count mismatch degrades to "no curvature term", which
+        # is the SAFE direction: κ only ever relaxes a row.
+        kappa_v = None
+        if curv_on:
+            kappa_v = np.zeros(n_c, dtype=np.float64)
+            idx_k = np.flatnonzero(grp == G_OBS)
+            if idx_k.size == len(obs_kappa):
+                kappa_v[idx_k] = obs_kappa
+            else:
+                self._log.error(
+                    f'curvature term disabled this tick: {idx_k.size} '
+                    f'obstacle rows vs {len(obs_kappa)} kappa terms',
+                    throttle_duration_sec=2.0)
+                kappa_v = None
+                self.diag_kappa = 0.0
+                self.diag_kappa_n = 0
         # ── Lateral-evasion bias ────────────────────────────────────────────
         # One vector for the whole snapshot, or None. None (not a zeros array)
         # so the 100 Hz tick can skip the add entirely and stay bit-identical
@@ -2870,6 +2989,7 @@ class ConstraintBuilder:
                                     outrun_v,
                                     lock_dir,
                                     k0_row, k1_row, zone_row, h_pen_row,
+                                    kappa_v,
                                     around_geom=around_best,
                                     capture_stamp=float(getattr(obs, 't_cap',
                                                                 obs.stamp)),

@@ -165,6 +165,9 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
     * the Phase-1 feedforward ``b_ff``, added only when the flag put it in the
       snapshot; ``None`` there means the expression is bit-identical to the
       pre-Phase-1 build, which is what the regression asserts.
+    * the curvature term ``kappa`` (``enable_curvature_term``), the
+      ``n̂̇ᵀv_rel`` part of ``ḧ`` the row used to omit. Same treatment as
+      ``b_ff``: ``None`` in the snapshot when the flag is off.
     * RATE-CAP rows (retreat caps, then task-space speed caps) — these are not
       barriers at all. They are stored with a negated ``a`` so the generic
       ``G = [−A | −e]`` turns them into UPPER bounds, and their RHS is the
@@ -218,6 +221,16 @@ def build_row_rhs(con, qdot, qdot_cbf, *, k0: float, k1: float,
     h_qp = kk1 * (con.A @ qdot_cbf - con.v_obs) + kk0 * h_k0 + con.jdot_qdot
     if con.b_ff is not None:
         h_qp += con.b_ff
+    # The curvature term of ḧ (enable_curvature_term), which the snapshot
+    # carries only when the flag is on. ADDED, like ċ: ḧ = aᵀq̈ + ċ + κ, so the
+    # row aᵀq̈ ≥ −(k₁ḣ + k₀h̄ + ċ + κ) is this same h_qp with κ inside it.
+    # κ ≥ 0, so it RELAXES the bound — which is the point: it is the part of
+    # ḧ that tangential motion produces for free, and charging the QP for it
+    # is what blocks sliding around an obstacle. None (not zeros) when off, so
+    # this add does not happen at all and the expression is bit-identical.
+    kap = getattr(con, 'kappa', None)
+    if kap is not None:
+        h_qp += kap
 
     rtr = rtr_cap = spd = spd_cap = 0.0
     if con.n_cap:

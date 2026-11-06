@@ -432,6 +432,12 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         # how many rows. +0.000/0 with the flag off.
         f'vhd={getattr(rows, "diag_vobs_hdot", 0.0):+.3f}/'
         f'{int(getattr(rows, "diag_vobs_hdot_n", 0))} '
+        # enable_curvature_term: largest curvature term κ = n̂̇ᵀv_rel [m/s²]
+        # added to a row's RHS this rebuild, and on how many rows. 0.000/0
+        # with the flag off. Read it against k0·h̄: κ is the amount of ḧ the
+        # row gets for free from sliding sideways.
+        f'kap={getattr(rows, "diag_kappa", 0.0):.3f}/'
+        f'{int(getattr(rows, "diag_kappa_n", 0))} '
         # ── ISO 10218 layer (roadmap Step 10) ──────────────────────────────
         # sp     [m]   separation distance the worst control point NEEDS at the
         #              speed it is actually travelling (ISO 10218-2:2025 Annex
