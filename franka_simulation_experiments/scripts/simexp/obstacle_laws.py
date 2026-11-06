@@ -3,6 +3,12 @@
 Same definitions as src/scenario_obstacles_system.cpp: position at episode time
 t >= 0 for the analytic laws, and the explicit-Euler pursuit of a target
 sequence (cbf_scenarios.Sphere.step).
+
+``wander`` is the quasi-random tour of a box (one incommensurate sinusoid per
+world axis). It is analytic for exactly this reason: the plugin and this module
+are the sim and the truth of ONE motion, and no seeded RNG is bit-identical
+across C++ and numpy. Variety between seeds comes from the catalog's
+``jitter_m`` on ``p0``, which translates the whole tour.
 """
 from __future__ import annotations
 
@@ -34,6 +40,26 @@ def _phase(spec: dict) -> float:
     return float(spec.get('phase_deg', 0.0)) * np.pi / 180.0
 
 
+#: default frequency multipliers of ``wander``: 1, the golden ratio and the
+#: silver ratio. Mirrored in gz_world.WANDER_RATIOS and in
+#: scenario_obstacles_system.cpp; the three must agree, because this module is
+#: the TRUTH of the motion the plugin runs, not an approximation of it.
+WANDER_RATIOS = (1.0, 1.6180339887498949, 2.4142135623730951)
+
+
+def _wander(spec: dict):
+    """``(box, w_i, phase_i)`` of the wander law, validated as the plugin does."""
+    period = float(spec.get('period', 0.0))
+    if period <= 0.0:
+        raise ValueError('wander needs a positive period')
+    box = np.asarray(spec.get('box', (0.0, 0.0, 0.0)), float)
+    ratios = np.asarray(spec.get('ratios', WANDER_RATIOS), float)
+    ph = np.asarray(spec.get('phase_deg_xyz', (0.0, 0.0, 0.0)), float) * np.pi / 180.0
+    if box.shape != (3,) or ratios.shape != (3,) or ph.shape != (3,):
+        raise ValueError('wander needs 3-vectors for box, ratios and phase_deg_xyz')
+    return box, (2.0 * np.pi / period) * ratios, ph
+
+
 def position(spec: dict, t: float) -> np.ndarray:
     p0 = np.asarray(spec['p0'], float)
     law = spec.get('law', 'static')
@@ -48,6 +74,12 @@ def position(spec: dict, t: float) -> np.ndarray:
     if law == 'oscillate':
         w = 2.0 * np.pi / float(spec['period'])
         return p0 + _axis(spec) * (float(spec['amplitude']) * np.sin(w * t + _phase(spec)))
+    if law == 'wander':
+        # One INDEPENDENT sinusoid per world axis: the three frequencies are
+        # incommensurate, so the ball tours the box p0 +/- box without ever
+        # repeating. Bounded by construction, which is why no clamp is needed.
+        box, w3, ph = _wander(spec)
+        return p0 + box * np.sin(w3 * t + ph)
     raise ValueError(f'{law} is not analytic (pursuit needs the target, see pursue())')
 
 
@@ -63,6 +95,9 @@ def velocity(spec: dict, t: float) -> np.ndarray:
     if law == 'oscillate':
         w = 2.0 * np.pi / float(spec['period'])
         return _axis(spec) * (float(spec['amplitude']) * w * np.cos(w * t + _phase(spec)))
+    if law == 'wander':
+        box, w3, ph = _wander(spec)
+        return box * w3 * np.cos(w3 * t + ph)
     raise ValueError(law)
 
 

@@ -277,6 +277,102 @@ pentagon:
       T: 30.0
       obstacles: [{p0: [0.45, 0.50, 0.45], radius: 0.06, law: oscillate,
                    axis: [0.0, -1.0, 0.35], amplitude: 0.5, period: 10.0}]
+    pentagon_wander:                     # a ball TOURING THE WORKSPACE quasi-randomly
+      # law: wander -- one independent sinusoid per world axis, with
+      # INCOMMENSURATE frequency ratios (1, golden, silver), so
+      #     p_i(t) = p0_i + box_i * sin(2 pi ratio_i t / period + phase_i)
+      # never closes and never repeats inside a run. The ball tours the box
+      # p0 +/- box instead of running one line back and forth, which is what
+      # every other moving entry here does (oscillate is a segment, linear a
+      # ray, pursuit a chase). Encounters therefore arrive from a different
+      # direction, at a different height and at a different speed each time,
+      # which is the point: it is the one entry where the approach geometry is
+      # not scripted.
+      #
+      # NOT a seeded random walk, deliberately. The Gazebo plugin and
+      # simexp.obstacle_laws are the sim and the TRUTH of one motion and must
+      # agree exactly, and no RNG is bit-identical across C++ and numpy. The
+      # variety between seeds comes from jitter_m below, which translates the
+      # whole tour by up to 4 cm (seed 0 is the nominal, as everywhere here).
+      #
+      # Why these numbers:
+      #   p0 (0.52, 0, 0.45), box (0.22, 0.40, 0.15)
+      #     x in [0.30, 0.74]: straddles the commanded path plane (x = 0.40)
+      #        but stays on the CAMERA side, never behind the arm, so the ball
+      #        is always perceivable and the escape direction (-x) stays free.
+      #     y in [-0.40, 0.40]: the full lateral span of the circle.
+      #     z in [0.30, 0.60]: inside the circle's band (centre 0.45, r 0.25)
+      #        and clear of the table top at z = 0.
+      #   period 12 s with the default ratios -> peak speed per axis
+      #     (0.063, 0.339, 0.190) m/s, |v| median 0.29 and max 0.41 m/s: the
+      #     same order as pentagon_lateral's 0.3 and pentagon_lateral_y's 0.33,
+      #     and above lateral_evasion_v_min = 0.15, so the velocity-derived
+      #     terms engage.
+      #   phase_deg_xyz (0, -90, 0) -> THE BALL IS BORN at
+      #     p0 + box*sin(phase) = (0.52, -0.40, 0.45), 0.45 m from the hand at
+      #     q0 (0.32, 0, 0.47) and clear of every control point, so
+      #     enforce_start_clearance leaves it alone (start_shift must stay an
+      #     empty list -- re-check it if you edit p0, the box or the phases).
+      #   T 40 s -> 3.3 base periods. The ball is inside the barrier band of
+      #     the commanded circle (within ball radius + d_safe) 39% of the time:
+      #     busy enough that every arm meets it repeatedly, and NOT the 60%+
+      #     dwell that makes pentagon_sweep a test of whether the arm abandons
+      #     the task rather than of whether it avoids.
+      #
+      # scene: diag is stated for the same reason as pentagon_lateral_osc's --
+      # the catalog default is 'rig', and the DIAG lab is where this programme
+      # measures.
+      scene: diag
+      T: 40.0
+      jitter_m: 0.04
+      obstacles: [{p0: [0.52, 0.0, 0.45], radius: 0.06, law: wander,
+                   box: [0.22, 0.40, 0.15], period: 12.0,
+                   phase_deg_xyz: [0.0, -90.0, 0.0]}]
+
+    pentagon_wander_close:               # pentagon_wander, TOURING THE TASK CIRCLE ITSELF
+      # Same `wander` law, same ratios, same scene. The ONLY change is the
+      # size and the centre of the box, because on pentagon_wander the ball
+      # spends most of the run far from the hand: measured against the
+      # COMMANDED path point, the shipped tour is within d_safe on 2% of ticks
+      # and within 20 cm on 12%, its closest approach to the commanded path is
+      # +6.6 cm, so the nominal circle is never actually blocked and the
+      # barrier rarely becomes active (one run: engaged 7.7% of the episode,
+      # n_act = 0 for most of it).
+      #
+      # Why these numbers (circle: centre (0.40, 0, 0.45), r 0.25, plane yz):
+      #   p0 (0.44, 0, 0.45) = the circle's OWN centre, pushed 4 cm to the
+      #     camera side of the path plane, so the tour is concentric with the
+      #     task instead of sitting beside it.
+      #   box (0.08, 0.22, 0.14)
+      #     x in [0.36, 0.52]: straddles the path plane (x = 0.40) and still
+      #        never goes behind the arm, so the ball stays perceivable and
+      #        the escape direction (-x) stays free, as in pentagon_wander.
+      #     y in [-0.22, 0.22], z in [0.31, 0.59]: just INSIDE the rim the
+      #        hand sweeps (y = +/-0.25, z = 0.45 +/- 0.25), so the ball keeps
+      #        crossing the rim from the inside at a different point each pass.
+      #   period 7.0 s (not 12): the box is ~half the shipped one, so the same
+      #     period would halve the speed. 7 s restores it -- peak per axis
+      #     (0.072, 0.320, 0.303) m/s, |v| median 0.31 and max 0.44, the same
+      #     band as pentagon_wander's 0.29/0.39 and above
+      #     lateral_evasion_v_min = 0.15. It is also incommensurate with the
+      #     commander's 6 s cycle, so encounters do not lock to one phase of
+      #     the circle.
+      #   phase_deg_xyz (0, -90, 0) -> born at (0.44, -0.22, 0.45): 0.25 m from
+      #     the hand at q0 (0.32, 0, 0.47), i.e. 0.19 m of surface gap against
+      #     d_safe = 0.10, so enforce_start_clearance leaves it alone
+      #     (start_shift must stay an empty list -- re-check if you edit this).
+      #   T 40 s -> 5.7 base periods. Dwell against the commanded path point:
+      #     within d_safe on 16% of ticks (8x the shipped tour), within 20 cm
+      #     on 41% (3.4x), closest approach -4.7 cm -- the ball now genuinely
+      #     OCCUPIES the commanded path and the arm must go around it, which is
+      #     what the shipped tour does not force.
+      scene: diag
+      T: 40.0
+      jitter_m: 0.04
+      obstacles: [{p0: [0.44, 0.0, 0.45], radius: 0.06, law: wander,
+                   box: [0.08, 0.22, 0.14], period: 7.0,
+                   phase_deg_xyz: [0.0, -90.0, 0.0]}]
+
     pentagon_multi_static:               # pentagon_on_path + pentagon_beside_path at once
       T: 30.0
       obstacles: [{p0: [0.40, -0.25, 0.45], radius: 0.05, law: static},

@@ -23,6 +23,20 @@
 //              p0 - axis * amplitude, the far end, and sweeps in. simexp's
 //              obstacle_laws.position/velocity carry the same term; the two are
 //              the sim and the truth of one motion and must not disagree.
+//   wander     p_i(t) = p0_i + box_i * sin(2 pi ratio_i t / period + phase_i)
+//              A ball touring a BOX quasi-randomly: one independent sinusoid
+//              per world axis, with INCOMMENSURATE frequency ratios (default
+//              1, golden ratio, silver ratio), so the path never closes and
+//              never repeats inside a run while staying C-infinity, bounded by
+//              p0 +/- box and exactly reproducible. It is deliberately NOT a
+//              seeded random walk: the truth side (simexp.obstacle_laws) must
+//              evaluate the SAME motion, and no RNG is bit-identical across
+//              C++ and numpy. Per-seed variety comes from the catalog's
+//              jitter_m on p0, which translates the whole box.
+//              <box> half-extents [m], <ratios> frequency multipliers,
+//              <period> [s] the base period, <phase_deg_xyz> [deg] the three
+//              phases, which decide where the ball is BORN. Peak speed on axis
+//              i is box_i * 2 pi ratio_i / period.
 //
 // Before the episode starts the obstacles are PARKED out of view (unless
 // <park>false</park>). The start time arrives as a sim time on a gz topic
@@ -92,6 +106,8 @@ struct Obstacle
   Vector3d p0, v0, gravity{0, 0, -9.81}, park{0, 0, -20}, axis{1, 0, 0};
   double speed{0.0};
   double amplitude{0.0}, period{0.0}, phase{0.0};   // phase in RADIANS
+  Vector3d box{0, 0, 0}, ratios{1.0, 1.6180339887498949, 2.4142135623730951};
+  Vector3d phase_xyz{0, 0, 0};                     // wander phases, RADIANS
   bool use_park{true};
   ignition::gazebo::Entity entity{ignition::gazebo::kNullEntity};
   Vector3d p, v;   // pursuit state, and the last commanded position / velocity
@@ -130,10 +146,20 @@ public:
       ob.amplitude = o->Get<double>("amplitude", 0.0).first;
       ob.period = o->Get<double>("period", 0.0).first;
       ob.phase = o->Get<double>("phase_deg", 0.0).first * M_PI / 180.0;
+      // wander: one sinusoid per world axis. The defaults are the golden and
+      // silver ratios, which is the whole point -- rational ratios would close
+      // the curve into a repeating Lissajous figure.
+      ob.box = ParseVec(o->Get<std::string>("box", "0 0 0").first, {0, 0, 0});
+      ob.ratios = ParseVec(o->Get<std::string>("ratios",
+          "1 1.6180339887498949 2.4142135623730951").first,
+          {1.0, 1.6180339887498949, 2.4142135623730951});
+      const Vector3d ph_deg = ParseVec(
+          o->Get<std::string>("phase_deg_xyz", "0 0 0").first, {0, 0, 0});
+      ob.phase_xyz = ph_deg * (M_PI / 180.0);
       ob.p = ob.p0;
       ob.v = Vector3d::Zero;
       if (ob.law != "static" && ob.law != "linear" && ob.law != "ballistic" &&
-        ob.law != "pursuit" && ob.law != "oscillate")
+        ob.law != "pursuit" && ob.law != "oscillate" && ob.law != "wander")
       {
         ignerr << "[ScenarioObstacles] unknown law '" << ob.law << "' for " << ob.model << "\n";
         continue;
@@ -146,6 +172,11 @@ public:
           continue;
         }
         ob.axis /= n;
+      }
+      if (ob.law == "wander" && ob.period <= 0.0) {
+        ignerr << "[ScenarioObstacles] wander needs a positive <period> for "
+               << ob.model << "\n";
+        continue;
       }
       obstacles_.push_back(ob);
     }
@@ -205,6 +236,16 @@ public:
           const double w = 2.0 * M_PI / ob.period;
           p = ob.p0 + ob.axis * (ob.amplitude * std::sin(w * t + ob.phase));
           ob.v = ob.axis * (ob.amplitude * w * std::cos(w * t + ob.phase));
+        } else if (ob.law == "wander") {
+          // Per-axis, so the three frequencies are independent: that is what
+          // makes the tour quasi-random instead of a line segment.
+          const double w0 = 2.0 * M_PI / ob.period;
+          for (int i = 0; i < 3; ++i) {
+            const double wi = w0 * ob.ratios[i];
+            const double a = wi * t + ob.phase_xyz[i];
+            p[i] = ob.p0[i] + ob.box[i] * std::sin(a);
+            ob.v[i] = ob.box[i] * wi * std::cos(a);
+          }
         } else {   // pursuit: the same time origin as the analytic laws
           if (!target) {
             target = Target(ecm);

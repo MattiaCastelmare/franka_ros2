@@ -24,6 +24,8 @@ import os
 import numpy as np
 import yaml
 
+from .obstacle_laws import WANDER_RATIOS
+
 GRAVITY = (0.0, 0.0, -9.81)
 
 
@@ -138,6 +140,12 @@ def resolve(name: str, seed: int = 0, cfg: dict | None = None, depth_rate_hz: fl
                     amplitude=float(o.get('amplitude', 0.0)),
                     period=float(o.get('period', 0.0)),
                     phase_deg=float(o.get('phase_deg', 0.0)),
+                    # wander's parameters, carried for the same reason: the
+                    # SDF writer reads them off this spec, and a dropped one
+                    # leaves a ball sitting still at p0.
+                    box=list(o.get('box', (0.0, 0.0, 0.0))),
+                    ratios=list(o.get('ratios', WANDER_RATIOS)),
+                    phase_deg_xyz=list(o.get('phase_deg_xyz', (0.0, 0.0, 0.0))),
                     park=bool(o.get('park', True)))
         obstacles.append(spec)
     nominal = dict(sc.get('nominal', {'law': 'joint_pd'}))
@@ -159,10 +167,11 @@ def _spawn(spec: dict) -> np.ndarray:
     for pursuit (which integrates from p0; ``obstacle_laws.position`` cannot
     evaluate it without the target). An oscillate with ``phase_deg`` != 0 is the
     exception: it is born at p0 + axis * amplitude * sin(phase), e.g. at the far
-    end of the swing for -90. The clearance rule below is about where a
+    end of the swing for -90; so is a ``wander``, born at
+    p0 + box * sin(phase_xyz). The clearance rule below is about where a
     trajectory STARTS, so it has to ask the law, not read p0.
     """
-    if spec.get('law') == 'oscillate':
+    if spec.get('law') in ('oscillate', 'wander'):
         from .obstacle_laws import position
         return position(spec, 0.0)
     return np.asarray(spec['p0'], float)

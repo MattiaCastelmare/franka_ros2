@@ -195,6 +195,13 @@ def _halo_visual(radius: float, halo_m: float | None) -> str:
 #: the camera's frustum (the floor is at z = -0.88).
 PARK_AT = (0.0, 0.0, -20.0)
 
+#: default frequency multipliers of the `wander` law: 1, the golden ratio and
+#: the silver ratio. Irrational RATIOS are the point — with rational ones the
+#: three sinusoids close into a repeating Lissajous figure instead of touring
+#: the box. Mirrored in simexp.obstacle_laws.WANDER_RATIOS and in
+#: scenario_obstacles_system.cpp's defaults; the three must agree.
+WANDER_RATIOS = (1.0, 1.6180339887498949, 2.4142135623730951)
+
 
 def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
                               truth_topic='/sim/truth/obstacle_poses', truth_period=0.001,
@@ -202,9 +209,11 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
                               target_offset=(0.0, 0.0, 0.107)) -> str:
     """The ScenarioObstacles world-system block for these obstacle specs.
 
-    Each spec: ``name, radius, law (static|linear|ballistic|pursuit|oscillate),
-    p0`` and, per law, ``v0``, ``gravity``, ``speed``, ``axis`` + ``amplitude``
-    + ``period`` + ``phase_deg``; ``park`` (default True). ``phase_deg`` shifts
+    Each spec: ``name, radius,
+    law (static|linear|ballistic|pursuit|oscillate|wander), p0`` and, per law,
+    ``v0``, ``gravity``, ``speed``, ``axis`` + ``amplitude`` + ``period`` +
+    ``phase_deg``, ``box`` + ``ratios`` + ``period`` + ``phase_deg_xyz``
+    (wander); ``park`` (default True). ``phase_deg`` shifts
     the oscillation's sine, so it decides where the ball is BORN: 0 starts it at
     ``p0`` (the centre of the swing), -90 at ``p0 - axis * amplitude`` (the far
     end, sweeping in). The pursuit target is the flange:
@@ -223,6 +232,13 @@ def scenario_obstacles_plugin(obstacles, *, start_topic='/sim/episode_start',
             f'<amplitude>{float(o.get("amplitude", 0.0)):.9g}</amplitude>'
             f'<period>{float(o.get("period", 0.0)):.9g}</period>'
             f'<phase_deg>{float(o.get("phase_deg", 0.0)):.9g}</phase_deg>'
+            # wander: one sinusoid per world axis, incommensurate by default.
+            # Written unconditionally like oscillate's fields, for the same
+            # reason -- a dropped element silently turns the law into a ball
+            # sitting at p0.
+            f'<box>{_fmt(o.get("box", (0, 0, 0)))}</box>'
+            f'<ratios>{_fmt(o.get("ratios", WANDER_RATIOS))}</ratios>'
+            f'<phase_deg_xyz>{_fmt(o.get("phase_deg_xyz", (0, 0, 0)))}</phase_deg_xyz>'
             f'<park>{"true" if o.get("park", True) else "false"}</park>'
             f'<park_at>{_fmt(o.get("park_at", PARK_AT))}</park_at>'
             '</obstacle>')
