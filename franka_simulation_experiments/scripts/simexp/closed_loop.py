@@ -39,6 +39,14 @@ from . import analysis as A
 from .reflex_checks import CLIP_KIND
 
 FAMILIES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
+#: Task 5.5 of ``OSCBF_ALIGNMENT_PLAN.md``: the achieved QP rate is a pass/fail
+#: INPUT, not just a reported number. A cell that misses the rate its own
+#: condition asked for by more than this fraction is not a valid data point —
+#: the slew box makes jerk = max_qddot_delta/dt, so two arms clocked
+#: differently are not being compared on their barriers (the filter has been
+#: measured starved to 18 Hz against a 100 Hz target). ``batch`` gates ``ok``
+#: on the verdict; a batch that wants the old behaviour must say so.
+QP_RATE_TOL = 0.05
 LEVELS = ('full', 'box-only', 'brake')     # cbf_qp_assembly.LEVEL_NAMES (test pins it)
 _STAMP = re.compile(r'\[(\d{9,}\.\d+)\]')
 _FB = re.compile(r'fb=\[(\d+), (\d+), (\d+)\]')
@@ -46,6 +54,26 @@ _FB = re.compile(r'fb=\[(\d+), (\d+), (\d+)\]')
 #: box and the hard state box were DISJOINT, i.e. the ticks where
 #: slew_yields_to_state_box decides which box the solver is handed.
 _SLEWCONF = re.compile(r'slewconf=\[(\d+), (\d+)\]')
+
+
+def rate_verdict(achieved, target, tol: float = QP_RATE_TOL):
+    """``(ok, relative error)`` for an achieved QP rate against its nominal.
+
+    ``None`` for either input means the verdict is UNKNOWN, not a failure: the
+    bag may carry no ``cbf_status`` (the filter never ran) or the manifest may
+    not record the nominal rate (a run from before this gate). Unknown is
+    reported as ``None`` so such a cell is neither silently accepted as
+    rate-matched nor silently discarded.
+    """
+    if achieved is None or target is None:
+        return None, None
+    target = float(target)
+    if not target > 0.0:
+        return None, None
+    err = float(achieved) / target - 1.0
+    # the band INCLUDES its edge: 95.0/100.0 - 1 is -0.050000000000000044 in
+    # binary, which would otherwise reject a cell that is exactly on tolerance
+    return bool(abs(err) <= float(tol) + 1e-9), err
 
 
 def _wall(line: str) -> float | None:
@@ -142,10 +170,14 @@ def summarize_run(run_dir: str) -> dict:
     t0, t1 = ep.get('t_start_sim'), ep.get('t_end_sim')
     if t0 is None or t1 is None:
         return {'error': 'no episode in run_manifest_sim.json'}
+    # the rate this cell's own condition asked for: the gate's reference (Task 5.5)
+    qp_target = ((man.get('condition') or {}).get('cbf_params') or {}).get('qp_rate_hz')
     rs = A.load_json(os.path.join(run_dir, 'reflex_summary.json')) or {}
     rtf = rs.get('rtf') or man.get('rtf') or {}
     counts = rs.get('counts') or man.get('reflex_counts') or {}
-    out = dict(rtf=rtf.get('rtf_run'), rtf_p10=rtf.get('rtf_p10_window'),
+    out = dict(qp_rate_target_hz=qp_target, qp_rate_hz=None, qp_rate_err=None,
+               qp_rate_ok=None,
+               rtf=rtf.get('rtf_run'), rtf_p10=rtf.get('rtf_p10_window'),
                reflex_verdict=rs.get('verdict') or man.get('reflex_verdict'),
                reflex_trips=sum(v for k, v in counts.items() if k != CLIP_KIND),
                rate_clips=counts.get(CLIP_KIND, 0),
@@ -204,10 +236,14 @@ def summarize_run(run_dir: str) -> dict:
         st = [m.data for t, m in b['/NS_1/cbf_status'] if t0 <= t <= t1]
         if st:
             S = np.array([list(d[:5]) for d in st])
+            r_hz = len(S) / max(t1 - t0, 1e-9)
+            ok_r, err_r = rate_verdict(r_hz, qp_target)
             out.update(slack_max_any=float(S[:, 1].max()), fault_ticks=int((S[:, 2] > 0).sum()),
                        status_ticks=len(S), n_rows_max=int(S[:, 0].max()),
-                       # achieved QP rate in SIM time (nominal qp_rate_hz 300)
-                       qp_rate_hz=len(S) / max(t1 - t0, 1e-9))
+                       # achieved QP rate in SIM time, against the nominal this
+                       # condition asked for (cbf_params.qp_rate_hz, 100 Hz as
+                       # shipped) and the +-QP_RATE_TOL verdict on it
+                       qp_rate_hz=r_hz, qp_rate_err=err_r, qp_rate_ok=ok_r)
 
     lp = os.path.join(run_dir, 'launch.log')
     if os.path.isfile(lp):

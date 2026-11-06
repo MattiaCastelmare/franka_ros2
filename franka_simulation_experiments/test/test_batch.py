@@ -51,3 +51,26 @@ def test_flat_row_picks_the_estimator_the_cbf_used():
     assert row['est_rms'] == 0.05 and row['trk_rms'] == 0.05 and row['res_rms'] == 0.2
     assert row['sets'] == 'vobs_in_hdot=False' and 'sets' not in row['cell']
     assert row['causes'] == '2 untracked:3'           # a tracker condition keeps approach_probe's
+
+
+def test_a_cell_that_missed_its_qp_rate_is_not_ok():
+    """Task 5.5: the rate gates ``ok``, so a rate miss cannot enter a comparison."""
+    good = {'closed_loop': {'min_h': -0.05, 'qp_rate_ok': True}}
+    assert batch.cell_ok(good) is True
+    assert batch.cell_ok({'closed_loop': {'min_h': -0.05, 'qp_rate_ok': False}}) is False
+    # unknown (no cbf_status, or a manifest from before the gate) is not a failure
+    assert batch.cell_ok({'closed_loop': {'min_h': -0.05, 'qp_rate_ok': None}}) is True
+    assert batch.cell_ok({'closed_loop': {'min_h': -0.05}}) is True
+    # the older reasons still hold
+    assert batch.cell_ok(dict(good, timed_out=True)) is False
+    assert batch.cell_ok(dict(good, leftovers=['gzserver'])) is False
+    assert batch.cell_ok({'closed_loop': {'min_h': None, 'qp_rate_ok': True}}) is False
+
+
+def test_the_flat_row_carries_the_rate_target_and_the_verdict():
+    c = dict(scenario='slow', condition='kf', seed=0, perception='true')
+    row = batch._flat(c, {'ok': False, 'closed_loop': {
+        'min_h': -0.05, 'qp_rate_hz': 18.0, 'qp_rate_target_hz': 100.0,
+        'qp_rate_err': -0.82, 'qp_rate_ok': False}})
+    assert row['qp_rate_hz'] == 18.0 and row['qp_rate_target_hz'] == 100.0
+    assert row['qp_rate_ok'] is False and row['qp_rate_err'] == -0.82

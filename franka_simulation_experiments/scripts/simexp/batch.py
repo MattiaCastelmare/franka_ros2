@@ -78,6 +78,24 @@ def flags_grid() -> list[dict]:
             for f in TRACK_CONSUMERS for s in scen]
 
 
+def cell_ok(r: dict) -> bool:
+    """Is this cell a valid data point?
+
+    It must have finished (no timeout, no leftover processes), have produced a
+    clearance to score, and have held the QP rate its condition asked for
+    (``closed_loop.QP_RATE_TOL``, Task 5.5 of ``OSCBF_ALIGNMENT_PLAN.md``). A
+    cell clocked outside that band is marked NOT ok even when it ran to the
+    end, because the comparison it belongs to is between barriers, not between
+    control rates. An UNKNOWN verdict (``qp_rate_ok is None``: no cbf_status in
+    the bag, or a manifest without a nominal rate) does not fail the cell; it
+    stays visible as ``qp_rate_ok = null`` in the result and the CSV.
+    """
+    cl = r.get('closed_loop') or {}
+    return bool(not r.get('timed_out') and not r.get('leftovers')
+                and cl.get('min_h') is not None
+                and cl.get('qp_rate_ok') is not False)
+
+
 def _flat(c: dict, r: dict) -> dict:
     cl, est, att = r.get('closed_loop', {}), r.get('estimator', {}), r.get('attribution', {})
     used = est.get('used')
@@ -98,7 +116,9 @@ def _flat(c: dict, r: dict) -> dict:
         **{'emulated_fps': None, **{k: v for k, v in c.items() if k != 'sets'}},
         sets=';'.join(f'{k}={v}' for k, v in sorted((c.get('sets') or {}).items())),
         ok=r.get('ok'), wall_s=r.get('wall_s'),
-        rtf=cl.get('rtf'), qp_rate_hz=cl.get('qp_rate_hz'), reflex=cl.get('reflex_verdict'),
+        rtf=cl.get('rtf'), qp_rate_hz=cl.get('qp_rate_hz'),
+        qp_rate_target_hz=cl.get('qp_rate_target_hz'), qp_rate_err=cl.get('qp_rate_err'),
+        qp_rate_ok=cl.get('qp_rate_ok'), reflex=cl.get('reflex_verdict'),
         reflex_trips=cl.get('reflex_trips'), rate_clips=cl.get('rate_clips'),
         min_h=cl.get('min_h'), neg_s=cl.get('neg_duration_s'), contact=cl.get('contact'),
         task_done=cl.get('task_done'), task_err=cl.get('task_final_err'),
@@ -156,8 +176,7 @@ def run_one(batch_dir: str, c: dict, *, timeout_s: float = 400.0) -> dict:
                returncode=rr['returncode'])
     try:
         out.update(score_cell(rd, c))
-        out['ok'] = (not rr['timed_out'] and not rr['leftovers']
-                     and out['closed_loop'].get('min_h') is not None)
+        out['ok'] = cell_ok(out)
     except Exception:                                          # noqa: BLE001
         out['ok'] = False
         out['error'] = traceback.format_exc()
@@ -212,9 +231,16 @@ def run_grid(batch_dir: str, cells: list[dict], *, log=print) -> str:
             rows.append(_flat(rr['cell'], rr))
         write_csv(csv_path, rows)
         cl = r.get('closed_loop', {})
+        # a rate miss is the one failure that looks like a healthy run in every
+        # other column, so it is named in the progress line (Task 5.5)
+        rate = f'qp={cl.get("qp_rate_hz") or float("nan"):.0f}Hz'
+        if cl.get('qp_rate_ok') is False:
+            rate += f'!={cl.get("qp_rate_target_hz"):.0f} RATE_FAIL'
+        elif cl.get('qp_rate_ok') is None:
+            rate += '?'
         log(f'[{i}/{len(cells)} {time.time() - t0:7.0f}s] {cell_name(c):48s} ok={r.get("ok")} '
             f'min_h={cl.get("min_h", float("nan")):+.3f} rtf={cl.get("rtf") or float("nan"):.2f} '
-            f'qp={cl.get("qp_rate_hz") or float("nan"):.0f}Hz wall={r.get("wall_s", 0):.0f}s')
+            f'{rate} wall={r.get("wall_s", 0):.0f}s')
     return csv_path
 
 
@@ -238,8 +264,7 @@ def _rescore_one(res_path: str) -> str:
         r.pop(k, None)
     try:
         r.update(score_cell(rd, r['cell']))
-        r['ok'] = (not r.get('timed_out') and not r.get('leftovers')
-                   and r['closed_loop'].get('min_h') is not None)
+        r['ok'] = cell_ok(r)
     except Exception:                                          # noqa: BLE001
         r['ok'] = False
         r['error'] = traceback.format_exc()

@@ -102,3 +102,43 @@ def test_reflex_events_are_counted_inside_the_episode_from_the_trip_file(run):
     r = CL.summarize_run(run)
     assert r['rate_clips'] == 2 and r['reflex_trips'] == 1 and r['reflex_trips_whole_run'] == 1
     assert r['reflex_verdict'] == 'FAIL' and r['rtf'] == 0.8     # the final summary, not the copy
+
+
+def test_the_rate_verdict_is_the_plans_five_percent_band():
+    """Task 5.5: the band is +-5 %, and the error is signed and relative."""
+    assert CL.QP_RATE_TOL == 0.05
+    assert CL.rate_verdict(100.0, 100.0) == (True, 0.0)
+    assert CL.rate_verdict(95.0, 100.0)[0] is True            # exactly on the edge
+    assert CL.rate_verdict(105.0, 100.0)[0] is True
+    assert CL.rate_verdict(94.9, 100.0)[0] is False
+    assert CL.rate_verdict(105.1, 100.0)[0] is False
+    assert CL.rate_verdict(18.0, 100.0) == (False, pytest.approx(-0.82))
+    # a target other than 100 Hz is honoured, not assumed
+    assert CL.rate_verdict(297.0, 300.0)[0] is True
+    assert CL.rate_verdict(100.0, 300.0)[0] is False
+    # and a wider band can be asked for explicitly
+    assert CL.rate_verdict(80.0, 100.0, tol=0.25)[0] is True
+
+
+def test_an_unjudgeable_rate_is_unknown_and_not_a_pass():
+    for a, t in ((None, 100.0), (100.0, None), (None, None), (100.0, 0.0)):
+        assert CL.rate_verdict(a, t) == (None, None)
+
+
+def test_a_run_with_no_cbf_status_reports_the_rate_as_unknown(run):
+    """No bag in the fixture: the rate is absent, so the verdict must be None.
+
+    Not False (that would throw away a cell for a bag that was never recorded)
+    and not True (nothing was measured).
+    """
+    r = CL.summarize_run(run)
+    assert r['qp_rate_hz'] is None and r['qp_rate_ok'] is None
+    assert r['qp_rate_err'] is None
+
+
+def test_the_nominal_rate_comes_from_the_cells_own_condition(run):
+    man = json.load(open(os.path.join(run, 'run_manifest_sim.json')))
+    man['condition'] = {'cbf_params': {'qp_rate_hz': 250.0}}
+    with open(os.path.join(run, 'run_manifest_sim.json'), 'w') as f:
+        json.dump(man, f)
+    assert CL.summarize_run(run)['qp_rate_target_hz'] == 250.0
