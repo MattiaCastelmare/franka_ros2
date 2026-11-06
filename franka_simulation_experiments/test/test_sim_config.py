@@ -40,7 +40,22 @@ def test_perception_sim_overrides_are_exactly_the_justified_ones():
     means adding it to this list, with its reason there."""
     p = os.path.join(REPO, 'franka_simulation', 'config', 'sim', 'perception_sim.yaml')
     with open(p) as f:
-        assert (yaml.safe_load(f) or {}) == {'booleans': {'visualize': False}}
+        assert (yaml.safe_load(f) or {}) == {
+            'booleans': {'visualize': False},
+            # SIM ONLY. MaskBuilder's robot_depth z-buffer is filled from
+            # projected mesh samples, and at the shipped 3000/link the fill is
+            # wrong at the silhouette edge: the model surface lands FARTHER
+            # than the arm is, the arm's own pixels read as being in front of
+            # the model, the depth gate un-excludes them and they become
+            # obstacle rows at a gap of ~0 -- the arm is its own obstacle.
+            # Measured on sim_runs/control_sweep_20261105 at 3000/link: 17.5%
+            # of the arm's own pixels in front of the 16 cm gate and a 24-25 px
+            # leak EVERY frame, in every cell. Denser sampling moves the model
+            # surface nearer, which is the direction that stops it. NOT raised
+            # on the rig, where the same number trades against a real hand-eye
+            # error (rig residual -6.1 cm, 2026-09-21).
+            'meshes': {'sample_points_per_link': 12000},
+        }
 
 
 def test_deep_merge_overrides_nested_keys_only():

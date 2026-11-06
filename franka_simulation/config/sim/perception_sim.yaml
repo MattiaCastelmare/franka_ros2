@@ -16,3 +16,31 @@ booleans:
   # frame). The overlay is still drawn and published (publish_overlay_image), so
   # only imshow + waitKey are skipped. gz_cbf_stack gui:=true turns it back on.
   visualize: false
+
+meshes:
+  # RAISED 3000 -> 12000 for sim only (2026-11-06, measured).
+  #
+  # `robot_depth` in MaskBuilder is a z-buffer filled from projected mesh
+  # samples; pixels without a sample inherit the nearest robot surface via a
+  # min-filter. Too few samples and that fill is wrong at the silhouette edge:
+  # the model surface lands FARTHER than the arm really is, so the arm's own
+  # pixels read as being in front of the model and the depth gate UN-EXCLUDES
+  # them. They then become obstacle rows at a gap of ~0 — the arm is its own
+  # obstacle.
+  #
+  # Measured on sim_runs/control_sweep_20261105 at 3000 samples/link:
+  #   calibration residual measured - model = -2.8 cm (spread 3.5 cm),
+  #   and 17.5% of the arm's own pixels in front of the 16 cm depth gate,
+  #   reported by the node as "phantoms on the arm";
+  #   distance_engine's own leak counter: 24-25 px EVERY frame, in every cell
+  #   and every scenario of the campaign.
+  # utils/calibration_check documents the density swing this rides on: the
+  # residual goes -0.9 cm at 300 samples/link to +6.0 cm at 20000, on ONE
+  # unchanged extrinsic. Denser sampling moves the model surface NEARER, which
+  # is the direction that stops the un-exclusion.
+  #
+  # Sim only, and deliberately: on the rig the same number trades against a
+  # real hand-eye error (rig residual was -6.1 cm, 2026-09-21), so it must be
+  # re-measured there rather than copied from here. The cost is paid once, at
+  # startup, not per frame.
+  sample_points_per_link: 12000
