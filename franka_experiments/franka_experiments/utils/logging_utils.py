@@ -438,6 +438,35 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         # row gets for free from sliding sideways.
         f'kap={getattr(rows, "diag_kappa", 0.0):.3f}/'
         f'{int(getattr(rows, "diag_kappa_n", 0))} '
+        # ── Evidence-conditioned trust (three flags, all default off) ──────
+        # ev   [m]/class  largest evidence-keyed tightening this rebuild and
+        #                 the class that earned it (fresh|young|coasting|
+        #                 untracked). 0.000/- with enable_evidence_margin off.
+        #                 `coasting` on this field is the interesting one: the
+        #                 track is still being reported but is no longer being
+        #                 MEASURED.
+        # mem  rows/held  obstacle-memory rows emitted this rebuild, and how
+        #                 many vanished tracks are currently remembered. 0/0
+        #                 with enable_obstacle_memory off. A nonzero `rows`
+        #                 means the barrier is constraining something the
+        #                 camera can no longer see.
+        # rho  [m]/rows   largest MEASURED radius of curvature that replaced
+        #                 the configured constant, and on how many rows. 0.0/0
+        #                 with curvature_radius_from_normal off; a large value
+        #                 is a FLAT surface correctly refusing a κ.
+        f'ev={getattr(rows, "diag_ev_margin", 0.0):.3f}/'
+        f'{getattr(rows, "diag_ev_class", "") or "-"} '
+        f'mem={int(getattr(rows, "diag_mem_rows", 0))}/'
+        f'{int(getattr(rows, "diag_mem_held", 0))}'
+        # memskip  why a remembered obstacle did not become a row. `live` is
+        #          the healthy case (still measured); any other non-zero entry
+        #          is the mechanism failing to emit, which `mem=0/N` alone
+        #          cannot distinguish.
+        + (''.join(f',{k}={v}' for k, v in
+                   sorted(getattr(rows, 'diag_mem_skip', {}).items())
+                   if v and k != 'live') or '') + ' '
+        f'rho={getattr(rows, "diag_rho_meas", 0.0):.2f}/'
+        f'{int(getattr(rows, "diag_rho_n", 0))} '
         # ── ISO 10218 layer (roadmap Step 10) ──────────────────────────────
         # sp     [m]   separation distance the worst control point NEEDS at the
         #              speed it is actually travelling (ISO 10218-2:2025 Annex

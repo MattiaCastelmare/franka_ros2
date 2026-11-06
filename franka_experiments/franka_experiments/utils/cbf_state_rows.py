@@ -29,6 +29,7 @@ Everything here is pure numpy plus the caller's kinematics object; no ROS.
 
 from __future__ import annotations
 
+import math
 import time
 
 from typing import List, NamedTuple, Optional, Sequence, Tuple
@@ -1338,6 +1339,228 @@ def row_slack_slots(P) -> int:
 
 # ── Immutable snapshots (atomic-swap shared state) ───────────────────────────
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Evidence-conditioned barrier trust
+# ═══════════════════════════════════════════════════════════════════════════
+# One thesis, three mechanisms, each behind its own flag and each OFF by
+# default: a row should be tightened, held or relaxed by what the perception
+# chain has actually EARNED on that row, measured, rather than by a hand-set
+# constant or by a velocity covariance that does not predict the error that
+# actually hurts. The error that hurts is the reported DISTANCE being
+# optimistic, and it is measurable against a simulator's ground truth.
+#
+# Every function here is pure and importable without rclpy, so the tests
+# exercise the arithmetic and the gates directly.
+
+#: Evidence classes, worst (most tightening) last. The class of a row is a
+#: statement about the MEASUREMENTS behind it, never about its distance.
+EV_FRESH = 'fresh'          # confirmed track, updated on this frame
+EV_YOUNG = 'young'          # a track, but below the frames_seen gate
+EV_COASTING = 'coasting'    # a confirmed track that stopped being updated
+EV_UNTRACKED = 'untracked'  # track_id 0: this frame's pixel and nothing else
+EV_REMEMBERED = 'remembered'  # no measurement at all; a memory row
+
+
+def evidence_class(track_id: int, frames_seen: int, *, min_frames: int,
+                   stale: bool) -> str:
+    """Which evidence class a row belongs to.
+
+    ``stale`` is the caller's answer to "has this track stopped being
+    updated?", which only a consumer holding history can know: ``frames_seen``
+    counts measurements, so a track coasting through an occlusion keeps its
+    count frozen rather than growing. A frozen count with the track still
+    present is the signature of exactly the regime where the measured distance
+    optimism has its tail, and it is invisible to any single frame.
+    """
+    if int(track_id) == 0:
+        return EV_UNTRACKED
+    if stale:
+        return EV_COASTING
+    if int(frames_seen) < int(min_frames):
+        return EV_YOUNG
+    return EV_FRESH
+
+
+def evidence_margin(cls: str, margins: dict) -> float:
+    """Metres of tightening for an evidence class; 0.0 for an unknown one.
+
+    Clamped at 0 from below on purpose: this term exists to make a row HARDER,
+    and a negative entry in the configuration would quietly turn the mechanism
+    into a relaxation. Unknown classes contribute nothing, so adding a class
+    later cannot change an old configuration's behaviour.
+    """
+    m = float(margins.get(cls, 0.0))
+    if not np.isfinite(m) or m < 0.0:
+        return 0.0
+    return m
+
+
+def fitted_rate(samples) -> float:
+    """Magnitude of the least-squares time slope of a vector sequence.
+
+    ``samples`` is an iterable of ``(t, vec)``. Returns ``0.0`` for fewer than
+    three samples or a degenerate time span, which is the conservative answer
+    everywhere this is used (a rate of 0 means "no rotation observed", hence an
+    infinite radius of curvature and no relaxation).
+
+    A least-squares slope and not a difference of the two endpoints: the normal
+    arrives at the perception rate and is already EMA-smoothed, so a two-point
+    difference over one rebuild is dominated by its noise. The same fitted-slope
+    discipline a surface-point velocity needs, for the same reason.
+    """
+    pts = [(float(t), np.asarray(v, dtype=np.float64)) for t, v in samples]
+    if len(pts) < 3:
+        return 0.0
+    t = np.array([a for a, _ in pts])
+    V = np.stack([b for _, b in pts])
+    dt = t - t.mean()
+    den = float(dt @ dt)
+    if den <= 1e-12:
+        return 0.0
+    slope = (dt[:, None] * (V - V.mean(axis=0))).sum(axis=0) / den
+    r = float(np.linalg.norm(slope))
+    return r if np.isfinite(r) else 0.0
+
+
+def measured_curvature_radius(v_perp_norm: float, normal_rate: float, *,
+                              rate_floor: float) -> float:
+    """rho_c estimated from the rotation of the contact normal, or ``inf``.
+
+    For a locally spherical obstacle at centre distance rho_c,
+
+        n_hatdot = (I - n n^T) v_rel / rho_c   ==>   rho_c = ||v_perp|| / ||n_hatdot||
+
+    so the radius the curvature term needs is observable from the normal the
+    perception chain already publishes, instead of being assumed. A flat
+    surface -- a desk, a wall, the floor -- produces no normal rotation, so the
+    estimate diverges and the curvature term vanishes on exactly those rows.
+
+    Conservative in every direction it can be wrong. kappa = ||v_perp||^2/rho_c,
+    so OVERestimating kappa is unsafe and overestimating kappa means
+    UNDERestimating rho_c. Measurement noise inflates the observed rate, which
+    would shrink rho_c, so ``rate_floor`` is subtracted from it first; a rate at
+    or below the floor is read as no rotation at all and returns ``inf``.
+    """
+    r = float(normal_rate) - float(rate_floor)
+    v = float(v_perp_norm)
+    if not np.isfinite(r) or r <= 0.0 or not np.isfinite(v) or v <= 0.0:
+        return float('inf')
+    rho = v / r
+    return rho if np.isfinite(rho) and rho > 0.0 else float('inf')
+
+
+def segment_point_distance(a: np.ndarray, b: np.ndarray, p: np.ndarray) -> float:
+    """Distance from point ``p`` to the segment ``a``--``b``."""
+    ab = np.asarray(b, dtype=np.float64) - np.asarray(a, dtype=np.float64)
+    ap = np.asarray(p, dtype=np.float64) - np.asarray(a, dtype=np.float64)
+    den = float(ab @ ab)
+    t = 0.0 if den <= 1e-18 else float(np.clip((ap @ ab) / den, 0.0, 1.0))
+    return float(np.linalg.norm(ap - t * ab))
+
+
+def in_self_mask(cam: np.ndarray, p: np.ndarray, points, *,
+                 halo_rad: float, depth_tol: float) -> bool:
+    """Would the perception chain's own self-mask have deleted ``p``?
+
+    This is the predicate `real_time_distance` actually implements, and it is
+    NOT occlusion. Per ``fr3_complete.yaml`` `mask:`, the exclusion mask is the
+    robot's DILATED SILHOUETTE -- 12 px around the body and 24 px around the
+    end effector, which is why this takes an angular halo rather than a metric
+    radius -- gated in depth by ``depth_gate_bias_m + depth_gate_tol_m``. A
+    pixel is dropped when it falls inside that halo AND sits within the
+    tolerance of the robot's own modelled range. Depth ORDER is irrelevant: the
+    config says so in as many words, "a hand a metre in front of the arm is as
+    invisible as one touching it", and the depth gate is what bounds it.
+
+    Measured on `pentagon_sweep` (the OPEN_ISSUES S5 cell), of 7 disappearances
+    of a track that was within 25 cm, this predicate explains 2 and
+    :func:`in_self_shadow` explains 0 -- both of the two sitting inside the EE
+    halo at a range difference of ~10 cm. That is the whole reason this
+    function exists: requiring true occlusion asks for the one thing the mask
+    does not need, so the memory never armed on the failure it was built for.
+
+    ``points`` are (position, is_ee) pairs; the halo is doubled for the end
+    effector exactly as ``ee_mask_dilate_px`` doubles it in the image.
+    """
+    cam = np.asarray(cam, dtype=np.float64)
+    p = np.asarray(p, dtype=np.float64)
+    d = p - cam
+    L = float(np.linalg.norm(d))
+    if L <= 1e-9:
+        return False
+    u = d / L
+    for q, is_ee in points:
+        q = np.asarray(q, dtype=np.float64)
+        r = q - cam
+        Lq = float(np.linalg.norm(r))
+        if Lq <= 1e-9:
+            continue
+        if abs(L - Lq) > float(depth_tol):      # the depth gate keeps it
+            continue
+        cos = float(np.clip((r / Lq) @ u, -1.0, 1.0))
+        if math.acos(cos) <= float(halo_rad) * (2.0 if is_ee else 1.0):
+            return True
+    return False
+
+
+def in_self_shadow(cam: np.ndarray, p: np.ndarray, polyline, radius: float) -> bool:
+    """Is ``p`` hidden from ``cam`` by the robot's own body?
+
+    The body is the polyline through the robot's control points -- the same
+    points the barrier is built on -- thickened by ``radius``. ``p`` is in the
+    shadow when the ray from the camera to ``p`` passes within ``radius`` of a
+    polyline vertex that lies BETWEEN the camera and ``p``; a part of the arm
+    behind the obstacle hides nothing.
+
+    This is the mechanism that makes the obstacle memory specific to a
+    manipulator: the thing that most often hides the obstacle is the robot
+    itself, and the self-mask then deletes those pixels from the depth image,
+    so the barrier goes quiet exactly when the obstacle is nearest.
+    """
+    cam = np.asarray(cam, dtype=np.float64)
+    p = np.asarray(p, dtype=np.float64)
+    d = p - cam
+    L = float(np.linalg.norm(d))
+    if L <= 1e-9:
+        return False
+    u = d / L
+    for q in polyline:
+        q = np.asarray(q, dtype=np.float64)
+        s = float((q - cam) @ u)
+        if s <= 0.0 or s >= L:            # behind the camera, or past p
+            continue
+        if float(np.linalg.norm((cam + s * u) - q)) <= float(radius):
+            return True
+    return False
+
+
+def memory_surface_gap(cp_now: np.ndarray, p_last: np.ndarray, v_last: np.ndarray,
+                       *, offset: float, age: float, inflate_mps: float) -> tuple:
+    """``(gap, n_hat, d_centre)`` of a remembered obstacle, propagated to now.
+
+    The remembered point is carried forward at its last measured velocity and
+    the remembered SURFACE is then eroded by ``inflate_mps * age``, a bound on
+    how wrong that propagation may be. The erosion is what makes a longer hold
+    strictly more conservative rather than a stale certainty: the row tightens
+    as the memory ages and nothing about it ever relaxes.
+
+    ``offset`` is the capsule radius plus the mask-dilation margin that
+    perception had already subtracted when the track was last seen
+    (``d_centre - LinkDistance.distance``), carried so a memory row speaks the
+    same units as the live row it replaces and cannot double-count it.
+    """
+    cp_now = np.asarray(cp_now, dtype=np.float64)
+    p_prop = np.asarray(p_last, dtype=np.float64) + np.asarray(
+        v_last, dtype=np.float64) * float(age)
+    delta = cp_now - p_prop
+    d_ctr = float(np.linalg.norm(delta))
+    if d_ctr <= 1e-9:
+        return 0.0, np.array([1.0, 0.0, 0.0]), 0.0
+    n_hat = delta / d_ctr
+    gap = d_ctr - float(offset) - float(inflate_mps) * float(age)
+    return float(gap), n_hat, d_ctr
+
+
 class JointSnap(NamedTuple):
     q:     np.ndarray   # (NV,)
     qdot:  np.ndarray   # (NV,)
@@ -1743,6 +1966,31 @@ class ConstraintBuilder:
         # is what keeps the QP rows bit-identical, because the node then passes
         # no per-row gain vectors and build_row_rhs falls back to the scalars.
         self._zones = ladder_from_params(P, logger)
+        # ── Evidence-conditioned trust (all three default OFF) ──────────
+        #: (frames_seen, t_cap) last seen per control-point label, so a track
+        #: that stops being UPDATED can be told from one that is still being
+        #: measured. frames_seen alone cannot say this: it counts measurements,
+        #: so a coasting track simply freezes it.
+        self._ev_seen: dict = {}
+        #: track_id -> remembered obstacle. See _remember_obstacle.
+        self._obs_mem: dict = {}
+        #: label -> deque of (t, n_hat) for the fitted normal rotation rate.
+        self._curv_nhat_hist: dict = {}
+        #: Every control-point label that has carried a live obstacle row. The
+        #: robot's own body for the self-occlusion test is rebuilt from these
+        #: through kinematics, so it is available on a rebuild with no rows.
+        self._cp_labels: set = set()
+        self.diag_ev_margin = 0.0   # largest evidence tightening this rebuild
+        self.diag_ev_class = ''     # ... and the class that produced it
+        self.diag_mem_rows = 0      # memory rows emitted this rebuild
+        # Why a remembered obstacle did NOT become a row, by reason. Without
+        # this, "mem=0/2" is indistinguishable between a healthy hold (the
+        # track is still being measured) and a mechanism that cannot emit.
+        self.diag_mem_skip = dict(live=0, expired=0, gate=0, no_frame=0,
+                                  kin=0, degenerate=0, leverage=0)
+        self.diag_mem_held = 0      # obstacles currently remembered
+        self.diag_rho_meas = 0.0    # largest MEASURED rho_c used [m]
+        self.diag_rho_n = 0         # rows whose rho_c came from the normal
         self.diag_h_hold = self.diag_v_obs = 0.0
         # Control point behind diag_v_obs. That maximum is taken over ALL rows
         # while `vel[obs/rob/rel]` on the same CBFDIAG line belongs to the row
@@ -1937,6 +2185,29 @@ class ConstraintBuilder:
         curv_on = bool(getattr(self._P, 'enable_curvature_term', False))
         curv_r_obs = float(getattr(self._P, 'curvature_obstacle_radius', 0.30))
         curv_kap_max = float(getattr(self._P, 'curvature_kappa_max', 2.0))
+        # ── Evidence-conditioned trust: read once per rebuild ───────────────
+        ev_on = bool(getattr(self._P, 'enable_evidence_margin', False))
+        ev_margins = {
+            EV_FRESH: float(getattr(self._P, 'evidence_margin_fresh_m', 0.0)),
+            EV_YOUNG: float(getattr(self._P, 'evidence_margin_young_m', 0.0)),
+            EV_COASTING: float(getattr(self._P, 'evidence_margin_coasting_m', 0.0)),
+            EV_UNTRACKED: float(getattr(self._P, 'evidence_margin_untracked_m', 0.0)),
+        }
+        ev_grace = float(getattr(self._P, 'evidence_coast_grace_s', 0.07))
+        mem_on = bool(getattr(self._P, 'enable_obstacle_memory', False))
+        rho_meas_on = bool(getattr(self._P, 'curvature_radius_from_normal', False))
+        rho_win = float(getattr(self._P, 'curvature_normal_window_s', 0.20))
+        rho_floor = float(getattr(self._P, 'curvature_normal_rate_floor', 0.30))
+        self.diag_ev_margin = 0.0
+        self.diag_ev_class = ''
+        self.diag_mem_rows = 0
+        for _k in self.diag_mem_skip:
+            self.diag_mem_skip[_k] = 0
+        self.diag_rho_meas = 0.0
+        self.diag_rho_n = 0
+        #: Control points seen live this rebuild, by track id: a remembered
+        #: obstacle that is visible again is released rather than doubled.
+        live_tracks: set = set()
         self.diag_kappa = 0.0      # largest κ put into a row this rebuild
         self.diag_kappa_n = 0      # how many rows carried a nonzero κ
         self.diag_hstand = 0.0
@@ -2400,6 +2671,36 @@ class ConstraintBuilder:
                 if h_std > self.diag_hstand:
                     self.diag_hstand = h_std
 
+            # ── N1: evidence-keyed distance margin (enable_evidence_margin) ─
+            # One scalar tightening, chosen by what the perception chain has
+            # EARNED on this row. The class comes from fields already on the
+            # wire plus one thing only a consumer with history can know: has
+            # this track stopped being updated? frames_seen counts measurements
+            # and therefore freezes while a track coasts, so a frozen count on
+            # a still-present track is the signature of the regime where the
+            # measured distance optimism has its tail (p90 +6 cm, max +12.8 cm
+            # against ground truth) -- and it is invisible to any single frame.
+            #
+            # Replaces, rather than supplements, the covariance-based margin:
+            # that one prices the uncertainty of the obstacle's VELOCITY, which
+            # is not the quantity that was measured to be wrong.
+            if ev_on:
+                prev_ev = self._ev_seen.get(lbl)
+                n_now = int(ob.frames_seen)
+                if prev_ev is None or prev_ev[0] != n_now:
+                    self._ev_seen[lbl] = (n_now, obs.t_cap)
+                    ev_stale = False
+                else:
+                    ev_stale = (obs.t_cap - prev_ev[1]) > ev_grace
+                ev_cls = evidence_class(
+                    ob.track_id, n_now,
+                    min_frames=self._P.obstacle_velocity_min_frames, stale=ev_stale)
+                h_ev = evidence_margin(ev_cls, ev_margins)
+                h -= h_ev
+                if h_ev > self.diag_ev_margin:
+                    self.diag_ev_margin = h_ev
+                    self.diag_ev_class = ev_cls
+
             # ċᵢ = n̂ᵀ(J̇p q̇): centripetal/Coriolis part of d̈ that does NOT
             # depend on q̈ (the relative-degree-2 term previously omitted).
             # Frozen at this snapshot's q̇ (js.qdot); the QP refreshes only aᵀq̇.
@@ -2458,7 +2759,36 @@ class ConstraintBuilder:
                     and (ob.frames_seen >= self._min_frames_eff or fast)):
                 v_rel = Jp @ js.qdot - np.asarray(ob.v_vec, dtype=np.float64)
                 v_perp = v_rel - n_w * float(n_w @ v_rel)
+                # ── N3: rho_c MEASURED, not assumed ────────────────────
+                # The constant below is a hand-set upper bound on the
+                # obstacle's curvature radius, applied to EVERY row -- so in a
+                # furnished room the desk, the bench and the wall all get the
+                # curvature of a ball, and kappa over-relaxes exactly the rows
+                # that should never have had one. Measured on
+                # pentagon_wander_close: that cost 4.3 cm of margin and left
+                # 2.2 mm of true clearance.
+                #
+                # rho_c is observable instead. n_hatdot = (I-n n^T)v_rel/rho_c,
+                # so rho_c = ||v_perp||/||n_hatdot||, and a flat surface
+                # produces no normal rotation at all -> rho_c -> inf,
+                # kappa -> 0. The max() keeps it one-directional: the estimate
+                # is used ONLY where it is LARGER than the constant, so this
+                # can never relax a row more than the constant-radius version
+                # already did.
                 rho_c = d_ctr + curv_r_obs
+                if rho_meas_on:
+                    hist = self._curv_nhat_hist.setdefault(lbl, [])
+                    hist.append((float(obs.t_cap), np.array(n_w, copy=True)))
+                    while hist and (obs.t_cap - hist[0][0]) > rho_win:
+                        hist.pop(0)
+                    rho_hat = measured_curvature_radius(
+                        float(np.linalg.norm(v_perp)), fitted_rate(hist),
+                        rate_floor=rho_floor)
+                    if rho_hat > rho_c:
+                        rho_c = rho_hat
+                        self.diag_rho_n += 1
+                        if np.isfinite(rho_hat) and rho_hat > self.diag_rho_meas:
+                            self.diag_rho_meas = float(rho_hat)
                 if rho_c > 1e-6:
                     kap_i = float(v_perp @ v_perp) / rho_c
                 if not np.isfinite(kap_i) or kap_i < 0.0:
@@ -2497,6 +2827,32 @@ class ConstraintBuilder:
                 # state produced it — and names it the way the publisher and
                 # skip_keys do.
                 rows_link.append(lbl)
+                # ── N2 bookkeeping: what is live, where the arm is, and what
+                # is worth remembering (enable_obstacle_memory) ──────────────
+                if mem_on:
+                    # The LABEL, not the position: the shadow test runs on a
+                    # rebuild that may have no live row at all -- which is the
+                    # only kind of rebuild it is ever asked about -- so the arm
+                    # has to be re-evaluated from kinematics there, not carried
+                    # over from rows that no longer exist.
+                    self._cp_labels.add(lbl)
+                    tid = int(ob.track_id)
+                    if tid:
+                        live_tracks.add(tid)
+                        if (int(ob.frames_seen) >= int(self._P.memory_min_frames)
+                                and float(ob.d) <= float(self._P.memory_trigger_gap_m)):
+                            self._obs_mem[tid] = dict(
+                                p=np.array(ob.ph, copy=True),
+                                v=(np.zeros(3) if ob.v_vec is None
+                                   else np.array(ob.v_vec, dtype=np.float64, copy=True)),
+                                t=float(obs.t_cap),
+                                # d_centre - surface gap = capsule radius + the
+                                # mask-dilation margin perception had already
+                                # subtracted. Carried so a memory row speaks
+                                # the same units as the live row it stands in
+                                # for and cannot double-count either.
+                                offset=float(d_ctr - ob.d),
+                                lbl=lbl, d=float(ob.d))
                 if go_on and (around_best is None or h < around_best[0]):
                     around_best = (float(h), Jp, n_w, lbl)
 
@@ -2549,6 +2905,150 @@ class ConstraintBuilder:
                         lock_best = (h, a, Jp, n_w, ob.v_vec, ob.pr - ob.ph)
                     if h < _LOCK_ROW_H:
                         lock_rows.append((h, a))
+
+        # ── N2: occlusion-aware obstacle memory ─────────────────────────────
+        # A confirmed track that was CLOSE and then vanished keeps its row for
+        # memory_hold_s at a conservatively propagated position.
+        #
+        # Why this is a manipulator problem and not the mobile-robot one that
+        # OGM-CBF already solves with an occupancy map: here the body that most
+        # often hides the obstacle is the robot's OWN, and the self-mask then
+        # deletes those pixels from the depth image on purpose. So the barrier
+        # does not merely lose a distant obstacle -- it goes quiet exactly when
+        # the obstacle is nearest and behind the hand. Measured on
+        # pentagon_wander_close: on 4.4% of ticks the filter believed
+        # everything was at or beyond d_safe while the arm was truly inside it,
+        # and at the worst instant it read 0.100 m against a true 0.0022 m.
+        #
+        # The rows are ADDED, never substituted for a live one, and the
+        # remembered surface is eroded by memory_inflate_speed_mps per second
+        # of age, so the mechanism can only ever add constraints and a longer
+        # hold is strictly more conservative. They are appended HERE, after the
+        # obstacle loop and before every other family, so the per-obstacle-row
+        # arrays (obs_bff, obs_kappa, obs_dz, obs_w) keep their append-order
+        # contract with the G_OBS mask.
+        if mem_on and self._obs_mem:
+            cam = np.array([float(getattr(self._P, 'memory_camera_x', 0.0)),
+                            float(getattr(self._P, 'memory_camera_y', 0.0)),
+                            float(getattr(self._P, 'memory_camera_z', 0.0))])
+            occl_req = bool(getattr(self._P, 'memory_require_occlusion', False))
+            self_r = float(getattr(self._P, 'memory_self_radius_m', 0.08))
+            halo_rad = float(getattr(self._P, 'memory_mask_halo_rad', 0.0278))
+            mask_depth_tol = float(getattr(self._P, 'memory_mask_depth_tol_m', 0.16))
+            hold_s = float(self._P.memory_hold_s)
+            infl = float(self._P.memory_inflate_speed_mps)
+            self_poly = None            # built once, lazily, if asked for
+            for tid in list(self._obs_mem):
+                mem = self._obs_mem[tid]
+                age = float(obs.t_cap) - mem['t']
+                # A track being MEASURED this rebuild emits no memory row and
+                # keeps its entry: the entry was just refreshed by the loop
+                # above and is what will be held the moment the track vanishes.
+                # Deleting it here instead would throw away the memory on every
+                # frame the obstacle is visible, which is every frame before
+                # the only one that matters.
+                if tid in live_tracks:
+                    self.diag_mem_skip['live'] += 1
+                    continue
+                # Released when the memory has expired, or when the clock went
+                # backwards (a bag jump), or -- with the shadow test on -- when
+                # the arm does not explain the disappearance, so the obstacle
+                # most likely left rather than hid.
+                if age > hold_s or age < 0.0:
+                    self.diag_mem_skip['expired'] += 1
+                    del self._obs_mem[tid]
+                    continue
+                # The robot's own body, NOW, from the control points the
+                # barrier is built on. Evaluated from kinematics rather than
+                # from this rebuild's rows, because the rebuild that needs the
+                # answer is precisely the one whose rows have vanished.
+                #
+                # An empty or unevaluable point set KEEPS the memory: not being
+                # able to prove the arm explains the disappearance is not
+                # evidence that the obstacle left, and the time bound still
+                # releases it.
+                #
+                # The test is the SELF-MASK, not occlusion. Asking for true
+                # occlusion was measurably the wrong question: on
+                # pentagon_wander_close it explained 0 of 10 disappearances of
+                # a close track and on pentagon_sweep 0 of 7, because the mask
+                # is a dilated silhouette with a depth gate and does not care
+                # which of the two is in front. The mask predicate explains 2
+                # of those 7. See in_self_mask.
+                #
+                # EVERY configured control point, not just the labels that
+                # carried an obstacle row. The mask is the whole robot's
+                # silhouette, and the link that explains a disappearance is
+                # usually NOT the link the vanished row was on: on
+                # pentagon_sweep both explained events sit on fr3_link8, which
+                # never carried a row, so a polyline built from row labels
+                # alone missed them and the gate released every memory.
+                if occl_req and self_poly is None:
+                    self_poly = []
+                    labels = getattr(self._kin, '_control_points', None)
+                    labels = list(labels) if labels else list(self._cp_labels)
+                    for lab in labels:
+                        try:
+                            pos = self._kin.control_point_position(lab)
+                        except (KeyError, AttributeError):
+                            continue
+                        link = lab.partition('#')[0]
+                        self_poly.append(
+                            (pos, link.endswith(('link7', 'link8')) or 'hand' in link))
+                if occl_req and self_poly and not in_self_mask(
+                        cam, mem['p'] + mem['v'] * age, self_poly,
+                        halo_rad=halo_rad, depth_tol=mask_depth_tol):
+                    self.diag_mem_skip['gate'] += 1
+                    del self._obs_mem[tid]
+                    continue
+                lbl_m = mem['lbl']
+                fid_m = self._frame_id(lbl_m.partition('#')[0])
+                if fid_m is None or self._control_point_jacobian is None:
+                    self.diag_mem_skip['no_frame'] += 1
+                    continue
+                try:
+                    cp_now = self._kin.control_point_position(lbl_m)
+                    Jp_m, Jpd_m = self._control_point_jacobian(lbl_m)
+                except (KeyError, AttributeError):
+                    self.diag_mem_skip['kin'] += 1
+                    continue
+                gap_m, n_m, d_ctr_m = memory_surface_gap(
+                    cp_now, mem['p'], mem['v'],
+                    offset=mem['offset'], age=age, inflate_mps=infl)
+                if d_ctr_m <= 1e-6:
+                    self.diag_mem_skip['degenerate'] += 1
+                    continue
+                a_m = (n_m @ Jp_m).astype(np.float64)
+                if float(np.linalg.norm(a_m)) < self._P.cbf_min_leverage:
+                    self.diag_mem_skip['leverage'] += 1
+                    continue
+                h_m = gap_m - self._P.d_safe
+                jdq_m = float(n_m @ (Jpd_m @ js.qdot)) if Jpd_m is not None else 0.0
+                if not (np.all(np.isfinite(a_m)) and np.isfinite(h_m)
+                        and np.isfinite(jdq_m)):
+                    continue
+                rows_a.append(a_m)
+                rows_h.append(h_m)
+                rows_jdq.append(jdq_m)
+                rows_group.append(G_OBS)
+                # v_obs = 0 on a memory row: the propagation has already been
+                # spent moving the obstacle, and charging k1 for the same
+                # velocity a second time would double-count it.
+                rows_vobs.append(0.0)
+                obs_bff.append(0.0)
+                # No curvature relaxation without a measurement to support it.
+                obs_kappa.append(0.0)
+                obs_dz.append(float(gap_m))
+                obs_w.append(risk_slack_weight(
+                    h_m, w_max=self._P.slack_weight_max,
+                    rho=self._P.slack_weight_rho,
+                    alpha=self._P.slack_weight_alpha)
+                    if self._P.enable_weighted_slack else 1.0)
+                rows_link.append(f'mem:{lbl_m}')
+                if gap_m < d_obs_min:
+                    d_obs_min = gap_m
+                self.diag_mem_rows += 1
+        self.diag_mem_held = len(self._obs_mem) if mem_on else 0
 
         # ── Joint-limit rows ────────────────────────────────────────────────
         # Same HOCBF convention: aᵀq̈ + s ≥ −k1(aᵀq̇) − k0·h − ċ, with ċ ≡ 0

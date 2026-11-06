@@ -506,6 +506,26 @@ class CBFKinematics:
         D1 = pin.getFrameJacobianTimeVariation(self.model, self.data, f1, rf)[:3, :]
         return J, (1.0 - t) * D0 + t * D1
 
+    def control_point_position(self, label: str) -> np.ndarray:
+        """World position of a configured control point after :meth:`update`.
+
+        The same geometry :meth:`control_point_jacobian` differentiates, so the
+        point and its Jacobian can never describe different places: an origin
+        interpolation for a segment sample, and the rigid fingertip offset for
+        the final end-link sample. Unknown labels raise ``KeyError`` rather
+        than quietly returning a different physical point.
+
+        Needed by anything that must reason about where a control point is NOW
+        for an obstacle measured earlier -- the obstacle memory, for instance,
+        whose row is attached to the control point the track was last seen on.
+        """
+        f0, f1, t, offset = self._control_points[label.partition('.')[0]]
+        if offset is not None:
+            return np.asarray(self.data.oMf[f1].act(offset), dtype=np.float64)
+        p0 = np.asarray(self.data.oMf[f0].translation, dtype=np.float64)
+        p1 = np.asarray(self.data.oMf[f1].translation, dtype=np.float64)
+        return (1.0 - t) * p0 + t * p1
+
     def update(self, q: np.ndarray, qdot: np.ndarray,
                with_jdot: bool = True) -> None:
         """Single pass per tick: FK + Jacobians (+ Jdot unless with_jdot=False)."""

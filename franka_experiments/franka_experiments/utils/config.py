@@ -574,6 +574,70 @@ CBF_PARAM_SPEC = {
     'enable_curvature_term': ('bool', dict()),
     'curvature_obstacle_radius': ('float', dict(minimum=0.0, maximum=10.0)),
     'curvature_kappa_max': ('float', dict(minimum=0.0, maximum=50.0)),
+    # ── Evidence-conditioned barrier trust (three novelties, all default OFF) ──
+    # Shared thesis: the barrier should trust and relax its rows by what the
+    # perception chain has actually EARNED on this row, measured, instead of by
+    # hand-set constants or by a velocity covariance that does not predict the
+    # error that actually hurts (the DISTANCE being optimistic).
+    #
+    # N1 — quantile-calibrated, evidence-keyed distance margin. One scalar
+    # tightening per row, picked by an evidence class derived from fields
+    # already on LinkDistance: fresh (a confirmed track updated this frame),
+    # young (below the frame gate), coasting (present but not updated), or
+    # untracked (track_id 0). Every value is a tightening in metres, so every
+    # value can only ever make a row harder; 0.0 disables a class.
+    'enable_evidence_margin': ('bool', dict()),
+    'evidence_margin_fresh_m': ('float', dict(minimum=0.0, maximum=0.5)),
+    'evidence_margin_young_m': ('float', dict(minimum=0.0, maximum=0.5)),
+    'evidence_margin_coasting_m': ('float', dict(minimum=0.0, maximum=0.5)),
+    'evidence_margin_untracked_m': ('float', dict(minimum=0.0, maximum=0.5)),
+    'evidence_coast_grace_s': ('float', dict(minimum=0.0, maximum=5.0)),
+    # N2 — occlusion-aware obstacle memory. A confirmed track that was CLOSE
+    # and then vanished keeps its row alive at a conservatively propagated
+    # position for memory_hold_s, because on a manipulator the thing that most
+    # often hides the obstacle is the robot's own body and the self-mask then
+    # deletes it from the depth image. The row is ADDED, never substituted for
+    # a live one, so the mechanism can only add constraints.
+    'enable_obstacle_memory': ('bool', dict()),
+    'memory_hold_s': ('float', dict(minimum=0.0, maximum=5.0)),
+    'memory_trigger_gap_m': ('float', dict(minimum=0.0, maximum=2.0)),
+    'memory_min_frames': ('int', dict(minimum=1, maximum=100)),
+    # Bound on how wrong the constant-velocity propagation may be, in m/s. The
+    # remembered surface is eroded by this times the age, so a memory row is
+    # strictly more conservative the longer it is held.
+    'memory_inflate_speed_mps': ('float', dict(minimum=0.0, maximum=5.0)),
+    # Self-occlusion test. OFF by default, and then the memory is time-bounded
+    # only. ON, the camera origin in the BASE frame must be given, and a memory
+    # whose last-seen point is NOT in the robot's own shadow is released at
+    # once: nothing explains its absence, so it most likely left. The shadow is
+    # the set of points whose ray from the camera passes within
+    # memory_self_radius_m of the robot's own control-point polyline.
+    'memory_require_occlusion': ('bool', dict()),
+    'memory_camera_x': ('float', dict(minimum=-10.0, maximum=10.0)),
+    'memory_camera_y': ('float', dict(minimum=-10.0, maximum=10.0)),
+    'memory_camera_z': ('float', dict(minimum=-10.0, maximum=10.0)),
+    'memory_self_radius_m': ('float', dict(minimum=0.0, maximum=0.5)),
+    # The self-mask test the release actually uses. The exclusion mask is a
+    # DILATED SILHOUETTE with a depth gate (fr3_complete.yaml `mask:`), so the
+    # halo is angular: 12 px at fx 431.5 = 0.0278 rad, doubled for the EE to
+    # match ee_mask_dilate_px. The depth tolerance is that config's
+    # depth_gate_bias_m + depth_gate_tol_m = 0.06 + 0.10.
+    'memory_mask_halo_rad': ('float', dict(minimum=0.0, maximum=0.5)),
+    'memory_mask_depth_tol_m': ('float', dict(minimum=0.0, maximum=1.0)),
+    # N3 — curvature radius MEASURED from the rotation of the contact normal
+    # instead of assumed. n_hatdot = (I - n n^T) v_rel / rho_c, so
+    # rho_c = ||v_perp|| / ||n_hatdot|| is observable from the normal the
+    # perception chain already publishes. A flat surface (a desk, a wall) gives
+    # ||n_hatdot|| -> 0, hence rho_c -> inf and kappa -> 0, which is exactly the
+    # row the constant-radius version over-relaxed. The estimate is only ever
+    # used when it is LARGER than the constant-radius value, so this can only
+    # shrink kappa relative to enable_curvature_term alone.
+    'curvature_radius_from_normal': ('bool', dict()),
+    'curvature_normal_window_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    # Noise floor subtracted from the measured ||n_hatdot|| [rad/s]. Noise
+    # INFLATES the measured rotation, which would shrink rho_c and inflate
+    # kappa, so subtracting a floor is the conservative direction.
+    'curvature_normal_rate_floor': ('float', dict(minimum=0.0, maximum=50.0)),
     'enable_velocity_standoff': ('bool', dict()),
     # Ranges WIDENED (2.0 -> 5.0 s, 1.0 -> 2.0 m) so the ISO parameterisation
     # fits inside them: with iso_enabled the filter sets time_s = T_r + v_h/a_s

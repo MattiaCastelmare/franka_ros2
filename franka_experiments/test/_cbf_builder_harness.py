@@ -33,12 +33,32 @@ class _Kin:
 
     def __init__(self):
         self.q = np.zeros(NV)
+        #: label -> world position, for control_point_position(). Only the
+        #: obstacle memory needs it; everything else works off ob.pr.
+        self.cp_positions = {}
+        #: CBFKinematics exposes every CONFIGURED control point here, and the
+        #: self-mask test enumerates it rather than the labels that happened to
+        #: carry a row -- the link that explains a disappearance is usually not
+        #: the link the vanished row was on. Aliased so the harness cannot
+        #: drift from cp_positions.
+        self._control_points = self.cp_positions
 
     def update(self, q, qdot, with_jdot=True):
         self.q = np.asarray(q, dtype=np.float64)
 
     def resolve_frame_id(self, link):
         return 1 + (abs(hash(link)) % 7)
+
+    def control_point_position(self, label):
+        """Where a configured control point IS now, as CBFKinematics reports.
+
+        The harness' points do not move with q -- a test that needs motion
+        writes the position it wants into ``cp_positions``. Unknown labels
+        raise ``KeyError``, exactly as the real accessor does, so a caller that
+        mistypes a label gets an error rather than a different point.
+        """
+        return np.asarray(self.cp_positions[label.partition('.')[0]],
+                          dtype=np.float64)
 
     def point_jacobian(self, fid, p_world):
         # Smooth in q so the row direction is configuration dependent, and
@@ -209,6 +229,29 @@ class P:
     iso_z_depth = 0.06
     iso_z_robot = 0.01
     iso_tcp_reduced_speed = 0.25
+    # ── Evidence-conditioned trust — all three OFF, so every existing test
+    # keeps the rows and the RHS it was written against. ───────────────────
+    enable_evidence_margin = False
+    evidence_margin_fresh_m = 0.01
+    evidence_margin_young_m = 0.04
+    evidence_margin_coasting_m = 0.08
+    evidence_margin_untracked_m = 0.02
+    evidence_coast_grace_s = 0.07
+    enable_obstacle_memory = False
+    memory_hold_s = 0.50
+    memory_trigger_gap_m = 0.25
+    memory_min_frames = 8
+    memory_inflate_speed_mps = 0.20
+    memory_require_occlusion = False
+    memory_camera_x = 0.0
+    memory_camera_y = 0.0
+    memory_camera_z = 0.0
+    memory_self_radius_m = 0.08
+    memory_mask_halo_rad = 0.0278
+    memory_mask_depth_tol_m = 0.16
+    curvature_radius_from_normal = False
+    curvature_normal_window_s = 0.20
+    curvature_normal_rate_floor = 0.30
 
 
 def make_params(**over):
@@ -223,11 +266,25 @@ ACC = np.array([6.0, 2.585, 3.5, 4.0, 17.0, 5.5, 17.0])
 QD = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
 
 
-def make_builder(**over):
+def make_builder(kin=None, cp_jacobian=False, **over):
+    """A real ConstraintBuilder on the harness' kinematics.
+
+    ``kin`` lets a test keep a reference to the kinematics it can then write
+    ``cp_positions`` into. ``cp_jacobian=True`` supplies the control-point
+    Jacobian callable the torque node supplies on the robot -- the obstacle
+    memory needs it, because its row is attached to the control point the
+    vanished track was last seen on rather than to a point on the wire.
+    """
+    kin = _Kin() if kin is None else kin
+    cpj = None
+    if cp_jacobian:
+        def cpj(label):
+            return kin.point_jacobian(1, kin.control_point_position(label))
     return ConstraintBuilder(
-        make_params(**over), _Kin(),
+        make_params(**over), kin,
         q_min=np.full(NV, -2.8), q_max=np.full(NV, 2.8),
-        acc_lb=-ACC, acc_ub=ACC, logger=_Log(), qdot_max=QD)
+        acc_lb=-ACC, acc_ub=ACC, logger=_Log(), qdot_max=QD,
+        control_point_jacobian=cpj)
 
 
 def make_obstacle(d=0.25, pr=(0.5, 0.0, 0.5), ph=(0.5, -0.25, 0.5),

@@ -1783,6 +1783,84 @@ params:
   # barrier itself is asking for.
   curvature_kappa_max: 2.0
 
+  # ══ Evidence-conditioned barrier trust ═══════════════════════════════════
+  # Three mechanisms, all OFF by default, sharing one thesis: the barrier
+  # should trust and relax each row by what the perception chain has actually
+  # EARNED on that row, measured, rather than by hand-set constants or by a
+  # velocity covariance that does not predict the error that actually hurts.
+  # The error that hurts is the reported DISTANCE being optimistic: measured
+  # on sim_runs/20261106 (pentagon_wander_close, DIAG, ground truth at 1 kHz),
+  # the filter believed everything was at or beyond d_safe on 4.4% of ticks
+  # while the robot was truly inside it, and at the worst instant it read
+  # 0.100 m against a true 0.0022 m.
+
+  # ── N1: evidence-keyed distance margin ───────────────────────────────────
+  # One scalar tightening per row, picked by the evidence class the row's own
+  # LinkDistance fields put it in. Every value is metres of tightening, so no
+  # value can loosen a row and 0.0 switches a class off. The numbers below are
+  # high quantiles of the measured optimism per class, NOT guesses.
+  enable_evidence_margin: false
+  evidence_margin_fresh_m: 0.01       # confirmed track, updated this frame
+  evidence_margin_young_m: 0.04       # below the frames_seen gate
+  evidence_margin_coasting_m: 0.08    # present but NOT updated: the regime
+                                      # where the measured optimism has its
+                                      # tail (p90 +6 cm, max +12.8 cm)
+  evidence_margin_untracked_m: 0.02   # track_id 0: this frame's pixel only
+  evidence_coast_grace_s: 0.07        # a 30 Hz chain may skip one frame
+                                      # without being "coasting" (2 frames)
+
+  # ── N2: occlusion-aware obstacle memory ──────────────────────────────────
+  # A confirmed track that was CLOSE and then vanished keeps its row alive at
+  # a conservatively propagated position. On a manipulator the body that most
+  # often hides the obstacle is the robot's own, and the self-mask then
+  # deletes it from the depth image -- so the barrier goes quiet exactly when
+  # the obstacle is nearest. OGM-CBF does the mobile-robot analogue with an
+  # occupancy map; this is the self-occlusion case.
+  #
+  # A memory row is ADDED, never substituted for a live one, and the
+  # remembered surface is eroded at memory_inflate_speed_mps per second of
+  # age, so holding longer is strictly more conservative, never less.
+  enable_obstacle_memory: false
+  memory_hold_s: 0.50                 # how long a vanished track is kept
+  memory_trigger_gap_m: 0.25          # only tracks seen this close are kept
+  memory_min_frames: 8                # ... and only CONFIRMED ones
+  memory_inflate_speed_mps: 0.20      # bound on the propagation error
+  memory_require_occlusion: false     # needs the camera origin below
+  memory_camera_x: 0.0
+  memory_camera_y: 0.0
+  memory_camera_z: 0.0
+  memory_self_radius_m: 0.08          # robot shadow half-width
+  # The release test is the SELF-MASK, not occlusion, because that is what
+  # perception implements: `mask:` in fr3_complete.yaml dilates the robot's
+  # SILHOUETTE by 12 px (24 at the EE) and gates it in depth by
+  # depth_gate_bias_m + depth_gate_tol_m = 0.16 m. Depth order is irrelevant --
+  # that config says "a hand a metre in front of the arm is as invisible as one
+  # touching it". Measured: requiring true occlusion explained 0 of 10
+  # disappearances of a close track on pentagon_wander_close and 0 of 7 on
+  # pentagon_sweep; this predicate explains 2 of those 7, both inside the EE
+  # halo at a range difference of ~0.10 m.
+  memory_mask_halo_rad: 0.0278        # 12 px at fx 431.5; x2 at the EE
+  memory_mask_depth_tol_m: 0.16       # depth_gate_bias_m + depth_gate_tol_m
+
+  # ── N3: curvature radius measured from the normal's rotation ─────────────
+  # n_hatdot = (I - n n^T) v_rel / rho_c, so rho_c = ||v_perp|| / ||n_hatdot||
+  # is observable from the normal perception already publishes. A desk or a
+  # wall gives ||n_hatdot|| -> 0, hence rho_c -> inf and kappa -> 0: exactly
+  # the rows the constant-radius curvature term over-relaxed (measured: it
+  # cost 4.3 cm of margin and left 2.2 mm of true clearance on
+  # pentagon_wander_close, because curvature_obstacle_radius was applied to
+  # furniture rows too). The estimate is used ONLY when it is LARGER than the
+  # constant-radius value, so this can only ever shrink kappa.
+  curvature_radius_from_normal: false
+  curvature_normal_window_s: 0.20     # LSQ window for n_hatdot (differencing
+                                      # one rebuild is too noisy -- the same
+                                      # fitted-slope discipline the surface
+                                      # velocity estimate needs)
+  curvature_normal_rate_floor: 0.30   # [rad/s] noise floor subtracted from
+                                      # the measured rate; noise inflates it,
+                                      # which would inflate kappa, so
+                                      # subtracting is the safe direction
+
   # ── Speed-proportional standoff (cbf_safety_filter) ────────────────────────
   #   d_safe_eff = d_safe + min(velocity_standoff_time_s * v_app, _max)
   #
