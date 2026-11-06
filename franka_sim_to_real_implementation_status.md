@@ -769,7 +769,8 @@ docker exec franka_ros2 bash -lc 'source /ros2_ws/install/setup.bash && \
    simulated D455 and scripted obstacles with ground truth:
    `ros2 launch franka_simulation_experiments gz_cbf_stack.launch.py
    condition:=kf scenario:=slow`. Phase 5 batch, 345 cells
-   (`franka_simulation/docs/gz_cbf_experiments_report.md`): the tracker's
+   (report file removed 2026-11-05; in git history and superseded by
+   `franka_simulation_experiments/sim_runs/`): the tracker's
    v_obs error is 4–5× below the residual's with no lag, which buys min h
    only below ~1.5 m/s; at ≥ 2 m/s every condition is in contact, limited by
    warning time (the 0.7 m publish gate), not by the estimator; IMM and

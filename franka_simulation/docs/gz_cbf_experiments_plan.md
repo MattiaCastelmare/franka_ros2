@@ -416,7 +416,7 @@ Every option keeps the three default-off edits of §5.2. Under A or C, everythin
 | 4 | 4.5 episode discipline (birth at p0, start clearance: wedge +10.4 mm, seeded replay) | done |
 | 5 | 5.1 conditions × scenarios runs; estimator vs truth tables | done: 345 cells (302 grid + 22 emul@30 + 21 flag-off), all ok, 0 reflex trips |
 | 5 | 5.2 closed-loop tables; three-column comparison + cause attribution | done (emulated column built, offline at 30/60 fps: §3.4) |
-| 5 | 5.3 tables into the report (STOP gate → continue, proposals only) | done: `gz_cbf_experiments_report.md` |
+| 5 | 5.3 tables into the report (STOP gate → continue, proposals only) | done; the report file was removed on 2026-11-05 (superseded by `franka_simulation_experiments/sim_runs/`) and `--report` recreates it |
 | 6 | 6.1 `run_gz_scenarios` (headless, fresh Gazebo per cell, resumable, `--rescore`, `--report`), CSV + report | done |
 | 6 | 6.2 docs: franka_simulation README §13, ARCHITECTURE §10, status P1.6 | done |
 | 6 | 6.3 optional: `motion_source:=rl` smoke | done: auto-selected ens_e3_all12.onnx, q̈_nom 100 Hz, flange 0.21 m toward the target, reflex PASS, no contact |

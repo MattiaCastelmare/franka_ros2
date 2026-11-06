@@ -11,10 +11,11 @@ Evidence is in `sim_runs/minimal_l1_slack_20261104/`, `sim_runs/ball_position_sw
 | 0 | **Fix perception** | Lost and optimistic detections, phantom obstacles near the fingertip, unmonitored links 0–3 (OPEN_ISSUES F4), stale normal (F5), track lost in the self-mask (S5), rig phantoms (S3) | **Not done.** Every experiment points here as the main problem. Flacco's depth-space gray area + finite pixel was tried and **rejected**: the robot became over-conservative and one run stalled. The code was removed |
 | 1 | Use `minimal` as the base (Option A) | Start from the minimal HOCBF, not the full framework | ✓ done |
 | 2 | Per-row ℓ1 obstacle slack | Each obstacle row gets its own linear-priced slack, so one bad row no longer loosens the others | ✓ done: condition `minimal_l1` (`obstacle_slack_mode: row_l1`). Helps with moving balls; no effect with fixed ones |
-| 3 | Curvature term in ḧ | Add `‖v_rel,⊥‖²/ρ_c` to ḧ, so the arm is not pushed outward too much while sliding around an obstacle | not done |
+| 3 | Curvature term in ḧ | Add `‖v_rel,⊥‖²/ρ_c` to ḧ, so the arm is not pushed outward too much while sliding around an obstacle | **done, measured, NOT yet accepted.** Condition `minimal_l1_curv`; 20 tests; campaign `sim_runs/curvature_term_20261105/` (5 moving scenarios × 2 arms × 6 seeds, DIAG, 100 Hz). Contacts 6/30 → 3/30 and `pentagon_sweep` fixed on every seed; tracking better on `lateral_osc` (6/6) and `multi_mixed` (6/6); but `lateral_y`/`lateral_osc` lose margin on some seeds and the κ clamp saturates in 15 of 30 cells. See that README's "What to do next" |
 | 4 | One constant perception margin | Replace the dynamic margins with one fixed margin sized from the measured perception error | not done |
 | 5 | Task/null-space objective (from oscbf) | The QP corrects through redundant joint motion first, so the hand deviates less from its path | not done |
-| 6 | Safe fallback | On QP failure, brake. Never drop the obstacle rows (today's box-only rung does) | not done |
+| — | **Rate gate on every cell** | The achieved QP rate is now a pass/fail input, not just a reported number: `closed_loop` records `qp_rate_target_hz` / `qp_rate_err` / `qp_rate_ok` against the rate the cell's own condition asked for, and `batch.cell_ok` refuses a cell outside ±5 % | ✓ done 2026-11-05 (Task 5.5 of `../OSCBF_ALIGNMENT_PLAN.md`; 6 tests). Re-scored cells of the 11-05 campaign: 99.4–99.9 Hz against 100, all `ok` |
+| 6 | Safe fallback | On QP failure, brake. Never drop the obstacle rows (the old box-only rung did) | ✓ done — Task 1 of `../OSCBF_ALIGNMENT_PLAN.md`, committed in `25be305`; `brake` and `slew_yields_to_state_box` are both the shipped default. Dormant in a healthy run, so it still needs the stress grid (condition `minimal_l1_legacy_fallback` is the old behaviour) |
 | 7 | Gain tuning | Sweep (k₀, k₁) = (ω², 2ω), ω ∈ {5, 7, 10} | not done |
 
 Steps 3–7 are added **one at a time**, each compared against the previous version.
@@ -58,8 +59,13 @@ ros2 launch franka_simulation_experiments gz_cbf_stack.launch.py \
 **Scenarios:**
 - moving: `pentagon_lateral`, `pentagon_sweep`, `pentagon_crossing`, `pentagon_multi_mixed`;
 - fixed ball: `pentagon_pos_p1` … `pentagon_pos_p8`;
-- occlusion: `pentagon_occl_o1`.
+- occlusion: `pentagon_occl_o1`;
+- quasi-random: `pentagon_wander` (new, 2026-11-05) — one incommensurate sinusoid per world axis, so the ball
+  tours the box p0 ± (0.22, 0.40, 0.15) m instead of running one line back and forth. Scene `diag`, T = 40 s,
+  |v| median 0.29 m/s, peak 0.39 m/s. Gazebo's ball matches `simexp.obstacle_laws` to 0.0000 mm, which is what
+  makes it usable as truth. `jitter_m: 0.04` gives per-seed variety; seed 0 is the nominal.
 
-**Conditions:** use `condition:=minimal` for the old slack.
+**Conditions:** `minimal` (shared quadratic slack), `minimal_l1` (per-row ℓ1), `minimal_l1_curv` (+ curvature term),
+`minimal_l1_legacy_fallback` (pre-Task-1 failure behaviour).
 
 **Afterwards:** run `bash /ros2_ws/src/franka_simulation_experiments/sim_runs/sim_cleanup.sh`.

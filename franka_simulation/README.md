@@ -867,7 +867,9 @@ launch file `Node(package='franka_simulation', executable='…')`. Running the
 ## 13. Pipeline 5 — franka_experiments' CBF + Kalman stack on the Gazebo FR3
 
 Every output of this pipeline is **SIM**. Plan, hazard verification and every
-deviation: `docs/gz_cbf_experiments_plan.md`. Tables: `docs/gz_cbf_experiments_report.md`.
+deviation: `docs/gz_cbf_experiments_plan.md`. Tables: regenerate them with
+`run_gz_scenarios --report`; the measurements in use live in
+`franka_simulation_experiments/sim_runs/`.
 
 The hardware pipeline A of `franka_experiments` (real_time_distance → cluster /
 Kalman / IMM tracker → `cbf_safety_filter` → `qddot_to_torque` →

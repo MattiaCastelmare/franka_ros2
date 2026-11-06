@@ -527,8 +527,9 @@ world system `src/scenario_obstacles_system.cpp` che muove gli ostacoli a ogni p
 fisica e ne pubblica la verità) e gli override sim in `config/sim/`. Le tre modifiche a
 `franka_experiments` sono default-off con test bit-identici (`external_plant`,
 `motion_source:=none`, `experiment_logger.truth_topic`). Piano, verifica H1–H13 e
-deviazioni: `franka_simulation/docs/gz_cbf_experiments_plan.md`; tabelle:
-`franka_simulation/docs/gz_cbf_experiments_report.md`; uso: `franka_simulation/README.md`
+deviazioni: `franka_simulation/docs/gz_cbf_experiments_plan.md`; tabelle: rigenerabili con
+`run_gz_scenarios --report` (il report di ottobre è stato rimosso; le misure correnti sono le
+campagne in `franka_simulation_experiments/sim_runs/`); uso: `franka_simulation/README.md`
 §13.
 
 ---
