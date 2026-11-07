@@ -1,0 +1,22 @@
+# Controller: students/circle_tracking/controller_mass_minimization.py
+# Same initial pose, circular reference and tracking gains as the damped variant.
+# Only fingertip position is tracked; orientation remains free.
+# Start angles [rad], ordered fr3_joint1..7.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
+
+circle:
+  radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
+  period: 8.0   # [s] period at cruise angular speed
+  ramp: 1.0     # [s] startup ramp; first +x extreme at t = 4.5 s of RUN
+
+tracking:
+  kp_position: 100.0  # [1/s^2] Cartesian position-error gain
+  kd_position: 20.0   # [1/s] Cartesian velocity-error gain
+  kd_nullspace: 4.0   # [1/s] same nullspace velocity damping as the damped variant
+
+# The direction is the fixed normal from the runner's selected wall_config,
+# even with wall:=false. It does not follow the circular trajectory's tangent.
+# This variant does not set Controller.done: launch duration and existing stops apply.
+mass_minimization:
+  gain: 0.01            # [N m rad/kg] 0 recovers the damped command; evaluations remain active
+  gradient_step: 0.0001  # [rad] symmetric finite-difference step

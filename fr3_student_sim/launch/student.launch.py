@@ -33,7 +33,8 @@ ARGS = {
                         '(empty = config/task.yaml)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
-    'observer': ('true', 'Enable momentum observer and collision detection (monitoring only)'),
+    'observer': ('true', 'Enable momentum observer and collision detection '
+                          '(required by controllers with a collision-reaction policy)'),
     'observer_config': ('', 'Observer gain and residual thresholds YAML '
                             '(empty = config/observer.yaml)'),
     'stop_at_detachment': ('false', 'End the run when the tool first leaves the wall'),

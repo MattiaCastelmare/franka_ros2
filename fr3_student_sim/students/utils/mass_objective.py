@@ -1,4 +1,4 @@
-"""Directional reflected mass and its dynamically projected gradient torque.
+"""Shared student utility for directional mass and projected gradient torque.
 
 The robot interface supplies ``effective_mass(q, normal)`` at the controlled
 point, expressed in the same base frame as the fixed direction ``normal``.

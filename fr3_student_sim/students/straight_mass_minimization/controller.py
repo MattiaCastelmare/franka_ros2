@@ -8,7 +8,7 @@ the existing safety stops remain the runner's responsibility.
 import numpy as np
 
 from fr3_student_sim.controller_base import StudentController
-from mass_objective import DirectionalMassObjective, projected_mass_torque
+from utils.mass_objective import DirectionalMassObjective, projected_mass_torque
 from straight_line_reference import StraightLineReference
 
 

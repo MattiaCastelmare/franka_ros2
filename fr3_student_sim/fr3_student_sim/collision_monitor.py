@@ -26,6 +26,17 @@ class CollisionMonitor:
         self.observer = GeneralizedMomentumObserver(robot, gain) if self.enabled else None
         self.detector = CollisionDetector(threshold) if self.enabled else None
         self._rows = []
+        self._detection_callback = None
+
+    def set_detection_callback(self, callback):
+        """Register one optional callable receiving ``t`` on each detection onset.
+
+        Notification is synchronous with monitoring, independently of the
+        controller update period. The callback should only record the event.
+        """
+        if callback is not None and not callable(callback):
+            raise TypeError('detection callback must be callable or None')
+        self._detection_callback = callback
 
     @classmethod
     def from_yaml(cls, robot, path, *, enabled=True):
@@ -60,6 +71,8 @@ class CollisionMonitor:
             'collision_joints': self.detector.joints.copy(),
         })
         if event:
+            if self._detection_callback is not None:
+                self._detection_callback(float(t))
             joints = (np.flatnonzero(self.detector.joints) + 1).tolist()
             return (f'collision detected at t={t:.4f} s: joints={joints}, '
                     f'|r|={residual_norm:.4f} N m')

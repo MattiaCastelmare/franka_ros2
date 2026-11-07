@@ -14,8 +14,9 @@ At every ``/joint_states`` message (1 kHz, simulation time) it:
 
 Gazebo adds g(q) to whatever is published (as the real robot does).
 An independent momentum observer and threshold detector monitor the delayed,
-clipped actuator torque; they never change the tracking command. The virtual
-wall torque is kept out of the observer input.
+clipped actuator torque. Controllers can subscribe to detection onsets through
+an optional startup hook; notification and reaction stay outside this runner.
+The virtual wall torque is kept out of the observer input.
 Optional realism: Gaussian noise on the q, dq the controller sees (``noise_q``,
 ``noise_dq``); the log and the wall always use the true state. The runner also
 warns when the hand body (not only the fingertip) goes into the wall.
@@ -35,6 +36,7 @@ from datetime import datetime
 import numpy as np
 import rclpy
 import yaml
+from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
@@ -64,10 +66,13 @@ LATENCY_SAMPLES = 1
 
 
 def load_controller_class(path: str):
-    # so that the controller can import helper files placed next to it
+    # Allow shared students/utils imports and prefer the controller's local helpers.
+    students = os.path.join(get_package_share_directory('fr3_student_sim'), 'students')
     folder = os.path.dirname(os.path.abspath(path))
-    if folder not in sys.path:
-        sys.path.insert(0, folder)
+    for search_path in (students, folder):
+        if search_path in sys.path:
+            sys.path.remove(search_path)
+        sys.path.insert(0, search_path)
     spec = importlib.util.spec_from_file_location('student_controller', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -132,6 +137,7 @@ class Runner(Node):
         self.ctrl = cls(self.robot, controller_params, self.dt_ctrl)
         self.collision_monitor = CollisionMonitor.from_yaml(
             self.robot, g('observer_config'), enabled=bool(g('observer_enabled')))
+        self.ctrl.bind_collision_monitor(self.collision_monitor)
 
         self.pub = self.create_publisher(Float64MultiArray, '/fr3_effort_controller/commands', 10)
         self.sub = self.create_subscription(JointState, '/joint_states', self._on_js,
