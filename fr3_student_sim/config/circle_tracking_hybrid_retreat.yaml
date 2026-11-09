@@ -6,7 +6,7 @@ initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1
 
 circle:
   radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
-  period: 8.0   # [s] period at cruise angular speed
+  period: 4.0   # [s] period at cruise angular speed
   ramp: 1.0     # [s] smooth startup
 
 tracking:
@@ -15,7 +15,7 @@ tracking:
   kd_nullspace: 4.0   # [1/s] nullspace velocity damping in TRACK and RETREAT
 
 mass_minimization:
-  gain: 0.01            # [N m rad/kg] applied only before detection
+  gain: 0.1            # [N m rad/kg] applied only before detection
   gradient_step: 0.0001  # [rad] central differences, evaluated only in TRACK
 
 retreat:
