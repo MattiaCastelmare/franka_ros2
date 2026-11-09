@@ -1,0 +1,23 @@
+# Controller: students/circle_tracking/controller_optimized.py
+# Matches circle_tracking_baseline.yaml, adding only mass minimization.
+# initial_q defines the fixed preferred posture q0; orientation remains free.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1..7
+
+circle:
+  radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
+  period: 8.0   # [s] period at cruise angular speed
+  ramp: 1.0     # [s] smooth startup
+
+tracking:
+  kp_position: 100.0  # [1/s^2] same Cartesian position-error gain as baseline
+  kd_position: 20.0   # [1/s] same Cartesian velocity-error gain as baseline
+  kp_nullspace: 25.0  # [1/s^2] same projected posture attraction as baseline
+  kd_nullspace: 10.0  # [1/s] same nullspace damping as baseline, applied once
+
+mass_minimization:
+  gain: 0.01            # [N m rad/kg] projected descent torque; 0 recovers baseline law
+  gradient_step: 0.0001  # [rad] symmetric finite-difference step
+
+# The fixed mass direction is the configured wall normal, at fr3_fingertip.
+# Tracking, posture and mass minimization stay active after collision detection.
+# There is no release or retreat; existing launch duration and safety stops apply.

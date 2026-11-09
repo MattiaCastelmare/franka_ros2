@@ -1,202 +1,72 @@
 # fr3_student_sim
 
-A Franka FR3 in Gazebo that you control with joint torques from **one Python
-file**. You do not need to know ROS 2: you write a `Controller` class
-(joint state in → torques out) and the package does everything else.
+Three FR3 experiments in Gazebo, all controlling only the position of
+`fr3_fingertip` with joint torques. Gripper orientation remains free.
 
-## What is in the package
+| Experiment                                                             | Controller in `students/circle_tracking/` | Configuration                                  |
+| ---------------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------- |
+| Circular tracking with nullspace posture feedback                      | `controller_baseline.py`                  | `config/circle_tracking_baseline.yaml`       |
+| Baseline tracking with directional mass minimization | `controller_optimized.py` | `config/circle_tracking_optimized.yaml` |
+| Mass-minimizing circular tracking, then immediate retreat on detection | `controller_hybrid_retreat.py`            | `config/circle_tracking_hybrid_retreat.yaml` |
 
-| What | Where | You … |
-|---|---|---|
-| **Your controller** | `students/my_controller.py` | **write it** (the only code you edit) |
-| Examples | `students/examples/`: `zero_torque.py` (the arm floats), `joint_pd.py` (joint PD), `cartesian_pd.py` (the fingertip follows the circle with a Cartesian "spring") | read, run, copy from |
-| Task parameters | `config/task.yaml`: start pose, circle (4 cm, 8 s), gains of your 3R study. Reaches your controller as `self.params`; add your own keys | edit |
-| The wall | `config/wall.yaml`: vertical plane at x = 0.62 m, `k_e` = 20000 N/m, `b_e` = 15 N s/m | edit |
-| Collision monitoring | `config/observer.yaml`: momentum-observer gain and per-joint residual thresholds | configure |
-| Robot model | `self.robot` (`fr3_student_sim/fr3_model.py`): kinematics, M, C, g, effective mass of the **simulated** robot | call it |
-| Plots and contact facts | `ros2 run fr3_student_sim plot_run <log>` | run it |
-| Many experiments in one go | `ros2 run fr3_student_sim run_batch <file>`, example in `config/batch_example.yaml` | run it |
-| Checks of the package | `test/` (see Troubleshooting) | run them if something looks broken |
+The other experiments, their configurations and the former checks are kept
+in [trash/](trash/README.md). [Progress](docs/progress.md) preserves their
+development history. They are outside the active controller/configuration
+directories.
 
-What the package does for you at every run: starts Gazebo with the FR3,
-**compensates gravity** (as the real robot does), moves the arm to the start pose
-(about 2 s, until it is at rest), calls your `update` at 1 kHz, clips your torques to the FR3 limits, applies
-the wall force, monitors collisions independently of the tracking law, stops
-the robot safely if something goes wrong, and saves a log.
+## Run the experiments
 
-The scene: at the start pose the tool points horizontally at the wall (+x),
-fingertip at (0.56, 0, 0.50) m in the robot base frame (x forward, z up). The circle
-lies in the vertical x-z plane and starts there. The wall is vertical, with
-outward normal (-1, 0, 0), at x = 0.62 m. The desired circle reaches
-x approximately 0.64 m, giving about 20 mm of reference overlap at its
-farthest point. Actual penetration depends on the robot's contact motion.
-
-## 1. Run it
-
-Everything runs inside the `franka_ros2` Docker container.
+Everything runs inside the `franka_ros2` Docker container. From the host:
 
 ```bash
-# on the host, once per boot
-cd ~/Git/franka_ros2 && docker compose up -d && xhost +local:docker
-
-# open a terminal in the container (as many as you like)
+docker start franka_ros2
 docker exec -it franka_ros2 bash
-
-# in the container, once (again only if you ADD a file)
-cd /ros2_ws && colcon build --symlink-install --packages-select fr3_student_sim
 ```
 
-Then, in every new terminal:
-
-```bash
-source /ros2_ws/install/setup.bash
-cd /ros2_ws/src/fr3_student_sim
-
-ros2 launch fr3_student_sim student.launch.py controller:=examples/cartesian_pd.py   # an example
-ros2 launch fr3_student_sim student.launch.py                                        # YOUR controller
-ros2 run fr3_student_sim plot_run runs/<newest file>.npz                             # look at the run
-```
-
-The Gazebo window opens and `duration` sets the maximum RUN length. A controller's
-`done` flag, safety stop or `Ctrl+C` can end it earlier; the log is saved in
-`fr3_student_sim/runs/`. Edits to your controller work at the
-next launch (no rebuild).
-
-The circle experiment has five separately selectable controllers:
-
-| Variant | Controller in `students/circle_tracking/` | Task configuration |
-|---|---|---|
-| Minimal position tracking | `controller.py` | `config/circle_tracking.yaml` |
-| Position tracking with nullspace velocity damping | `controller_nullspace_damping.py` | `config/circle_tracking_nullspace_damping.yaml` |
-| Damped tracking with directional mass minimization | `controller_mass_minimization.py` | `config/circle_tracking_mass_minimization.yaml` |
-| Mass-minimizing tracking with collision release | `controller_hybrid.py` | `config/circle_tracking_hybrid.yaml` |
-| Mass-minimizing tracking with immediate horizontal retreat | `controller_hybrid_retreat.py` | `config/circle_tracking_hybrid_retreat.yaml` |
-
-The damping variant reuses the minimal controller and adds only
-`qdd_null = -kd_nullspace * (I - J_pinv @ J) @ dq`, contributing
-`M(q) @ qdd_null` to its torque. The trajectory, Cartesian gains and observer
-are the same. Its configuration starts with `kd_nullspace: 4.0` [1/s]; zero
-recovers the minimal command. It logs `dq_null` and `qdd_null` in addition to
-the existing signals, with `qdd_command` containing the total requested
-acceleration. Damping does not impose a desired posture or enforce joint limits.
-
-The mass-minimization variant extends that damping controller with the same
-projected mass-gradient torque as the straight experiment. It uses the fixed
-wall normal, gain 0.01 and gradient step 1e-4 rad. Setting the mass gain to
-zero recovers the damped circular command. It keeps the existing duration
-and stop conditions and logs mass, gradient, requested mass torque and normal
-speeds for the existing plot command.
-
-After building the package to install the new files, choose one command:
-
-```bash
-# Minimal reference controller:
-ros2 launch fr3_student_sim student.launch.py \
-  controller:=circle_tracking/controller.py \
-  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking.yaml \
-  run_name:=circle_minimal wall:=true
-
-# Variant with nullspace damping:
-ros2 launch fr3_student_sim student.launch.py \
-  controller:=circle_tracking/controller_nullspace_damping.py \
-  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_nullspace_damping.yaml \
-  run_name:=circle_nullspace_damping wall:=true
-
-# Variant with nullspace damping and mass minimization:
-ros2 launch fr3_student_sim student.launch.py \
-  controller:=circle_tracking/controller_mass_minimization.py \
-  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_mass_minimization.yaml \
-  run_name:=circle_mass_minimization wall:=true \
-  control_rate:=1000 real_time_factor:=0.20
-```
-
-The run names give the log files distinct prefixes. Each log already records
-the selected controller path and task parameters. For a comparison, keep
-wall/observer settings, initial pose, trajectory and Cartesian gains equal
-and change only the controller variant. New control laws get separate files;
-gain changes belong in configuration files.
-
-### Hybrid tracking and collision release
-
-`students/circle_tracking/controller_hybrid.py` uses
-`config/circle_tracking_hybrid.yaml`. TRACK inherits the circular
-mass-minimization controller, with the same position-only reference, free
-orientation, Cartesian gains, nullspace damping and fixed-wall-normal mass
-objective. On the first GMO detection, it switches once to RELEASE and
-commands only `tau = -D_R @ dq` on all seven joints. The positive diagonal
-entries in `reaction.damping` are `[30, 30, 30, 20, 10, 10, 5]` [N m s/rad].
-This is direct joint-torque damping, distinct from `tracking.kd_nullspace`
-[1/s]; tracking, nullspace damping, mass torque and Coriolis compensation
-are inactive in RELEASE. The simulator keeps its gravity compensation.
-
-RELEASE stays latched until the run ends, even if the residual drops below
-threshold. It does not set `done` or stop when contact is detected. The
-command below keeps recording after detachment and has a maximum RUN duration
-of 20 s; existing safety stops, exceptions or `Ctrl+C` can end it earlier.
-Wall interaction, the observer and logging remain active. This controller
-requires `observer:=true`; monitoring-disabled launch is rejected for it.
-
-Build for the new files as described above, then run inside the container:
-
-```bash
-source /ros2_ws/install/setup.bash
-
-ros2 launch fr3_student_sim student.launch.py \
-  controller:=circle_tracking/controller_hybrid.py \
-  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_hybrid.yaml \
-  run_name:=circle_hybrid \
-  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
-  wall:=true \
-  observer:=true \
-  stop_at_detachment:=false \
-  control_rate:=1000 \
-  real_time_factor:=0.20 \
-  duration:=20.0
-
-cd /ros2_ws/src/fr3_student_sim
-latest_hybrid_log=$(ls -t runs/circle_hybrid_*.npz | head -n 1)
-ros2 run fr3_student_sim plot_run "$latest_hybrid_log" --no-show
-```
-
-The log adds `user_release_active`, `user_release_start_time` and the seven
-requested `user_tau_release` torques before clipping. The release timestamp
-records the first RELEASE command update, which can follow the first
-detection timestamp. In RELEASE, mass is still evaluated once per update and
-normal speed remains logged. Mass torque and nullspace acceleration are zero;
-inactive references, tracking errors, requested acceleration, mass gradient,
-nullspace velocity and reference normal speed are marked NaN rather than
-presented as active targets. The existing plots display these user signals.
-
-### Hybrid tracking and immediate horizontal retreat
-
-`students/circle_tracking/controller_hybrid_retreat.py` uses its separate
-`config/circle_tracking_hybrid_retreat.yaml`. TRACK is the same circular
-mass-minimization law. The first GMO detection latches RETREAT directly;
-the first controller update after that event captures the current fingertip
-position and starts the retreat reference. No waiting phase or velocity-stop
-criterion precedes the retreat. This variant uses the same callback binding
-as the release controller and requires `observer:=true`.
-
-The goal is 3 cm from that captured position along the wall's outward normal
-projected onto the horizontal x-y plane and normalized (currently -x).
-`retreat.distance: 0.03` [m] and `retreat.duration: 2.0` [s] configure the
-motion. `students/circle_tracking/retreat_reference.py` supplies a quintic
-reference that starts and ends with zero reference velocity and
-acceleration, then holds the goal until the run ends. RETREAT uses the existing
-position-only tracking law with Cartesian gains 100 [1/s^2] and 20 [1/s],
-nullspace damping 4 [1/s] and Coriolis compensation; orientation remains free.
-Mass torque is zero during RETREAT. Simulator gravity compensation continues.
-The controller does not resume the circle or set `done` when the 2 s reference
-finishes; the launch duration and existing stop conditions still end the run.
-
-Build for the added files, then launch and plot inside the container:
+Build after adding, removing or moving package files:
 
 ```bash
 cd /ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-select fr3_student_sim
 source /ros2_ws/install/setup.bash
+```
 
+Baseline:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_baseline.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_baseline.yaml \
+  run_name:=circle_baseline \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.50 \
+  duration:=20
+```
+
+Optimized:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_optimized.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_optimized.yaml \
+  run_name:=circle_optimized \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.50 \
+  duration:=20
+```
+
+Hybrid retreat:
+
+```bash
 ros2 launch fr3_student_sim student.launch.py \
   controller:=circle_tracking/controller_hybrid_retreat.py \
   task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_hybrid_retreat.yaml \
@@ -206,266 +76,228 @@ ros2 launch fr3_student_sim student.launch.py \
   observer:=true \
   stop_at_detachment:=false \
   control_rate:=1000 \
-  real_time_factor:=0.20 \
-  duration:=20.0
+  real_time_factor:=0.5 \
+  duration:=20
+```
 
+These commands request at most 20 simulated seconds in RUN, after settling.
+Existing safety stops, exceptions or `Ctrl+C` can end a run earlier. A slower
+real-time factor leaves more computation time without guaranteeing reception
+of every joint-state sample. Logs are saved with the selected run-name prefix.
+
+The launch defaults to `circle_tracking/controller_baseline.py`. When
+`task_config` is omitted, it selects the matching configuration for baseline,
+optimized or hybrid retreat. In a new shell, source `/ros2_ws/install/setup.bash`.
+
+Save figures for each experiment's latest log:
+
+```bash
+source /ros2_ws/install/setup.bash
 cd /ros2_ws/src/fr3_student_sim
+
+latest_baseline_log=$(ls -t runs/circle_baseline_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_baseline_log" --no-show
+
+latest_optimized_log=$(ls -t runs/circle_optimized_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_optimized_log" --no-show
+
 latest_retreat_log=$(ls -t runs/circle_hybrid_retreat_*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_retreat_log" --no-show
 ```
 
-The log adds `user_retreat_active` (latched 0/1),
-`user_retreat_start_time` (NaN before the first RETREAT command) and
-`user_retreat_complete` (0/1 for completion of the reference, rather than a
-measured-arrival condition). Position,
-velocity and acceleration references, tracking errors and requested joint
-acceleration remain valid during RETREAT and the final hold. Mass and normal
-speed diagnostics continue; `user_tau_mass` is zero and
-`user_mass_gradient` is NaN during RETREAT. Wall interaction, monitoring,
-logging and existing safety stops remain active.
+## Controllers and configuration
 
-### Straight approach with directional mass minimization
+All three experiments retain the same initial pose, vertical x-z circle of radius
+0.04 m, cruise period 8 s and startup ramp 1 s. Cartesian gains are
+100 [1/s^2] and 20 [1/s]. The fingertip starts near (0.56, 0, 0.50) m and
+the circular reference reaches x approximately 0.64 m. The current wall is
+at x = 0.62 m, with outward normal (-1, 0, 0), stiffness 20000 N/m and
+damping 15 N s/m. Its roughly 20 mm maximum reference overlap is distinct
+from actual penetration under contact force.
 
-`students/straight_mass_minimization/controller.py` is a separate position-only
-experiment, with free orientation, its own reference module and
-`config/straight_mass_minimization.yaml`. Mass-minimization tracking uses
-the shared `students/utils/mass_objective.py`. The controller loader makes the
-`students/` root importable for `from utils.mass_objective import ...`; the
-helper's mathematics is unchanged by the move. The straight controller keeps
-Cartesian acceleration tracking and nullspace damping, then adds the projected torque
-`tau_mass = -gain * (I - J.T @ Jbar.T) @ mass_gradient`, where
-`Jbar = M^-1 @ J.T @ (J @ M^-1 @ J.T)^-1`.
+The baseline adds projected posture feedback towards a copy of `initial_q`
+to Cartesian tracking and nullspace velocity damping. Its posture gain is
+25 [1/s^2] and nullspace damping is 10 [1/s], including when those settings
+are omitted. It logs directional mass as a diagnostic and keeps tracking
+after detections. `user_qdd_null` includes posture feedback and damping;
+`user_qdd_command` contains the total requested acceleration.
 
-For trajectory geometry, the runner supplies a copy of the configured wall
-point and normal through `self.params['wall_geometry']`. The reference moves towards that plane along
-the inward normal (currently +x): 0.5 s startup, 0.02 m/s reference speed at
-the plane, smooth braking over 1 mm of reference penetration, then a 0.2 s
-hold. It ends on schedule through `Controller.done`, about 3.55 s with the
-current wall; the default launch `duration: 20.0` remains an upper bound.
-Collision detection does not trigger this stop. Actual contact
-speed and penetration can differ from the reference.
+The optimized controller inherits the complete baseline law, with the same
+posture gain 25 [1/s^2] and damping 10 [1/s], and adds only the projected
+directional-mass gradient torque. It reuses `utils.mass_objective`, with
+gain 0.01 [N m rad/kg], gradient step `1e-4` rad and the fixed wall normal
+as its direction. Baseline and optimized therefore share pose, reference,
+Cartesian gains, posture feedback and damping. Both keep tracking after
+GMO detections without switching mode. The hybrid-retreat controller is unchanged.
 
-The initial mass gain is 0.01 [N m rad/kg]; the central-difference gradient
-step is `1e-4` rad, requiring 15 mass evaluations per update. Set
-`mass_minimization.gain: 0.0` in the same YAML for a
-future comparison with straight tracking and damping alone. The objective
-does not guarantee decreasing mass, joint-limit avoidance or lower contact force.
+For optimized logs, `user_qdd_null` still contains only baseline posture
+feedback and damping; `user_qdd_command` also includes the mass torque's
+acceleration contribution. Additional fields are `user_mass_gradient`,
+`user_tau_mass` (requested before total torque clipping), `user_normal_speed`
+and `user_normal_speed_ref`, positive towards the wall. With a full-row-rank
+task Jacobian, setting `mass_minimization.gain` to zero recovers the nominal
+baseline command; the gradient is still evaluated, so computation cost remains
+different. No timing equivalence is assumed.
 
-Build once for the new files, then launch inside the container:
+The hybrid controller uses nullspace damping 4 [1/s] and mass-gradient torque
+gain 0.01 [N m rad/kg] in TRACK, with gradient step `1e-4` rad. The fixed mass
+direction is the wall normal in the base frame. The first GMO detection
+latches RETREAT directly. At the next controller update it captures the
+current fingertip position and starts a 3 cm horizontal retreat along the
+projected outward normal, currently -x. There is no waiting phase or condition
+requiring measured velocity to reach zero. `retreat.distance` [m] and
+`retreat.duration` [s], initially 0.03 and 2.0, configure a quintic reference
+with zero reference velocity and acceleration at its endpoints. Actual robot
+velocity is not reset at the switch.
 
-```bash
-cd /ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select fr3_student_sim
-source /ros2_ws/install/setup.bash
+RETREAT reuses the damped position tracker without mass torque. After the
+reference finishes, it holds the endpoint until the run ends, without
+resuming the circle or setting `done`. `user_retreat_active` stays 1 during
+that hold; `user_retreat_complete` indicates reference completion, not measured
+arrival. `user_retreat_start_time` is the first retreat-command update time.
+Mass and normal-speed diagnostics continue, `user_tau_mass` is zero and
+`user_mass_gradient` is NaN in RETREAT. References, errors and requested joint
+acceleration remain valid.
 
-ros2 launch fr3_student_sim student.launch.py \
-  controller:=straight_mass_minimization/controller.py \
-  task_config:=/ros2_ws/src/fr3_student_sim/config/straight_mass_minimization.yaml \
-  run_name:=straight_mass_minimization \
-  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
-  wall:=true
+The baseline and hybrid TRACK settings differ in both posture feedback and
+nullspace damping, so their comparison does not isolate the mass objective.
+These controllers do not guarantee joint-limit avoidance or lower contact force.
 
-cd /ros2_ws/src/fr3_student_sim
-latest_straight_log=$(ls -t runs/straight_mass_minimization_*.npz | head -n 1)
-ros2 run fr3_student_sim plot_run "$latest_straight_log" --no-show
-```
+The six active YAML files are:
 
-The existing log and plots include `user_mass_kg`, `user_mass_gradient`,
-`user_tau_mass`, `user_normal_speed` and `user_normal_speed_ref`.
-`user_tau_mass` is requested before the total torque is clipped;
-`user_qdd_command` includes tracking, damping and the mass contribution.
-The controller uses no true external force. Existing monitoring and safety
-stops remain active; the circular controllers, wall and launch defaults are unchanged.
+| File                                           | Role                                                                        |
+| ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `config/circle_tracking_baseline.yaml`       | Baseline initial pose, circle, Cartesian and nullspace gains.               |
+| `config/circle_tracking_optimized.yaml` | Matching baseline settings plus directional-mass gain and gradient step. |
+| `config/circle_tracking_hybrid_retreat.yaml` | Hybrid initial pose, circle, tracking, mass objective and retreat settings. |
+| `config/wall.yaml`                           | Shared plane geometry and contact stiffness/damping.                        |
+| `config/observer.yaml`                       | Observer gain and per-joint residual thresholds.                            |
+| `config/controllers.yaml`                    | Joint list for the Gazebo effort controller.                                |
 
-Options (`name:=value` after the launch command):
+Shared tracking classes are in `students/utils/circle_tracking.py`:
+`PositionTrackingController`, `DampedTrackingController` and
+`MassTrackingController`. The reference modules are
+`students/utils/circle_reference.py` and `students/utils/retreat_reference.py`;
+the mass objective stays in `students/utils/mass_objective.py`. This
+reorganization preserves the control laws and current gains. The loader makes
+`students/` importable so controllers can import `utils`.
 
-| option | default | meaning |
-|---|---|---|
-| `controller` | `my_controller.py` | file in `students/` (or an absolute path); `none` = only the robot, no controller (it floats and drifts) |
-| `wall` | `true` | the wall on/off |
-| `observer` | `true` | momentum observer and detector on/off; required by both hybrid controllers |
-| `observer_config` | `config/observer.yaml` | observer gain and residual thresholds |
-| `duration` | `20.0` | [s] length of the run |
-| `stop_at_detachment` | `false` | end the run when the fingertip first leaves the wall |
-| `task_config`, `wall_config` | `config/…` | other parameter files (e.g. one per experiment) |
-| `run_name` | controller name | prefix of the log file |
-| `log_dir` | `fr3_student_sim/runs` | where the logs go |
-| `gui` | `true` | the Gazebo window |
-| `real_time_factor` | `0.5` | simulation speed: 0.5 leaves Python the time to run at 1 kHz |
-| `control_rate` | `1000` | [Hz] how often `update` is called |
+## Runtime and collision monitoring
 
-**Realism** (all off by default, so the simulated robot is *exactly* your model and
-every signal is perfect; a real robot is not, so test with them on):
+Gazebo compensates gravity. Controller torques therefore implement
+`M(q) qdd + C(q, dq) dq = tau + tau_ext` without adding gravity themselves.
+The runner settles the arm, executes the selected controller, clips its torque
+to the FR3 limits, applies virtual-wall interaction and saves the log.
+The existing safety stop ends a run if a joint comes within 0.05 rad of its
+limit or exceeds its speed limit. The virtual wall acts only at the fingertip;
+the displayed wall box has no Gazebo collision geometry.
 
-| option | example | effect |
-|---|---|---|
-| `joint_friction` | `true` | joint friction your model does not know (~0.3 N m) |
-| `mass_error` | `0.05` | each link of the simulated robot ±5 % heavier/lighter than in your model |
-| `noise_q`, `noise_dq` | `0.0001`, `0.002` | noise [rad], [rad/s] on the `q`, `dq` you receive |
-| `seed` | `0` | random seed of the above |
+`FR3Model` in `fr3_student_sim/fr3_model.py` supplies position, Jacobians,
+inertia, Coriolis and gravity terms, and directional mass for the simulated
+robot. The controller receives this model, the selected YAML as `self.params`,
+nominal `self.dt`, and measured `q`, `dq` in `update(t, q, dq)`.
+`self.params['wall_geometry']` contains a copy of the static wall point and
+normal; true contact force is not a controller input. `self.log` entries are
+saved as `user_<name>`. Existing NPZ files retain their original fields;
+newly added diagnostics require a new experiment to be logged.
 
-**Batch**: list experiments in a YAML file (see `config/batch_example.yaml`); they
-run one after another without the window, and a table is printed at the end.
+`CollisionMonitor` owns the generalized momentum observer and detector. The
+mathematics remains in `momentum_observer.py` and `collision_detector.py`:
+joint momentum is `M(q) dq`, the residual is `K_O @ (p - p_hat)`, and the
+gravity-compensated update uses
+`p_hat_dot = tau_applied + C.T @ dq + residual`. Pinocchio's Coriolis matrix
+satisfies `Mdot = C + C.T`. Initialization uses measured momentum at the first
+RUN sample; implicit Euler integration uses elapsed simulation time.
 
-## 2. Write your controller
+The observer's torque input is reconstructed from clipped command history,
+averaged over the measurement interval with the assumed 1 ms simulator delay.
+It excludes wall torque and simulator-added gravity. It is not measured motor
+telemetry and never uses the true external force. Monitoring updates on every
+received RUN joint-state sample independently of the controller period.
 
-```python
-import numpy as np
-from fr3_student_sim.controller_base import StudentController
+The current observer gain is 30 [1/s] and threshold is 0.1 [N m]; each accepts
+a scalar or seven values. Detection occurs when any `abs(residual[i])` exceeds
+its threshold. The residual norm is diagnostic only. The runner calls
+`bind_collision_monitor(monitor)` once at startup. Its base implementation is
+a no-op; the hybrid override requires monitoring and registers `on_collision`
+to retain the first onset, including one between controller updates. The
+controller owns the latch and reaction; the monitor does not command torque.
 
-class Controller(StudentController):
+## Logs and figures
 
-    def __init__(self, robot, params, dt):
-        super().__init__(robot, params, dt)
-        self.q0 = np.array(params['initial_q'])
-
-    def update(self, t, q, dq):                      # t [s], q [rad], dq [rad/s]: (7,) arrays
-        tau = 100.0 * (self.q0 - q) - 10.0 * dq
-        self.log['speed'] = np.linalg.norm(dq)       # saved in the log, plotted
-        return tau                                   # (7,) [N m], WITHOUT gravity
-```
-
-| inside the class | |
-|---|---|
-| `self.robot` | `position(q)`, `pose(q)`, `jacobian(q)` (6×7), `jacobian_pos(q)` (3×7), `velocity(q, dq)`, `jdot_dq(q, dq)`, `mass_matrix(q)`, `mass_matrix_inv(q)`, `coriolis_matrix(q, dq)`, `coriolis(q, dq)`, `gravity(q)`, `effective_mass(q, n)`, `kinetic_energy(q, dq)`. Default point: `fr3_fingertip` (where the wall pushes); other points with `frame='…'`, e.g. `'fr3_hand_tcp'`, `'fr3_hand'`, `'fr3_link4'` |
-| `self.params` | the dict in `task.yaml` |
-| `self.dt` | nominal period; for integrals use `t - t_previous` (a sample can be missed) |
-| `self.tau_applied` | torque that really acted since your last update (your command clipped, 1 ms simulator delay included) |
-| `self.bind_collision_monitor(monitor)` | startup hook called once by the runner; a no-op unless the controller overrides it |
-| `self.log` | anything you put here is saved at every step |
-| `self.done = True` | ends the run |
-
-Each hybrid controller overrides the binding hook, checks that the monitor is
-enabled, and registers `on_collision`. Each owns `first_collision_time` [s since
-RUN start], initially `None`, and latches only the first callback timestamp.
-This state belongs to the selected hybrid controller, not the generic base class.
-
-You can split your code into several files in `students/` (e.g. `observer.py`)
-and import them from your controller with `from observer import …`.
-
-The FR3 limits are available as numpy arrays:
-`from fr3_student_sim.fr3_model import TAU_MAX, DQ_MAX, Q_MIN, Q_MAX`.
-
-**The rules of the simulated FR3**
-
-* The simulator **adds g(q)** to your torque: never add gravity yourself. What you
-  control is `M(q) ddq + C(q, dq) dq = tau + tau_ext`.
-* Torques are clipped to ±[87, 87, 87, 87, 12, 12, 12] N m.
-* **SAFETY STOP** (run ends, robot held) if a joint comes within 0.05 rad of its limit
-  or exceeds its speed limit (2.6 rad/s for joints 1–4): your controller is unstable
-  or the arm drifts.
-* 7 joints, 3 for a position task: a **4-dimensional null space**, which drifts unless
-  you damp or use it.
-* The wall pushes with `F = k_e δ + b_e max(v_n, 0)` at the **fingertip only**. You
-  cannot measure it. If the hand turns and its body enters the wall, nothing pushes
-  it: the run prints a warning. Keep the tool facing the wall.
-
-## 3. The log
-
-`plot_run` saves `<log>.png` and prints the ground-truth facts of the first contact
-(time, entry speed, peak force, peak penetration, duration). Everything else your
-study needs, you compute from the log (full state at 1 kHz):
+For `X.npz`, the existing plot command saves `X.png`, `X_collision.png` and,
+when observer data are present, `X_observer.png`. It prints ground-truth first
+contact facts and detection times. Logs keep state, references, requested and
+clipped torques, wall contact data, observer signals and user diagnostics:
 
 ```python
 from fr3_student_sim.plot_run import load_run
-run = load_run('runs/xxx.npz')
-run['t'], run['q'], run['dq']       # time, joint state (true values, without noise)
-run['tau']                          # your torque after clipping (run['tau_cmd'] before)
-run['tau_applied']                  # actuator torque acting over the sample interval,
-                                    # delayed and clipped; gravity compensated, wall excluded
-run['p'], run['v']                  # fingertip position, velocity
-run['F_n'], run['delta']            # wall force [N], penetration [m]; run['contact'] 0/1
-run['tau_wall']                     # TRUE external joint torque of the wall (J^T F): compare
-                                    # it with what your controller estimates
-run['hand_depth']                   # how deep the hand body is in the wall (should stay ~0)
-run['residual'], run['residual_norm'] # seven signed joint residuals and their Euclidean norm
-run['momentum'], run['momentum_estimate'] # measured and observed M(q) dq
-run['collision_joints']             # per-joint threshold flags
-run['collision_detected']           # any joint over threshold
-run['detection_event'], run['detection_times'] # onset samples and timestamps
-run['residual_threshold']           # configured thresholds [N m], seven values
-run['user_speed']                   # everything you put in self.log
-run['meta']                         # all the parameters of the run
+
+run = load_run('runs/<log>.npz')
+run['t'], run['q'], run['dq'], run['p'], run['v']
+run['tau_cmd'], run['tau'], run['tau_applied'], run['tau_wall']
+run['F_n'], run['delta'], run['v_n'], run['contact']
+run['residual'], run['residual_norm'], run['detection_times']
+run['user_mass_kg'], run['meta']
 ```
 
-With monitoring enabled, `plot_run` also saves `<log>_observer.png`: seven
-residual panels with positive/negative thresholds, the residual norm and a
-detection timeline. Event times are marked on the figures and printed.
+`tau_applied` is the delayed, clipped actuator-command reconstruction; it
+excludes the wall. `tau_wall` is the true external wall torque, retained for
+offline analysis. Neither supplies true force feedback to the controllers.
 
-`CollisionMonitor` in `collision_monitor.py` coordinates the observer and
-detector independently of ROS and the tracking controller. It loads the
-existing observer YAML, owns both instances, collects their samples, returns
-detection-onset messages, and exports the
-existing NPZ fields and observer metadata. On interruption, it exports only
-the samples corresponding to saved
-plant rows. The mathematical implementations remain in `momentum_observer.py`
-and `collision_detector.py`.
+The baseline and optimized main figures use the generic user-signal layout. Hybrid-retreat
+logs with the required signals use eight panels: position and reference;
+three position-error components [mm]; seven joint torques [N m]; seven joint
+velocities [rad/s]; force and penetration [mm] on a second axis; mass [kg];
+actual/reference normal speed together; and phase 0 TRACK, 1 RETREAT, 2 HOLD.
+Normal speed is positive towards the wall. HOLD labels the final-reference
+hold, not a new control mode or measured arrival.
 
-The runner binds the selected controller to the monitor once at startup,
-then calls the monitor for every RUN measurement and handles its messages
-and exceptions. `set_detection_callback` delivers onset timestamps to the
-registered controller callback independently of its control update period.
-The controller owns any detection latch and reaction policy; the runner does
-not copy that state in its RUN loop. It retains ROS communication,
-simulation time and phases, measurement noise, actuator history and delay alignment, controller
-execution, torque clipping, safety stops and file I/O. No separate ROS node,
-launch argument or plotting change is needed.
+The collision figure has five panels: mass and actual normal speed in the
+first row, force and positive penetration [mm] in the second, and generalized
+positive contact work [J] across the last row. Its time origin is the first
+recorded sample with `F_n > 0`, marked by a dashed gold line, with a default
+window of 0.5 s on either side. With no contact it shows the full recorded
+interval. This origin is independent of GMO detection.
 
-The observer is initialized with `p_hat = M(q) dq` at the first RUN sample
-and uses simulation timestamps with implicit Euler integration. The runner
-supplies actuator torque after clipping, averaged over the elapsed interval
-with the simulator's 1 ms transport delay. The monitor adds no delay or
-gravity term and never reads the true wall force or `tau_wall`.
+Work integrates `max(-tau_ext @ dq, 0)` using trapezoids over the whole saved
+sequence and actual timestamp intervals before cropping. Logged `tau_ext`
+takes precedence, with `tau_wall` as fallback for existing wall logs. External
+torque acts on the robot; summing joint power before taking the positive part
+gives net aggregate outward power. Missing external torque or `dq` produces
+`Not logged`; no residual or actuator-torque substitution is made. For the
+current wall the power equals `F_n * max(v_n, 0)`, including elastic loading
+and damping during compression. It is a sampled contact-work estimate.
+The other contact signals and contact-centred zoom remain tied to the wall.
 
-The full momentum equation is `p_hat_dot = tau_motor + C.T @ dq - g + r`,
-`r = K_O @ (p - p_hat)`. Since the simulator adds gravity compensation, the
-implemented equivalent is `p_hat_dot = tau_applied + C.T @ dq + r`.
-`coriolis_matrix` supplies Pinocchio's matrix with `Mdot = C + C.T`; using
-`C @ dq` in its place would be incorrect. `/joint_states.effort` is a
-transmitted wrench rather than separate actuator-command telemetry and is
-not used as the observer input.
+`collision_plot.py` prepares these signals offline without recomputing mass
+with Pinocchio or changing the NPZ. Missing mass is labelled unavailable.
+Position-error norm remains available from its helper without being drawn
+in the collision figure; inactive-reference NaNs are preserved. The observer
+figure still shows the seven residuals, thresholds, norm and detection timeline.
 
-Configure `gain` [1/s] and `threshold` [N m] in `config/observer.yaml`; each
-accepts a scalar or seven values. Defaults are 30 and 0.1. A collision is
-reported when any `abs(residual[i]) > threshold[i]`. The monitor itself does
-not command torque or stop the run. The ordinary tracking variants keep their
-law; the selected hybrid controller uses the first-detection notification for
-RELEASE or RETREAT.
-These settings target the nominal simulation; noise,
-friction or model errors require checking the free-motion residual before
-selecting thresholds for an experiment.
+## Launch options
 
-## 4. Your project
+| Option                               | Default                                    | Meaning                                                                                        |
+| ------------------------------------ | ------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `controller`                       | `circle_tracking/controller_baseline.py` | Active controller path relative to `students/`, or absolute; `none` starts only the robot. |
+| `task_config`                      | Matching selected experiment               | Explicit task YAML override.                                                                   |
+| `wall`, `observer`               | `true`                                   | Enable wall interaction and monitoring; hybrid retreat requires the observer.                  |
+| `wall_config`, `observer_config` | Shared YAML files                          | Override wall or observer settings.                                                            |
+| `duration`                         | `20.0`                                   | Maximum RUN duration [s]; the commands above request 20 s.                                      |
+| `stop_at_detachment`               | `false`                                  | Optionally end at first detachment.                                                            |
+| `control_rate`                     | `1000`                                   | Nominal controller frequency [Hz].                                                             |
+| `real_time_factor`                 | `0.5`                                    | Requested simulation speed; the commands above use 0.50.                                       |
+| `run_name`, `log_dir`            | Controller name, package `runs/`         | Log prefix and destination.                                                                    |
+| `gui`                              | `true`                                   | Open the Gazebo window.                                                                        |
+| `partition`                        | Empty                                      | Separate Gazebo transport partition for parallel runs.                                         |
 
-Start with the examples: `zero_torque.py` (with `wall:=false`, the arm must stay
-still), then `joint_pd.py` and `cartesian_pd.py`; change their gains, turn the wall on.
+Optional realism settings are `joint_friction`, `mass_error`, `noise_q`,
+`noise_dq` and `seed`; their defaults retain the nominal model and noiseless
+measurements. `run_batch` remains available for a supplied batch YAML, with
+baseline defaults and matching task selection; the former template is archived.
 
-Then bring your planar-3R study to the FR3. You decide and justify:
-
-* the task controller (which dynamics compensation; position only, or also orientation?)
-  and what to do with the null space;
-* how to detect the contact without a force sensor, with a threshold that also works
-  with the realism options on;
-* how to compute and use the effective mass and its variation with q;
-* which experiments to run and which quantities to compare to answer your question on
-  a 7-joint robot.
-
-## Troubleshooting
-
-* **No window**: run `xhost +local:docker` on the host, or use `gui:=false`.
-* **Nothing happens / the run never starts**: Gazebo's own output is not shown in
-  the terminal; its file is printed at the start (`Gazebo output (if something goes
-  wrong): /tmp/fr3_student_…/gazebo.log`). Look there.
-* **`Ctrl+C` while the simulation is still starting** may print one
-  `[ERROR] [spawner-…]: process has died`: harmless, the start-up was interrupted.
-* **"X% of the joint states were missed"**: your controller is too slow; use
-  `real_time_factor:=0.25` or `control_rate:=500`.
-* **Exception in Controller.update**: the traceback is printed, the robot stops safely,
-  the log is saved.
-* **The arm moves strangely right at the start**: your first torque has a jump; start
-  your references and gains smoothly.
-* **Two simulations at once** (e.g. two terminals): give each its own
-  `partition:=name` and a different `export ROS_DOMAIN_ID=<n>`.
-* **Is the package itself OK?** Run its checks (1 s, no Gazebo):
-  `cd /ros2_ws/src/fr3_student_sim && python3 -m pytest test/`
+For a missing Gazebo window, check the host display permissions or use
+`gui:=false`. Startup and GUI output paths are printed in the terminal.
+If joint-state samples are missed, reduce `real_time_factor` or
+`control_rate`. An exception in a controller stops the run and saves its log.

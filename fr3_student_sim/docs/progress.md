@@ -1,5 +1,14 @@
 # Progress: FR3 simulation experiments
 
+This document preserves the development history. The 2026-11-09 cleanup
+retained baseline and hybrid retreat; the later optimized variant adds a
+third active entry point. Earlier sections
+describe the layout and defaults before that cleanup: archived `students/`,
+`config/` and `test/` paths now live under `fr3_student_sim/trash/`, retaining
+their relative structure. Shared tracking and reference implementations now
+live in `students/utils/`. Use the current package README and the final
+development entries below for the active files and commands.
+
 ## 2026-11-04
 
 ### Objective
@@ -87,8 +96,8 @@ first detachment. In each new shell, run
 ### Where to make changes
 
 Select each controller with its matching `task_config` YAML. The minimal
-circular controller is the baseline; additional laws use separate controller
-files and configurations. The circle reference is shared by the five circular
+circular controller remains the original reference; additional laws use separate
+controller files and configurations. The circle reference is shared by the six circular
 variants during tracking, while the straight experiment has its own reference
 module. Edit the selected YAML to change its gains or trajectory settings.
 
@@ -97,16 +106,17 @@ module. Edit the selected YAML to change its gains or trajectory settings.
 ### Circular controller variants
 
 The minimal controller in `students/circle_tracking/controller.py` is kept
-as the reference. The five circular variants have separate controller files
+as the reference. The six circular variants have separate controller files
 and matching task configurations:
 
-| Variant | Controller in `students/circle_tracking/` | Task configuration |
-|---|---|---|
-| Minimal position tracking | `controller.py` | `config/circle_tracking.yaml` |
-| Position tracking with nullspace velocity damping | `controller_nullspace_damping.py` | `config/circle_tracking_nullspace_damping.yaml` |
-| Damped position tracking with directional mass minimization | `controller_mass_minimization.py` | `config/circle_tracking_mass_minimization.yaml` |
-| Mass-minimizing tracking with latched collision release | `controller_hybrid.py` | `config/circle_tracking_hybrid.yaml` |
-| Mass-minimizing tracking with immediate horizontal retreat | `controller_hybrid_retreat.py` | `config/circle_tracking_hybrid_retreat.yaml` |
+| Variant                                                     | Controller in `students/circle_tracking/` | Task configuration                                |
+| ----------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------- |
+| Minimal position tracking                                   | `controller.py`                           | `config/circle_tracking.yaml`                   |
+| Position tracking with nullspace velocity damping           | `controller_nullspace_damping.py`         | `config/circle_tracking_nullspace_damping.yaml` |
+| Baseline with nullspace posture feedback and damping        | `controller_baseline.py`                  | `config/circle_tracking_baseline.yaml`          |
+| Damped position tracking with directional mass minimization | `controller_mass_minimization.py`         | `config/circle_tracking_mass_minimization.yaml` |
+| Mass-minimizing tracking with latched collision release     | `controller_hybrid.py`                    | `config/circle_tracking_hybrid.yaml`            |
+| Mass-minimizing tracking with immediate horizontal retreat  | `controller_hybrid_retreat.py`            | `config/circle_tracking_hybrid_retreat.yaml`    |
 
 The damping variant reuses the minimal controller and adds only velocity
 damping in the position Jacobian's null space:
@@ -130,7 +140,7 @@ acceleration command. It adds no posture objective or joint-limit avoidance.
 The existing launch selects the requested controller through its `controller`
 argument. Use `run_name:=circle_minimal` for the reference and
 `run_name:=circle_nullspace_damping` for the damping variant to distinguish
-the saved files. This damping variant reuses the baseline controller and
+the saved files. This damping variant reuses the minimal reference controller and
 circle reference, and uses the shared runner, wall and collision monitor.
 
 ### Run the nullspace damping controller
@@ -165,9 +175,10 @@ ros2 run fr3_student_sim plot_run "$latest_circle_log" --no-show
 ```
 
 With the default collision monitoring enabled, the terminal prints the
-selected log, detection times and the two PNG paths. The images are saved
-next to the `.npz` file; the observer figure ends in `_observer.png`.
-With `observer:=false`, only the tracking/contact figure is produced.
+selected log, detection times and the PNG paths. The images are saved
+next to the `.npz` file; the observer figure ends in `_observer.png` and
+the additional collision figure ends in `_collision.png`.
+With `observer:=false`, the main and collision figures are produced.
 
 To also open the graph windows, run this in the same terminal:
 
@@ -473,16 +484,17 @@ the plot command produces seven joint-residual panels, the residual norm
 and a detection timeline in the separate `_observer.png` figure, and marks
 event times on the tracking/contact figure.
 
-### Configuration files in use
+### Configuration files before the cleanup
 
 | Configuration                                     | Role                                                                                                                                                                                                |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `config/task.yaml`                              | Default task when `task_config` is omitted. Its top-level `Kp` and `Kd` fields are not read by the supplied controllers; the circular and straight variants read their `tracking` mappings. |
 | `config/circle_tracking.yaml`                   | Initial pose, circular reference and Cartesian gains for the minimal circular controller.                                                                                                           |
 | `config/circle_tracking_nullspace_damping.yaml` | Matching circular settings plus `tracking.kd_nullspace` for the damping variant.                                                                                                                  |
-| `config/circle_tracking_mass_minimization.yaml` | Matching damped circular settings plus the fixed-wall-normal mass gain and gradient step for the circular mass-minimization variant. |
-| `config/circle_tracking_hybrid.yaml` | Matching mass-minimizing circular TRACK settings plus seven joint-torque damping coefficients for the latched RELEASE phase. |
-| `config/circle_tracking_hybrid_retreat.yaml` | Matching mass-minimizing circular TRACK settings plus horizontal retreat distance and reference duration for the latched RETREAT phase. |
+| `config/circle_tracking_baseline.yaml`          | Matching circular settings with nullspace posture gain 25 [1/s^2] and damping 10 [1/s] for the baseline variant.                                                                                    |
+| `config/circle_tracking_mass_minimization.yaml` | Matching damped circular settings plus the fixed-wall-normal mass gain and gradient step for the circular mass-minimization variant.                                                                |
+| `config/circle_tracking_hybrid.yaml`            | Matching mass-minimizing circular TRACK settings plus seven joint-torque damping coefficients for the latched RELEASE phase.                                                                        |
+| `config/circle_tracking_hybrid_retreat.yaml`    | Matching mass-minimizing circular TRACK settings plus horizontal retreat distance and reference duration for the latched RETREAT phase.                                                             |
 | `config/straight_mass_minimization.yaml`        | Initial pose, straight reference, Cartesian/nullspace gains and mass-objective settings for the straight variant.                                                                                   |
 | `config/wall.yaml`                              | Shared plane geometry and contact-model stiffness/damping, selected with `wall_config`.                                                                                                           |
 | `config/observer.yaml`                          | Momentum-observer gain and per-joint residual thresholds, selected with `observer_config`.                                                                                                        |
@@ -587,8 +599,8 @@ ros2 launch fr3_student_sim student.launch.py \
   observer:=true \
   stop_at_detachment:=false \
   control_rate:=1000 \
-  real_time_factor:=0.20 \
-  duration:=20.0
+  real_time_factor:=0.50 \
+  duration:=10
 ```
 
 After the run, save the figures for its latest log:
@@ -725,8 +737,8 @@ ros2 launch fr3_student_sim student.launch.py \
   observer:=true \
   stop_at_detachment:=false \
   control_rate:=1000 \
-  real_time_factor:=0.20 \
-  duration:=20.0
+  real_time_factor:=0.5 \
+  duration:=10
 ```
 
 Save the figures for the latest retreat log:
@@ -737,4 +749,357 @@ cd /ros2_ws/src/fr3_student_sim
 
 latest_retreat_log=$(ls -t runs/circle_hybrid_retreat_*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_retreat_log" --no-show
+```
+
+## 2026-11-08
+
+### Compact figure for the horizontal-retreat experiment
+
+`plot_run` selects an eight-panel figure for `controller_hybrid_retreat.py`
+logs containing `user_retreat_active`, `user_retreat_complete` and the required signals:
+
+1. Cartesian position and its reference.
+2. The three position-error components in mm.
+3. The seven joint torques in N m.
+4. The seven joint velocities in rad/s.
+5. Normal contact force and penetration in mm, with penetration on a second axis.
+6. Directional mass in kg.
+7. Actual and reference normal speed together, positive towards the wall.
+8. Phase: 0 TRACK, 1 RETREAT, 2 HOLD.
+
+HOLD is a display label derived from `user_retreat_complete` for maintaining
+the final reference. It does not indicate measured arrival or introduce a
+new control mode. The full NPZ signals, controller laws, references and gains
+are preserved. The separate observer figure and generic figures for the
+other controllers are unchanged. The existing `latest_retreat_log` selection
+and `plot_run "$latest_retreat_log" --no-show` command still apply; no new
+plot option is needed.
+
+## 2026-11-09
+
+### Collision signals in a separate figure
+
+Each `plot_run X.npz` now also writes `X_collision.png`, alongside the
+existing `X.png` and, when observer data are present, `X_observer.png`.
+The new offline `collision_plot.py` module separates signal preparation in
+`collision_signals` from figure creation in `collision_figure`. It uses one
+saved experiment without requiring a baseline run. Control laws, references,
+gains, runner, observer and the saved NPZ data are unchanged.
+
+The figure now has five panels: two columns in each of the first two rows,
+then generalized positive contact work across both columns of the third row.
+
+| Panel                                 | Signal                                                                   |
+| ------------------------------------- | ------------------------------------------------------------------------ |
+| Directional mass [kg]                 | The existing `user_mass_kg` data.                                      |
+| Normal speed [m/s]                    | Actual velocity along the inward wall normal, positive towards the wall. |
+| Contact force [N]                     | The recorded normal spring-damper force $F_n$.                         |
+| Positive penetration [mm]             | $1000\max(\delta,0)$.                                                  |
+| Generalized positive contact work [J] | Cumulative outward contact work $W_{\mathrm{out}}^+$.                  |
+
+The position-error-norm panel has been removed from this collision figure.
+The main figure's error panel and the NPZ reference/error signals remain
+available. The offline helper still returns `position_error_mm`, preserving
+inactive-reference NaNs; it is no longer drawn in `_collision.png`.
+
+The default display window spans 0.5 s before and after the first recorded
+sample with $F_n>0$. The time axis is relative to that contact and a dashed
+gold line marks zero. This origin comes from the recorded contact force,
+independently of GMO threshold crossings.
+
+The plotted generalized work uses external joint torques
+$\tau_{\mathrm{ext}}$ acting on the robot, with outward power given by the
+negative of their scalar product with joint velocity:
+
+$$
+\begin{aligned}
+P_{\mathrm{out}}^+(t) &=
+  \max\!\left(-\tau_{\mathrm{ext}}(t)^\top\dot q(t),0\right), \\
+W_{\mathrm{out}}^+(t) &=
+  \int_{t_0}^{t}P_{\mathrm{out}}^+(s)\,\mathrm{d}s, \\
+W_{\mathrm{out},0}^+ &= 0, \\
+W_{\mathrm{out},i}^+ &= W_{\mathrm{out},i-1}^+
+  +\frac{P_{\mathrm{out},i-1}^++P_{\mathrm{out},i}^+}{2}
+   \left(t_i-t_{i-1}\right).
+\end{aligned}
+$$
+
+The helper prefers logged `tau_ext`; existing virtual-wall logs use the
+fallback `tau_wall`. It does not substitute an observer residual or actuator
+torque. Missing external torque or `dq` leaves the work panel marked
+`Not logged`. The scalar product sums all joint-power terms before taking
+the positive part. With several external contacts, this represents net
+aggregate outward power, rather than separately clipping each contact's
+contribution. The helper result keeps its existing
+`positive_contact_work_J` field.
+
+Here $t_0$ is the first saved timestamp. Integration uses the whole saved
+sequence and its actual, potentially unequal timestamp intervals before the
+display is cropped. The cumulative signal does not decrease. For the current
+wall, with $v_n=-n^\top\dot p$, $F_{\mathrm{wall}}=F_n n$ and
+$\tau_{\mathrm{wall}}=J^\top F_{\mathrm{wall}}$, its power reduces to
+$F_n\max(v_n,0)$, including elastic loading and damping during compression.
+It remains an estimate from sampled contact data, not an exact accounting of
+energy exchanged by the simulated actuators. The other four panels retain
+their existing signals; normal speed, mass direction, force, penetration
+and the force-positive contact zoom remain tied to the wall setup.
+
+Missing mass is annotated as unavailable, without substituting zeros or
+recomputing mass with Pinocchio. The main figure and the separate
+observer figure remain available, and the same `plot_run ... --no-show`
+command generates the new figure without a new option. With observer data
+there are three PNGs; without them there are two.
+
+### Default collision-monitor binding hook restored
+
+`StudentController.bind_collision_monitor(monitor)` has been restored as a
+default no-op. Ordinary tracking controllers can inherit it when the runner
+performs its existing startup binding, avoiding the missing-method error.
+The hybrid controllers keep their own overrides and collision callbacks.
+The runner's binding call and all control laws remain unchanged.
+
+### Directional-mass diagnostic in the damping controller
+
+`students/circle_tracking/controller_nullspace_damping.py` now logs
+`mass_kg` along the wall normal supplied by the runner in the base frame.
+It uses the fingertip position Jacobian and inertia matrix already evaluated
+for damping. The control law is unchanged: no mass gradient, minimization
+torque or gain is added. The runner saves `user_mass_kg` automatically, and
+the existing main and `_collision.png` figures display it without configuration
+or plotter changes. A new experiment records this additional signal; old NPZ
+files retain their original fields.
+
+### Circular baseline with nullspace posture feedback
+
+The separate `students/circle_tracking/controller_baseline.py` extends the
+existing nullspace-damping controller and uses
+`config/circle_tracking_baseline.yaml`. It keeps the same initial pose,
+position-only circle (radius 0.04 m, steady period 8 s, ramp 1 s), Cartesian
+gains 100 [1/s^2] and 20 [1/s], and free orientation. A copy of `initial_q`
+provides the posture reference $q_0$. The new variant adds only the projected
+posture acceleration to the inherited tracking and damping law:
+
+$$
+\begin{aligned}
+a &= \ddot p_{\mathrm{ref}}
+  +K_d\left(\dot p_{\mathrm{ref}}-J\dot q\right)
+  +K_p\left(p_{\mathrm{ref}}-p\right), \\
+N &= I-J^\dagger J, \\
+\ddot q_{\mathrm{posture}} &= k_{p,N}N(q_0-q), \\
+\ddot q_{\mathrm{null}} &= -k_{d,N}N\dot q+\ddot q_{\mathrm{posture}}, \\
+\ddot q_{\mathrm{cmd}} &= J^\dagger\left(a-\dot J\dot q\right)
+  +\ddot q_{\mathrm{null}}, \\
+\tau_{\mathrm{baseline}} &= M(q)\ddot q_{\mathrm{cmd}}+c(q,\dot q).
+\end{aligned}
+$$
+
+`tracking.kp_nullspace` sets $k_{p,N}=25$ [1/s^2] and
+`tracking.kd_nullspace` sets $k_{d,N}=10$ [1/s]. These are also this
+controller's defaults when the corresponding settings are omitted. The
+simulator continues gravity compensation; the controller adds no gravity
+term or mass-minimization torque.
+
+The existing log schema is retained: `user_dq_null` is the inherited
+projected velocity, `user_qdd_null` includes both damping and posture
+feedback, and `user_qdd_command` contains the total requested acceleration.
+`user_mass_kg` remains the inherited directional-mass diagnostic. The GMO and
+detector keep recording detections without switching this controller's law.
+Launch duration and existing safety conditions still end the run; posture
+feedback does not guarantee joint-limit avoidance.
+
+The minimal controller, original damping controller and their configurations
+remain unchanged. Compared with the current circular mass-minimization
+variant, this baseline adds posture feedback and changes nullspace damping
+from 4 to 10 [1/s], so the difference is not limited to the mass objective.
+No other controller's settings are changed automatically.
+
+### Run the posture baseline
+
+Build for the added files, then launch inside the container:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_baseline.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_baseline.yaml \
+  run_name:=circle_baseline \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.50 \
+  duration:=20
+```
+
+This command requests a maximum RUN duration of 20 s. Existing safety stops,
+exceptions or `Ctrl+C` can end the run earlier.
+
+Save the figures for the latest baseline log with the existing plot command:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+latest_baseline_log=$(ls -t runs/circle_baseline_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_baseline_log" --no-show
+```
+
+### Active experiments and archive cleanup
+
+The active package now keeps only the circular baseline and hybrid-retreat
+entry points. Their control laws, gains, references, collision policies and
+logged signals are preserved. The other experiment files are archived in
+`trash/`, retaining the original `students/`, `config/`, `test/` and `runs/` paths.
+The preceding sections remain a record of those developments rather than
+the current active inventory.
+
+The two active entry points and five configuration files are:
+
+| File                                                      | Role                                                                                        |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `students/circle_tracking/controller_baseline.py`       | Position tracking with nullspace posture feedback and damping; directional-mass diagnostic. |
+| `students/circle_tracking/controller_hybrid_retreat.py` | Mass-minimizing circular TRACK followed directly by latched RETREAT on first detection.     |
+| `config/circle_tracking_baseline.yaml`                  | Baseline initial pose, circle and tracking/nullspace gains.                                 |
+| `config/circle_tracking_hybrid_retreat.yaml`            | Hybrid circle, tracking, mass objective and retreat settings.                               |
+| `config/wall.yaml`                                      | Shared wall geometry and stiffness/damping.                                                 |
+| `config/observer.yaml`                                  | Momentum-observer gain and residual thresholds.                                             |
+| `config/controllers.yaml`                               | Joint list for the Gazebo effort controller.                                                |
+
+Tracking implementations have been extracted into shared student utilities:
+
+| Shared file                             | Preserved implementation                                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `students/utils/circle_tracking.py`   | `PositionTrackingController`, `DampedTrackingController` and `MassTrackingController`, carrying the existing Cartesian, damping and mass-gradient laws. |
+| `students/utils/circle_reference.py`  | Existing circular reference.                                                                                                                                  |
+| `students/utils/retreat_reference.py` | Existing quintic retreat reference and endpoint hold.                                                                                                         |
+| `students/utils/mass_objective.py`    | Existing directional mass, central-difference gradient and torque projection.                                                                                 |
+| `students/utils/__init__.py`          | Shared utilities package.                                                                                                                                     |
+
+The baseline and hybrid entry points import these implementations instead of
+depending on other selectable experiment controllers. This moves the shared
+code without changing its mathematics or the values in the two active task
+configurations. The hybrid's existing retreat tracker supplies its mass
+diagnostic without a duplicate mass evaluation.
+
+The archive contains the former minimal, damping, standalone circular-mass,
+hybrid-RELEASE and straight experiments, the original circle/retreat reference
+files, the skeleton and examples, and their former checks. Its seven archived
+YAML files are `task.yaml`, `batch_example.yaml`, `circle_tracking.yaml`,
+`circle_tracking_nullspace_damping.yaml`,
+`circle_tracking_mass_minimization.yaml`, `circle_tracking_hybrid.yaml` and
+`straight_mass_minimization.yaml`, under `trash/config/`. Saved NPZ and PNG
+results of the former nullspace-damping experiment are in `trash/runs/`.
+`trash/README.md`
+indexes the retained material. Archived paths are outside the active students
+and configuration directories.
+
+`student.launch.py` now defaults to
+`circle_tracking/controller_baseline.py`. Without an explicit `task_config`,
+it chooses the matching YAML for the selected baseline or hybrid-retreat
+entry point. `run_batch` remains available with baseline defaults and matching
+task selection per run unless a task file is supplied explicitly; its former
+example template is archived. Wall, observer,
+plotting and safety behaviour are preserved.
+
+At this cleanup, the package README provided build, launch and plot commands
+for both active experiments. Those commands requested a maximum RUN duration of 7 s,
+nominal 1000 Hz control and real-time factor 0.20, with wall and observer
+enabled and first-detachment stopping disabled. Logs retain the distinct
+`circle_baseline_` and `circle_hybrid_retreat_` prefixes. The launch defaults
+remained a maximum duration of 20 s and real-time factor 0.5; the documented
+7 s and 0.20 values were explicit per-run overrides.
+
+### Optimized circular tracking with the complete baseline law
+
+The new `students/circle_tracking/controller_optimized.py` inherits the
+complete baseline controller and adds the existing projected mass-gradient
+torque. Its separate `config/circle_tracking_optimized.yaml` keeps the baseline
+initial pose, radius 0.04 m, cruise period 8 s, ramp 1 s, Cartesian gains
+100 [1/s^2] and 20 [1/s], posture gain 25 [1/s^2] and nullspace damping
+10 [1/s]. The fixed posture reference remains a copy of `initial_q`, and
+orientation remains free. The added mass settings are gain
+0.01 [N m rad/kg] and central-difference step $10^{-4}$ rad.
+
+With $n$ the fixed wall unit normal in the base frame and $J$ the fingertip
+position Jacobian, the additional command is:
+
+$$
+\begin{aligned}
+m_n(q) &= \left(n^\top J M^{-1}J^\top n\right)^{-1}, \\
+\bar J &= M^{-1}J^\top\left(JM^{-1}J^\top\right)^{-1}, \\
+N_\tau &= I-J^\top\bar J^\top, \\
+\tau_m &= -k_m N_\tau\nabla_q m_n(q), \\
+\tau_{\mathrm{optimized}} &= \tau_{\mathrm{baseline}}+\tau_m, \\
+\ddot q_{\mathrm{cmd,optimized}} &=
+  \ddot q_{\mathrm{cmd,baseline}}+M^{-1}\tau_m.
+\end{aligned}
+$$
+
+The existing `students/utils/mass_objective.py` supplies directional mass,
+its central-difference gradient and the dynamic torque projection. The
+baseline posture and damping terms are preserved. This adds no further
+objective, gravity term or collision reaction. The observer and detector
+continue recording detections while the optimized controller keeps tracking.
+The runner, clipping, safety stops and the hybrid-retreat controller are
+unchanged.
+
+The inherited `user_qdd_null` still describes baseline posture feedback and
+damping only. `user_qdd_command` includes the mass torque's joint-acceleration
+contribution. The log also contains `user_mass_kg`, `user_mass_gradient`,
+`user_tau_mass`, `user_normal_speed` and `user_normal_speed_ref`.
+`user_tau_mass` is requested before total torque clipping; both normal-speed
+signals are positive towards the wall. With a full-row-rank task Jacobian,
+setting `mass_minimization.gain: 0.0` recovers the nominal baseline command.
+The mass gradient is still computed in that case, so the variant retains
+additional computation rather than matching baseline timing.
+
+The active inventory now has three controller entry points: baseline,
+optimized and hybrid retreat. There are six active YAML files: their three
+matching task configurations, plus `wall.yaml`, `observer.yaml` and
+`controllers.yaml`. The launch still defaults to baseline; automatic task
+selection in launch and batch now also recognizes the optimized controller.
+The earlier two-entry cleanup inventory remains the record of that stage.
+
+### Run the optimized controller
+
+Build for the added files, then launch inside the container. The command uses
+the same 20 s maximum RUN duration, 1000 Hz nominal controller rate and
+real-time factor 0.50 as the current README baseline command:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_optimized.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_optimized.yaml \
+  run_name:=circle_optimized \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.50 \
+  duration:=20
+```
+
+Existing safety stops, exceptions or `Ctrl+C` can end the run earlier.
+Baseline and optimized keep the same tracking, posture and damping settings
+for the comparison; only the optimized variant adds the mass objective.
+
+Save its figures through the existing plotting command:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+latest_optimized_log=$(ls -t runs/circle_optimized_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_optimized_log" --no-show
 ```

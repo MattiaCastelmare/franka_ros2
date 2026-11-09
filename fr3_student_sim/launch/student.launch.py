@@ -1,7 +1,7 @@
 """Gazebo FR3 + effort controller + virtual wall + the student's controller.
 
-    ros2 launch fr3_student_sim student.launch.py                       # my_controller.py
-    ros2 launch fr3_student_sim student.launch.py controller:=examples/joint_pd.py
+    ros2 launch fr3_student_sim student.launch.py                       # posture baseline
+    ros2 launch fr3_student_sim student.launch.py controller:=circle_tracking/controller_hybrid_retreat.py
     ros2 launch fr3_student_sim student.launch.py wall:=false duration:=10 gui:=false
 
 ``controller`` is a path to a Python file; relative paths are looked up in the
@@ -27,10 +27,10 @@ PKG = 'fr3_student_sim'
 QUIET = {'stdout': 'log', 'stderr': 'log'}     # helper processes: ~/.ros/log only
 
 ARGS = {
-    'controller': ('my_controller.py', 'Controller file (relative to students/ or absolute); '
+    'controller': ('circle_tracking/controller_baseline.py', 'Controller file (relative to students/ or absolute); '
                                        '"none" = only the robot, commanded from the terminal'),
     'task_config': ('', 'Task YAML passed to the controller as self.params '
-                        '(empty = config/task.yaml)'),
+                        '(empty = matching baseline, optimized or hybrid-retreat YAML)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
     'observer': ('true', 'Enable momentum observer and collision detection '
@@ -135,7 +135,13 @@ def _launch(context):
     sim_only = controller.lower() == 'none'
     if not sim_only and not os.path.isabs(controller):
         controller = os.path.join(share, 'students', controller)
-    task_cfg = a['task_config'] or os.path.join(share, 'config', 'task.yaml')
+    default_tasks = {
+        'controller_baseline.py': 'circle_tracking_baseline.yaml',
+        'controller_optimized.py': 'circle_tracking_optimized.yaml',
+        'controller_hybrid_retreat.py': 'circle_tracking_hybrid_retreat.yaml',
+    }
+    default_task = default_tasks.get(os.path.basename(controller), 'circle_tracking_baseline.yaml')
+    task_cfg = a['task_config'] or os.path.join(share, 'config', default_task)
     wall_cfg = a['wall_config'] or os.path.join(share, 'config', 'wall.yaml')
     observer_cfg = a['observer_config'] or os.path.join(share, 'config', 'observer.yaml')
     with open(task_cfg) as f:

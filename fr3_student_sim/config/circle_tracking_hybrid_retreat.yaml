@@ -1,6 +1,6 @@
 # Controller: students/circle_tracking/controller_hybrid_retreat.py
 # Requires observer:=true. First detection immediately selects the retreat.
-# TRACK matches circle_tracking_mass_minimization.yaml; no waiting for rest.
+# TRACK uses circular tracking, nullspace damping and mass minimization.
 # Only fingertip position is tracked; orientation remains free in both phases.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1..7
 

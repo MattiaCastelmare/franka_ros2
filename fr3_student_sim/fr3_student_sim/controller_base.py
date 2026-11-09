@@ -3,7 +3,7 @@
 A controller is a Python file that defines ``class Controller(StudentController)``
 and overrides :meth:`update`. The runner calls ``update`` at ``control_rate`` Hz
 with the current simulation time and joint state, and sends the returned torque
-to the robot. See ``students/my_controller.py``.
+to the robot. See ``students/circle_tracking/controller_baseline.py``.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class StudentController:
     """What the runner gives you, as attributes:
 
     robot        FR3Model of the simulated robot (kinematics, M, C, g, m_eff ...)
-    params       dict loaded from the task YAML (``config/task.yaml`` by default)
+    params       dict loaded from the task YAML selected for the experiment
     dt           [s] control period (1 / control_rate)
     tau_applied  (7,) torque that acted on the robot since your previous update:
                  your commands clipped to TAU_MAX, with the simulator's 1 ms
@@ -33,6 +33,10 @@ class StudentController:
         self.tau_applied = np.zeros(7)
         self.log = {}
         self.done = False
+
+    def bind_collision_monitor(self, monitor):
+        """Optional startup hook; ordinary tracking controllers need no binding."""
+        return None
 
     def update(self, t: float, q: np.ndarray, dq: np.ndarray) -> np.ndarray:
         """Return the (7,) joint torque [N m] to command, WITHOUT gravity.

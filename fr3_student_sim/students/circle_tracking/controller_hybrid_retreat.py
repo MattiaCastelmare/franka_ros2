@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from controller_mass_minimization import Controller as MassCircleController
-from controller_nullspace_damping import Controller as DampedCircleController
-from retreat_reference import RetreatReference
+from utils.circle_tracking import MassTrackingController as MassCircleController
+from utils.circle_tracking import DampedTrackingController as DampedCircleController
+from utils.retreat_reference import RetreatReference
 
 
 class Controller(MassCircleController):
@@ -78,8 +78,8 @@ class Controller(MassCircleController):
             self.log = dict(self.retreat_tracker.log)
             normal = self.mass_objective.normal
             J = self.robot.jacobian_pos(q)
+            # The damped tracker already logs directional mass along this normal.
             self.log.update({
-                'mass_kg': float(self.robot.effective_mass(q, normal)),
                 'mass_gradient': np.full(7, np.nan),
                 'tau_mass': np.zeros(7),
                 'normal_speed': float(-normal @ (J @ dq)),

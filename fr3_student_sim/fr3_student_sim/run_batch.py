@@ -1,19 +1,19 @@
 """Run a list of experiments one after the other (no Gazebo window).
 
     cd /ros2_ws/src/fr3_student_sim
-    ros2 run fr3_student_sim run_batch config/batch_example.yaml
+    ros2 run fr3_student_sim run_batch path/to/batch.yaml
 
 The batch file::
 
     defaults:                       # launch options for every run
-      controller: my_controller.py
+      controller: circle_tracking/controller_baseline.py
       duration: 16
       stop_at_detachment: true
     runs:
       - name: slow_circle           # also the prefix of the log file
-        task: {circle: {period: 12.0}}             # merged into config/task.yaml
+        task: {circle: {period: 12.0}}             # merged into the selected task YAML
       - name: soft_wall
-        task: {my_gain: 2.0}                       # any key your controller reads
+        task: {tracking: {kp_nullspace: 20.0}}     # keys read by the controller
         wall: {stiffness: 1500}                    # merged into config/wall.yaml
         launch: {noise_dq: 0.001}                  # extra launch options for this run
 
@@ -58,7 +58,7 @@ def main():
     share = get_package_share_directory('fr3_student_sim')
     batch = _yaml(a.batch)
     defaults = dict(batch.get('defaults', {}))
-    task0 = _yaml(defaults.pop('task_config', os.path.join(share, 'config', 'task.yaml')))
+    default_task_config = defaults.pop('task_config', '')
     wall0 = _yaml(defaults.pop('wall_config', os.path.join(share, 'config', 'wall.yaml')))
     logs = runs_dir()
     cfg_dir = os.path.join(logs, 'batch_configs')
@@ -67,13 +67,23 @@ def main():
     results = []
     for i, run in enumerate(batch['runs']):
         name = run['name']
+        opts = merge(defaults, run.get('launch'))
+        controller = opts.get('controller', 'circle_tracking/controller_baseline.py')
+        default_tasks = {
+            'controller_baseline.py': 'circle_tracking_baseline.yaml',
+            'controller_optimized.py': 'circle_tracking_optimized.yaml',
+            'controller_hybrid_retreat.py': 'circle_tracking_hybrid_retreat.yaml',
+        }
+        default_task = default_tasks.get(os.path.basename(controller), 'circle_tracking_baseline.yaml')
+        task_config = (opts.pop('task_config', default_task_config)
+                       or os.path.join(share, 'config', default_task))
+        task0 = _yaml(task_config)
         task_path = os.path.join(cfg_dir, f'{name}_task.yaml')
         wall_path = os.path.join(cfg_dir, f'{name}_wall.yaml')
         with open(task_path, 'w') as f:
             yaml.safe_dump(merge(task0, run.get('task')), f, sort_keys=False)
         with open(wall_path, 'w') as f:
             yaml.safe_dump(merge(wall0, run.get('wall')), f, sort_keys=False)
-        opts = merge(defaults, run.get('launch'))
         opts.update({'run_name': name, 'task_config': task_path, 'wall_config': wall_path,
                      'log_dir': logs,
                      'gui': 'true' if a.gui else 'false'})

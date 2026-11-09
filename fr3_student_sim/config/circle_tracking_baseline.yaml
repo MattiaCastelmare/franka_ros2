@@ -1,0 +1,19 @@
+# Controller: students/circle_tracking/controller_baseline.py
+# Circular position tracking with nullspace posture feedback and damping.
+# initial_q also defines the fixed preferred posture q0; orientation remains free.
+# Directional mass is logged along the wall normal, without mass minimization.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1..7
+
+circle:
+  radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
+  period: 8.0   # [s] period at cruise angular speed
+  ramp: 1.0     # [s] smooth startup
+
+tracking:
+  kp_position: 100.0  # [1/s^2] Cartesian position-error gain
+  kd_position: 20.0   # [1/s] Cartesian velocity-error gain
+  kp_nullspace: 25.0  # [1/s^2] attraction towards q0 = initial_q, projected by N
+  kd_nullspace: 10.0  # [1/s] nullspace damping, applied once by the parent controller
+
+# The controller keeps tracking after detection; there is no release or retreat.
+# Existing launch duration, torque clipping and safety stops remain active.
