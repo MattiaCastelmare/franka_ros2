@@ -1,0 +1,31 @@
+# Controller: students/circle_tracking/controller_optimized_joint_release.py
+# Optimized is unchanged in TRACK; the joint guard selects pure damping once.
+# The guard uses measured q/dq, independently of collision detection.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad]
+
+# Same fixed offline reference as circle_tracking_optimized.yaml.
+# Static result only: 5.031412 kg at reference contact; see docs/optimized_posture.json.
+q_posture_ref: [0.0009337749574533208, 0.12861549736842573, 0.002690472030156691, -2.322216468315685, 0.009145189410021034, 4.2849746252027465, 0.7921241458891122]
+
+circle:
+  radius: 0.04  # [m] vertical x-z circle
+  period: 4.0   # [s] cruise period
+  ramp: 1.0     # [s] smooth startup
+
+tracking:
+  kp_position: 100.0  # [1/s^2]
+  kd_position: 20.0   # [1/s]
+  kp_nullspace: 25.0  # [1/s^2] attraction towards q_posture_ref
+  kd_nullspace: 10.0  # [1/s] nullspace damping in TRACK
+
+mass_minimization:
+  gain: 0.1  # [N m rad/kg] online analytical mass torque, only in TRACK
+
+joint_release:
+  margin: 0.10     # [rad] from physical limits; runner stop remains at 0.05 rad
+  lookahead: 0.10  # [s] linear prediction towards each bound, not a braking guarantee
+  damping: [30.0, 30.0, 30.0, 20.0, 10.0, 10.0, 5.0]  # [N m s/rad]
+  # RELEASE starts when any predicted distance is <= margin, and remains latched.
+  # Only tau = -diag(damping) * dq remains; Gazebo still compensates gravity.
+  # No tracking, posture attraction, mass torque or Coriolis compensation in RELEASE.
+  # Continue until launch duration or an existing stop; do not resume the circle.

@@ -1,12 +1,13 @@
 # fr3_student_sim
 
-Three FR3 experiments in Gazebo, all controlling only the position of
-`fr3_fingertip` with joint torques. Gripper orientation remains free.
+Four FR3 experiments in Gazebo with joint-torque control. Tracking controls
+only the position of `fr3_fingertip`; gripper orientation remains free.
 
 | Experiment                                                             | Controller in `students/circle_tracking/` | Configuration                                  |
 | ---------------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------- |
 | Circular tracking with nullspace posture feedback                      | `controller_baseline.py`                  | `config/circle_tracking_baseline.yaml`       |
-| Baseline tracking with directional mass minimization | `controller_optimized.py` | `config/circle_tracking_optimized.yaml` |
+| Offline-posture tracking with online directional mass minimization | `controller_optimized.py` | `config/circle_tracking_optimized.yaml` |
+| Optimized tracking with preventive joint-limit release | `controller_optimized_joint_release.py` | `config/circle_tracking_optimized_joint_release.yaml` |
 | Mass-minimizing circular tracking, then immediate retreat on detection | `controller_hybrid_retreat.py`            | `config/circle_tracking_hybrid_retreat.yaml` |
 
 The other experiments, their configurations and the former checks are kept
@@ -64,6 +65,25 @@ ros2 launch fr3_student_sim student.launch.py \
   duration:=20
 ```
 
+Optimized with preventive joint-limit release:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_optimized_joint_release.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_optimized_joint_release.yaml \
+  run_name:=circle_optimized_joint_release \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.20 \
+  duration:=20
+```
+
+The 0.20 real-time factor leaves more computation time for this run without
+guaranteeing receipt of all joint-state samples.
+
 Hybrid retreat:
 
 ```bash
@@ -87,7 +107,8 @@ of every joint-state sample. Logs are saved with the selected run-name prefix.
 
 The launch defaults to `circle_tracking/controller_baseline.py`. When
 `task_config` is omitted, it selects the matching configuration for baseline,
-optimized or hybrid retreat. In a new shell, source `/ros2_ws/install/setup.bash`.
+optimized, optimized joint release or hybrid retreat. In a new shell, source
+`/ros2_ws/install/setup.bash`.
 
 Save figures for each experiment's latest log:
 
@@ -98,8 +119,11 @@ cd /ros2_ws/src/fr3_student_sim
 latest_baseline_log=$(ls -t runs/circle_baseline_*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_baseline_log" --no-show
 
-latest_optimized_log=$(ls -t runs/circle_optimized_*.npz | head -n 1)
+latest_optimized_log=$(ls -t runs/circle_optimized_[0-9]*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_optimized_log" --no-show
+
+latest_joint_release_log=$(ls -t runs/circle_optimized_joint_release_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_joint_release_log" --no-show
 
 latest_retreat_log=$(ls -t runs/circle_hybrid_retreat_*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_retreat_log" --no-show
@@ -107,7 +131,7 @@ ros2 run fr3_student_sim plot_run "$latest_retreat_log" --no-show
 
 ## Controllers and configuration
 
-All three experiments retain the same initial pose, vertical x-z circle of radius
+All four experiments retain the same initial pose, vertical x-z circle of radius
 0.04 m, current cruise period 4 s and startup ramp 1 s. Cartesian gains are
 100 [1/s^2] and 20 [1/s]. The fingertip starts near (0.56, 0, 0.50) m and
 the circular reference reaches x approximately 0.64 m. The current wall is
@@ -122,22 +146,57 @@ are omitted. It logs directional mass as a diagnostic and keeps tracking
 after detections. `user_qdd_null` includes posture feedback and damping;
 `user_qdd_command` contains the total requested acceleration.
 
-The optimized controller inherits the complete baseline law, with the same
-posture gain 25 [1/s^2] and damping 10 [1/s], and adds only the projected
-directional-mass gradient torque. It reuses `utils.mass_objective`, with
+The optimized controller inherits the baseline tracking and posture law,
+with the same posture gain 25 [1/s^2] and damping 10 [1/s]. Its optional
+`q_posture_ref` selects a fixed preferred posture obtained offline. `initial_q`
+still sets the settling pose and the circle's starting point; it is not
+replaced by the posture reference. If `q_posture_ref` is absent, the preferred
+posture falls back to `initial_q`, preserving the previous behaviour. The
+controller also keeps the online projected directional-mass gradient torque.
+It reuses `utils.mass_objective`, with
 the current configured gain 0.1 [N m rad/kg], an analytical gradient and the
-fixed wall normal as its direction. Baseline and optimized therefore share pose, reference,
-Cartesian gains, posture feedback and damping. Both keep tracking after
+fixed wall normal as its direction. Baseline and optimized share the initial
+pose, circular reference, Cartesian gains and posture/damping gains. With an
+offline posture selected, their comparison includes both the changed posture
+reference and online mass minimization. Both keep tracking after
 GMO detections without switching mode. The hybrid-retreat policy remains separate.
 
-For optimized logs, `user_qdd_null` still contains only baseline posture
-feedback and damping; `user_qdd_command` also includes the mass torque's
+For optimized logs, `user_qdd_null` contains posture feedback towards the
+selected reference and damping; `user_qdd_command` also includes the mass torque's
 acceleration contribution. Additional fields are `user_mass_gradient`,
 `user_tau_mass` (requested before total torque clipping), `user_normal_speed`
 and `user_normal_speed_ref`, positive towards the wall. With a full-row-rank
 task Jacobian, setting `mass_minimization.gain` to zero recovers the nominal
-baseline command; the gradient is still evaluated, so computation cost remains
+baseline command only when both use the same posture reference and other
+settings. Otherwise the offline posture remains active. The gradient is
+still evaluated, so computation cost remains
 different. No timing equivalence is assumed.
+
+The preventive joint-release variant starts with the same optimized task,
+offline posture and mass gain 0.1. At each controller update it projects the
+joint-position margins using current velocity over
+`joint_release.lookahead: 0.10` s. If any predicted margin reaches
+`joint_release.margin: 0.10` rad, it latches RELEASE for the rest of RUN.
+The trigger uses joint state independently of GMO events; the observer is
+optional for this variant and remains enabled in the command above.
+
+RELEASE requests only `tau = -D_R @ dq`, with
+`joint_release.damping: [30, 30, 30, 20, 10, 10, 5]` [N m s/rad]. Cartesian
+tracking, posture feedback, mass torque and Coriolis compensation are inactive;
+the simulator continues gravity compensation. It does not resume tracking or
+end the run on release. The linear lookahead is a prediction, not a braking
+distance or joint-limit guarantee. Existing runner limits and stop conditions
+remain active. The original optimized controller and hybrid retreat are unchanged.
+
+The log adds `user_release_active`, `user_release_start_time`,
+`user_release_joint` (0 before release, then the triggering joint numbered
+1 to 7), `user_tau_release`, and seven-component
+`user_joint_limit_margin` and `user_joint_limit_predicted_margin`.
+The release timestamp is its first command-update time and the torque is
+requested before runner clipping. Mass and actual normal speed continue in
+RELEASE, while `user_tau_mass` is zero. Inactive references, errors, mass
+gradient, acceleration commands, nullspace diagnostics and reference normal
+speed are NaN.
 
 The hybrid controller uses nullspace damping 4 [1/s] and the current
 mass-gradient torque gain 0.1 [N m rad/kg] in TRACK. The fixed mass
@@ -163,12 +222,13 @@ The baseline and hybrid TRACK settings differ in both posture feedback and
 nullspace damping, so their comparison does not isolate the mass objective.
 These controllers do not guarantee joint-limit avoidance or lower contact force.
 
-The six active YAML files are:
+The seven active YAML files are:
 
 | File                                           | Role                                                                        |
 | ---------------------------------------------- | --------------------------------------------------------------------------- |
 | `config/circle_tracking_baseline.yaml`       | Baseline initial pose, circle, Cartesian and nullspace gains.               |
-| `config/circle_tracking_optimized.yaml` | Matching baseline settings plus directional-mass gain. |
+| `config/circle_tracking_optimized.yaml` | Baseline tracking/gains, optional offline posture reference and online directional-mass gain. |
+| `config/circle_tracking_optimized_joint_release.yaml` | Matching optimized task plus predictive joint margin, lookahead and release damping. |
 | `config/circle_tracking_hybrid_retreat.yaml` | Hybrid initial pose, circle, tracking, mass objective and retreat settings. |
 | `config/wall.yaml`                           | Shared plane geometry and contact stiffness/damping.                        |
 | `config/observer.yaml`                       | Observer gain and per-joint residual thresholds.                            |
@@ -186,9 +246,68 @@ The shared mass objective now computes the analytical joint gradient from
 Pinocchio's position-Jacobian time variation and Coriolis matrix, evaluated
 with a virtual velocity. It reuses the caller's inertia matrix and Jacobian
 without perturbing joint positions. Optimized and hybrid TRACK evaluate it
-at every controller update. Active YAML files no longer need `gradient_step`;
+at every controller update while their mass-minimizing mode is active.
+Active YAML files no longer need `gradient_step`;
 that extra key in an older task file is ignored. Previous NPZ logs remain
 readable. This change preserves the projected mass-torque law and current gains.
+
+### Offline posture workflow
+
+`students/utils/optimize_posture.py` computes a fixed posture at the first
+entering intersection of the circular reference with the wall plane. It
+keeps that Cartesian point and the fixed wall-normal mass direction, leaves
+orientation free, and constrains each joint inside its position limits with
+an explicitly chosen margin. The point comes from reference geometry,
+independently of measured contact and GMO detection.
+
+The CLI requires `--task-config`, `--wall-config`, `--baseline-log`,
+`--joint-margin`, `--selection` and `--output`. The margin must exceed
+0.05 rad. `--selection closest-target` minimizes squared joint displacement
+from the logged baseline pre-contact configuration while meeting the mass
+target; `minimum-mass` minimizes mass directly. `--reduction` sets the
+requested fractional reduction from logged pre-contact mass, default 0.30.
+The baseline log must match the task and wall, use the original posture
+reference, and come from baseline or optimized with zero mass gain.
+
+The output copies the input task and adds `q_posture_ref`; it retains
+`initial_q`, gains and the online mass objective. A JSON report records the
+reference contact point, baseline/target/candidate masses, joint margins and
+solver status. `--report` selects its path; the default is the output path
+with suffix `.posture.json`. The result is a local static candidate, not a
+claim that its mass or joint margins will be reached throughout the motion
+or at actual impact.
+
+The active optimized task now includes the `closest-target` posture with
+search margin 0.15 rad. Its nominal static mass at the reference contact
+point is 5.031412 kg against the logged baseline's 7.187731 kg, meeting the
+30% static target; the candidate's smallest physical joint margin is
+0.231925 rad. Details and the joint vector are saved in
+[docs/optimized_posture.json](docs/optimized_posture.json). These values do
+not establish the mass reduction at actual impact or margins along the path.
+
+To reproduce the offline task in temporary files, inside the container:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+python3 students/utils/optimize_posture.py \
+  --task-config config/circle_tracking_optimized.yaml \
+  --wall-config config/wall.yaml \
+  --baseline-log runs/circle_optimized_20261110_155101.npz \
+  --selection closest-target \
+  --joint-margin 0.15 \
+  --reduction 0.30 \
+  --output /tmp/circle_tracking_optimized_offline.yaml \
+  --report /tmp/circle_tracking_optimized_offline.posture.json
+```
+
+This reference log used optimized with zero mass gain and `initial_q` as
+posture reference, so it represents the matching baseline law. The launch
+command remains unchanged and uses the posture already stored in the active
+optimized YAML. Regenerate the offline posture with a matching baseline log
+if the model, wall, initial pose or circle settings change. SciPy is imported
+by the standalone offline CLI, not by the online controller.
 
 ## Runtime and collision monitoring
 
@@ -234,8 +353,8 @@ controller owns the latch and reaction; the monitor does not command torque.
 ## Logs and figures
 
 For `X.npz`, the existing plot command saves `X.png`, `X_collision.png` and,
-when observer data are present, `X_observer.png`. It prints ground-truth first
-contact facts and detection times. Logs keep state, references, requested and
+when observer data are present, `X_observer.png`. It prints first-impact
+metrics and detection times. Logs keep state, references, requested and
 clipped torques, wall contact data, observer signals and user diagnostics:
 
 ```python
@@ -254,7 +373,8 @@ run['ctrl_ms'], run['controller_updated'], run['meta']['timing']
 excludes the wall. `tau_wall` is the true external wall torque, retained for
 offline analysis. Neither supplies true force feedback to the controllers.
 
-The baseline and optimized main figures use the generic user-signal layout. Hybrid-retreat
+The baseline, optimized and joint-release main figures use the generic
+user-signal layout. Hybrid-retreat
 logs with the required signals use eight panels: position and reference;
 three position-error components [mm]; seven joint torques [N m]; seven joint
 velocities [rad/s]; force and penetration [mm] on a second axis; mass [kg];
@@ -262,28 +382,37 @@ actual/reference normal speed together; and phase 0 TRACK, 1 RETREAT, 2 HOLD.
 Normal speed is positive towards the wall. HOLD labels the final-reference
 hold, not a new control mode or measured arrival.
 
-The collision figure has five panels: mass and actual normal speed in the
-first row, force and positive penetration [mm] in the second, and generalized
-positive contact work [J] across the last row. Its time origin is the first
-recorded sample with `F_n > 0`, marked by a dashed gold line, with a default
-window of 0.5 s on either side. With no contact it shows the full recorded
-interval. This origin is independent of GMO detection.
+The collision figure now has six panels: directional mass, actual normal
+speed, normal force with its peak marked, penetration with its maximum
+marked, cumulative normal impulse, and a text card with pre-contact normal
+kinetic energy, mass and speed. The first five panels show 50 ms before the
+first recorded `F_n > 0` through the end of its first compression-release
+cycle. Time zero is that force-positive onset, independent of GMO detection.
 
-Work integrates `max(-tau_ext @ dq, 0)` using trapezoids over the whole saved
-sequence and actual timestamp intervals before cropping. Logged `tau_ext`
-takes precedence, with `tau_wall` as fallback for existing wall logs. External
-torque acts on the robot; summing joint power before taking the positive part
-gives net aggregate outward power. Missing external torque or `dq` produces
-`Not logged`; no residual or actuator-torque substitution is made. For the
-current wall the power equals `F_n * max(v_n, 0)`, including elastic loading
-and damping during compression. It is a sampled contact-work estimate.
-The other contact signals and contact-centred zoom remain tied to the wall.
+The cycle ends at the first detachment or the start of the first
+recompression, whichever occurs first. Recompression is identified by normal
+speed returning from negative to positive after release; its zero-crossing
+time is linearly interpolated. Force peak, maximum penetration and impulse
+use only this interval, excluding later contacts and recompressions.
+`impact_metrics.py` shares these definitions between the figure and console
+reports, including the batch report. Impulse integrates the recorded normal
+force with trapezoids and actual timestamp intervals.
 
-`collision_plot.py` prepares these signals offline without recomputing mass
-with Pinocchio or changing the NPZ. Missing mass is labelled unavailable.
-Position-error norm remains available from its helper without being drawn
-in the collision figure; inactive-reference NaNs are preserved. The observer
-figure still shows the seven residuals, thresholds, norm and detection timeline.
+The energy card uses the sample strictly before onset:
+`E_n = 0.5 * m_n * v_n**2`. It is the normal kinetic-energy estimate from
+logged directional mass and speed. No preceding sample means these entry
+values are unavailable and the cycle is incomplete; missing normal speed
+leaves the cycle unavailable.
+If the log ends before a completed cycle, the metrics mark it incomplete.
+The console exposes `first_impact_complete` and `first_impact_end_reason`
+alongside the interval and entry metrics.
+
+Positive contact work is no longer drawn in `_collision.png`.
+`collision_plot.py` and `impact_metrics.py` work offline from the saved
+signals without adding dynamics calculations or changing the NPZ. Missing
+data are labelled unavailable. The main figure, its position-error panels
+and the separate observer figure remain unchanged; the same plotting
+commands still produce the same PNG filenames.
 
 ## Timing reports
 
@@ -321,7 +450,7 @@ from each run; the analytical-gradient change alone makes no performance claim.
 | `duration`                         | `20.0`                                   | Maximum RUN duration [s]; the commands above request 20 s.                                      |
 | `stop_at_detachment`               | `false`                                  | Optionally end at first detachment.                                                            |
 | `control_rate`                     | `1000`                                   | Nominal controller frequency [Hz].                                                             |
-| `real_time_factor`                 | `0.5`                                    | Requested simulation speed; the commands above use 0.50.                                       |
+| `real_time_factor`                 | `0.5`                                    | Requested simulation speed; the joint-release command uses 0.20, the others 0.50. |
 | `run_name`, `log_dir`            | Controller name, package `runs/`         | Log prefix and destination.                                                                    |
 | `gui`                              | `true`                                   | Open the Gazebo window.                                                                        |
 | `partition`                        | Empty                                      | Separate Gazebo transport partition for parallel runs.                                         |

@@ -1,7 +1,14 @@
 # Controller: students/circle_tracking/controller_optimized.py
-# Matches circle_tracking_baseline.yaml, adding only mass minimization.
-# initial_q defines the fixed preferred posture q0; orientation remains free.
+# Matches baseline tracking and gains, with offline posture + online mass minimization.
+# initial_q defines only the start and the circle; orientation remains free.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1..7
+
+# Fixed nullspace reference computed offline at the first reference/wall crossing.
+# Local solution minimizing distance to baseline pre-contact q, with >=30% lower mass.
+# Static mass: 5.031412 kg; baseline: 7.187731 kg; minimum joint margin: 0.231925 rad.
+# Search margin: 0.15 rad. Details: docs/optimized_posture.json.
+# These are static results; mass and margins during the run must still be measured.
+q_posture_ref: [0.0009337749574533208, 0.12861549736842573, 0.002690472030156691, -2.322216468315685, 0.009145189410021034, 4.2849746252027465, 0.7921241458891122]
 
 circle:
   radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
@@ -15,7 +22,7 @@ tracking:
   kd_nullspace: 10.0  # [1/s] same nullspace damping as baseline, applied once
 
 mass_minimization:
-  gain: 0.1            # [N m rad/kg] projected descent torque; 0 recovers baseline law
+  gain: 0.1            # [N m rad/kg]; 0 disables only the online mass torque
   # The gradient is analytical and evaluated at each controller update.
 
 # The fixed mass direction is the configured wall normal, at fr3_fingertip.

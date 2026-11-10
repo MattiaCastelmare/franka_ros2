@@ -72,6 +72,7 @@ def main():
         default_tasks = {
             'controller_baseline.py': 'circle_tracking_baseline.yaml',
             'controller_optimized.py': 'circle_tracking_optimized.yaml',
+            'controller_optimized_joint_release.py': 'circle_tracking_optimized_joint_release.yaml',
             'controller_hybrid_retreat.py': 'circle_tracking_hybrid_retreat.yaml',
         }
         default_task = default_tasks.get(os.path.basename(controller), 'circle_tracking_baseline.yaml')
@@ -99,8 +100,10 @@ def main():
         new = sorted(set(glob.glob(os.path.join(logs, f'{name}_*.npz'))) - before)
         results.append((name, metrics(load_run(new[-1])) if new else None))
 
-    keys = ['stop_reason', 't_contact_s', 'entry_speed_mps', 'peak_force_N',
-            'peak_penetration_mm', 'contact_duration_s', 'max_hand_depth_mm', 'missed_samples_pct']
+    keys = ['stop_reason', 't_contact_s', 'entry_mass_kg', 'entry_speed_mps',
+            'entry_normal_kinetic_energy_J', 'peak_force_N', 'normal_impulse_Ns',
+            'peak_penetration_mm', 'first_impact_duration_s', 'first_impact_complete',
+            'max_hand_depth_mm', 'missed_samples_pct']
     print('\n' + f'{"run":24s}' + ''.join(f'{k[:16]:>18s}' for k in keys))
     for name, m in results:
         if m is None:

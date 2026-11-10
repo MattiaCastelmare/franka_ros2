@@ -1,0 +1,84 @@
+{
+  "nominal_candidate_only": true,
+  "achieved_in_simulation": false,
+  "selection": "closest-target",
+  "joint_margin_rad": 0.15,
+  "requested_reduction": 0.3,
+  "baseline_log": "/ros2_ws/src/fr3_student_sim/runs/circle_optimized_20261110_155101.npz",
+  "baseline_precontact_time_s": 1.8329999999999997,
+  "baseline_first_contact_time_s": 1.834,
+  "baseline_mass_kg": 7.187731092331108,
+  "baseline_recomputed_mass_kg": 7.187731092331105,
+  "target_mass_kg": 5.031411764631776,
+  "candidate_mass_kg": 5.031411764601703,
+  "candidate_reduction": 0.3000000000041839,
+  "initial_q": [
+    0.0,
+    -0.1517,
+    0.0,
+    -2.6105,
+    0.0,
+    4.0295,
+    0.785
+  ],
+  "baseline_precontact_q": [
+    2.605977193611588e-08,
+    -0.030879596260151507,
+    4.0036970633017116e-08,
+    -2.3841105671961347,
+    2.1246763852137057e-07,
+    3.9580028372754583,
+    0.7849998357251635
+  ],
+  "q_posture_ref": [
+    0.0009337749574533208,
+    0.12861549736842573,
+    0.002690472030156691,
+    -2.322216468315685,
+    0.009145189410021034,
+    4.2849746252027465,
+    0.7921241458891122
+  ],
+  "contact_position_m": [
+    0.62,
+    3.810416101196433e-16,
+    0.534600861606316
+  ],
+  "normal": [
+    -1.0,
+    0.0,
+    0.0
+  ],
+  "reference_contact_time_s": 1.8333053190629087,
+  "reference_entry_speed_mps": 0.05441536332317545,
+  "position_error_m": 4.8979003645820756e-12,
+  "joint_margins_rad": [
+    2.742766225042547,
+    1.6550845026315744,
+    2.8980095279698435,
+    0.7198835316843151,
+    2.797354810589979,
+    0.23192537479725317,
+    2.2237758541108876
+  ],
+  "minimum_joint_margin_rad": 0.23192537479725317,
+  "solver": {
+    "method": "SLSQP",
+    "success": true,
+    "message": "Optimization terminated successfully",
+    "iterations": 6
+  },
+  "local_constant_geometry_estimate": {
+    "description": "Online mass/posture balance only; not a trajectory or limit guarantee.",
+    "joint_offset_rad": [
+      -0.0003898196920683767,
+      0.024187439686914107,
+      0.0010785014716569767,
+      0.013448522180828905,
+      0.0015679085552737877,
+      0.0438515513014533,
+      0.002741927868154977
+    ],
+    "minimum_joint_margin_rad": 0.1880738234957997
+  }
+}

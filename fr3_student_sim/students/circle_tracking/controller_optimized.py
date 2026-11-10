@@ -1,8 +1,10 @@
 """The posture baseline plus directional-mass minimization in torque nullspace.
 
-Reuse the baseline's circle, Cartesian tracking, preferred posture and damping.
-Add the same dynamically projected mass-gradient torque used by the hybrid
-experiment. The observer only monitors collisions; this controller keeps tracking.
+Reuse the baseline's circle, Cartesian tracking, posture law and damping.
+An optional fixed q_posture_ref selects the offline low-mass posture, separately
+from initial_q, which still defines the start and the circle. Add the same
+dynamically projected mass-gradient torque used by the hybrid experiment.
+The observer only monitors collisions; this controller keeps tracking.
 Gravity remains compensated by the simulator.
 """
 
@@ -13,10 +15,14 @@ from utils.mass_objective import DirectionalMassObjective, projected_mass_torque
 
 
 class Controller(BaselineController):
-    """Add mass minimization without changing the baseline's other objectives."""
+    """Combine a fixed preferred posture with online mass minimization."""
 
     def __init__(self, robot, params, dt):
         super().__init__(robot, params, dt)
+        self.q0 = np.asarray(
+            params.get('q_posture_ref', params['initial_q']), dtype=float).copy()
+        if self.q0.shape != (7,) or not np.all(np.isfinite(self.q0)):
+            raise ValueError('q_posture_ref must contain seven finite joint angles')
         mass = params.get('mass_minimization', {})
         self.mass_objective = DirectionalMassObjective(robot, self.mass_direction)
         self.mass_gain = float(mass.get('gain', 0.01))

@@ -29,6 +29,8 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
+  <!-- Only the offline preferred-posture search uses SciPy. -->
+  <exec_depend>python3-scipy</exec_depend>
   <!-- Pinocchio comes from robotpkg in the franka_ros2 Docker image (no rosdep key). -->
 
   <test_depend>python3-pytest</test_depend>

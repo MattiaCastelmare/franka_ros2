@@ -2,7 +2,8 @@
 
 This document preserves the development history. The 2026-11-09 cleanup
 retained baseline and hybrid retreat; the later optimized variant adds a
-third active entry point. Earlier sections
+third active entry point, followed by a fourth with preventive joint release.
+Earlier sections
 describe the layout and defaults before that cleanup: archived `students/`,
 `config/` and `test/` paths now live under `fr3_student_sim/trash/`, retaining
 their relative structure. Shared tracking and reference implementations now
@@ -11,6 +12,8 @@ development entries below for the active files and commands.
 
 The analytical-gradient implementation and timing reports added on
 2026-11-10 supersede the finite-difference details in earlier entries.
+The later first-impact entry also supersedes the historical positive-work
+panel and contact-window descriptions.
 
 ## 2026-11-04
 
@@ -1195,3 +1198,325 @@ for safe 1 kHz cases; otherwise they remain unavailable. The summary records
 `controller_timing_source` and `controller_timing_scope` to identify this
 selection and the real-time comparison. These additions report measured
 timing without claiming a speed improvement or guaranteed update rate.
+
+### Separate offline posture reference with online mass minimization
+
+`controller_optimized.py` now accepts an optional `q_posture_ref`, separate
+from `initial_q`. The initial configuration still defines settling and the
+starting point and center of the circular reference. The additional setting
+replaces only the fixed reference used by the optimized controller's posture
+feedback. If omitted, it falls back to `initial_q`, preserving the previous
+controller behaviour. Baseline and hybrid retreat are unchanged.
+
+With $N=I-J^\dagger J$, the optimized nullspace acceleration becomes:
+
+$$
+\begin{aligned}
+q_{\mathrm{posture}} &={}
+\begin{cases}
+q_{\mathrm{posture\_ref}}, & \text{when supplied}, \\
+q_{\mathrm{initial}}, & \text{otherwise},
+\end{cases} \\
+\ddot q_{\mathrm{null}} &=
+  k_{p,N}N\left(q_{\mathrm{posture}}-q\right)-k_{d,N}N\dot q.
+\end{aligned}
+$$
+
+The existing posture and damping gains and the online projected analytical
+mass-gradient torque are retained. `user_qdd_null` reflects the selected
+posture reference and damping; `user_qdd_command` still includes the online
+mass contribution. The reference is saved with task parameters in metadata.
+No new collision reaction is added.
+
+With an offline reference selected only for optimized, comparison against
+baseline includes both the changed posture reference and online mass
+minimization. Zero mass gain removes only the online mass torque: it recovers
+the nominal baseline command only when the posture references and remaining
+settings also match. The gradient computation is still performed.
+
+### Offline posture generation at the reference contact point
+
+`students/utils/optimize_posture.py` adds a standalone offline CLI. It finds
+the first entering intersection $p_c$ of the circular reference with the
+configured wall plane, including the existing startup-ramp timing. The mass
+direction remains the fixed outward wall normal. This reference crossing
+is distinct from measured contact and observer detection.
+
+The selected baseline log supplies $q_s$, the joint configuration at the
+sample immediately before its first $F_n>0$, and the logged mass $m_b$ at
+that sample. The tool accepts matching baseline-law logs, including optimized
+with zero mass gain and the original posture reference. It checks that
+initial pose, circle, gains, wall geometry and the logged mass agree with the
+selected task and model.
+
+Both criteria keep the Cartesian contact position and box-constrain the
+joint positions with an explicit margin $\Delta q$:
+
+$$
+\begin{aligned}
+p(q) &= p_c, \\
+q_{\min}+\Delta q &\le q\le q_{\max}-\Delta q, \\
+m_{\mathrm{target}} &= (1-\rho)m_b.
+\end{aligned}
+$$
+
+`closest-target` minimizes $\tfrac12\lVert q-q_s\rVert^2$ subject also to
+$m_n(q)\le m_{\mathrm{target}}$. `minimum-mass` minimizes $m_n(q)$ directly
+with the position equality and box bounds. Orientation is free. The local
+SLSQP solution is accepted only if its mass meets the requested target and
+its position and bounds satisfy the implemented tolerances. This does not
+assert a global optimum or constrain the intervening dynamic trajectory.
+
+The CLI requires `--task-config`, `--wall-config`, `--baseline-log`,
+`--joint-margin`, `--selection` and `--output`. The explicit margin must
+exceed the runner's 0.05 rad stop margin. Optional `--reduction` defaults to
+0.30, and `--report` overrides the default output suffix `.posture.json`.
+The generated YAML deep-copies the input task and adds `q_posture_ref`,
+leaving the initial pose, gains and online analytical-gradient control intact.
+
+The JSON report records the selected criterion, baseline source and mass,
+mass target, candidate mass, reference contact point, candidate joint vector,
+physical joint margins and solver status. It identifies the result as a
+nominal static candidate rather than an achieved simulation result. Its
+local constant-geometry diagnostic is likewise distinct from a trajectory
+or joint-limit guarantee. A requested reduction describes this static
+candidate; it does not establish the mass at actual impact.
+
+### Active closest-target posture
+
+`config/circle_tracking_optimized.yaml` now stores the generated fixed
+`q_posture_ref`. The selected criterion is `closest-target`, with a search
+margin of 0.15 rad and requested static mass reduction of 30%. With $q_s$
+from the matching baseline-law log, the selected problem is:
+
+$$
+\begin{aligned}
+q^\star &= \arg\min_q\ \frac12\lVert q-q_s\rVert^2, \\
+\text{subject to}\quad
+p(q) &= p_c, \\
+m_n(q) &\le 0.70m_b, \\
+q_{\min}+0.15 &\le q\le q_{\max}-0.15.
+\end{aligned}
+$$
+
+The source is `runs/circle_optimized_20261110_155101.npz`, recorded with zero
+mass gain and the original `initial_q` posture reference. It supplies a
+baseline-law pre-contact mass of 7.187731092 kg. At the reference crossing
+$p_c\approx(0.62,0,0.534600862)$ m, the selected static candidate has mass
+5.031411765 kg, meeting the requested 30% reduction, and minimum physical
+joint margin 0.231925375 rad. The reference crossing time is approximately
+1.833305319 s; this is a reference time, not measured contact or detection.
+
+The candidate joint vector and full offline diagnostics are retained in
+`docs/optimized_posture.json`. The report marks the result as a nominal
+static candidate, not achieved simulation behaviour. Its local
+constant-geometry mass/posture balance estimate is also nominal and does not
+establish margins or convergence during the actual motion.
+
+The active configuration keeps the original `initial_q`, circle and gains;
+the online analytical mass-gradient torque remains active. Baseline and
+hybrid retreat are unchanged. Comparison against the original baseline now
+includes both offline posture selection and online mass minimization. A new
+offline posture and matching reference log are needed if model, wall,
+initial configuration or circle settings change; launch does not recompute
+the posture. The online controller does not import SciPy or run the offline
+solver.
+
+The existing optimized launch and plot commands still apply. To reproduce
+the offline output without overwriting the active task, use:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+python3 students/utils/optimize_posture.py \
+  --task-config config/circle_tracking_optimized.yaml \
+  --wall-config config/wall.yaml \
+  --baseline-log runs/circle_optimized_20261110_155101.npz \
+  --selection closest-target \
+  --joint-margin 0.15 \
+  --reduction 0.30 \
+  --output /tmp/circle_tracking_optimized_offline.yaml \
+  --report /tmp/circle_tracking_optimized_offline.posture.json
+```
+
+### First compression-release cycle metrics and collision figure
+
+`fr3_student_sim/impact_metrics.py` centralizes the first-impact interval and
+metrics used by plotting and console reports. The interval starts at the
+first recorded sample with $F_n>0$. It ends at the first detachment or the
+beginning of the first recompression after release, whichever occurs first.
+The recompression boundary is the negative-to-positive normal-velocity
+zero crossing after release, with its time linearly interpolated between
+recorded samples. Its origin is recorded contact force rather than observer
+detection. Later contacts and recompressions are outside the selected cycle.
+
+The first-impact force peak, maximum penetration and normal impulse use the
+same interval. Writing $t_c$ for onset and $t_e$ for the selected end, the
+shared quantities include:
+
+$$
+\begin{aligned}
+I_n &= \int_{t_c}^{t_e}F_n(t)\,\mathrm{d}t, \\
+F_{n,\max} &= \max_{t_c\le t\le t_e}F_n(t), \\
+\delta_{\max} &= \max_{t_c\le t\le t_e}\max\left(\delta(t),0\right), \\
+E_n^- &= \frac12m_n(t_-)v_n(t_-)^2,\qquad t_-<t_c.
+\end{aligned}
+$$
+
+$t_-$ is the timestamp of the recorded sample immediately before onset.
+Both entry mass and speed come from that sample; no sample after contact is
+substituted. The impulse uses trapezoidal integration with actual timestamp
+intervals, including the selected interpolated cycle boundary. The energy
+is a normal kinetic-energy estimate from existing log signals. No robot
+dynamics or directional-mass model is recomputed offline.
+
+The shared report fields are `contact`, `t_contact_s`, `first_impact_end_s`,
+`first_impact_duration_s`, `first_impact_complete`, `first_impact_end_reason`,
+`precontact_sample_s`, `entry_mass_kg`, `entry_speed_mps`,
+`entry_normal_kinetic_energy_J`, `peak_force_N`, `normal_impulse_Ns` and
+`peak_penetration_mm`. Plotting and the batch report use the same first-cycle
+metrics. If onset is the first log row, pre-contact values remain unavailable
+and the recorded cycle is marked incomplete.
+Missing normal velocity leaves the cycle unavailable. If the log ends before
+the selected cycle is complete, its report is explicitly marked incomplete.
+Missing or incomplete data are not replaced by fabricated values.
+
+`X_collision.png` now has six panels in three rows and two columns:
+
+| Panel | Contents |
+|---|---|
+| Directional mass [kg] | Logged mass along the wall normal. |
+| Normal speed [m/s] | Actual speed, positive towards the wall. |
+| Normal force [N] | First-cycle force with its peak marked. |
+| Penetration [mm] | Positive penetration with its maximum marked. |
+| Cumulative normal impulse [N s] | Integral of force over the first cycle only. |
+| Pre-contact energy card | $E_n^-$, entry mass and entry normal speed. |
+
+The first five panels display 50 ms before onset through the selected cycle
+end, using time relative to onset. The previous positive-work panel is
+removed from this figure. Historical work formulas and figure descriptions
+remain in the preceding development entries. The existing `X.png` main
+figure, `X_observer.png` when monitoring data are present, NPZ contents,
+controller laws and observer are unchanged. The plot command and its
+`--no-show` option retain the same three output filenames.
+
+### Optimized tracking with preventive joint-limit release
+
+The new `students/circle_tracking/controller_optimized_joint_release.py`
+and `config/circle_tracking_optimized_joint_release.yaml` add a separate
+preventive-release variant. TRACK reuses the optimized controller's offline
+posture, circular reference, gains and online analytical mass-gradient torque.
+The existing baseline, optimized and hybrid-retreat controllers and their
+configurations are retained.
+
+At each controller update, the variant predicts the remaining distance to
+each joint limit using a linear velocity lookahead. For joint $i$:
+
+$$
+\begin{aligned}
+\hat d_i^- &= q_i-q_{\min,i}-T\max(-\dot q_i,0), \\
+\hat d_i^+ &= q_{\max,i}-q_i-T\max(\dot q_i,0), \\
+\hat d_i &= \min\left(\hat d_i^-,\hat d_i^+\right), \\
+\mathrm{release}_k &= \mathrm{release}_{k-1}
+  \ \lor\ \left(\min_i\hat d_i\le d_R\right).
+\end{aligned}
+$$
+
+`joint_release.lookahead` supplies $T=0.10$ s and `joint_release.margin`
+supplies $d_R=0.10$ rad. The latch starts false. Its trigger depends only on
+the current joint configuration and velocity, independently of observer
+residuals and detection events. Monitoring can be disabled for this variant;
+the launch command below keeps it enabled for recording.
+
+Once triggered, the controller stays in RELEASE for the remaining RUN and
+requests only joint damping:
+
+$$
+\begin{aligned}
+D_R &= \operatorname{diag}(30,30,30,20,10,10,5)
+       \quad [\mathrm{N\,m\,s/rad}], \\
+\tau(t) &={}
+\begin{cases}
+\tau_{\mathrm{optimized}}(t), & \mathrm{TRACK}, \\
+-D_R\dot q(t), & \mathrm{RELEASE}.
+\end{cases}
+\end{aligned}
+$$
+
+`joint_release.damping` configures the seven coefficients. RELEASE disables
+Cartesian tracking, posture feedback, mass torque and Coriolis compensation.
+Gravity remains compensated by the simulator. The runner still clips the
+requested torque and retains its existing joint-position and velocity stops.
+The controller neither resumes tracking nor sets `done` at release. Wall
+interaction, logging and enabled monitoring continue while the runner stays
+in RUN.
+
+This lookahead uses current velocity over a fixed horizon. It is not a
+computed braking distance, and the added release policy does not guarantee
+that a joint limit will be avoided. No QP, additional tracking term or
+force-based trigger is introduced.
+
+The added log fields are `user_release_active` (0 or 1),
+`user_release_start_time` (NaN before release, then its first command-update
+time), `user_release_joint` (0 before release, then the one-based joint with
+the smallest predicted margin), and `user_tau_release` (seven zeros in
+TRACK, requested damping torque before clipping in RELEASE). The triggering
+joint and start time remain latched. The seven-component
+`user_joint_limit_margin` stores $\min(q-q_{\min},q_{\max}-q)$, and
+`user_joint_limit_predicted_margin` stores the predicted $\hat d$ at each
+update, including during RELEASE.
+
+Directional mass and actual normal speed remain available in RELEASE.
+`user_tau_mass` is zero. The inactive `user_p_ref`, `user_v_ref`,
+`user_a_ref`, position/velocity errors, `user_qdd_command`, `user_qdd_null`,
+`user_dq_null`, `user_mass_gradient` and `user_normal_speed_ref` are NaN.
+The circle center and initial position remain available as constant
+diagnostics. The guard records its transition through these log fields
+without console printing in the update path.
+
+The active inventory now has four controller entry points and seven YAML
+files: four task configurations plus wall, observer and Gazebo-controller
+configuration. Launch and batch task selection recognize the new variant,
+while the default controller remains baseline. The runner is unchanged.
+
+### Run the preventive-release variant
+
+Build for the new files, then launch inside the container:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_optimized_joint_release.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_optimized_joint_release.yaml \
+  run_name:=circle_optimized_joint_release \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.20 \
+  duration:=20
+```
+
+The command requests a maximum RUN duration of 20 s and nominal 1000 Hz
+control. Its real-time factor 0.20 leaves more computation time without
+guaranteeing receipt of every sample; existing safety stops, exceptions or
+`Ctrl+C` can end the run early. Other documented launch commands are unchanged.
+
+Save the figures for its latest log:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+latest_joint_release_log=$(ls -t runs/circle_optimized_joint_release_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_joint_release_log" --no-show
+```
+
+The existing main, observer and first-cycle collision PNGs keep their names
+and metric definitions.

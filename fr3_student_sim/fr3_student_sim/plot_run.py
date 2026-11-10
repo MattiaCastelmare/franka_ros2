@@ -3,16 +3,18 @@
     ros2 run fr3_student_sim plot_run runs/circle_baseline_20261109_180000.npz
     ros2 run fr3_student_sim plot_run runs/*.npz --no-show      # PNGs only, many runs
 
-For each log ``X.npz`` it writes ``X.png`` next to it and prints the ground-truth
-facts of the first contact (time, entry speed, peak force and penetration, duration).
+For each log ``X.npz`` it writes ``X.png`` next to it and prints first-impact
+metrics: peak force, normal impulse, maximum penetration, and the normal
+kinetic energy, mass and speed from the sample immediately before contact.
 Logs with a momentum observer also produce ``X_observer.png`` with the seven
 joint residuals, their detection thresholds, the residual norm and detection times.
-``X_collision.png`` adds five single-run panels around the first recorded contact:
-directional mass, normal velocity, contact force, penetration, positive contact
-work transferred through contact.
+``X_collision.png`` contains six panels for the first compression-release cycle:
+directional mass, normal velocity, contact force, penetration, normal impulse
+and a pre-contact normal kinetic-energy summary. The interval ends at the first
+detachment or the start of recompression, whichever occurs first.
 Hybrid-retreat logs use eight main panels; all user diagnostics remain in the
 NPZ. Other controllers keep the generic layout showing their user signals.
-Further analyses (energies, work, detection delay ...) can be computed from
+Further analyses (detection delay, tracking error ...) can be computed from
 the log. In Python::
 
     from fr3_student_sim.plot_run import load_run, metrics
@@ -49,6 +51,7 @@ from pathlib import Path
 import numpy as np
 
 from fr3_student_sim.collision_plot import collision_figure
+from fr3_student_sim.impact_metrics import first_impact
 from fr3_student_sim.timing import timing_metrics
 
 
@@ -60,8 +63,7 @@ def load_run(path: str) -> dict:
 
 
 def metrics(run: dict) -> dict:
-    """Ground-truth facts of the run and of its first contact. Energies, effective
-    mass, work, detection delay, tracking error ... are yours to compute from the log."""
+    """Run diagnostics and the same first-impact metrics used by the figure."""
     t = run['t']
     out = {'duration_s': float(t[-1]), 'stop_reason': run['meta'].get('stop_reason', ''),
            'samples': int(len(t)),
@@ -69,21 +71,7 @@ def metrics(run: dict) -> dict:
            int(np.sum(np.any(np.abs(run['tau_cmd'] - run['tau']) > 1e-9, axis=1))),
            'max_hand_depth_mm': 1e3 * float(np.max(run['hand_depth'])) if 'hand_depth' in run else 0.0}
     out.update(timing_metrics(run))
-    in_c = np.where(run['contact'] > 0)[0]
-    if in_c.size == 0:
-        out['contact'] = False
-        return out
-    i0 = int(in_c[0])
-    after = np.where(run['contact'][i0:] == 0)[0]
-    i1 = i0 + int(after[0]) if after.size else len(t)
-    out.update({
-        'contact': True,
-        't_contact_s': float(t[i0]),
-        'contact_duration_s': float(t[i1 - 1] - t[i0]),
-        'entry_speed_mps': float(run['v_n'][i0]),
-        'peak_force_N': float(np.max(run['F_n'][i0:i1])),
-        'peak_penetration_mm': 1e3 * float(np.max(run['delta'][i0:i1])),
-    })
+    out.update(first_impact(run)['metrics'])
     return out
 
 

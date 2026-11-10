@@ -30,7 +30,8 @@ ARGS = {
     'controller': ('circle_tracking/controller_baseline.py', 'Controller file (relative to students/ or absolute); '
                                        '"none" = only the robot, commanded from the terminal'),
     'task_config': ('', 'Task YAML passed to the controller as self.params '
-                        '(empty = matching baseline, optimized or hybrid-retreat YAML)'),
+                        '(empty = matching baseline, optimized, optimized-joint-release '
+                        'or hybrid-retreat YAML)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
     'observer': ('true', 'Enable momentum observer and collision detection '
@@ -138,6 +139,7 @@ def _launch(context):
     default_tasks = {
         'controller_baseline.py': 'circle_tracking_baseline.yaml',
         'controller_optimized.py': 'circle_tracking_optimized.yaml',
+        'controller_optimized_joint_release.py': 'circle_tracking_optimized_joint_release.yaml',
         'controller_hybrid_retreat.py': 'circle_tracking_hybrid_retreat.yaml',
     }
     default_task = default_tasks.get(os.path.basename(controller), 'circle_tracking_baseline.yaml')
