@@ -16,7 +16,7 @@ tracking:
 
 mass_minimization:
   gain: 0.1            # [N m rad/kg] applied only before detection
-  gradient_step: 0.0001  # [rad] central differences, evaluated only in TRACK
+  # The gradient is analytical and evaluated at each update only in TRACK.
 
 retreat:
   distance: 0.03  # [m] from actual trigger position, horizontally out of the wall

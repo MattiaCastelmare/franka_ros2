@@ -30,7 +30,8 @@ Logged arrays (one row per 1 kHz plant sample):
     F, F_n, delta, v_n  wall force vector, normal force, penetration, penetration rate
     contact             1 while in contact
     hand_depth          how deep the hand BODY is inside the wall (it should stay <= 0)
-    ctrl_ms             time spent in Controller.update [ms]
+    ctrl_ms             wall time spent in the last Controller.update [ms]
+    controller_updated  true only at samples with a Controller.update call
     residual            momentum-observer residual on the seven joints [N m]
     residual_norm       Euclidean norm of the residual [N m]
     collision_detected  1 while any joint residual exceeds its threshold
@@ -48,6 +49,7 @@ from pathlib import Path
 import numpy as np
 
 from fr3_student_sim.collision_plot import collision_figure
+from fr3_student_sim.timing import timing_metrics
 
 
 def load_run(path: str) -> dict:
@@ -63,12 +65,10 @@ def metrics(run: dict) -> dict:
     t = run['t']
     out = {'duration_s': float(t[-1]), 'stop_reason': run['meta'].get('stop_reason', ''),
            'samples': int(len(t)),
-           'missed_samples_pct': 100.0 * (1.0 - len(t) / max(round((t[-1] - t[0]) / 1e-3) + 1, 1)),
            'tau_saturated_samples':
            int(np.sum(np.any(np.abs(run['tau_cmd'] - run['tau']) > 1e-9, axis=1))),
-           'controller_ms_mean': float(np.mean(run['ctrl_ms'])),
-           'controller_ms_max': float(np.max(run['ctrl_ms'])),
            'max_hand_depth_mm': 1e3 * float(np.max(run['hand_depth'])) if 'hand_depth' in run else 0.0}
+    out.update(timing_metrics(run))
     in_c = np.where(run['contact'] > 0)[0]
     if in_c.size == 0:
         out['contact'] = False

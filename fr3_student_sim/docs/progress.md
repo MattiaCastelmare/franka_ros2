@@ -9,6 +9,9 @@ their relative structure. Shared tracking and reference implementations now
 live in `students/utils/`. Use the current package README and the final
 development entries below for the active files and commands.
 
+The analytical-gradient implementation and timing reports added on
+2026-11-10 supersede the finite-difference details in earlier entries.
+
 ## 2026-11-04
 
 ### Objective
@@ -1103,3 +1106,92 @@ cd /ros2_ws/src/fr3_student_sim
 latest_optimized_log=$(ls -t runs/circle_optimized_*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_optimized_log" --no-show
 ```
+
+## 2026-11-10
+
+### Analytical directional-mass gradient
+
+`students/utils/mass_objective.py` now evaluates the exact joint gradient of
+directional mass through model derivatives. It replaces the previous
+central-difference computation, including the fourteen perturbed
+configurations, while retaining the same fixed-normal objective and
+projected torque law. Both optimized tracking and hybrid TRACK use the shared
+implementation at their existing controller-update frequency. The current
+configured mass gain remains 0.1 [N m rad/kg]; no control gain, collision
+policy or tracking law is changed by this replacement.
+
+For the fixed unit normal $n$ in the robot base frame, let $J$ be the
+fingertip position Jacobian in world-aligned axes. The implementation uses:
+
+$$
+\begin{aligned}
+j &= J(q)^\top n, \\
+x &= M(q)^{-1}j, \\
+m_n(q) &= \left(j^\top x\right)^{-1}, \\
+\dot J(q,x) &= \sum_i x_i\frac{\partial J(q)}{\partial q_i}, \\
+\nabla_q m_n(q) &= -2m_n(q)^2
+  \left[\dot J(q,x)^\top n-C(q,x)^\top x\right].
+\end{aligned}
+$$
+
+$x$ is a virtual velocity used to contract the model derivatives; it is not
+the measured joint velocity or an additional velocity command. The robot
+model exposes `jacobian_pos_time_variation(q, x)` using Pinocchio's
+`LOCAL_WORLD_ALIGNED` frame convention. The same virtual velocity enters
+`coriolis_matrix(q, x)`. The helper can reuse the caller's $M$ and $J$ and
+keeps snapshots of model results while Pinocchio reuses its working data.
+The resulting gradient is neither normalized nor clipped.
+
+Active mass configurations no longer contain `gradient_step`, and the helper
+has no perturbation-step parameter. An extra `gradient_step` in an older task
+mapping is ignored. Previous logs remain readable with their original
+signals. Earlier finite-difference formulas, evaluation counts and step
+values in this document remain historical descriptions, superseded here.
+The current active circle configurations use a cruise period of 4 s; the
+earlier 8 s descriptions likewise refer to the earlier settings. The launch
+commands, duration and requested real-time factors in the README are preserved.
+
+### Controller-call timing and plant-sampling reports
+
+The new `fr3_student_sim/timing.py` prepares timing summaries independently
+of controller and contact diagnostics. Every saved RUN row now includes a
+`controller_updated` flag. `ctrl_ms` measures wall time around the controller
+call; it can remain held on rows without a call. Selecting flagged rows
+prevents those held values from being counted as additional updates.
+
+The summary contains actual update count, mean, 95th percentile and maximum
+controller duration, plus the number and percentage of calls exceeding the
+nominal period:
+
+$$
+\begin{aligned}
+T_s &= \frac{1}{f_{\mathrm{control}}}, \\
+N_{\mathrm{over}} &= \#\left\{k\mid t_{\mathrm{controller},k}>T_s\right\}.
+\end{aligned}
+$$
+
+This comparison assumes real time at RTF = 1. It does not measure complete
+ROS callback latency or establish a deadline for the slower simulation.
+Requested RTF is not stored in metadata. The recorded controller period is
+derived from `control_rate`, rather than inferred from repeated `ctrl_ms`.
+
+Separate plant-stream statistics use the saved simulation timestamps and a
+nominal 1 kHz stream. They count expected and missing samples over the saved
+interval, intervals longer than 1 ms and the maximum interval, with the
+corresponding percentages. Missing-sample count and gap-interval count are
+kept distinct because one interval can contain multiple missing samples.
+
+The runner prints the summary at the end and saves it as `meta['timing']`.
+`plot_run` includes it in the existing printed metrics, using the same command
+and `--no-show` option. The main keys are `controller_updates`,
+`controller_ms_mean`, `controller_ms_p95`, `controller_ms_max`,
+`controller_period_ms`, `controller_update_over_period_count`,
+`controller_update_over_period_pct`, `expected_samples`, `missed_samples`,
+`missed_samples_pct`, `sample_intervals_over_1ms`,
+`sample_intervals_over_1ms_pct` and `sample_interval_ms_max`.
+
+For legacy logs without update flags, per-call statistics are inferred only
+for safe 1 kHz cases; otherwise they remain unavailable. The summary records
+`controller_timing_source` and `controller_timing_scope` to identify this
+selection and the real-time comparison. These additions report measured
+timing without claiming a speed improvement or guaranteed update rate.

@@ -87,6 +87,19 @@ class FR3Model:
         """(3,) linear velocity of the frame origin."""
         return self.jacobian_pos(q, frame) @ np.asarray(dq, float)
 
+    def jacobian_pos_time_variation(self, q, dq, frame: str | None = None) -> np.ndarray:
+        """(3, 7) analytical dJ/dt of the position Jacobian, with world axes.
+
+        ``dq`` may also be a virtual direction when contracting derivatives
+        with respect to q. It does not change the measured joint velocity.
+        """
+        fid = self.frame_id(frame or self.tool_frame)
+        pin.computeJointJacobiansTimeVariation(
+            self.model, self.data, np.asarray(q, float), np.asarray(dq, float))
+        pin.updateFramePlacement(self.model, self.data, fid)
+        return pin.getFrameJacobianTimeVariation(
+            self.model, self.data, fid, pin.LOCAL_WORLD_ALIGNED)[:3].copy()
+
     def jdot_dq(self, q, dq, frame: str | None = None) -> np.ndarray:
         """(3,) dJ/dt * dq of the linear part (the Cartesian acceleration at ddq = 0)."""
         fid = self.frame_id(frame or self.tool_frame)

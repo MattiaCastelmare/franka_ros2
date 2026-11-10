@@ -1,17 +1,29 @@
 """Shared student utility for directional mass and projected gradient torque.
 
-The robot interface supplies ``effective_mass(q, normal)`` at the controlled
-point, expressed in the same base frame as the fixed direction ``normal``.
-Mass is measured in kg; its joint gradient is in kg/rad.
+The position Jacobian and its analytical time variation use world-aligned
+axes at the controlled point, as does the fixed direction ``normal``.
+Mass is measured in kg; its joint gradient is in kg/rad. No configuration
+perturbations or numerical differences are used during control.
 """
 
 import numpy as np
 
 
 class DirectionalMassObjective:
-    """Evaluate reflected mass and its central-difference joint gradient."""
+    """Evaluate reflected mass and its analytical joint gradient.
 
-    def __init__(self, robot, normal, gradient_step):
+    For the seven revolute coordinates, let j = J.T n, x = M^-1 j and
+    m = 1 / (j.T x). The exact derivative contracts the position Hessian
+    and inertia derivatives without assembling either tensor:
+
+        grad(m) = -2 m^2 (Jdot(q, x).T n - C(q, x).T x).
+
+    Here x is a virtual velocity, not the measured dq. The formula uses
+    a fixed world direction, J = dp/dq, and the Coriolis convention
+    Mdot = C + C.T. The gradient is neither normalized nor clipped.
+    """
+
+    def __init__(self, robot, normal):
         normal = np.asarray(normal, dtype=float)
         if normal.shape != (3,) or not np.all(np.isfinite(normal)):
             raise ValueError('mass direction must contain three finite values')
@@ -19,31 +31,26 @@ class DirectionalMassObjective:
         if not np.isfinite(length) or length <= 0.0:
             raise ValueError('mass direction must have a finite, nonzero norm')
         self.normal = (normal / length).copy()
-        self.gradient_step = float(gradient_step)
-        if not np.isfinite(self.gradient_step) or self.gradient_step <= 0.0:
-            raise ValueError('mass gradient step must be finite and positive')
         self.robot = robot
 
-    def evaluate(self, q):
+    def evaluate(self, q, *, M=None, J=None):
         """Return mass [kg] and gradient [kg/rad] at ``q`` [rad].
 
-        A seven-joint robot requires one nominal mass evaluation and fourteen
-        evaluations at symmetric perturbations. The input configuration is
-        unchanged; the gradient is neither normalized nor clipped.
+        Optional M and J reuse the controller's nominal matrices at this q.
+        All model outputs used below are snapshots, since Pinocchio shares
+        its working data between dynamics and kinematics calls.
         """
         q = np.asarray(q, dtype=float)
         if q.ndim != 1 or q.size == 0 or not np.all(np.isfinite(q)):
             raise ValueError('joint positions must be a finite, nonempty vector')
-        mass = float(self.robot.effective_mass(q, self.normal))
-        gradient = np.empty_like(q)
-        h = self.gradient_step
-        for joint in range(q.size):
-            q_plus, q_minus = q.copy(), q.copy()
-            q_plus[joint] += h
-            q_minus[joint] -= h
-            mass_plus = self.robot.effective_mass(q_plus, self.normal)
-            mass_minus = self.robot.effective_mass(q_minus, self.normal)
-            gradient[joint] = (mass_plus - mass_minus) / (2.0 * h)
+        M = self.robot.mass_matrix(q) if M is None else np.asarray(M, dtype=float)
+        J = self.robot.jacobian_pos(q) if J is None else np.asarray(J, dtype=float)
+        j = J.T @ self.normal
+        x = np.linalg.solve(M, j)
+        mass = 1.0 / float(j @ x)
+        Jdot = self.robot.jacobian_pos_time_variation(q, x)
+        C = self.robot.coriolis_matrix(q, x)
+        gradient = -2.0 * mass**2 * (Jdot.T @ self.normal - C.T @ x)
         return mass, gradient
 
 

@@ -48,6 +48,7 @@ from fr3_student_sim.collision_monitor import CollisionMonitor
 from fr3_student_sim.controller_base import StudentController
 from fr3_student_sim.fr3_model import DQ_MAX, Q_MAX, Q_MIN, TAU_MAX, FR3Model
 from fr3_student_sim.robot_description import ARM_JOINTS
+from fr3_student_sim.timing import timing_metrics
 from fr3_student_sim.wall import Wall
 
 HOLD_KP = np.array([600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0])
@@ -217,15 +218,19 @@ class Runner(Node):
             self._finish('exception in momentum observer')
             return
         reason = self._safety(q, dq)
+        controller_updated = False
         if not reason and t >= self.t_last_ctrl + self.dt_ctrl - 1e-6:
             self.t_last_ctrl = t
             # what acted on the robot over the samples since the last update
             self.ctrl.tau_applied = self.torque_history.mean(self.last_control_time, t_sim)
             self.last_control_time = t_sim
+            controller_updated = True
             try:
                 c0 = time.perf_counter()
-                tau = np.asarray(self.ctrl.update(t, q_m, dq_m), float).reshape(7)
-                self.ctrl_ms = 1e3 * (time.perf_counter() - c0)
+                try:
+                    tau = np.asarray(self.ctrl.update(t, q_m, dq_m), float).reshape(7)
+                finally:
+                    self.ctrl_ms = 1e3 * (time.perf_counter() - c0)
                 if not np.all(np.isfinite(tau)):
                     raise ValueError(f'non-finite torque {tau}')
             except Exception:  # the student's code: report and stop safely
@@ -256,6 +261,7 @@ class Runner(Node):
         self.rows.append(np.concatenate([
             [t], q, dq, self.tau_raw, self.tau_ctrl, tau_applied, tau_wall, p, v, F,
             [f_n, delta, v_n, float(f_n > 0), self.hand_depth, self.ctrl_ms,
+             float(controller_updated),
              time.monotonic() - self.wall_t0]]))
 
         self.had_contact |= f_n > 0
@@ -295,10 +301,11 @@ class Runner(Node):
         cols, k, out = [('t', 1), ('q', 7), ('dq', 7), ('tau_cmd', 7), ('tau', 7),
                         ('tau_applied', 7), ('tau_wall', 7), ('p', 3), ('v', 3), ('F', 3), ('F_n', 1),
                         ('delta', 1), ('v_n', 1), ('contact', 1), ('hand_depth', 1), ('ctrl_ms', 1),
-                        ('wall_clock', 1)], 0, {}
+                        ('controller_updated', 1), ('wall_clock', 1)], 0, {}
         for name, n in cols:
             out[name] = R[:, k] if n == 1 else R[:, k:k + n]
             k += n
+        out['controller_updated'] = out['controller_updated'].astype(bool)
         # student log: forward-filled onto every plant sample
         keys = sorted({key for _, d in self.user_rows for key in d})
         for key in keys:
@@ -317,18 +324,34 @@ class Runner(Node):
                 'realism': self.realism,
                 'observer': self.collision_monitor.metadata(self.torque_history.delay),
                 'stop_reason': self.stop_reason}
+        timing = timing_metrics(dict(out, meta=meta))
+        meta['timing'] = timing
         np.savez(self.log_path, meta=json.dumps(meta), **out)
         t, wc = out['t'], out['wall_clock']
         rtf = (t[-1] - t[0]) / max(wc[-1] - wc[0], 1e-9)
-        dropped = 1.0 - len(t) / max(round((t[-1] - t[0]) / 1e-3) + 1, 1)
-        if dropped > 0.02:
+        dropped = timing['missed_samples_pct']
+        if dropped > 2.0:
             self.get_logger().warn(
-                f'{100 * dropped:.0f}% of the 1 kHz joint states were missed: the controller is '
-                f'too slow for real time. Use real_time_factor:=0.5 (or lower) or control_rate:=500.')
+                f'{dropped:.1f}% of the 1 kHz joint states were missed: the runner did not '
+                f'keep up. Reduce real_time_factor or control_rate.')
+        calls = timing['controller_updates']
+        controller_summary = (
+            f'controller {timing["controller_ms_mean"]:.2f} ms mean / '
+            f'{timing["controller_ms_p95"]:.2f} ms p95 / '
+            f'{timing["controller_ms_max"]:.2f} ms max'
+            if calls else 'no controller updates')
         self.get_logger().info(
             f'saved {self.log_path}  ({len(R)} samples, {t[-1]:.2f} s sim, real-time factor '
-            f'{rtf:.2f}, controller {np.mean(out["ctrl_ms"]):.2f} ms mean / '
-            f'{np.max(out["ctrl_ms"]):.2f} ms max, peak wall force {np.max(out["F_n"]):.2f} N)')
+            f'{rtf:.2f}, {controller_summary}, peak wall force {np.max(out["F_n"]):.2f} N)')
+        if calls:
+            self.get_logger().info(
+                f'Controller.update wall time exceeded the nominal real-time period '
+                f'{timing["controller_period_ms"]:.3f} ms (RTF=1): '
+                f'{timing["controller_update_over_period_count"]}/{calls} calls '
+                f'({timing["controller_update_over_period_pct"]:.2f}%). '
+                f'Plant sample intervals over 1 ms simulated: '
+                f'{timing["sample_intervals_over_1ms"]}/{max(len(t) - 1, 0)} '
+                f'({timing["sample_intervals_over_1ms_pct"]:.2f}%).')
 
 
 def _save_interrupted(node):

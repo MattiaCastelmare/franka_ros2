@@ -16,7 +16,7 @@ tracking:
 
 mass_minimization:
   gain: 0.1            # [N m rad/kg] projected descent torque; 0 recovers baseline law
-  gradient_step: 0.0001  # [rad] symmetric finite-difference step
+  # The gradient is analytical and evaluated at each controller update.
 
 # The fixed mass direction is the configured wall normal, at fr3_fingertip.
 # Tracking, posture and mass minimization stay active after collision detection.

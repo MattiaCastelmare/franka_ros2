@@ -108,7 +108,7 @@ ros2 run fr3_student_sim plot_run "$latest_retreat_log" --no-show
 ## Controllers and configuration
 
 All three experiments retain the same initial pose, vertical x-z circle of radius
-0.04 m, cruise period 8 s and startup ramp 1 s. Cartesian gains are
+0.04 m, current cruise period 4 s and startup ramp 1 s. Cartesian gains are
 100 [1/s^2] and 20 [1/s]. The fingertip starts near (0.56, 0, 0.50) m and
 the circular reference reaches x approximately 0.64 m. The current wall is
 at x = 0.62 m, with outward normal (-1, 0, 0), stiffness 20000 N/m and
@@ -125,10 +125,10 @@ after detections. `user_qdd_null` includes posture feedback and damping;
 The optimized controller inherits the complete baseline law, with the same
 posture gain 25 [1/s^2] and damping 10 [1/s], and adds only the projected
 directional-mass gradient torque. It reuses `utils.mass_objective`, with
-gain 0.01 [N m rad/kg], gradient step `1e-4` rad and the fixed wall normal
-as its direction. Baseline and optimized therefore share pose, reference,
+the current configured gain 0.1 [N m rad/kg], an analytical gradient and the
+fixed wall normal as its direction. Baseline and optimized therefore share pose, reference,
 Cartesian gains, posture feedback and damping. Both keep tracking after
-GMO detections without switching mode. The hybrid-retreat controller is unchanged.
+GMO detections without switching mode. The hybrid-retreat policy remains separate.
 
 For optimized logs, `user_qdd_null` still contains only baseline posture
 feedback and damping; `user_qdd_command` also includes the mass torque's
@@ -139,8 +139,8 @@ task Jacobian, setting `mass_minimization.gain` to zero recovers the nominal
 baseline command; the gradient is still evaluated, so computation cost remains
 different. No timing equivalence is assumed.
 
-The hybrid controller uses nullspace damping 4 [1/s] and mass-gradient torque
-gain 0.01 [N m rad/kg] in TRACK, with gradient step `1e-4` rad. The fixed mass
+The hybrid controller uses nullspace damping 4 [1/s] and the current
+mass-gradient torque gain 0.1 [N m rad/kg] in TRACK. The fixed mass
 direction is the wall normal in the base frame. The first GMO detection
 latches RETREAT directly. At the next controller update it captures the
 current fingertip position and starts a 3 cm horizontal retreat along the
@@ -168,7 +168,7 @@ The six active YAML files are:
 | File                                           | Role                                                                        |
 | ---------------------------------------------- | --------------------------------------------------------------------------- |
 | `config/circle_tracking_baseline.yaml`       | Baseline initial pose, circle, Cartesian and nullspace gains.               |
-| `config/circle_tracking_optimized.yaml` | Matching baseline settings plus directional-mass gain and gradient step. |
+| `config/circle_tracking_optimized.yaml` | Matching baseline settings plus directional-mass gain. |
 | `config/circle_tracking_hybrid_retreat.yaml` | Hybrid initial pose, circle, tracking, mass objective and retreat settings. |
 | `config/wall.yaml`                           | Shared plane geometry and contact stiffness/damping.                        |
 | `config/observer.yaml`                       | Observer gain and per-joint residual thresholds.                            |
@@ -181,6 +181,14 @@ Shared tracking classes are in `students/utils/circle_tracking.py`:
 the mass objective stays in `students/utils/mass_objective.py`. This
 reorganization preserves the control laws and current gains. The loader makes
 `students/` importable so controllers can import `utils`.
+
+The shared mass objective now computes the analytical joint gradient from
+Pinocchio's position-Jacobian time variation and Coriolis matrix, evaluated
+with a virtual velocity. It reuses the caller's inertia matrix and Jacobian
+without perturbing joint positions. Optimized and hybrid TRACK evaluate it
+at every controller update. Active YAML files no longer need `gradient_step`;
+that extra key in an older task file is ignored. Previous NPZ logs remain
+readable. This change preserves the projected mass-torque law and current gains.
 
 ## Runtime and collision monitoring
 
@@ -239,6 +247,7 @@ run['tau_cmd'], run['tau'], run['tau_applied'], run['tau_wall']
 run['F_n'], run['delta'], run['v_n'], run['contact']
 run['residual'], run['residual_norm'], run['detection_times']
 run['user_mass_kg'], run['meta']
+run['ctrl_ms'], run['controller_updated'], run['meta']['timing']
 ```
 
 `tau_applied` is the delayed, clipped actuator-command reconstruction; it
@@ -275,6 +284,31 @@ with Pinocchio or changing the NPZ. Missing mass is labelled unavailable.
 Position-error norm remains available from its helper without being drawn
 in the collision figure; inactive-reference NaNs are preserved. The observer
 figure still shows the seven residuals, thresholds, norm and detection timeline.
+
+## Timing reports
+
+New logs mark actual controller calls with `controller_updated`; `ctrl_ms`
+contains the measured wall time around the last controller call. Summaries
+select only marked calls, so a held value on another plant sample is not
+counted twice. `timing.py` reports `controller_updates`,
+`controller_ms_mean`, `controller_ms_p95`, `controller_ms_max`, and the count
+and percentage of calls exceeding `controller_period_ms = 1000/control_rate`.
+This is a nominal real-time comparison at RTF = 1. It does not measure the
+whole callback latency or establish whether the running simulation meets a
+deadline. The requested real-time factor is not saved in metadata.
+
+Plant sampling is reported separately in simulated time: expected and missing
+1 kHz samples, missing percentage, the count/percentage of intervals over
+1 ms, and the maximum interval. One gap can account for several missing
+samples. These counts cover the interval represented by the saved log.
+
+The runner prints timing summaries at the end and saves them in
+`meta['timing']`. The same `plot_run ... --no-show` command prints these
+metrics through its existing report, without a new option or figure. For old
+logs without update flags, controller statistics are inferred only for safe
+1 kHz cases; otherwise they are unavailable. `controller_timing_source`
+records how the calls were selected. Timing fields describe measurements
+from each run; the analytical-gradient change alone makes no performance claim.
 
 ## Launch options
 

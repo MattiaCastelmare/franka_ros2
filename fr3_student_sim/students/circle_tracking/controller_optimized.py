@@ -18,8 +18,7 @@ class Controller(BaselineController):
     def __init__(self, robot, params, dt):
         super().__init__(robot, params, dt)
         mass = params.get('mass_minimization', {})
-        self.mass_objective = DirectionalMassObjective(
-            robot, self.mass_direction, mass.get('gradient_step', 1e-4))
+        self.mass_objective = DirectionalMassObjective(robot, self.mass_direction)
         self.mass_gain = float(mass.get('gain', 0.01))
         if not np.isfinite(self.mass_gain) or self.mass_gain < 0.0:
             raise ValueError('mass_minimization.gain must be finite and nonnegative')
@@ -29,7 +28,7 @@ class Controller(BaselineController):
         tau_baseline = super().update(t, q, dq)
         J = self.robot.jacobian_pos(q)
         M = self.robot.mass_matrix(q)
-        mass_kg, gradient = self.mass_objective.evaluate(q)
+        mass_kg, gradient = self.mass_objective.evaluate(q, M=M, J=J)
         tau_mass = projected_mass_torque(M, J, gradient, self.mass_gain)
 
         # qdd_null retains the baseline's posture+damping contribution. The
