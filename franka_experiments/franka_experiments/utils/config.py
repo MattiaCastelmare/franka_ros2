@@ -632,6 +632,51 @@ CBF_PARAM_SPEC = {
     # row the constant-radius version over-relaxed. The estimate is only ever
     # used when it is LARGER than the constant-radius value, so this can only
     # shrink kappa relative to enable_curvature_term alone.
+    # ── Self-Shadow Barrier (SSB) ───────────────────────────────────────────
+    # The rows built on the depth returns the robot's OWN self-filter deleted
+    # (franka_experiments/utils/self_shadow.py; the measurement side is the
+    # `ssb_*` block under `distance:` in fr3_complete.yaml). Both halves must
+    # be on: this flag alone produces nothing, because without
+    # `distance.ssb_enabled` no `shadow_*` field is ever written.
+    #
+    # OFF by default, and off means no row, no slack used and no change to any
+    # other family — the `ssb` slack COLUMN exists either way so the decision
+    # vector has one layout per build rather than one per flag.
+    'ssb_rows_enabled': ('bool', dict()),
+    # [m] safety distance for the SSB family ONLY. Deliberately smaller than
+    # `d_safe`: a shadow row is the lowest-trust constraint in the problem, it
+    # engages at a few centimetres from the arm's own surface by construction
+    # (the recoverable band is 4-10 cm in front of it), and a large value here
+    # would make a false positive violent instead of merely conservative.
+    'ssb_d_safe': ('float', dict(minimum=0.0, maximum=0.5)),
+    # [m] gap below which a shadow produces a row at all, with `ssb_row_release`
+    # as the hysteresis multiplier on the way out — the same engage/release
+    # discipline the self-collision family uses, and for the same reason: a row
+    # that appears and disappears on alternate rebuilds changes n_c and throws
+    # away OSQP's warm start every time.
+    'ssb_row_horizon': ('float', dict(minimum=0.0, maximum=1.0)),
+    'ssb_row_release': ('float', dict(minimum=1.0, maximum=5.0)),
+    'ssb_max_rows': ('int', dict(minimum=0, maximum=32)),
+    # [s] how long a shadow row survives a frame in which its measurement is
+    # missing. A shadow is a per-frame pixel measurement with no track behind
+    # it, so it flickers across the support and guard thresholds; 0 disables
+    # the hold and makes every row strictly this frame's.
+    'ssb_hold_s': ('float', dict(minimum=0.0, maximum=2.0)),
+    # [m/s] the held surface is eroded by this times the age, so a longer hold
+    # is strictly MORE conservative rather than a stale certainty. Same device
+    # as memory_inflate_speed_mps. 0 holds the measurement unchanged.
+    'ssb_inflate_speed_mps': ('float', dict(minimum=0.0, maximum=5.0)),
+    # Slack price of the SSB family. BELOW rho_slack on purpose: when a shadow
+    # row and an obstacle row disagree the obstacle row — backed by a
+    # measurement the pipeline believed — must win, and a shadow row must be
+    # able to buy its way out rather than deadlock the arm on a surface whose
+    # identity is the thing in doubt.
+    'rho_slack_ssb': ('float', dict(positive=True)),
+    # Cap on the SSB family's slack variable. 1e6 = the preallocated default,
+    # i.e. fully soft. 0.0 makes the SSB rows HARD, which is a legitimate
+    # experiment and can render the QP infeasible — the fallback ladder then
+    # reports it (fb=[full, box, brake]) rather than absorbing it.
+    'ssb_slack_max': ('float', dict(minimum=0.0)),
     'curvature_radius_from_normal': ('bool', dict()),
     'curvature_normal_window_s': ('float', dict(minimum=0.0, maximum=2.0)),
     # Noise floor subtracted from the measured ||n_hatdot|| [rad/s]. Noise
@@ -681,6 +726,7 @@ CBF_PARAM_SPEC = {
     'diag_vel_ratio_thr': ('float', dict(minimum=0.0)),
     'osqp_max_iter': ('int', dict(positive=True)),
     'qp_row_block': ('int', dict(minimum=1, maximum=256)),
+    'qp_thread_fifo_prio': ('int', dict(minimum=0, maximum=99)),
     'diag_period_s': ('float', dict(minimum=0.0)),
     'diag_disable_gc': ('bool', dict()),
     'diag_qddot_alpha': ('float', dict(minimum=0.0, maximum=1.0)),

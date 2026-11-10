@@ -43,6 +43,7 @@ parameter.  No value is hardcoded in this module.
 """
 from __future__ import annotations
 
+import math
 import os
 import queue
 import threading
@@ -193,6 +194,18 @@ class RealTimeDistance(Node):
             link_mesh_samples[link_name] = trimesh.load(
                 full_path, force='mesh').sample(sample_pts)
 
+        # ── Self-Shadow Barrier: ask the mask to keep the model points ────
+        # Has to happen BEFORE MaskBuilder is constructed: it reads the stride
+        # once, in __init__. A shadow candidate is only usable once it has been
+        # tested against the robot's own geometry, so the model set is not
+        # optional when the flag is on — it is derived from the flag rather
+        # than configured separately, which is what stops a run from silently
+        # keeping every candidate because one key was forgotten.
+        if bool(self.distance_cfg.get('ssb_enabled', False)):
+            self.mask_cfg = dict(self.mask_cfg)
+            self.mask_cfg['model_points_stride'] = max(
+                1, int(self.distance_cfg.get('ssb_model_points_stride', 8)))
+
         # ── Sub-systems ──────────────────────────────────────────────────
         self.mask_builder = MaskBuilder(
             link_mesh_samples=link_mesh_samples,
@@ -292,6 +305,41 @@ class RealTimeDistance(Node):
                 if self.distance_cfg['depth_gate_tol_m'] > 0.0 else
                 '2D silhouette only — anything inside the robot outline is '
                 'invisible whatever its depth (set mask.depth_gate_tol_m)'))
+        # ── Self-Shadow Barrier ───────────────────────────────────────────
+        # `ssb_*` live in the distance: block (they are read where the pixels
+        # are) and the mask dilation/downsample stay in mask:. The engine needs
+        # the robot's own mesh samples in camera frame for its 3-D model test,
+        # and MaskBuilder only keeps them when asked, so the stride is derived
+        # from the flag rather than configured twice: a shadow candidate must
+        # be tested against the model or it is not usable, and a silently
+        # missing model would make the mechanism keep everything.
+        if bool(self.distance_cfg.get('ssb_enabled', False)):
+            if self.distance_cfg['depth_gate_tol_m'] <= 0.0:
+                self.get_logger().warn(
+                    'distance.ssb_enabled with mask.depth_gate_tol_m = 0: the '
+                    'self-filter is a pure 2D silhouette, so there is no depth '
+                    'band to recover and SSB will report nothing')
+            if float(self.distance_cfg.get('ssb_guard_m', 0.04)) >= \
+                    self.distance_cfg['depth_gate_tol_m']:
+                self.get_logger().warn(
+                    'distance.ssb_guard_m >= mask.depth_gate_tol_m: the shadow '
+                    'candidate band is EMPTY by construction')
+            stride = int(self.mask_cfg.get('model_points_stride', 0))
+            self.get_logger().info(
+                f'SSB ON: recovering depth returns the self-filter deleted '
+                f'between {self.distance_cfg.get("ssb_guard_m", 0.04):.3f} m '
+                f'and {self.distance_cfg["depth_gate_tol_m"]:.3f} m in front '
+                f'of the debiased model surface; rejected within '
+                f'{self.distance_cfg.get("ssb_model_clearance_m", 0.05):.3f} m '
+                f'of a mesh sample (stride {stride}), minimum blob '
+                f'{int(self.distance_cfg.get("ssb_min_support_px", 6))} px')
+        # SSBDIAG's own throttle, separate from log_throttle_s: the SSB line is
+        # the ONLY evidence an observe-only arm leaves on a bag, so it has to be
+        # able to run faster than the generic distance log without dragging
+        # that one with it.
+        self._ssb_log_throttle_s = float(
+            self.distance_cfg.get('ssb_log_throttle_s', 0.5))
+
         self.distance_cfg['iso_distance_hold_max_s'] = float(
             (ctrl_cfg.get('params', {}) or {}).get('iso_distance_hold_max_s', 0.0))
         self.get_logger().info(
@@ -788,6 +836,12 @@ class RealTimeDistance(Node):
                 # standing before it. None (or a zero tolerance) falls back to
                 # the pure 2D mask exactly.
                 robot_depth=self.mask_builder.robot_depth,
+                # SSB only: the robot's own mesh samples in CAMERA frame, the
+                # representation the 3-D model test needs. None whenever the
+                # mask was not asked to keep them, which keeps the SSB filter
+                # chain honest about not having a model (it then warns rather
+                # than silently keeping every candidate).
+                model_points_cam=self.mask_builder.model_points_cam,
             )
         if cp_results is None:
             self._publish_per_link_heartbeat(stamp)
@@ -865,10 +919,19 @@ class RealTimeDistance(Node):
                         if np.isfinite(r.distance)
                         and r.distance <= thresholds['max_thresh']]
                        if self._publish_contact_regime else in_band)
+        # ── SSB keeps the topic alive on a frame with no obstacle pixel ───
+        # A hand entirely inside the dilated silhouette produces NO publishable
+        # control point — that is the failure SSB exists for — so a shadow
+        # measurement has to be able to force the per-link topic out, exactly
+        # as a predicted impact already can. Without this the rows the barrier
+        # needs are replaced by an empty heartbeat.
+        n_shadow = sum(1 for r in cp_results
+                       if np.isfinite(getattr(r, 'shadow_distance', np.inf)))
         now = time.monotonic()
-        if not publishable and n_pred:
+        if not publishable and (n_pred or n_shadow):
             # Nothing measured inside the band, but a fast object is predicted
-            # to reach a control point: publish, so the CBF gets the rows.
+            # to reach a control point, or the self-filter deleted a return the
+            # robot cannot explain: publish, so the CBF gets the rows.
             self._publish_fallback(fallback_distance, stamp)
             self._publish_rows(cp_results, n_pts, stamp, thresholds, fallback_distance)
             return
@@ -958,6 +1021,9 @@ class RealTimeDistance(Node):
             fallback=fallback_distance,
             zones=self.zones,
             return_cluster_ids=want_cids,
+            shadow_unknown_frac=float(
+                (self.distance_engine.last_shadow_cloud.unknown_fraction()
+                 if self.distance_engine.last_shadow_cloud is not None else 0.0)),
         )
         multi_msg, mld_msg = msgs[0], msgs[1]
         cluster_ids = msgs[2] if want_cids else None
@@ -983,6 +1049,61 @@ class RealTimeDistance(Node):
         self.multi_dist_pub.publish(multi_msg)
         self.per_link_dist_pub.publish(mld_msg)
         self._hb_active = False   # re-arm the heartbeat transition log
+        self._log_ssb(cp_results)
+
+    def _log_ssb(self, cp_results) -> None:
+        """One throttled SSBDIAG line per frame the self-filter deleted anything.
+
+        Every number here is a COUNT of rays in a named class, plus the three
+        filter stages' survivor counts, so the line answers the only question
+        that matters about the measurement half on its own: of the returns the
+        self-filter deleted, how many were unexplainable by the robot's own
+        geometry, and how close was the nearest one.
+
+        This is the perception half's ONLY evidence when the row half is off
+        (condition minimal_l1_ssb_obs): with no SSB row the CBFDIAG `ssb[n/d/s]`
+        field is 0/inf by construction, because the constraint builder is what
+        fills it. Without this line an observe-only arm would look identical to
+        a disabled one on a bag, which is exactly the comparison the validation
+        needs to be able to make.
+
+        Never raises: a diagnostic must not take the perception loop down.
+        """
+        try:
+            st = self.distance_engine.last_shadow_stats or {}
+            if not st:
+                return
+            cloud = self.distance_engine.last_shadow_cloud
+            n_shadow = sum(1 for r in cp_results
+                           if math.isfinite(getattr(r, 'shadow_distance',
+                                                    math.inf)))
+            reason = st.get('reason')
+            if reason:                        # the gate could not run this frame
+                self.get_logger().info(f'SSBDIAG skipped: {reason}',
+                                       throttle_duration_sec=5.0)
+                return
+            gaps = [r.shadow_distance for r in cp_results
+                    if math.isfinite(getattr(r, 'shadow_distance', math.inf))]
+            cls = '/'.join(f'{k.split("_", 1)[1]}:{int(v)}'
+                           for k, v in sorted(st.items()) if k.startswith('cls_'))
+            self.get_logger().info(
+                f'SSBDIAG t={self.get_clock().now().nanoseconds * 1e-9:.3f} '
+                f'cls[{cls}] '
+                f'unknown_frac={float(st.get("unknown_frac", 0.0)):.4f} '
+                f'band={int(st.get("n_band", 0))} '
+                f'unexplained={int(st.get("n_unexplained", 0))} '
+                f'supported={int(st.get("n_supported", 0))} '
+                f'max_blob={int(st.get("max_blob", 0))} '
+                f'ssb_ms={float(st.get("ssb_ms", float("nan"))):.2f} '
+                f'model_pts={int(st.get("n_model_pts", 0))} '
+                f'front_max={float(st.get("front_max_m", 0.0)):.3f} '
+                f'cloud={0 if cloud is None else cloud.n} '
+                f'n_cp_shadow={int(n_shadow)} '
+                f'd_shadow_min={(min(gaps) if gaps else float("inf")):.4f}',
+                throttle_duration_sec=self._ssb_log_throttle_s)
+        except Exception as exc:              # noqa: BLE001
+            self.get_logger().error(f'SSBDIAG failed: {type(exc).__name__}: {exc}',
+                                    throttle_duration_sec=10.0)
 
     def _check_calibration(self, depth, transforms) -> None:
         """Throttled model-vs-measurement comparison. Never raises, never blocks.

@@ -341,7 +341,7 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
     behind the caller's throttle, so its cost is amortised to nothing.
     """
     from franka_experiments.utils.cbf_state_rows import (
-        G_CAP, G_OBS, G_QLIM, G_SC, G_SING, G_SPD)
+        G_CAP, G_OBS, G_QLIM, G_SC, G_SING, G_SPD, G_SSB)
 
     dq = qddot_safe - qddot_nom
     i = int(np.argmin(con.h_bar))
@@ -393,6 +393,14 @@ def format_cbf_diag(*, now, con, rows, caps, h_qp, qdot, qdot_cbf,
         f's[obs/sc/qlim/sing/cap/spd]={slack[G_OBS]:.3f}/{slack[G_SC]:.3f}/'
         f'{slack[G_QLIM]:.3f}/{slack[G_SING]:.3f}/{slack[G_CAP]:.3f}/'
         f'{slack[G_SPD]:.3f} '
+        # ── Self-Shadow Barrier ────────────────────────────────────────────
+        # APPENDED as its own key rather than inside s[...]: every existing
+        # parser splits that bracketed group on '/' and counts six. n_ssb = 0
+        # with the family off, which is also what "nothing was shadowed" looks
+        # like -- the two are told apart by d_ssb (+inf vs a number).
+        f'ssb[n/d/s]={int(getattr(con, "n_ssb", 0))}/'
+        f'{float(getattr(con, "d_ssb_min", float("inf"))):.3f}/'
+        f'{(slack[G_SSB] if G_SSB < len(slack) else 0.0):.3f} '
         f'd_sc={con.d_sc_min:.3f} sigma={rows.diag_sigma:.3f} '
         f'capage={cap_age:.3f} '
         f'vapp={rows.diag_vapp:.3f} hbrake={rows.diag_hbrake:.4f} '

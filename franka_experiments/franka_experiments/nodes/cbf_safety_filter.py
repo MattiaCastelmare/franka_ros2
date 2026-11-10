@@ -62,8 +62,10 @@ from franka_experiments.utils.cbf_hard_limits import (
 )
 from franka_experiments.utils.cbf_diagnostics import (
     FAMILIES,
+    FAMILIES_ALL,
     STATUS_FIELDS,
     STATUS_SCHEMA_VERSION,
+    family_violations,
 )
 from franka_experiments.utils.cbf_zones import ladder_from_params, ZONE_NAMES
 from franka_experiments.utils.go_around import GoAroundState, go_around_step
@@ -93,6 +95,7 @@ from franka_experiments.utils.cbf_state_rows import (
     G_SC,
     G_SING,
     G_SPD,
+    G_SSB,
     NV,
     NX,
     N_SLACK,
@@ -101,6 +104,7 @@ from franka_experiments.utils.cbf_state_rows import (
     NomSnap,
     Obstacle,
     ObstacleSnap,
+    Shadow,
     build_optional_row_builders,
     row_slack_slots,
 )
@@ -272,7 +276,11 @@ class CBFSafetyFilter(Node):
              G_QLIM: P.rho_slack_joint_limit,
              G_SING: P.rho_slack_singularity,
              G_CAP:  P.rho_slack_retreat,
-             G_SPD:  rho_spd},
+             G_SPD:  rho_spd,
+             # Self-Shadow Barrier. Below rho_slack on purpose: when a shadow
+             # row and an obstacle row disagree, the row backed by a
+             # measurement the pipeline BELIEVED must win. See fr3_control.yaml.
+             G_SSB:  P.rho_slack_ssb},
             n_slot=self._n_slot, rho_l1=P.rho_slack_l1,
             eps=P.obstacle_row_slack_eps)
         if self._n_slot:
@@ -295,6 +303,13 @@ class CBFSafetyFilter(Node):
         # obstacle rows and is surfaced by the fallback ladder (qp_fails,
         # fb=[full, box, brake]) instead of being absorbed somewhere else.
         # Only [:NV] is mutated per tick, so this bound stands for the run.
+        self._box_ub[NV + G_SSB] = float(P.ssb_slack_max)
+        if P.ssb_rows_enabled and P.ssb_slack_max <= 0.0:
+            self.get_logger().warn(
+                'ssb_slack_max = 0: the self-shadow rows are HARD. A shadow '
+                'the three perception filters let through can now make the QP '
+                'infeasible, and the fallback ladder (fb=[full, box, brake]) '
+                'is what will report it')
         self._box_ub[NV + G_OBS] = float(P.obstacle_slack_max)
         if P.obstacle_slack_max <= 0.0:
             self.get_logger().warn(
@@ -359,6 +374,17 @@ class CBFSafetyFilter(Node):
 
         # ── 6. Diagnostics ──────────────────────────────────────────────
         self._diag_slack = np.zeros(N_SLACK)
+        # The FULL slack vector of the emitted iterate, [family | row_l1]. The
+        # per-family summary above cannot stand in for it: the l1 rows carry
+        # their own columns in G, so the relaxed residual needs every slack the
+        # decision vector holds, not the 6-wide family digest.
+        self._diag_slack_full = np.zeros(self._n_slack)
+        # OPEN_ISSUES S4: the 12 per-family residual columns of /cbf_status.
+        # NaN is "not measured", which is what a tick that never reached the
+        # solve reports -- so they are reset to NaN every tick and written only
+        # where a real G, rhs and command exist.
+        self._diag_viol_raw = np.full(len(FAMILIES_ALL), float("nan"))
+        self._diag_viol_relaxed = np.full(len(FAMILIES_ALL), float("nan"))
         self._diag_vel_ratio = np.zeros(NV)
         self._diag_vel_bite = np.zeros(NV, dtype=bool)
         self._diag_slew_step = np.zeros(NV)
@@ -810,7 +836,30 @@ class CBFSafetyFilter(Node):
         # which is what used to make it depend on which rows survived the
         # builder's filters. See that function for what went wrong.
         parsed = []
+        shadows = []
         for cp_label, ld in labelled_links(msg):
+            # ── Self-Shadow Barrier ────────────────────────────────────────
+            # BEFORE the `ld.valid` gate, deliberately. `valid` is a statement
+            # about the OBSTACLE measurement, and the frame SSB exists for is
+            # exactly the one where there is no obstacle measurement: a hand
+            # entirely inside the dilated silhouette produces no obstacle pixel
+            # at all, so every entry of that frame is `valid = False` while the
+            # shadow is the only thing the barrier has. Gating the shadow on
+            # the obstacle's validity would discard it precisely then.
+            #
+            # `getattr` because an installed franka_msgs may predate the
+            # fields; the default is False, which contributes no row.
+            if getattr(ld, 'shadow_valid', False):
+                shadows.append(Shadow(
+                    cp_label=cp_label,
+                    link=ld.robot_link_name,
+                    d=float(ld.shadow_distance),
+                    pr=np.array([ld.closest_point_robot.x,
+                                 ld.closest_point_robot.y,
+                                 ld.closest_point_robot.z]),
+                    ph=np.array([ld.shadow_point.x, ld.shadow_point.y,
+                                 ld.shadow_point.z]),
+                    front_m=float(getattr(ld, 'shadow_front_m', 0.0))))
             if not ld.valid:
                 continue
             parsed.append(Obstacle(
@@ -853,7 +902,7 @@ class CBFSafetyFilter(Node):
                 self._cap_warned = True
             t_cap = now
         self._diag_cap_age = age
-        self._obs = ObstacleSnap(items, now, t_cap)
+        self._obs = ObstacleSnap(items, now, t_cap, shadows=tuple(shadows))
         self._track_input_rate(t_cap)
 
         # ── Empty-frame run (roadmap Step 7) ────────────────────────────
@@ -912,7 +961,30 @@ class CBFSafetyFilter(Node):
             self._con = self._rows.build(js, obs, self._now())
 
     def _elevate_thread_priority(self) -> None:
-        """Put *only* the calling (QP) thread on SCHED_FIFO at moderate priority.
+        """Put *only* the calling (QP) thread on SCHED_FIFO, if asked to.
+
+        DEFAULT OFF since 2026-11-07 (``qp_thread_fifo_prio: 0``), because on a
+        GIL'd interpreter this elevation is a PRIORITY INVERSION and it cost
+        rate rather than buying it. The FIFO thread cannot run without the GIL,
+        and the threads that must hand the GIL over -- grp_io, which delivers
+        joint states, and grp_perc, which rebuilds the rows -- are SCHED_OTHER,
+        so the kernel keeps preferring a thread that is blocked on a lock the
+        threads it outranks are holding. Measured in this container (July 2026):
+        ~46 Hz with the elevation against ~70 Hz with `ulimit -r 0`, with
+        `_qp_tick gap` warnings up to 900 ms. Every run of the 11-06 campaign
+        logged "elevated to SCHED_FIFO prio 50" and achieved ~90 Hz against the
+        100 Hz it asked for; OPEN_ISSUES S6 measures 30-56 Hz against 300 Hz
+        requested and had already ruled out the solver (0.25 ms), the clock,
+        input starvation, core count and the GUI. A blocked-not-saturated
+        filter at 49 % CPU is what a priority inversion looks like.
+
+        Raising the WHOLE process is the coherent alternative (`chrt -f 50` in
+        the launch wrapper, or an `rtprio` rlimit plus a single-threaded design)
+        because then no thread of it outranks another. That is a launch-side
+        change, not this node's to make.
+
+        Set ``qp_thread_fifo_prio`` to a positive priority to restore the old
+        behaviour for an A/B.
 
         On Linux, scheduling policy/priority are per-thread and sched_setscheduler
         targets a kernel TID; passing threading.get_native_id() (this thread's
@@ -937,11 +1009,19 @@ class CBFSafetyFilter(Node):
         env-based library/package discovery. Verify the limit with `ulimit -r`
         (already confirmed 99 on this machine). Do NOT request root here.
         """
+        prio = int(getattr(self.P, 'qp_thread_fifo_prio', 0))
+        if prio <= 0:
+            self.get_logger().info(
+                '_qp_tick thread left at default scheduling '
+                '(qp_thread_fifo_prio=0): a single SCHED_FIFO thread in a GIL\'d '
+                'process inverts against the io/perception threads that feed it '
+                '— see OPEN_ISSUES S6. Elevate the whole process instead.')
+            return
         try:
             tid = threading.get_native_id()          # this QP thread's kernel TID
-            os.sched_setscheduler(tid, os.SCHED_FIFO, os.sched_param(50))
+            os.sched_setscheduler(tid, os.SCHED_FIFO, os.sched_param(prio))
             self.get_logger().info(
-                f'_qp_tick thread (tid={tid}) elevated to SCHED_FIFO prio 50')
+                f'_qp_tick thread (tid={tid}) elevated to SCHED_FIFO prio {prio}')
         except PermissionError:
             self.get_logger().warn(
                 'Cannot set SCHED_FIFO (RTPRIO rlimit too low) — _qp_tick runs '
@@ -961,6 +1041,12 @@ class CBFSafetyFilter(Node):
             self._priority_set = True                   # executor's own thread
             self._elevate_thread_priority()
         self._watch_tick_gap()
+        # NaN = "not measured" for every path that returns before the solve
+        # (ISO stop, no joint state, stale geometry). Reset HERE and not beside
+        # the computation, or an early return republishes the previous tick's
+        # residuals as if they described this command.
+        self._diag_viol_raw[:] = float('nan')
+        self._diag_viol_relaxed[:] = float('nan')
 
         js = self._js
         if js is None:
@@ -1392,6 +1478,24 @@ class CBFSafetyFilter(Node):
         if level != OSQP_LEVEL_FULL:
             fault = 1.0                     # the barrier was off for this tick
 
+        # ── OPEN_ISSUES S4: the per-family residuals of the EMITTED command ──
+        # Not of the solver's iterate: qddot_safe is what leaves this node, and
+        # the question these columns answer is "was the row the command was
+        # sent against actually satisfied". On the UNPADDED G, so the zero rows
+        # pad_rows_to_block appends cannot dilute a family's maximum, and with
+        # con.group, whose length is the real n_c. ~0.02 ms at 70 rows: one
+        # matvec, which is why this can live on the tick at all.
+        if G is not None and h_qp is not None and con is not None and n_c:
+            try:
+                raw, relaxed = family_violations(
+                    G, h_qp, qddot_safe, self._diag_slack_full, con.group)
+                self._diag_viol_raw[:] = raw
+                self._diag_viol_relaxed[:] = relaxed
+            except Exception as exc:        # noqa: BLE001 — a diagnostic must
+                self.get_logger().warn(     # never take the control loop down
+                    f'family_violations failed: {type(exc).__name__}: {exc}',
+                    throttle_duration_sec=5.0)
+
         # ── STEP 6: publish, then report ────────────────────────────────
         if P.slew_box_enabled:
             np.subtract(qddot_safe, self._qddot_prev, out=self._diag_slew_step)
@@ -1637,6 +1741,22 @@ class CBFSafetyFilter(Node):
             self._osqp_prob, self._prev_nc = None, -1
         self._fallback_count[level] += 1
         self._last_level = level
+        # The FULL slack of the emitted iterate, for the relaxed residuals
+        # (OPEN_ISSUES S4). On a fallback rung the slack columns of G were not
+        # part of the answer, so the honest value is zero: the brake relaxes
+        # nothing, and reporting the failed iterate's slack would credit the
+        # command with a relaxation it never got.
+        tail = x[NV:]
+        # getattr: test/test_safety_failure_policy.py drives this method with a
+        # SimpleNamespace stub that predates the buffer.
+        full = getattr(self, '_diag_slack_full', None)
+        if full is None or full.shape[0] != tail.shape[0]:
+            full = np.zeros(tail.shape[0])
+            self._diag_slack_full = full
+        if level == OSQP_LEVEL_FULL:
+            np.copyto(full, tail)
+        else:
+            full[:] = 0.0
         if n_c > 0 and level == OSQP_LEVEL_FULL:
             np.copyto(self._diag_slack, x[NV:NX])
             if n_slot:
@@ -1897,6 +2017,14 @@ class CBFSafetyFilter(Node):
         obs, js = getattr(self, '_obs', None), getattr(self, '_js', None)
         sl = getattr(self, '_diag_slack', None)
         conf = getattr(self, '_diag_slew_conflict', None)
+        # getattr: the lightweight node stubs in the status-contract tests
+        # predate these buffers, and "not measured" is the honest answer for a
+        # caller that never ran a tick.
+        nanf = np.full(len(FAMILIES_ALL), nan)
+        v_raw = getattr(self, '_diag_viol_raw', nanf)
+        v_rel = getattr(self, '_diag_viol_relaxed', nanf)
+        n_hist = len(FAMILIES)          # the six whose columns are interleaved
+        n_tail = len(FAMILIES_ALL) - n_hist
         self._status_msg.data = [
             float(n_c), slack, fault, float(n_act), d_obs,
             float(s_p), float(v_cap), float(v_cls), float(latched),
@@ -1910,14 +2038,28 @@ class CBFSafetyFilter(Node):
             now - float(getattr(con, 'capture_stamp', nan)) if con is not None else nan,
             now - float(obs.stamp) if obs is not None else nan,
             now - float(getattr(con, 'built_stamp', nan)) if con is not None else nan,
-            # Per-family slack of the emitted command. The residuals that would
-            # go beside them (cbf_diagnostics.family_violations) need the QP's
-            # own G/rhs in decision-vector layout, which the tick does not keep;
-            # they stay NaN until the single-rate rebuild makes that cheap.
+            # Per-family slack of the emitted command, then its UNRELAXED and
+            # SLACK-RELAXED positive residuals (OPEN_ISSUES S4, closed
+            # 2026-11-07). Each family keeps its own units -- an obstacle row is
+            # [m/s^2], a joint-limit row is not -- so these must not be compared
+            # across families; see the cbf_diagnostics module docstring.
+            # violation_without_slack_* > 0 is the one that matters: it says the
+            # emitted command does not satisfy that family's row even before the
+            # slack it was allowed to buy.
             *(float(sl[g]) if sl is not None and g < len(sl) else nan
-              for g in range(len(FAMILIES))),
-            *(nan for _ in range(2 * len(FAMILIES))),
+              for g in range(n_hist)),
+            *(float(v) for v in v_raw[:n_hist]),
+            *(float(v) for v in v_rel[:n_hist]),
             float(getattr(con, 'build_wall_ms', nan)) if con is not None else nan,
+            # ── schema v3 tail: the families added after v2 ────────────────
+            # Appended, one column each, so no v2 index moves. The slice is
+            # driven by FAMILIES_ALL rather than by a literal 6, so adding a
+            # family to the QP extends this automatically instead of silently
+            # reporting the wrong column.
+            *(float(sl[n_hist + k]) if sl is not None and n_hist + k < len(sl)
+              else nan for k in range(n_tail)),
+            *(float(v) for v in v_raw[n_hist:]),
+            *(float(v) for v in v_rel[n_hist:]),
         ]
         self._status_pub.publish(self._status_msg)
 

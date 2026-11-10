@@ -256,6 +256,703 @@ conditions:
 
 
 
+  # ── SSB arms (Self-Shadow Barrier) ───────────────────────────────────────
+  # Three arms over minimal_l1, isolating the two halves of the mechanism. The
+  # perception half (distance.ssb_enabled) only MEASURES: it classifies the
+  # rays the self-filter deleted and publishes the shadow_* fields. The control
+  # half (cbf.ssb_rows_enabled) turns those measurements into constraint rows.
+  # Both default OFF, so minimal_l1 itself is the A baseline and is untouched.
+  #
+  # Scenarios: ssb_poke and ssb_band_sweep (config/scenarios.yaml) are the only
+  # ones that put an obstacle INSIDE the deleted band on purpose. Running these
+  # arms on any other scenario measures the mechanism's cost, not its effect.
+  minimal_l1_ssb_obs:
+    description: >
+      minimal_l1 + the SSB PERCEPTION half only: the deleted rays are
+      classified and the shadow_* fields are published, but no constraint row
+      is built. This is the arm that answers "does SSB see the blind region",
+      separately from "does acting on it help" — and it is also the honest
+      measurement of what the classification alone costs.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.04
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 3   # see fr3_complete.yaml: 6 never fires
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # Spelled out at OFF, so the resolved record of this arm differs from
+      # minimal_l1_ssb's in ssb_rows_enabled alone (ground rule 3: nothing
+      # implicit). The rest are inert while the flag is false and are listed
+      # so a sweep can drive them with --set.
+      ssb_rows_enabled: false
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
+  minimal_l1_ssb:
+    description: >
+      minimal_l1 + BOTH halves of the SSB: the deleted rays are classified and
+      the unexplained, cluster-supported ones become their own HOCBF family
+      (G_SSB) with their own slack price and their own, smaller safety
+      distance. The arm that answers "does acting on the blind region change
+      the motion".
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.04
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 3   # see fr3_complete.yaml: 6 never fires
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # The SSB family. Declared at the values fr3_control.yaml ships, so this
+      # arm differs from minimal_l1_ssb_obs in ssb_rows_enabled ALONE.
+      ssb_rows_enabled: true
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
+  minimal_l1_ssb_tol08:
+    description: >
+      SENSITIVITY to the depth gate's tolerance, the parameter the whole
+      mechanism hangs on. The band is (bias + guard, bias + tol), so 0.08 m
+      makes it 4 cm deep instead of 6 and there is less to classify. It also
+      narrows the self-filter itself, so the ordinary pipeline changes too --
+      this measures the chain's sensitivity to a SHARED parameter, not SSB's
+      alone. (An earlier draft called this the empty-band arm; that was wrong,
+      the band empties when tol <= guard, not when tol <= bias + guard. The
+      empty-band arm is minimal_l1_ssb_guard12.)
+      the motion".
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      mask: {depth_gate_tol_m: 0.08}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.04
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 3   # see fr3_complete.yaml: 6 never fires
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # The SSB family. Declared at the values fr3_control.yaml ships, so this
+      # arm differs from minimal_l1_ssb_obs in ssb_rows_enabled ALONE.
+      ssb_rows_enabled: true
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
+  minimal_l1_ssb_guard12:
+    description: >
+      THE FALSIFICATION ARM. ssb_guard_m 0.12 with depth_gate_tol_m 0.10
+      leaves the candidate band (bias + guard, bias + tol) = (0.18, 0.16)
+      EMPTY, so no return can be a candidate and SSB must classify nothing at
+      all. If shadows still appear here, the classifier is not reading the band
+      it claims to read and every positive result in the report is void.
+      ``ssb_guard_m`` is an SSB-only key: the self-filter and the ordinary
+      obstacle pipeline are bit-identical to minimal_l1_ssb, which makes this
+      arm also a clean "SSB present but inert" control.
+      the motion".
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.12
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 3   # see fr3_complete.yaml: 6 never fires
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # The SSB family. Declared at the values fr3_control.yaml ships, so this
+      # arm differs from minimal_l1_ssb_obs in ssb_rows_enabled ALONE.
+      ssb_rows_enabled: true
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
+  minimal_l1_ssb_tol20:
+    description: >
+      SENSITIVITY to the depth gate's tolerance, the other way: 0.20 m makes
+      the deleted band 10 cm deep instead of 6, so more of the approach is
+      blind and SSB has more to classify. Also widens the self-filter, so the
+      ordinary pipeline loses more -- a SHARED parameter, as in
+      minimal_l1_ssb_tol08.
+      the motion".
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      mask: {depth_gate_tol_m: 0.20}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.04
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 3   # see fr3_complete.yaml: 6 never fires
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # The SSB family. Declared at the values fr3_control.yaml ships, so this
+      # arm differs from minimal_l1_ssb_obs in ssb_rows_enabled ALONE.
+      ssb_rows_enabled: true
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
+  minimal_l1_ssb_dil8:
+    description: >
+      SENSITIVITY to the gripper mask dilation: 8 px instead of the shipped
+      18. A thinner silhouette deletes fewer rays near the hand, so there is
+      less to be shadowed -- and correspondingly less self-filter protection
+      against the arm being its own obstacle. Shared parameter again.
+      the motion".
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      mask: {ee_mask_dilate_px: 8}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.04
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 3   # see fr3_complete.yaml: 6 never fires
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # The SSB family. Declared at the values fr3_control.yaml ships, so this
+      # arm differs from minimal_l1_ssb_obs in ssb_rows_enabled ALONE.
+      ssb_rows_enabled: true
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
+  minimal_l1_ssb_sup6:
+    description: >
+      minimal_l1_ssb with the FIRST support threshold that was tried, 6 grid
+      samples. Kept as a measured sensitivity, not as a candidate: on ssb_poke
+      the largest blob a 4 cm ball ever produced was 3 samples, so this arm
+      builds ZERO rows and is behaviourally the observe-only arm. It is here
+      because "the mechanism is support-limited" is a result, and a threshold
+      that silently never fires is the failure mode most worth pinning.
+    obstacle_tracking: true
+    obstacle_velocity_source: tracker
+    perception:
+      tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}
+      distance:
+        ssb_enabled: true
+        ssb_guard_m: 0.04
+        ssb_model_clearance_m: 0.05
+        ssb_model_points_stride: 8
+        ssb_min_support_px: 6   # THE ONLY DIFFERENCE from minimal_l1_ssb
+        # 0.05 s, not the shipped 0.5: the ball crosses the deleted band in
+        # 0.75 s (ssb_poke), so a 0.5 s throttle samples two of the ~68 frames
+        # of the crossing and no time-resolved claim can be made from it.
+        ssb_log_throttle_s: 0.05
+    cbf:
+      uncertainty_margin: false        # k_sigma*sqrt(n'Pvv n)*T_react tightening
+      latency_compensation: false      # h_pred + propagated covariance
+      velocity_standoff: false         # d_safe_eff = d_safe + 0.25*v_o
+      zone_ladder: false               # per-row k0/k1, slack price, task fade
+      lateral_evasion: false           # sideways bias on the QP target
+      livelock_escape: false           # nullspace nudge when blocked and still
+      obstacle_velocity_normal_guard: false   # conditioning of v_o
+      obstacle_identity_guard: false          # conditioning of v_o
+      vobs_in_hdot: true               # KEPT: this IS the v_o of the formulation
+    # fr3_control.yaml keys with no launch argument, passed to the node as ROS
+    # parameters (cbf_param_overrides) so the installed YAML is never edited.
+    cbf_params:
+      # Declared here ONLY so --set can drive them in a sweep; the values are
+      # the ones config/fr3_control.yaml ships (k0_cbf 25.0, k1_cbf 10.5,
+      # cbf_update_rate_hz 50.0), so a plain run of this condition is
+      # byte-identical to before they were listed.
+      k0_cbf: 25.0                         # HOCBF position gain (omega^2, omega=5)
+      k1_cbf: 10.5                         # HOCBF velocity gain (~2*omega)
+      cbf_update_rate_hz: 50.0             # geometry rebuild rate of A, h_bar, c
+      vobs_hdot_max: 2.0                   # clamp on the v_o that enters hdot [m/s]
+      obstacle_velocity_min_frames: 8       # frames a track must be UPDATED on before
+                                           # its velocity is trusted (8 = ~265 ms at
+                                           # 30 Hz). Listed only so --set can drive it;
+                                           # 8 is the shipped value.
+      enable_go_around: false              # off in both arms
+      margin_gate_on_approach: false       # nothing left to gate
+      enable_velocity_feedforward: false   # quadratic braking margin v^2/2a
+      enable_sensor_range_uncertainty: false
+      state_governor_enabled: false        # task fade on the robot's own state
+      retreat_cap_enabled: false           # retreat rate-cap row family
+      link_speed_rows_enabled: false       # task-space speed cap row family
+      cbf_tangential_gain: 0.0             # the tangential steering bias
+      cbf_h_recovery_alpha: 0.0            # h is the measurement, unsmoothed
+      cbf_hdot_filter_alpha: 0.0           # k1 sees the measured qdot
+      obstacle_velocity_residual_floor: false   # v_o = the plain projection
+      obstacle_velocity_median: 1
+      obstacle_velocity_median_s: 0.0
+      obstacle_velocity_fast_trust: false
+      qp_rate_hz: 100.0                    # same experimental control as full
+      # Declared at their shipped defaults so the static-baseline sweep can
+      # drive them with --set. Listing them here changes nothing on its own.
+      rho_slack: 1000.0                    # price of the OBSTACLE family's slack
+      obstacle_slack_max: 1000000.0        # 0.0 makes the obstacle rows hard
+      obstacle_slack_mode: row_l1          # THE ONLY DIFFERENCE from minimal
+      rho_slack_l1: 1000.0
+      obstacle_row_slack_eps: 1000.0
+      obstacle_row_slack_slots: 32
+      obstacle_row_osqp_eps_rel: 1.0e-5
+      # Task 1 (safe fallback) at its shipped default, listed so --set can
+      # drive it. See condition minimal_l1_legacy_fallback.
+      qp_failure_policy: brake
+      slew_yields_to_state_box: true
+      brake_slew_limited: true
+      # Also at their shipped defaults, listed so the Task-1 STRESS grids can
+      # drive them with --set. The fallback and the slew yield are dormant in a
+      # healthy run, so the only way to measure them is to make the QP fail
+      # (obstacle_slack_max 0 = hard obstacle rows, osqp_max_iter small = no
+      # budget) or the slew box bite (max_qddot_delta small). Listing them here
+      # changes nothing on its own.
+      max_qddot_delta: 0.5
+      osqp_max_iter: 20000
+      k_brake: 3.0
+      # The SSB family. Declared at the values fr3_control.yaml ships, so this
+      # arm differs from minimal_l1_ssb_obs in ssb_rows_enabled ALONE.
+      ssb_rows_enabled: true
+      ssb_d_safe: 0.05
+      ssb_row_horizon: 0.20
+      ssb_row_release: 1.5
+      ssb_max_rows: 4
+      ssb_hold_s: 0.10
+      ssb_inflate_speed_mps: 0.20
+      rho_slack_ssb: 400.0
+      ssb_slack_max: 1000000.0
+
   # Task 1 of OSCBF_ALIGNMENT_PLAN.md, as an A/B arm. The safe fallback and the
   # slew yield are the new DEFAULTS (they are a safety fix, not a feature), so
   # the arm that needs spelling out is the OLD one. minimal_l1 vs this isolates

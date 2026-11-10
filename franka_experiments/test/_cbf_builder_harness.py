@@ -15,17 +15,36 @@ No ROS, no Pinocchio.
 import numpy as np
 
 from franka_experiments.utils.cbf_state_rows import (
-    ConstraintBuilder, JointSnap, Obstacle, ObstacleSnap)
+    ConstraintBuilder, JointSnap, Obstacle, ObstacleSnap, Shadow,
+    ShadowRowBuilder)
 
 NV = 7
 
 
 class _Log:
-    def info(self, *a, **k):    pass
-    def warn(self, *a, **k):    pass
-    def warning(self, *a, **k): pass
-    def error(self, *a, **k):   pass
-    def debug(self, *a, **k):   pass
+    """Swallows messages, but RECORDS them, so a test can assert one was said.
+
+    A constraint the builder decided not to emit has to be announced -- the
+    `max_rows` cap and the leverage gate both drop candidate safety rows -- and
+    "it is announced" is only checkable if the sink keeps what it was told.
+    """
+
+    def __init__(self):
+        self.msgs = []
+
+    def _rec(self, kind, a):
+        self.msgs.append((kind, str(a[0]) if a else ''))
+
+    def info(self, *a, **k):    self._rec('info', a)
+    def warn(self, *a, **k):    self._rec('warn', a)
+    def warning(self, *a, **k): self._rec('warning', a)
+    def error(self, *a, **k):   self._rec('error', a)
+    def debug(self, *a, **k):   self._rec('debug', a)
+
+    def said(self, needle, kind=None):
+        """Every recorded message containing ``needle``."""
+        return [m for k, m in self.msgs
+                if needle in m and (kind is None or k == kind)]
 
 
 class _Kin:
@@ -252,6 +271,17 @@ class P:
     curvature_radius_from_normal = False
     curvature_normal_window_s = 0.20
     curvature_normal_rate_floor = 0.30
+    # ── Self-Shadow Barrier — OFF, so every existing test keeps exactly the
+    # rows it was written against. The SSB tests turn it on explicitly.
+    ssb_rows_enabled = False
+    ssb_d_safe = 0.05
+    ssb_row_horizon = 0.20
+    ssb_row_release = 1.5
+    ssb_max_rows = 4
+    ssb_hold_s = 0.10
+    ssb_inflate_speed_mps = 0.20
+    rho_slack_ssb = 400.0
+    ssb_slack_max = 1e6
 
 
 def make_params(**over):
@@ -280,11 +310,28 @@ def make_builder(kin=None, cp_jacobian=False, **over):
     if cp_jacobian:
         def cpj(label):
             return kin.point_jacobian(1, kin.control_point_position(label))
-    return ConstraintBuilder(
-        make_params(**over), kin,
+    P_ = make_params(**over)
+    # The Self-Shadow Barrier is a policy object the node builds in
+    # build_optional_row_builders; this harness constructs the builder
+    # directly, so it has to do the same thing or the family would be silently
+    # absent whatever the flag said.
+    ssb = None
+    if getattr(P_, 'ssb_rows_enabled', False):
+        ssb = ShadowRowBuilder(
+            d_safe=P_.ssb_d_safe, horizon=P_.ssb_row_horizon,
+            max_rows=P_.ssb_max_rows, release=P_.ssb_row_release,
+            hold_s=P_.ssb_hold_s, inflate_mps=P_.ssb_inflate_speed_mps,
+            min_leverage=P_.cbf_min_leverage, with_kappa=False)
+    log = _Log()
+    b = ConstraintBuilder(
+        P_, kin,
         q_min=np.full(NV, -2.8), q_max=np.full(NV, 2.8),
-        acc_lb=-ACC, acc_ub=ACC, logger=_Log(), qdot_max=QD,
-        control_point_jacobian=cpj)
+        acc_lb=-ACC, acc_ub=ACC, logger=log, qdot_max=QD,
+        control_point_jacobian=cpj, ssb_rows=ssb)
+    #: the logger, reachable so a test can assert what the builder ANNOUNCED
+    #: (a dropped safety row has to be said out loud, not merely counted)
+    b.test_log = log
+    return b
 
 
 def make_obstacle(d=0.25, pr=(0.5, 0.0, 0.5), ph=(0.5, -0.25, 0.5),
@@ -301,21 +348,43 @@ def make_obstacle(d=0.25, pr=(0.5, 0.0, 0.5), ph=(0.5, -0.25, 0.5),
                     range_m=None if range_m is None else float(range_m))
 
 
+def make_shadow(cp_label='fr3_link5#0', link='fr3_link5', d=0.10,
+                pr=(0.5, 0.0, 0.5), ph=(0.5, -0.10, 0.5), front_m=0.05):
+    """One SSB measurement, as LinkDistance's ``shadow_*`` fields carry it.
+
+    ``d`` is the SURFACE gap perception reported, i.e. the centre distance
+    ``|pr - ph|`` already less the capsule radius; the builder recovers that
+    radius as ``|pr - ph| - d`` so a row rebuilt at the CURRENT control-point
+    position speaks the same units.
+    """
+    return Shadow(cp_label=cp_label, link=link, d=float(d),
+                  pr=np.asarray(pr, dtype=np.float64),
+                  ph=np.asarray(ph, dtype=np.float64), front_m=float(front_m))
+
+
 def make_js(q=0.1, qdot=0.0, stamp=0.0):
     return JointSnap(q=np.full(NV, q), qdot=np.full(NV, qdot), stamp=stamp)
 
 
-def make_obs(items, stamp=0.0, t_cap=None):
+def make_obs(items, stamp=0.0, t_cap=None, shadows=()):
     return ObstacleSnap(items=tuple(items), stamp=stamp,
-                        t_cap=stamp if t_cap is None else t_cap)
+                        t_cap=stamp if t_cap is None else t_cap,
+                        shadows=tuple(shadows))
 
 
-def run(builder, obstacles, *, n_frames=1, dt=1.0 / 30.0, qdot=0.0, q=0.1):
-    """Drive `n_frames` rebuilds and return the LAST ConstraintSnap."""
+def run(builder, obstacles, *, n_frames=1, dt=1.0 / 30.0, qdot=0.0, q=0.1,
+        shadows=()):
+    """Drive `n_frames` rebuilds and return the LAST ConstraintSnap.
+
+    ``shadows`` takes the same shape as ``obstacles``: a sequence, or a
+    callable of the frame index for a stream that changes between frames.
+    """
     con = None
     for k in range(n_frames):
         t = k * dt
         con = builder.build(make_js(q=q, qdot=qdot, stamp=t),
                             make_obs(obstacles(k) if callable(obstacles)
-                                     else obstacles, stamp=t), t)
+                                     else obstacles, stamp=t,
+                                     shadows=(shadows(k) if callable(shadows)
+                                              else shadows)), t)
     return con

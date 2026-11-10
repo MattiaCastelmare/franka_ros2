@@ -45,6 +45,7 @@ from franka_experiments.utils.cbf_evasion import (
     evasion_urgency,
     normal_brake_authority,
 )
+from franka_experiments.utils.self_shadow import shadow_row
 from franka_experiments.utils.self_collision import (
     Capsule,
     segment_segment_closest,
@@ -1167,6 +1168,202 @@ class SelfCollisionRowBuilder:
         return rows
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  The Self-Shadow Barrier rows
+# ═════════════════════════════════════════════════════════════════════════════
+
+class Shadow(NamedTuple):
+    """One shadowed surface, as ``LinkDistance``'s ``shadow_*`` fields carry it.
+
+    A depth return that the robot's OWN self-filter deleted and that the
+    robot's own geometry cannot account for. Weaker evidence than an obstacle
+    entry by construction — the pipeline threw these pixels away on the grounds
+    that they MIGHT be the robot — which is why it gets its own constraint
+    family, its own slack price and its own safety distance, and is never
+    merged into the obstacle rows.
+    """
+    cp_label: str            # 'link#k', the control point this was measured on
+    link: str                # that control point's end link
+    d: float                 # surface gap [m] at CAPTURE time; may be < 0
+    pr: np.ndarray           # (3,) the control point at capture, base frame
+    ph: np.ndarray           # (3,) the shadowed surface point, base frame
+    front_m: float = 0.0     # [m] in front of the debiased model surface
+
+
+class ShadowRowBuilder:
+    """HOCBF rows on the returns the depth self-filter deleted.
+
+    THE BARRIER, and why the shadow point is FROZEN in the world:
+
+        h = ‖p_j(q) − x‖ − offset − d_safe_ssb
+        a = n̂ᵀJ_j,      ċ = n̂ᵀJ̇_j q̇,      v_obs = 0
+
+    ``x`` is a depth measurement, and a depth measurement is a statement about
+    the WORLD: a surface was observed at this place at this time. It does not
+    move because the arm moved. So the row is an ordinary obstacle-shaped row
+    with ``J_x = 0``, and the "unknown region moves with q" term that
+    :func:`~franka_experiments.utils.self_shadow.shadow_row` carries is zero
+    here by construction — it exists for the VOID regime, where nothing was
+    observed and the unknown region really is a property of where the arm is.
+    ``self_shadow.shadow_row`` is the single implementation of both.
+
+    ``offset`` is the capsule radius perception had already subtracted
+    (``‖pr − ph‖ − d``), carried so a row recomputed at the CURRENT control
+    point position speaks the same units as the measurement and cannot
+    double-count it — the same device ``memory_surface_gap`` uses, and for the
+    same reason: the geometry is rebuilt at 50 Hz against a measurement
+    captured earlier.
+
+    THE HOLD. A shadow is a per-frame pixel measurement with no track behind
+    it, so it flickers: the blob crosses the ``ssb_min_support_px`` threshold,
+    or the guard band, between frames. Dropping the row on the first frame it
+    is missing would make the constraint set churn (and, because n_c changes,
+    throw away OSQP's warm start) exactly while something is close. A held row
+    keeps the FROZEN point for ``hold_s`` and its surface is eroded by
+    ``inflate_mps`` per second of age, so holding longer is strictly more
+    conservative and never a stale certainty.
+
+    Strictly additive: this builder can only ever add rows. It reads no
+    obstacle row, writes none, and shares no state with them.
+    """
+
+    def __init__(self, *, d_safe: float, horizon: float, max_rows: int,
+                 release: float = 1.0, hold_s: float = 0.0,
+                 inflate_mps: float = 0.0, min_leverage: float = 0.0,
+                 with_kappa: bool = False):
+        self._d_safe = float(d_safe)
+        self._horizon = float(horizon)
+        self._max_rows = int(max_rows)
+        self._release = float(release)
+        self._hold_s = float(hold_s)
+        self._inflate = float(inflate_mps)
+        self._min_lev = float(min_leverage)
+        self._kappa = bool(with_kappa)
+        #: label -> (ph, offset, t_seen, front_m). Keyed on the control-point
+        #: label, a FIXED finite key set, so it cannot grow without bound.
+        self._held: dict = {}
+        self._engaged: set = set()
+        self.last_min_gap = float('inf')
+        self.last_label = ''
+        self.last_front_m = 0.0
+        self.diag = {'seen': 0, 'held': 0, 'rows': 0, 'expired': 0,
+                     'leverage': 0, 'degenerate': 0, 'no_kin': 0,
+                     'out_of_horizon': 0, 'capped': 0}
+
+    def describe(self) -> str:
+        return (f'd_safe={self._d_safe:.3f} m, horizon={self._horizon:.3f} m, '
+                f'max_rows={self._max_rows}, hold={self._hold_s * 1e3:.0f} ms, '
+                f'erode={self._inflate:.2f} m/s')
+
+    def build(self, shadows, stamp, *, cp_position, cp_jacobian, qdot,
+              kappa_terms=None):
+        """Rows for the shadows currently inside the horizon.
+
+        Args:
+            shadows: iterable of :class:`Shadow`, this frame's measurements.
+            stamp: [s] capture time of the frame they came from. ``None``
+                disables the hold entirely (every entry is this frame's), which
+                is the conservative reading of "no usable clock".
+            cp_position: ``label -> (3,) world position``, raising ``KeyError``
+                on an unknown label. ``CBFKinematics.control_point_position``.
+            cp_jacobian: ``label -> (J, J̇)``.
+            qdot: (NV,) joint velocity, for the ``ċ`` term.
+            kappa_terms: optional list, appended one κ per emitted row.
+
+        Returns:
+            ``[(a, h, ċ, label), …]`` — the same ``Row`` tuple every other
+            family returns, so the assembler needs no special case.
+        """
+        for d in self.diag:
+            self.diag[d] = 0
+        self.last_min_gap = float('inf')
+        self.last_label = ''
+        self.last_front_m = 0.0
+
+        # ── Refresh / expire the held set ─────────────────────────────────
+        t = float(stamp) if stamp is not None else None
+        for sh in shadows:
+            off = float(np.linalg.norm(
+                np.asarray(sh.pr, dtype=np.float64)
+                - np.asarray(sh.ph, dtype=np.float64))) - float(sh.d)
+            self._held[sh.cp_label] = (np.asarray(sh.ph, dtype=np.float64),
+                                       off, t, float(sh.front_m))
+            self.diag['seen'] += 1
+        if t is not None:
+            for lbl in [k for k, v in self._held.items()
+                        if v[2] is None or not (0.0 <= t - v[2] <= self._hold_s)]:
+                # A negative age is a clock that went backwards (a bag jump):
+                # release, same as an expiry. Holding a measurement from the
+                # future is not conservative, it is unexplainable.
+                del self._held[lbl]
+                self.diag['expired'] += 1
+        elif self._hold_s <= 0.0:
+            self._held = {k: v for k, v in self._held.items() if v[2] is None}
+        self.diag['held'] = len(self._held)
+
+        # ── Cheap scan: the gap only, no Jacobians ────────────────────────
+        near = []
+        for lbl, (ph, off, t_seen, front) in self._held.items():
+            try:
+                cp_now = np.asarray(cp_position(lbl), dtype=np.float64)
+            except (KeyError, AttributeError, TypeError):
+                self.diag['no_kin'] += 1
+                continue
+            age = 0.0 if (t is None or t_seen is None) else max(t - t_seen, 0.0)
+            delta = cp_now - ph
+            d_ctr = float(np.linalg.norm(delta))
+            if d_ctr <= 1e-9:
+                self.diag['degenerate'] += 1
+                continue
+            gap = d_ctr - off - self._inflate * age
+            if gap < self.last_min_gap:
+                self.last_min_gap = gap
+                self.last_label = lbl
+                self.last_front_m = front
+            limit = (self._horizon * self._release if lbl in self._engaged
+                     else self._horizon)
+            if gap >= limit:
+                self.diag['out_of_horizon'] += 1
+                continue
+            near.append((gap, lbl, cp_now, ph, off, age))
+
+        if not near:
+            self._engaged.clear()
+            return []
+        near.sort(key=lambda z: (z[0], z[1]))
+        if len(near) > self._max_rows:
+            self.diag['capped'] = len(near) - self._max_rows
+        near = near[: self._max_rows]
+        self._engaged = {lbl for _, lbl, _, _, _, _ in near}
+
+        rows: List[Row] = []
+        for gap, lbl, cp_now, ph, off, age in near:
+            try:
+                Jp, Jpd = cp_jacobian(lbl)
+            except (KeyError, AttributeError, TypeError):
+                self.diag['no_kin'] += 1
+                continue
+            row = shadow_row(cp_now, Jp, Jpd, ph, qdot,
+                             rho=off + self._inflate * age, r_j=0.0,
+                             d_safe=self._d_safe, with_kappa=self._kappa)
+            if row is None:
+                self.diag['degenerate'] += 1
+                continue
+            a, h, cdot, kap, _n, _L = row
+            if float(np.linalg.norm(a)) < self._min_lev:
+                # No leverage: the row cannot be satisfied by any q̈, so it
+                # would be a constraint the QP can only pay slack for. See
+                # test_self_shadow_derivatives' adjacency test for the case
+                # where this is exact rather than merely small.
+                self.diag['leverage'] += 1
+                continue
+            rows.append((a, h, cdot, f'ssb:{lbl}'))
+            if kappa_terms is not None:
+                kappa_terms.append(kap)
+        self.diag['rows'] = len(rows)
+        return rows
+
+
 # ── Construction helper ──────────────────────────────────────────────────────
 
 def build_self_collision_builder(
@@ -1289,7 +1486,7 @@ _VMED_MAX_TAPS = 64
 #: estimator rather than a gain.
 _IDENT_DT_MAX = 0.2
 
-G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD = 0, 1, 2, 3, 4, 5
+G_OBS, G_SC, G_QLIM, G_SING, G_CAP, G_SPD, G_SSB = 0, 1, 2, 3, 4, 5, 6
 
 #: Rate-independent tuning: see the module that documents why every
 #: window on this path is a duration and not a frame count.
@@ -1306,9 +1503,16 @@ def _approach_weight(v_o: float, v_ref: float) -> float:
 #: ``iso_tcp_link`` parameter defaults to this). Last entry of
 #: ``robot.segment_links`` in fr3_complete.yaml.
 FR3_TCP_LINK = 'fr3_link8'
-N_SLACK = 6
-GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
-NX = NV + N_SLACK   # [qddot(7), s_obs, s_sc, s_qlim, s_sing, s_cap, s_spd]
+#: One slack per constraint FAMILY. `ssb` is LAST and is APPENDED, never
+#: inserted: every diagnostic that zips a slack vector against GROUP_NAMES, and
+#: every bag column derived from one, keeps its position. The column exists
+#: whether or not `ssb_rows_enabled` is set — an always-zero slack on a family
+#: with no rows costs one decision variable and keeps the decision-vector
+#: layout a constant of the BUILD rather than a function of a flag, which is
+#: what makes a flags-off run comparable with a flags-on one.
+N_SLACK = 7
+GROUP_NAMES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd', 'ssb')
+NX = NV + N_SLACK   # [qddot(7), s_obs, s_sc, s_qlim, s_sing, s_cap, s_spd, s_ssb]
 
 # Livelock escape (Phase 3c): obstacle rows closer than this [m] are all
 # removed from the escape direction, up to this many of them.
@@ -1627,6 +1831,12 @@ class ObstacleSnap(NamedTuple):
                         # term, the retreat cap AND (with the Phase-1 flag on)
                         # a term that SQUARES it. Falls back to `stamp` when the
                         # header stamp is missing or implausible.
+    shadows: tuple = ()
+                        # tuple[Shadow, ...] — this frame's SSB measurements
+                        # (LinkDistance.shadow_*). Default empty, which is what
+                        # a publisher without the fields produces and what the
+                        # flag-off path keeps, so the SSB family contributes no
+                        # row unless something was actually shadowed.
 
 
 class ConstraintSnap(NamedTuple):
@@ -1766,6 +1976,18 @@ class ConstraintSnap(NamedTuple):
                            # [s] node clock when this snapshot was built.
     build_wall_ms: float = float('nan')
                            # [ms] wall time ConstraintBuilder.build took.
+    # ── Self-Shadow Barrier (ssb_rows_enabled) ──────────────────────────────
+    d_ssb_min: float = float('inf')
+                           # [m] closest SHADOW surface gap this snapshot, or
+                           # +inf when no SSB row was built. Kept SEPARATE from
+                           # d_obs_min on purpose: d_obs_min is published on
+                           # /cbf_status and read by the commander's phase
+                           # governor, and feeding it a lower-trust number
+                           # would change the commander's behaviour through a
+                           # channel that has nothing to do with the barrier.
+    n_ssb: int = 0         # how many SSB rows this snapshot carries.
+                           # DIAGNOSTIC: the row count is the honest measure of
+                           # how much conservatism the mechanism is adding.
 
 
 
@@ -1795,6 +2017,7 @@ def build_optional_row_builders(P, kin, log):
         CBFKinematics, build_urdf_with_sc)
 
     sc_rows = sc_kin = sc_qi = sc_vi = sc_q = sc_v = sing_rows = None
+    ssb_rows = None
     _sc_sd = P.self_collision_safety_distance
     _sc_exclude = [str(x) for x in (P.self_collision_exclude_pairs or [])]
     if P.self_collision_rows_enabled:
@@ -1851,9 +2074,31 @@ def build_optional_row_builders(P, kin, log):
     else:
         log.warn('singularity row DISABLED by parameter')
 
+    # ── Self-Shadow Barrier rows ─────────────────────────────────────────
+    # Needs no model and no URDF of its own: the rows are built on the SAME
+    # control points and the SAME Jacobians the obstacle rows use, so this is
+    # only a policy object. It still fails soft, for the same reason as the two
+    # above: the obstacle rows and the hard box are the primary protection.
+    if bool(getattr(P, 'ssb_rows_enabled', False)):
+        try:
+            ssb_rows = ShadowRowBuilder(
+                d_safe=float(getattr(P, 'ssb_d_safe', 0.05)),
+                horizon=float(getattr(P, 'ssb_row_horizon', 0.20)),
+                max_rows=int(getattr(P, 'ssb_max_rows', 4)),
+                release=float(getattr(P, 'ssb_row_release', 1.0)),
+                hold_s=float(getattr(P, 'ssb_hold_s', 0.10)),
+                inflate_mps=float(getattr(P, 'ssb_inflate_speed_mps', 0.0)),
+                min_leverage=float(P.cbf_min_leverage),
+                with_kappa=False)
+            log.info(f'self-shadow rows: {ssb_rows.describe()}')
+        except Exception as exc:
+            ssb_rows = None
+            log.error(f'self-shadow rows DISABLED — setup failed: {exc}')
+    else:
+        log.info('self-shadow rows OFF (cbf.ssb_rows_enabled)')
 
     return dict(sc_rows=sc_rows, sc_kin=sc_kin, sc_qi=sc_qi, sc_vi=sc_vi,
-                sc_q=sc_q, sc_v=sc_v, sing_rows=sing_rows)
+                sc_q=sc_q, sc_v=sc_v, sing_rows=sing_rows, ssb_rows=ssb_rows)
 
 
 class ConstraintBuilder:
@@ -1874,7 +2119,8 @@ class ConstraintBuilder:
 
     def __init__(self, P, kin, *, q_min, q_max, acc_lb, acc_ub,
                  sc_rows=None, sc_kin=None, sc_qi=None, sc_vi=None,
-                 sc_q=None, sc_v=None, sing_rows=None, logger=None,
+                 sc_q=None, sc_v=None, sing_rows=None, ssb_rows=None,
+                 logger=None,
                  qdot_max=None, brake_acc=None, control_point_jacobian=None):
         self._P, self._kin, self._log = P, kin, logger
         # Optional for generic rigid-point callers and analytic test harnesses.
@@ -1900,6 +2146,10 @@ class ConstraintBuilder:
         self._sc_qi, self._sc_vi = sc_qi, sc_vi
         self._sc_q, self._sc_v = sc_q, sc_v
         self._sing_rows = sing_rows
+        # Self-Shadow Barrier policy object; None = the family is off. It needs
+        # no model of its own: its rows are built on the same control points
+        # and the same Jacobians the obstacle rows use.
+        self._ssb_rows = ssb_rows
         self._h_smooth, self._obs_vel, self._obs_frames = {}, {}, {}
         # Per-label median window for the CONSUMED closing speed, same
         # bounded key set (one per control point).
@@ -2107,6 +2357,7 @@ class ConstraintBuilder:
         # in the loop.
         link_seen: dict = {}
         d_sc_min      = np.inf      # closest self-collision surface gap [m]
+        d_ssb_min     = np.inf      # closest SELF-SHADOW surface gap [m]
         n_weak        = 0           # obstacles dropped this tick for low leverage
         min_a_dropped = np.inf      # smallest ‖a‖ among the dropped ones (debug)
         d_obs_min     = np.inf      # closest obstacle gap, obstacle rows only
@@ -3126,6 +3377,71 @@ class ConstraintBuilder:
                     f'self-collision rows skipped this tick: {exc}',
                     throttle_duration_sec=2.0)
 
+        # ── Self-Shadow Barrier rows ────────────────────────────────────────
+        # The returns the depth self-filter DELETED and the robot's own
+        # geometry cannot account for (utils/self_shadow, and the `ssb_*` keys
+        # in fr3_complete.yaml). Their own family, their own slack price and
+        # their own d_safe, because their evidence is weaker by construction:
+        # the perception chain threw these pixels away on the grounds that they
+        # MIGHT be the robot.
+        #
+        # AFTER every other family and BEFORE the rate caps, which must stay
+        # the trailing n_cap rows. Strictly additive: nothing above is read or
+        # changed, so with no shadow measurement (and with the flag off) every
+        # array here is exactly what it was.
+        #
+        # No κ on these rows, deliberately. κ ≥ 0 RELAXES a row, and it is the
+        # part of ḧ that tangential motion produces for free; claiming it on
+        # the lowest-trust family — against a surface whose identity is the
+        # thing in doubt — would be buying a relaxation with the evidence we
+        # are least sure of. `shadow_row` computes it either way so it can be
+        # logged, and `enable_curvature_term` keeps owning the obstacle family.
+        n_ssb = 0
+        # Every rebuild, not only the ones carrying a measurement: the HOLD
+        # exists precisely for the frames where `obs.shadows` is empty, and
+        # gating the call on a non-empty stream would make it unreachable.
+        # A rebuild with nothing held returns [] after one dict lookup.
+        if self._ssb_rows is not None:
+            try:
+                for a, h, jdq, lbl in self._ssb_rows.build(
+                        obs.shadows, getattr(obs, 't_cap', obs.stamp),
+                        cp_position=self._kin.control_point_position,
+                        cp_jacobian=self._control_point_jacobian,
+                        qdot=js.qdot):
+                    rows_a.append(a)
+                    rows_h.append(h)
+                    rows_jdq.append(jdq)
+                    rows_group.append(G_SSB)
+                    rows_vobs.append(0.0)   # a frozen measurement; nothing
+                                            # external moves it, and the hold's
+                                            # erosion already prices its age
+                    rows_link.append(lbl)
+                    n_ssb += 1
+                d_ssb_min = self._ssb_rows.last_min_gap
+                # A DROPPED candidate row is announced, never silent. The
+                # builder discards candidates three ways -- the `max_rows` cap,
+                # the `cbf_min_leverage` gate, and a degenerate/absent
+                # kinematic point -- and each one removes a row that the
+                # mechanism itself judged worth building. `n_ssb` on
+                # /cbf_status counts what SURVIVED, so without this line the
+                # difference is invisible in the logs and a cap that is always
+                # saturating looks identical to a quiet scene.
+                _d = self._ssb_rows.diag
+                _lost = (int(_d.get('capped', 0)) + int(_d.get('leverage', 0))
+                         + int(_d.get('degenerate', 0)) + int(_d.get('no_kin', 0)))
+                if _lost:
+                    self._log.warning(
+                        f'self-shadow: {_lost} candidate row(s) dropped '
+                        f'(capped {_d.get("capped", 0)}, no leverage '
+                        f'{_d.get("leverage", 0)}, degenerate '
+                        f'{_d.get("degenerate", 0)}, no kinematics '
+                        f'{_d.get("no_kin", 0)}); {n_ssb} kept',
+                        throttle_duration_sec=2.0)
+            except Exception as exc:
+                self._log.error(
+                    f'self-shadow rows skipped this tick: {exc}',
+                    throttle_duration_sec=2.0)
+
         if n_weak > 0:
             # Previously this drop was silent (no log/counter). Throttled so a
             # persistently weak-leverage obstacle can't spam the log.
@@ -3491,6 +3807,8 @@ class ConstraintBuilder:
                                     k0_row, k1_row, zone_row, h_pen_row,
                                     kappa_v,
                                     around_geom=around_best,
+                                    d_ssb_min=float(d_ssb_min),
+                                    n_ssb=int(n_ssb),
                                     capture_stamp=float(getattr(obs, 't_cap',
                                                                 obs.stamp)),
                                     built_stamp=float(now),

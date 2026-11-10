@@ -511,6 +511,113 @@ tests:
     nominal: {law: joint_pd}
     scene: bare
     obstacles: [{p0: [0.95, 0.90, 0.60], radius: 0.08, law: linear, v0: [0.0, -0.30, 0.0]}]
+  # ── SSB: the self-filter's own blind band ──────────────────────────────────
+  # These two exist to REPRODUCE the failure the Self-Shadow Barrier is about,
+  # not to score a controller. The robot holds q0 (nominal joint_pd) so the only
+  # thing moving is the obstacle, and every number below is derived, not chosen:
+  # log/ssb_work/place.py recomputes them from fr3_complete.yaml `mask:` + the
+  # diag extrinsics, and test_ssb_scenarios.py pins them.
+  #
+  # WHERE THE BAND IS. The depth gate deletes a masked pixel whose measurement
+  # lies within depth_gate_tol_m of surf = z_model - depth_gate_bias_m, and
+  # self_shadow calls a return a CANDIDATE when it is in front of surf by more
+  # than ssb_guard_m:
+  #
+  #     bias + guard  <  z_model - z_near  <  bias + tol      = (0.10, 0.16) m
+  #
+  # z_near is the ball's CAMERA-facing surface; the barrier's surface gap uses
+  # the ROBOT-facing one, a diameter deeper, so
+  #
+  #     gap  =  (z_model - z_near)  -  2 * r_ball
+  #
+  # With r_ball = 0.04 the deleted band is gap in (0.02, 0.08) m — ENTIRELY
+  # INSIDE d_safe = 0.10. That is a property of the shipped calibration, not of
+  # SSB, and it bounds what SSB can possibly claim: the self-filter only ever
+  # deletes an obstacle that is already within the safety distance, so SSB
+  # cannot prevent the d_safe violation such a deletion causes. It can only
+  # bound how much closer the obstacle gets while the ordinary pipeline is
+  # blind to it. Both scenarios therefore have the ball ENTER from outside,
+  # which is both the transition that matters and the only way to satisfy
+  # franka_rl's "never start inside the barrier" rule.
+  #
+  # scene diag_bare, not diag: the furnished DIAG lab reports
+  # d_obstacle_min = 0 from the room itself on a held pose, which floods the QP
+  # and would make "did the ball disappear" unmeasurable (see the `static`
+  # phantom-v_obs note on pentagon_ball_left).
+  ssb_poke:                              # ball travels ALONG the camera ray
+    # Straight in at 0.08 m/s on the ray through fr3_link8#0, from a gap of
+    # 0.40 m. Timeline, all derived:
+    #   t 0.00 s  gap 0.400  seen normally (0.40 < max_thresh 0.7)
+    #   t 4.00 s  gap 0.080  ENTERS the deleted band  -> pipeline goes blind
+    #   t 4.75 s  gap 0.020  leaves it (now in FRONT of the gate) -> seen again
+    #   t 5.00 s  gap 0.000  touching the capsule surface
+    # so the blind window is 0.75 s wide and 6 cm deep. The obstacles are
+    # visual-only, so nothing collides; T 8 s leaves 3 s of after.
+    T: 8.0
+    nominal: {law: joint_pd}
+    scene: diag_bare
+    obstacles:
+      - {p0: [0.7991, -0.0166, 0.7896], radius: 0.04, law: linear,
+         v0: [-0.0760, 0.0027, -0.0249], park: false}
+  # ── ssb_poke variants, for the sensitivity sweep ─────────────────────────
+  # Same ray, same p0, same radius as ssb_poke. Each changes exactly ONE thing,
+  # so the detection numbers can be attributed. They exist to answer "does the
+  # classifier keep firing, and does it start firing SPURIOUSLY, when the
+  # obstacle moves faster or the depth image degrades" -- which is the question
+  # a self-shadow classifier lives or dies on.
+  ssb_poke_fast:                         # 2x speed: 0.16 m/s
+    # The band is 6 cm deep, so the crossing shortens from 0.75 s to 0.375 s --
+    # about 12 perception frames at the measured 32 Hz. If support or hold
+    # cannot keep up, this is where it shows.
+    T: 8.0
+    nominal: {law: joint_pd}
+    scene: diag_bare
+    obstacles:
+      - {p0: [0.7991, -0.0166, 0.7896], radius: 0.04, law: linear,
+         v0: [-0.1520, 0.0054, -0.0498], park: false}
+  ssb_poke_slow:                         # 0.5x speed: 0.04 m/s
+    # Crossing 1.5 s. Tests the opposite failure: a long dwell, where a
+    # classifier that latches would accumulate rows it should have released.
+    T: 14.0
+    nominal: {law: joint_pd}
+    scene: diag_bare
+    obstacles:
+      - {p0: [0.7991, -0.0166, 0.7896], radius: 0.04, law: linear,
+         v0: [-0.0380, 0.0013, -0.0125], park: false}
+  ssb_poke_noisy:                        # + depth range noise
+    T: 8.0
+    nominal: {law: joint_pd}
+    scene: diag_bare
+    emulation: {cam_noise: true}        # the gazebo counterpart below
+    gazebo: {depth_adapter: {range_noise: true}}
+    obstacles:
+      - {p0: [0.7991, -0.0166, 0.7896], radius: 0.04, law: linear,
+         v0: [-0.0760, 0.0027, -0.0249], park: false}
+  ssb_poke_dropout:                      # + 10 % missing measurements
+    # The rule the formulation rests on is "a missing measurement is NOT
+    # evidence of free space". Dropped pixels inside the silhouette land in
+    # RAY_VOID, not RAY_CANDIDATE, so this cell is the test that dropout does
+    # not manufacture shadows: `band_out` must stay at zero.
+    T: 8.0
+    nominal: {law: joint_pd}
+    scene: diag_bare
+    gazebo: {depth_adapter: {dropout_p: 0.1}}
+    obstacles:
+      - {p0: [0.7991, -0.0166, 0.7896], radius: 0.04, law: linear,
+         v0: [-0.0760, 0.0027, -0.0249], park: false}
+  ssb_band_sweep:                        # ball DWELLS in the band, repeatedly
+    # Same ray, oscillating instead of travelling, so the band is entered and
+    # left four times in 32 s and the dwell is long (0.92 s per crossing, since
+    # the near extreme IS the turning point). Born at p0 = the FAR end of the
+    # swing (phase_deg 0), gap 0.26 m, so the start-clearance rule has nothing
+    # to do. gap sweeps 0.26 -> 0.02 -> 0.26; peak speed 0.188 m/s.
+    T: 32.0
+    nominal: {law: joint_pd}
+    scene: diag_bare
+    obstacles:
+      - {p0: [0.6661, -0.0119, 0.7461], radius: 0.04, law: oscillate,
+         axis: [-0.9497, 0.0339, -0.3113], amplitude: 0.24, period: 8.0,
+         phase_deg: 0.0, park: false}
   p4_laws:                               # truth vs law, every law at once, away from the arm
     T: 3.0
     nominal: {law: joint_pd}

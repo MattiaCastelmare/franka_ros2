@@ -100,6 +100,7 @@ def build_cp_messages(
     fallback: float,
     zones: dict,
     return_cluster_ids: bool = False,
+    shadow_unknown_frac: float = 0.0,
 ) -> tuple:
     """Build a (MultiDistance, MultiLinkDistance) pair from CP distance results.
 
@@ -126,6 +127,11 @@ def build_cp_messages(
         Also return the cluster id of every ``MultiLinkDistance`` entry
         (index-aligned with ``links``, -1 = unknown), for
         :func:`annotate_track_fields`.
+    shadow_unknown_frac:
+        Frame-global share of the self-filtered rays that carried no depth
+        return at all (``ShadowCloud.unknown_fraction``), stamped on every
+        entry.  0.0 — the default and the value with SSB off — reads as
+        "nothing removed, nothing unknown".
 
     Returns
     -------
@@ -204,7 +210,7 @@ def build_cp_messages(
     link_entries = []
     link_cluster_ids = []
     for lk in segment_links:
-        for r, d, di, obs, cid, rng in _cp_rows(by_link.get(lk, ())):
+        for r, d, di, obs, cid, rng, rank in _cp_rows(by_link.get(lk, ())):
             pt  = r.point
             ld  = LinkDistance()
             ld.robot_link_name = lk
@@ -257,6 +263,27 @@ def build_cp_messages(
             else:
                 ld.confidence = float(find_pt_confidence(d, n_pts))
             ld.zone       = get_safety_zone(d, zones)
+            # ── Self-Shadow Barrier ────────────────────────────────────────
+            # Written only on RANK 0 of a control point. Ranks >= 1 are the
+            # extra obstacle clusters of the SAME control point and carry the
+            # same closest_point_robot, so repeating the shadow measurement on
+            # them would hand the filter several identical SSB rows for one
+            # geometric fact. `hasattr` because an installed franka_msgs may
+            # predate these fields, in which case the default "not carried"
+            # state is what every consumer already handles.
+            if (rank == 0 and hasattr(ld, 'shadow_valid')
+                    and getattr(r, 'shadow_direction', None) is not None
+                    and math.isfinite(getattr(r, 'shadow_distance', float('inf')))):
+                sp, sd = r.shadow_point, r.shadow_direction
+                ld.shadow_valid = True
+                ld.shadow_distance = float(r.shadow_distance)
+                ld.shadow_point = Point(x=float(sp[0]), y=float(sp[1]),
+                                        z=float(sp[2]))
+                ld.shadow_direction = Vector3(x=float(sd[0]), y=float(sd[1]),
+                                              z=float(sd[2]))
+                ld.shadow_front_m = float(r.shadow_front_m)
+            if hasattr(ld, 'shadow_unknown_frac'):
+                ld.shadow_unknown_frac = float(shadow_unknown_frac)
             link_entries.append(ld)
             link_cluster_ids.append(cid)
 
@@ -280,10 +307,10 @@ def _cp_rows(results):
     """
     for r in sorted(results, key=lambda x: (x.seg_idx, x.cp_idx)):
         yield (r, r.distance, r.direction, r.closest_obstacle_point,
-               getattr(r, 'cluster_id', -1), getattr(r, 'range_m', None))
-        for h in getattr(r, 'extras', ()):
+               getattr(r, 'cluster_id', -1), getattr(r, 'range_m', None), 0)
+        for rank, h in enumerate(getattr(r, 'extras', ()), start=1):
             yield (r, h.distance, h.direction, h.point, h.cluster_id,
-                  getattr(h, 'range_m', None))
+                  getattr(h, 'range_m', None), rank)
 
 
 def labelled_links(msg):

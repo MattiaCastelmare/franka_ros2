@@ -227,6 +227,33 @@ params:
   obstacle_row_slack_eps: 1000.0
   obstacle_row_osqp_eps_rel: 1.0e-5  # OSQP eps_rel in row_l1 mode only
   obstacle_row_slack_slots: 32   # per-row slack columns; rows beyond fall back to the shared slack
+  # ── Self-Shadow Barrier (SSB) ─────────────────────────────────────────────
+  # The rows built on the depth returns the robot's OWN self-filter deleted and
+  # that the robot's own geometry cannot account for. See
+  # franka_experiments/utils/self_shadow.py for the construction, and the
+  # `ssb_*` block under `distance:` in fr3_complete.yaml for the measurement —
+  # BOTH flags must be on, since without `distance.ssb_enabled` no `shadow_*`
+  # field is ever written and this family has nothing to build on.
+  #
+  # OFF by default. Off means no row, no slack used, and every other family
+  # bit-identical; only the (always-zero) `ssb` slack COLUMN exists either way.
+  ssb_rows_enabled: false
+  # [m] the SSB family's own safety distance. Smaller than d_safe (0.10) on
+  # purpose: the recoverable band is 4-10 cm in front of the arm's own surface,
+  # so a shadow row engages close by construction, and a large value here would
+  # make a false positive violent rather than merely conservative.
+  ssb_d_safe: 0.05
+  ssb_row_horizon: 0.20      # [m] gap below which a shadow produces a row
+  ssb_row_release: 1.5       # hysteresis multiplier on the way out
+  ssb_max_rows: 4            # bounded worst case, like self_collision_max_rows
+  ssb_hold_s: 0.10           # [s] survival of a frame with no measurement
+  ssb_inflate_speed_mps: 0.20  # [m/s] erosion per second of hold age
+  # BELOW rho_slack (1000) deliberately: when a shadow row and an obstacle row
+  # disagree, the obstacle row — backed by a measurement the pipeline believed
+  # — must win, and the shadow row must be able to buy its way out rather than
+  # deadlock the arm on a surface whose identity is the thing in doubt.
+  rho_slack_ssb: 400.0
+  ssb_slack_max: 1000000.0   # 1e6 = fully soft; 0.0 makes the rows hard
   rho_slack_self_collision: 20000.0  # self-collision rows
   rho_slack_joint_limit: 200.0       # joint-limit rows
   rho_slack_singularity: 2000.0      # singularity row (sigma_min of J)
@@ -258,6 +285,23 @@ params:
   # to keep 150 rad/s^3. Watch for `_qp_tick gap` warnings (GIL contention
   # with the rebuild); go back to 100 if they become frequent.
   qp_rate_hz: 300.0
+  # SCHED_FIFO priority for the _qp_tick thread alone. 0 = leave it at default
+  # scheduling, which is the setting that MEASURES FASTER.
+  #
+  # A single FIFO thread inside a GIL'd process is a priority inversion, not a
+  # real-time guarantee: the elevated thread still cannot run without the GIL,
+  # and the SCHED_OTHER threads it now outranks (grp_io delivering joint
+  # states, grp_perc rebuilding the rows) are the ones holding it. Measured in
+  # this container, July 2026: ~46 Hz elevated vs ~70 Hz with `ulimit -r 0`,
+  # `_qp_tick gap` warnings to 900 ms. OPEN_ISSUES S6 independently measures
+  # 30-56 Hz against 300 Hz requested with the solver at 0.25 ms and the filter
+  # at 49 % CPU — blocked, not saturated — and every run of the 11-06 campaign
+  # logged the elevation while achieving ~90 Hz against a requested 100.
+  #
+  # If you want real-time scheduling here, raise the WHOLE process (`chrt -f 50`
+  # in the launch wrapper) so no thread of it outranks the threads feeding it.
+  # A positive value restores the old per-thread behaviour for an A/B.
+  qp_thread_fifo_prio: 0
   cbf_update_rate_hz: 50.0    # constraint geometry rebuild (A, h̄) from 30 Hz input
   nom_timeout: 0.5            # [s] stale qddot_nom → braking -k_brake*qdot
   joint_state_timeout: 0.1    # [s] stale joint state → braking on last known qdot

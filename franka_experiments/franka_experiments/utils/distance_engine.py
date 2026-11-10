@@ -41,6 +41,8 @@ Approach-spike outlier rejection (rate-limit + 1-frame confirmation):
 """
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
@@ -48,6 +50,9 @@ import numpy as np
 
 from franka_experiments.utils.obstacle_clusters import label_points
 from franka_experiments.utils.rate_scaling import ema_alpha_for
+from franka_experiments.utils.self_shadow import (
+    cluster_support, empty_cloud, extract_shadow_candidates,
+    nearest_candidate_per_cp, reject_model_explained)
 
 
 class ObstacleHit(NamedTuple):
@@ -84,6 +89,26 @@ class ControlPointResult:
     extras: List[ObstacleHit] = field(default_factory=list)
     # RAW range to closest_obstacle_point, camera frame [m]. See ObstacleHit.
     range_m: Optional[float] = None
+    # ── Self-Shadow Barrier (distance.ssb_enabled) ──────────────────────────
+    # The nearest point the robot's own depth self-filter DELETED and that the
+    # robot's geometry cannot account for: a surface that was observed, in
+    # front of the arm, inside the exclusion mask. `shadow_distance` is its
+    # surface gap to this control point in metres, NOT clamped at 0 (a negative
+    # value means it is inside the capsule, and the sign is what tells the
+    # barrier which way to push).
+    #
+    # +inf / None is the "nothing shadowed" state and is what every consumer
+    # sees with the flag off, so the published topic and every barrier row are
+    # unchanged unless the flag is set.
+    shadow_distance: float = float('inf')
+    shadow_point: Optional[np.ndarray] = None       # base frame
+    shadow_direction: Optional[np.ndarray] = None   # unit, shadow -> CP
+    shadow_pixel: Optional[Tuple[int, int]] = None
+    # Metres by which the shadow point sits IN FRONT of the robot's own
+    # debiased model surface along its ray. Diagnostic: it is the quantity the
+    # whole mechanism turns on, and a value near 0 means the candidate is only
+    # just outside the self class.
+    shadow_front_m: float = 0.0
 
     @property
     def obstacles(self) -> List[ObstacleHit]:
@@ -243,6 +268,39 @@ class DistanceEngine:
         self._export_cloud = bool(distance_cfg.get('export_obstacle_cloud', False))
         self.last_obstacle_cloud: Optional[ObstacleCloud] = None
 
+        # ── Self-Shadow Barrier (SSB) ──────────────────────────────────────
+        # OFF by default. With the flag off nothing below runs, nothing is
+        # stored, and every field of every ControlPointResult keeps its
+        # "nothing shadowed" default — so the published topic and the barrier
+        # rows are bit-identical to the pre-SSB pipeline.
+        #
+        # What it extracts: the depth returns the self-filter DELETED that sit
+        # clearly in front of the robot's own modelled surface. See
+        # utils/self_shadow for the geometry and for why the per-ray depth test
+        # alone is not enough to tell them from the arm itself.
+        self._ssb_enabled = bool(distance_cfg.get('ssb_enabled', False))
+        #: [m] half-width of the band around the debiased model surface in
+        #: which a return is read as the ROBOT rather than as a shadow
+        #: candidate. Sized by the SPREAD of the calibration residual: `bias`
+        #: is a MEDIAN, so at guard = 0 half the arm's own pixels become
+        #: candidates by construction. Must be < depth_gate_tol_m or the
+        #: candidate band is empty.
+        self._ssb_guard = float(distance_cfg.get('ssb_guard_m', 0.04))
+        #: [m] a candidate farther than this from EVERY robot mesh sample
+        #: cannot be the robot. The discriminator that makes the mechanism
+        #: safe to switch on; must exceed the sample SPACING (see
+        #: reject_model_explained). 0 disables the test, which keeps every
+        #: candidate — do not ship that.
+        self._ssb_clearance = float(distance_cfg.get('ssb_model_clearance_m', 0.05))
+        #: pixels a shadow blob must have before it is believed. Speckle
+        #: rejection, the same argument as tracking.cluster_min_points.
+        self._ssb_min_px = int(distance_cfg.get('ssb_min_support_px', 6))
+        #: ShadowCloud of the last frame, or None. Always replaced, never left
+        #: stale: a stale shadow is a barrier row built on a vanished frame.
+        self.last_shadow_cloud = None
+        #: Per-frame SSB diagnostics (ray-class counts, survivors per filter).
+        self.last_shadow_stats: dict = {}
+
         # Top-k obstacle points per CP, one per connected cluster
         # (perception.multi_obstacle_k). 1 = today's single global argmin: no
         # labelling, no extras, output bit-identical. The horizon and the row
@@ -273,6 +331,7 @@ class DistanceEngine:
         dilation_margins_px: Optional[Tuple[int, int]] = None,  # (margin_body_px, margin_ee_px)
         frame_stamp: Optional[float] = None,                    # frame time [s] for REAL dt
         robot_depth: Optional[np.ndarray] = None,               # (H, W) float, +inf off-robot
+        model_points_cam: Optional[np.ndarray] = None,          # (M, 3) robot mesh samples, CAMERA frame
     ) -> Tuple[Optional[List[ControlPointResult]], int]:
         """Depth-space CP distance pipeline with LPF smoothing.
 
@@ -308,6 +367,7 @@ class DistanceEngine:
         vg = self._grid_vg
 
         # ── Step 2: search exclusion mask ────────────────────────────────
+        ssb_ran = False
         if search_exclusion_mask is not None:
             excluded = search_exclusion_mask[vg, ug]
             if robot_depth is not None and self._depth_gate_tol > 0.0:
@@ -375,6 +435,18 @@ class DistanceEngine:
                 z_rob = robot_depth[vg, ug] - self._depth_gate_bias
                 depth_here = depth[vg, ug].astype(np.float32) * _DEPTH_TO_M
                 in_front = (depth_here > 0) & (depth_here < z_rob - self._depth_gate_tol)
+                # ── SSB: what the gate is about to throw away ───────────────
+                # Runs HERE, on `excluded` before it is relaxed, because the
+                # question is "which pixels does the self-filter delete", and
+                # one line below the answer is no longer in any array. Pure
+                # read: it cannot change `excluded`, `keep`, or anything the
+                # obstacle rows are built from.
+                if self._ssb_enabled:
+                    ssb_ran = True
+                    self._shadow_pass(
+                        depth_here, robot_depth[vg, ug], excluded, ug, vg,
+                        cx_f32, cy_f32, fx_inv_f32, fy_inv_f32,
+                        model_points_cam, int(step), frame_stamp)
                 excluded = excluded & ~in_front
                 # ── DIAGNOSTIC: self pixels that leaked past the mask ───────
                 # A pixel the mask did NOT exclude, sitting AT the robot's own
@@ -392,6 +464,15 @@ class DistanceEngine:
                     & (np.abs(depth_here - z_rob) <= self._depth_gate_tol)))
             keep   = ~excluded
             ug, vg = ug[keep], vg[keep]
+        if self._ssb_enabled and not ssb_ran:
+            # The gate did not run this frame (no exclusion mask, no depth
+            # buffer, or a zero tolerance), so there is no shadow measurement.
+            # Publish the EMPTY cloud rather than leaving the previous frame's
+            # in place — the same rule the obstacle cloud follows, and for the
+            # same reason: a stale shadow is a barrier row built on a frame
+            # that no longer exists.
+            self.last_shadow_cloud = empty_cloud(step=int(step), stamp=frame_stamp)
+            self.last_shadow_stats = {'reason': 'gate_not_run'}
 
         # Sample the EE-vs-body provenance with the SAME (vg, ug) indices used
         # for Z below, so it stays index-aligned with p_cam through Step 4.
@@ -404,6 +485,28 @@ class DistanceEngine:
         if ee_src is not None:
             ee_src = ee_src[valid]   # same boolean filter as Z/ug/vg
 
+        # ── Step 5 (moved up): project CPs into camera frame ──────────────
+        # R_base maps base→camera (rotation part of extrinsic).
+        # cp_cam[i] = R_base.T @ (cp_base[i] − t_base)
+        R_c2b  = R_base_f32.T                                            # (3, 3)
+        cp_cam = (R_c2b @ (cp_positions.T - t_base_f32[:, None])).T     # (N_CP, 3)
+
+        # ── Step 5b: nearest SHADOW point per control point ───────────────
+        # Same frame, same control points, same subtraction as Step 6 — the
+        # shadow set is a second obstacle set, so it is measured the same way.
+        # Computed here rather than in the loop below so the (N_pix, N_CP)
+        # arithmetic happens once.
+        #
+        # AHEAD of the "no obstacle pixel survived" return on purpose: a hand
+        # sitting entirely inside the dilated silhouette produces NO obstacle
+        # pixel and is exactly the case SSB exists for, so that path must still
+        # carry the shadow measurement.
+        ssb_gap = ssb_idx = None
+        if self._ssb_enabled and self.last_shadow_cloud is not None \
+                and self.last_shadow_cloud.n:
+            ssb_gap, ssb_idx = nearest_candidate_per_cp(
+                self.last_shadow_cloud.p_cam, cp_cam, radii)
+
         if ug.size == 0:
             # No obstacle pixel survived: publish an EMPTY cloud rather than
             # leaving the previous frame's in place. A stale cloud would let the
@@ -413,7 +516,11 @@ class DistanceEngine:
                     p_cam=np.empty((0, 3), dtype=np.float32),
                     u=np.empty(0, dtype=np.int32), v=np.empty(0, dtype=np.int32),
                     step=int(step), stamp=frame_stamp)
-            return self._lpf_pass(self._empty_results(control_points), dt), 0
+            empty = self._lpf_pass(self._empty_results(control_points), dt)
+            if ssb_gap is not None:
+                self._annotate_shadow(empty, control_points, ssb_gap, ssb_idx,
+                                      R_base_f32, t_base_f32)
+            return empty, 0
 
         # ── Step 4: unproject obstacle pixels to CAMERA frame ─────────────
         # Working in camera frame avoids transforming every pixel to base frame.
@@ -466,11 +573,9 @@ class DistanceEngine:
         else:
             margin_m = np.float32(0.0)   # scalar → natural broadcast, no-op
 
-        # ── Step 5: project CPs into camera frame ─────────────────────────
-        # R_base maps base→camera (rotation part of extrinsic).
-        # cp_cam[i] = R_base.T @ (cp_base[i] − t_base)
-        R_c2b  = R_base_f32.T                                            # (3, 3)
-        cp_cam = (R_c2b @ (cp_positions.T - t_base_f32[:, None])).T     # (N_CP, 3)
+        # ── Step 5: the CP projection and the shadow selection are above ──
+        # Both are needed on the no-obstacle-pixel path too, so they moved
+        # ahead of it.
 
         # ── Step 6: per-CP nearest obstacle ───────────────────────────────
         # Direct vectorised subtraction per CP — no KDTree overhead.
@@ -534,7 +639,120 @@ class DistanceEngine:
             self._cap_extra_rows(results)
 
         # ── Step 7: apply conservative low-pass filter ────────────────────
-        return self._lpf_pass(results, dt), int(ug.size)
+        out = self._lpf_pass(results, dt)
+        # AFTER the LPF, deliberately. The filter's state is keyed on the
+        # obstacle distance and its approach-spike logic is tuned against the
+        # obstacle statistics; running a second, differently-distributed signal
+        # through the same per-CP state would couple them. The shadow gap is
+        # carried raw and the barrier's own engage/hold hysteresis does the
+        # smoothing (see ShadowRowBuilder).
+        if ssb_gap is not None:
+            self._annotate_shadow(out, control_points, ssb_gap, ssb_idx,
+                                  R_base_f32, t_base_f32)
+        return out, int(ug.size)
+
+    def _annotate_shadow(self, results, control_points, ssb_gap, ssb_idx,
+                         R_base_f32, t_base_f32) -> None:
+        """Write the per-CP shadow fields onto ``results``, in place.
+
+        ``results`` is index-aligned with ``control_points`` on every path that
+        reaches here (both the normal build and ``_empty_results``), which is
+        what lets the gap array be indexed positionally.
+        """
+        cl = self.last_shadow_cloud
+        for i, (cp, r) in enumerate(zip(control_points, results)):
+            if not np.isfinite(ssb_gap[i]):
+                continue
+            j = int(ssb_idx[i])
+            sp_base = R_base_f32 @ cl.p_cam[j] + t_base_f32
+            svec = (np.asarray(cp['point'], dtype=np.float64)
+                    - sp_base.astype(np.float64))
+            snorm = float(np.linalg.norm(svec))
+            r.shadow_distance = float(ssb_gap[i])
+            r.shadow_point = sp_base
+            r.shadow_direction = ((svec / snorm).astype(np.float32)
+                                  if snorm > 1e-9 else np.zeros(3, np.float32))
+            r.shadow_pixel = (int(cl.u[j]), int(cl.v[j]))
+            r.shadow_front_m = (float(cl.front_m[j])
+                                if cl.front_m is not None else 0.0)
+
+    # ── Self-Shadow Barrier extraction ────────────────────────────────────
+
+    def _shadow_pass(self, depth_here, z_model, excluded, ug, vg,
+                     cx, cy, fx_inv, fy_inv, model_points_cam, step,
+                     frame_stamp) -> None:
+        """Extract this frame's shadow candidates into ``last_shadow_cloud``.
+
+        Three filters, in increasing cost and increasing discriminating power,
+        and the order is the point: each one runs on what the previous one
+        left, so the expensive 3-D query only ever sees the depth band's
+        survivors.
+
+        1. **The ray class** (``self_shadow.classify_masked_rays``): a valid
+           return, inside the exclusion mask, that the gate removed and that
+           sits more than ``ssb_guard_m`` in front of the robot's own debiased
+           model surface.  Cheap, vectorised, and it is the only one of the
+           three that is a statement about what the SELF-FILTER did.
+        2. **The 3-D model test** (``reject_model_explained``): farther than
+           ``ssb_model_clearance_m`` from every projected mesh sample.  This is
+           the discriminator.  Filter 1 cannot do its job alone because
+           ``robot_depth``'s own residual against the real arm is several
+           centimetres with a several-centimetre spread, so a depth-only
+           candidate set is dominated by the arm itself.
+        3. **Spatial support** (``cluster_support``): a blob of at least
+           ``ssb_min_support_px`` pixels.  An isolated pixel is depth speckle.
+
+        Writes ``last_shadow_cloud`` and ``last_shadow_stats`` unconditionally,
+        so the diagnostics distinguish "no candidate" from "not measured".
+        Never raises on an empty input, and never touches the obstacle path.
+        """
+        t_ssb = time.perf_counter()
+        cloud = extract_shadow_candidates(
+            depth_here, z_model, excluded, ug, vg,
+            cx=float(cx), cy=float(cy),
+            fx_inv=float(fx_inv), fy_inv=float(fy_inv),
+            bias=self._depth_gate_bias, tol=self._depth_gate_tol,
+            guard=self._ssb_guard, z_min=self.min_depth, z_max=self.max_depth,
+            step=step, stamp=frame_stamp)
+        stats = {f'cls_{k}': v for k, v in cloud.counts.items()}
+        stats['n_band'] = cloud.n
+        stats['unknown_frac'] = cloud.unknown_fraction()
+        # How far in front of the debiased surface the deepest-in-front
+        # candidate was, measured on the BAND cloud -- i.e. BEFORE the two
+        # filters. On the surviving cloud it reads 0.000 whenever the filters
+        # rejected everything, which is exactly the frame one wants the number
+        # for: it is the measurement's own property, not the filters'.
+        stats['front_max_m'] = (float(np.max(cloud.front_m))
+                                if cloud.n and cloud.front_m is not None else 0.0)
+        stats['n_model_pts'] = (0 if model_points_cam is None
+                                else int(len(model_points_cam)))
+
+        if cloud.n:
+            keep = reject_model_explained(cloud.p_cam, model_points_cam,
+                                          self._ssb_clearance)
+            cloud = _subset_cloud(cloud, keep)
+        stats['n_unexplained'] = cloud.n
+
+        blob: list = []
+        if cloud.n:
+            keep = cluster_support(cloud.u, cloud.v, cloud.z, step=step,
+                                   min_px=self._ssb_min_px, out_max_blob=blob)
+            cloud = _subset_cloud(cloud, keep)
+        stats['n_supported'] = cloud.n
+        # The largest blob the support filter SAW, in GRID SAMPLES (each worth
+        # step**2 pixels). Without it, a frame where every candidate was
+        # rejected for want of support is indistinguishable on a log from one
+        # with no candidate at all -- and those call for opposite fixes.
+        stats['max_blob'] = int(blob[0]) if blob else 0
+
+        # Wall time of the WHOLE shadow pass, for the performance budget: the
+        # three filters plus the unprojection, i.e. everything SSB adds to the
+        # perception loop except the per-control-point nearest-candidate query.
+        # Measured here rather than inferred from the `dist=` field, because
+        # that field also moves with the obstacle count.
+        stats['ssb_ms'] = (time.perf_counter() - t_ssb) * 1e3
+        self.last_shadow_cloud = cloud
+        self.last_shadow_stats = stats
 
     # ── Multi-obstacle rows ───────────────────────────────────────────────
 
@@ -777,3 +995,20 @@ class DistanceEngine:
             start_link=cp['start_link'],
             end_link=cp['end_link'],
         ) for cp in control_points]
+
+
+def _subset_cloud(cloud, keep):
+    """``cloud`` restricted to ``keep``, counts and denominators preserved.
+
+    The per-class ``counts`` and ``n_grid`` describe the FRAME, not the
+    surviving points, so they must not be re-derived from a filtered subset:
+    the unknown fraction is a property of what the self-filter removed and does
+    not change because a candidate was later rejected as the arm.
+    """
+    keep = np.asarray(keep, dtype=bool)
+    out = type(cloud)(
+        p_cam=cloud.p_cam[keep], u=cloud.u[keep], v=cloud.v[keep],
+        z=cloud.z[keep], counts=cloud.counts, n_grid=cloud.n_grid,
+        step=cloud.step, stamp=cloud.stamp,
+        front_m=None if cloud.front_m is None else cloud.front_m[keep])
+    return out

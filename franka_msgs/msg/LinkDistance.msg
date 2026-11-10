@@ -125,3 +125,62 @@ float64[9] position_velocity_covariance
 # knows nothing about this term emits the message-default 0.0 and every
 # consumer keeps working unchanged.
 float64 range_m
+
+# ── Self-Shadow Barrier (real_time_distance, distance.ssb_enabled) ───────────
+# The nearest depth return that the robot's OWN self-filter deleted and that
+# the robot's own geometry cannot account for: a surface that WAS observed,
+# inside the dilated exclusion mask, sitting clearly in front of the arm's
+# modelled front surface. See franka_experiments/utils/self_shadow.py for the
+# construction and for why a per-ray depth comparison alone cannot tell such a
+# return from the arm itself.
+#
+# This is NOT a second obstacle measurement of the same kind as the fields
+# above. Its evidence is weaker by construction — the pipeline deliberately
+# discarded these pixels because they MIGHT be the robot — so the consumer
+# gives it its own constraint family, its own slack price and its own safety
+# distance, and never merges it into the obstacle rows.
+#
+# DEFAULT IS SAFE AND IS "NOT CARRIED": shadow_valid defaults to false, every
+# consumer gates on it, and a publisher that knows nothing about SSB emits
+# exactly that. There is no value of these fields that can LOOSEN a constraint.
+
+# True only when this control point has a shadow measurement this frame.
+# shadow_distance of 0.0 is a valid, maximally-urgent reading, so the flag and
+# not the number is what says whether the measurement exists.
+bool shadow_valid
+
+# SURFACE gap in metres from closest_point_robot to shadow_point: the norm of
+# their difference minus the capsule radius. NOT clamped at 0 and NOT corrected
+# by the mask-dilation margin.
+#
+# Unclamped because the sign carries information the obstacle path does not
+# need: a negative gap means the shadowed surface is inside this control
+# point's own capsule, and the barrier's push direction depends on knowing it.
+# No margin correction because the dilation margin compensates for the
+# exclusion mask pushing the first OBSERVABLE obstacle pixel outward, and these
+# pixels are read from INSIDE that mask.
+float64 shadow_distance
+
+# The shadowed surface point itself (base frame).
+geometry_msgs/Point shadow_point
+
+# Unit normal, shadow_point -> closest_point_robot. Raw, not EMA-smoothed:
+# unlike `direction` this one is not fed through the distance low-pass filter,
+# whose per-control-point state is keyed on the obstacle statistics.
+geometry_msgs/Vector3 shadow_direction
+
+# Metres by which shadow_point sits IN FRONT of the arm's debiased modelled
+# surface along its own camera ray. Diagnostic: it is the quantity the whole
+# mechanism turns on, and a value just above mask.depth_gate_tol_m's guard band
+# marks a candidate that only barely escaped being classed as the robot.
+float64 shadow_front_m
+
+# Share of the rays the self-filter removed in this frame that carried NO valid
+# depth return at all, i.e. the part of the self-shadow that is genuinely
+# UNKNOWN rather than merely reclassified. Frame-global, repeated on every
+# entry (a ROS message has no per-frame section). 0.0 when nothing was removed.
+#
+# This is the honest denominator for any claim about SSB's coverage: SSB builds
+# rows from observed-but-deleted returns, and this number is how much of the
+# removed region it says nothing about.
+float64 shadow_unknown_frac

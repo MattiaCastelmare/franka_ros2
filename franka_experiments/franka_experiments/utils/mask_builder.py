@@ -99,6 +99,22 @@ class MaskBuilder:
         self._mask_normal_buf: Optional[np.ndarray] = None
         self._mask_ee_buf: Optional[np.ndarray] = None
 
+        # ── SSB: the robot's own mesh samples, in CAMERA frame ──────────
+        # The Self-Shadow Barrier needs to ask "could the robot be here?" about
+        # a 3-D point, and `robot_depth` cannot answer it: that buffer is a
+        # per-pixel MINIMUM over a sparse sample set, hole-filled by a
+        # min-filter, so its bias moves by centimetres with
+        # `meshes.sample_points_per_link` alone. A distance to the SAMPLES has
+        # no such bias. The samples are already projected into camera frame
+        # below for the mask; this keeps a decimated copy instead of discarding
+        # them, which costs one slice and one concatenate per rebuild.
+        #
+        # 0 (the default) keeps nothing and leaves every output of this class
+        # bit-identical.
+        self._model_stride = max(0, int(mask_cfg.get('model_points_stride', 0)))
+        #: (M, 3) float64 robot mesh samples in CAMERA frame, or None.
+        self.model_points_cam: Optional[np.ndarray] = None
+
         self.robot_mask: Optional[np.ndarray] = None
         self.search_exclusion_mask: Optional[np.ndarray] = None
         self.contours: Optional[list] = None
@@ -151,6 +167,8 @@ class MaskBuilder:
         zbuf = self._zbuf
         zbuf[:] = np.inf
 
+        model_chunks: List[np.ndarray] = [] if self._model_stride else None
+
         for link_name, pts_local in self._samples.items():
             if link_name not in transforms:
                 continue
@@ -183,6 +201,18 @@ class MaskBuilder:
             # downsampled pixel — would keep an arbitrary one instead of the
             # nearest.
             np.minimum.at(zbuf, (vs, us), p_cam[ok, 2].astype(np.float32))
+
+            # SSB: a decimated copy of THESE points — the ones actually in
+            # front of the camera, before any rasterisation. Taken with a
+            # stride rather than a random subsample so the set is identical for
+            # an identical pose, which is what keeps the barrier reproducible.
+            if model_chunks is not None:
+                model_chunks.append(p_cam[::self._model_stride].astype(np.float64))
+
+        if model_chunks is not None:
+            self.model_points_cam = (np.concatenate(model_chunks, axis=0)
+                                     if model_chunks else
+                                     np.empty((0, 3), dtype=np.float64))
 
         mask_normal = _dilate(mask_normal, dilate_px)
         mask_ee     = _dilate(mask_ee,     ee_dilate_px)

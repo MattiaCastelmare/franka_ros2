@@ -38,7 +38,11 @@ import numpy as np
 from . import analysis as A
 from .reflex_checks import CLIP_KIND
 
-FAMILIES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd')
+#: The QP's constraint families, in decision-vector order. Pinned to
+#: ``cbf_state_rows.GROUP_NAMES`` by test_closed_loop.test_names_are_the_filters,
+#: because the CBFDIAG slack line is parsed POSITIONALLY: a family added to the
+#: QP and not added here would shift every slack a scorer reads.
+FAMILIES = ('obs', 'sc', 'qlim', 'sing', 'cap', 'spd', 'ssb')
 #: Task 5.5 of ``OSCBF_ALIGNMENT_PLAN.md``: the achieved QP rate is a pass/fail
 #: INPUT, not just a reported number. A cell that misses the rate its own
 #: condition asked for by more than this fraction is not a valid data point —
@@ -146,8 +150,20 @@ def cbfdiag_capage(lines: list[str], t0: float, t1: float) -> dict:
     return dict(capage_ms_p50=float(np.median(ages)), capage_ms_p95=float(np.percentile(ages, 95)))
 
 
+#: The CBFDIAG keys the per-family slack is spread across, and which slot of
+#: each holds the slack. The six original families share one '/'-joined field;
+#: the SSB family was APPENDED as its own key (``ssb[n/d/s]`` = rows, closest
+#: gap, slack) rather than widened into the first, because every parser of that
+#: bracketed group counts six. Both are read here so no family's slack is
+#: silently scored as a measured 0.0.
+_SLACK_KEYS = (('s[obs/sc/qlim/sing/cap/spd]', FAMILIES[:6], None),
+               ('ssb[n/d/s]', ('ssb',), 2))
+
+
 def cbfdiag_slack(lines: list[str], t0: float, t1: float) -> dict:
+    """Per-family max slack and, for SSB, its row count and closest gap."""
     best = {n: 0.0 for n in FAMILIES}
+    ssb_rows_max, ssb_gap_min = 0.0, float('inf')
     n = 0
     for ln in lines:
         i = ln.find('CBFDIAG ')
@@ -158,9 +174,22 @@ def cbfdiag_slack(lines: list[str], t0: float, t1: float) -> dict:
         if not (t0 <= t <= t1):
             continue
         n += 1
-        for name, x in zip(FAMILIES, (f.get('s[obs/sc/qlim/sing/cap/spd]') or '').split('/')):
-            best[name] = max(best[name], A._num(x, 0.0))
-    return dict(best, n_lines=n)
+        for key, names, slot in _SLACK_KEYS:
+            parts = (f.get(key) or '').split('/')
+            if slot is None:
+                for name, x in zip(names, parts):
+                    best[name] = max(best[name], A._num(x, 0.0))
+            elif len(parts) > slot:
+                best[names[0]] = max(best[names[0]], A._num(parts[slot], 0.0))
+        ssb = (f.get('ssb[n/d/s]') or '').split('/')
+        if len(ssb) == 3:
+            ssb_rows_max = max(ssb_rows_max, A._num(ssb[0], 0.0))
+            g = A._num(ssb[1], float('inf'))
+            if np.isfinite(g):
+                ssb_gap_min = min(ssb_gap_min, g)
+    return dict(best, n_lines=n, ssb_rows_max=ssb_rows_max,
+                ssb_gap_min=(None if not np.isfinite(ssb_gap_min)
+                             else float(ssb_gap_min)))
 
 
 def summarize_run(run_dir: str) -> dict:

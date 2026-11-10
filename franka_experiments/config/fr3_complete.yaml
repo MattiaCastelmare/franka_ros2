@@ -252,6 +252,98 @@ distance: # in meters
   # lifecycle duration in this file.
   depth_rate_hz: 90.0
 
+  # ═══════════════════════════════════════════════════════════════════════
+  # Self-Shadow Barrier (SSB) — recovering what the self-filter deleted
+  # ═══════════════════════════════════════════════════════════════════════
+  # The depth self-filter below (`mask.depth_gate_*`) keeps a pixel inside the
+  # robot's dilated silhouette only when it is MORE than
+  # `depth_gate_bias_m + depth_gate_tol_m` = 0.16 m in front of the arm's
+  # modelled surface. Everything nearer than that threshold is deleted, and the
+  # distance pipeline then reads the deletion as free space. It is not free
+  # space: it is a 16 cm shell on the arm's own surface in which an obstacle is
+  # observed, deleted, and invisible. That shell is where `OPEN_ISSUES` S5
+  # happens (a ball enters it, the track dies, the arm interpenetrates by
+  # 14 mm) and it is the documented price of the gate.
+  #
+  # SSB re-examines exactly those deleted pixels and keeps the ones the robot's
+  # own geometry CANNOT account for, as a separate, lower-trust constraint
+  # family with its own slack price and its own safety distance. It does not
+  # change the gate, the obstacle pixels, the distances, or any existing row.
+  #
+  # OFF by default. With `ssb_enabled: false` nothing in utils/self_shadow runs,
+  # `MaskBuilder` keeps no model points, every `shadow_*` field on the wire
+  # stays at its "not carried" default and every barrier row is bit-identical
+  # to the pre-SSB pipeline. Turn the rows on with `cbf.ssb_rows_enabled` in
+  # fr3_control.yaml; this flag only produces the measurement.
+  ssb_enabled: false
+
+  # [m] half-width of the band around the DEBIASED model surface in which a
+  # return is read as the ROBOT rather than as a shadow candidate.
+  #
+  # SIZED BY THE SPREAD OF THE CALIBRATION RESIDUAL, NOT BY SENSOR NOISE, and
+  # it is not optional: `mask.depth_gate_bias_m` is the MEDIAN of that
+  # residual, so at `ssb_guard_m: 0` half of the arm's own pixels sit in front
+  # of the debiased surface and become candidates by construction. The measured
+  # spread on this rig is a MAD of 3.8-5.7 cm (sigma ~1.5x that), so 0.04 m
+  # keeps most of the arm out while leaving a usable band.
+  #
+  # The usable band is `[ssb_guard_m, depth_gate_tol_m]` measured from the
+  # debiased surface — 0.04 to 0.10 m at the shipped numbers, i.e. SSB recovers
+  # obstacles 4-10 cm in front of the arm and says nothing about the innermost
+  # 4 cm. Setting this at or above `mask.depth_gate_tol_m` makes the band EMPTY
+  # and the node warns.
+  ssb_guard_m: 0.04
+
+  # [m] a candidate farther than this from EVERY projected robot mesh sample
+  # cannot be the robot, whatever the per-pixel z-buffer said.
+  #
+  # THIS IS THE DISCRIMINATOR, and the reason the mechanism is safe to switch
+  # on. `mask.robot_depth` is a SPARSE per-pixel minimum whose bias moves by
+  # centimetres with `meshes.sample_points_per_link` alone (-0.9 cm at 300,
+  # +6.0 cm at 20000, one unchanged extrinsic), so a depth-only candidate set
+  # is dominated by the arm itself. A distance to the SAMPLES has no such bias;
+  # it is wrong only by the sample SPACING, so this must exceed that spacing:
+  # ~3 mm at 3000 samples/link, ~8x that at `ssb_model_points_stride: 8`.
+  #
+  # Conservative in the WRONG direction if set too large (a real obstacle
+  # touching the arm is attributed to the arm and missed) and over-conservative
+  # if too small (arm pixels become shadow rows). 0 disables the test, which
+  # keeps every candidate — do not ship that.
+  ssb_model_clearance_m: 0.05
+
+  # Stride with which `MaskBuilder` keeps the projected mesh samples for the
+  # test above. 8 of 12000 samples/link is 1500/link, ~13500 points, a cKDTree
+  # build of ~1 ms. Raise it if the perception budget is tight and raise
+  # `ssb_model_clearance_m` with it.
+  ssb_model_points_stride: 8
+
+  # Pixels a shadow blob must have before it is believed. Speckle rejection,
+  # the same argument `tracking.cluster_min_points` makes for the ordinary
+  # pipeline: an isolated depth artefact is a handful of pixels and an object
+  # is a blob. Counted on the DECIMATED grid (`pixel_step`), like every other
+  # pixel count in this file.
+  # Minimum connected blob, in GRID SAMPLES -- the engine samples every
+  # `pixel_step`-th pixel (6), so one sample stands for 36 px and this
+  # threshold is 36x coarser than the name suggests.
+  #
+  # 3, DERIVED and then MEASURED. Derived: depth speckle is isolated pixels, so
+  # a 2-sample connected blob already spans 12 px and speckle cannot produce
+  # one; 3 adds a margin without reaching for a real obstacle. Measured: the
+  # first value tried here was 6, and on ssb_poke (a 4 cm ball crossing the
+  # band at 1.5 m) the largest blob ever seen was 3 SAMPLES, so 6 rejected
+  # every candidate on every frame and the mechanism never fired once. The
+  # reason is geometric and worth writing down: the candidate band is only
+  # bias+tol-bias-guard = 6 cm deep, and a sphere's near-surface depth varies
+  # by its own radius across its disc, so only an ANNULUS of the disc is in
+  # the band at any instant -- about 11 samples for the whole disc at step 6,
+  # and 1-5 for the annulus.
+  ssb_min_support_px: 3
+  # Throttle of the SSBDIAG log line [s]. Separate from log_throttle_s because
+  # with cbf.ssb_rows_enabled off this line is the only record the mechanism
+  # leaves on a bag, and the CBFDIAG `ssb[n/d/s]` field is 0/inf by
+  # construction in that arm (the constraint builder is what fills it).
+  ssb_log_throttle_s: 0.5
+
   # Throttle interval [s] for repeated distance/obstacle log messages.
   log_throttle_s: 2.0
 
