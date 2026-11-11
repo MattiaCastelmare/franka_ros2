@@ -487,3 +487,26 @@ obstacle. The previous command equals the nominal.
 | F-4-10 | default OSQP tolerance: residuals ~1e-3; time_limit off | §4 | `check_qp_assembly.py` | timing on target |
 | F-4-11 | no torque rows, no workspace rows | §2.4 | grep + `check_torque_realization.py` 5 | — |
 | F-4-12 | before the first distance message: no rows at all, no fault | §5.1 | code reading | runtime |
+
+## 10. Stage 7 coverage addendum (2026-11-11, C-049): `utils/rate_scaling.py` read in full
+
+`FrameRateEstimator`, `tau_for_alpha` and the module header were read at the baseline (Verified);
+`frames_for` and `ema_alpha_for` were read in Stage 3.
+
+- **`FrameRateEstimator(nominal_hz, window=120, tol=0.20, min_interval=300)`** measures the rate as
+  1/median of the last `window` inter-frame intervals. Until the window is full, `hz` returns
+  `nominal_hz`. `add(dt)` ignores intervals outside (1e-4, 1.0) s (duplicates and stalls), and
+  returns True (re-derive the frame counts) only when the median rate moves more than 20 % from the
+  last reported rate and at least 300 frames after the previous report.
+- Users: `real_time_distance` (`self._rate`, L236, nominal = the camera profile rate) and
+  `cbf_safety_filter` (`self._in_rate`, L225, nominal = `obstacle_input_rate_hz` = 90.0,
+  `fr3_control.yaml` L1537). In the filter it sizes the two evidence gates of ch. 07 (the 24-frame
+  span gate and the 8-measurement margin gate, F-3-6) from the rate that actually arrives.
+- Consequence: for the first 120 distance messages (≈ 1.3 s at 90 Hz), and whenever the true rate
+  drifts by less than 20 %, the gates are sized from the nominal 90 Hz. A stream that runs at
+  60 Hz therefore keeps 90 Hz-sized gates (in frames) for at least 120 frames, i.e. a time window
+  1.5× longer than the configured seconds. This is the design (the docstring argues for it), not a
+  defect; it matters when interpreting start-up behaviour (F-4-12) and Q-3-1.
+- `tau_for_alpha(alpha, rate_hz)` = −1/(rate·ln α): a migration helper; no live caller.
+
+No new finding.

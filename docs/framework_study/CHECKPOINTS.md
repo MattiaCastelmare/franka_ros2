@@ -996,3 +996,265 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    - nothing launched: no Gazebo, no ROS graph, no pytest, no colcon.
 4. **State warning:** the container's installed workspace ≠ the baseline source (F-6-3).
 5. **Exact next action:** wait for the user's review. Stage 7 needs a separate, explicit approval.
+
+## C-040 — 2026-11-11 — Stage 7 — started
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` (Stages 0–6 committed and pushed) / consistent
+- Approval: the user's pasted prompt "execute ONLY Stage 7 — Final Synthesis, Code Classification,
+  Coverage Audit and Documentation Consolidation". No refactoring, no Gazebo, no commits.
+- Single writer: no other session is known to be writing to `docs/framework_study/`; tree clean at start.
+- Done so far: `tools/stage7_verification/inventory.py` (static evidence per ledger file: definitions,
+  static and string imports, entry points, launch references, test importers, chapter citations) →
+  `results/inventory.{json,md}`.
+- Exact next action: targeted reading of the unread safety-critical parts (`self_collision.py`,
+  the uncited builders of `cbf_state_rows.py`, the uncited methods of `cbf_safety_filter.py`,
+  `singularity_recovery.py`, the small pending utils), then the test traceability.
+
+## C-041 — 2026-11-11 — Stage 7 — safety-critical reading pass 1; install provenance
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent (Stage 7 edits uncommitted)
+1. **Read (in full):**
+   - `utils/self_collision.py`;
+   - `utils/singularity_recovery.py`;
+   - `utils/cbf_utils.py`, `utils/node_utils.py`;
+   - `scripts/pin_rt_thread.sh`;
+   - both `package.xml`, `setup.py`, `setup.cfg`, `MANIFEST.in`, `CMakeLists.txt`, `pytest.ini`,
+     the `.gitignore` files.
+2. **Read (the functions no chapter cited):**
+   - `cbf_state_rows.py`: retreat_*, joint_limit_risk_margin, risk_slack_weight, evidence_margin,
+     fitted_rate, measured_curvature_radius, in_self_mask, in_self_shadow, memory_surface_gap,
+     set_input_rate;
+   - `cbf_safety_filter.py`: `_joint_state_frozen`, `_on_iso_safety`, `_iso_stop_active`;
+   - `ros_setup`/`avoidance_math`: the velocity-stack model and joint ordering.
+3. **Findings:**
+   - F-7-1: the singularity recovery quintic ends at q̇ = v₀, and with \|v₀\| > 0.5 rad/s the plan
+     diverges (457 s, tens of rad);
+   - F-7-2: stale `TODO[LEGACY]` markers;
+   - F-7-3: the `select_gamma` docstring;
+   - F-7-4: the install is a mixed `fr3-student-sim` build (the cause of F-6-3; Q-6-1 answered).
+   - Chapter 06 got a Stage 7 correction note (6.R1).
+4. **Ledger:** documented `self_collision` (ch 08), `singularity_recovery` (ch 06), `cbf_state_rows`,
+   `cbf_safety_filter`.
+5. **Scripts:** `stage7_verification/inventory.py` and `check_install_provenance.py` (3/3 PASS).
+6. **Exact next action:** write `check_unread_functions.py` (F-7-1, F-7-3, risk weight) and
+   `check_legacy_markers.py`. Then the remaining pending non-test files (`rtd_debug`, hand-eye,
+   calibration configs, `control_regression_scenarios.yaml`), then test traceability.
+
+## C-042 — 2026-11-11 — Stage 7 — test traceability and build facts gathered
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent (Stage 7 edits uncommitted)
+1. **Scripts:**
+   - `check_unread_functions.py`: 9/9 PASS (F-7-1 reproduced 4 ways; F-7-3; the slack weight; the
+     joint-limit risk margin; segment/segment vs brute force; retreat displacement = ∫ speed);
+   - `test_traceability.py`: 128 test files, 1487 test functions, 0 stale imports. Infrastructure
+     per file: pure 74, ros 22, config 25, textual 20, gazebo 5, data 3, pinocchio 2, ml 1.
+     Replicas confirmed by hand: `test_phase_governor.py` (whole file mirrors the node),
+     `test_cbf_velocity_filter.py::test_gamma_continuous` (inlines `select_gamma`), and one helper
+     in `test_cbf_state_rows.py` (L732, mirrors `_obstacle_speed`). `test_cbf_multi_cp_qp` was a
+     false positive of the regex.
+2. **Facts for ch. 14:**
+   - the Dockerfile (ros:humble-ros-base; robotpkg Pinocchio; pip pins numpy 1.26.4, qpsolvers
+     4.3.3, osqp < 1.0, torch/mujoco/sb3/onnxruntime);
+   - docker-compose (repo bind-mounted at `/ros2_ws/src`; `build`, `install` and `log` live in the
+     container layer);
+   - the entrypoint; the container versions (pytest 6.2.5, Pinocchio 4.0.0, scipy 1.15.3, osqp
+     0.6.7.post3);
+   - the colcon build history (mixed symlink and copy builds);
+   - `franka_simulation` install facts added to F-7-4.
+3. **Exact next action:** write `14_build_launch_test.md`. Then 15, 16 (consolidating F-0-1 …
+   F-7-4), the guide comparison, A/B/C, `REFACTORING_READINESS.md`, `check_docs.py`.
+
+## C-043 — 2026-11-11 — Stage 7 — chapter 14 written
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent (Stage 7 edits uncommitted)
+1. **`14_build_launch_test.md`:**
+   - workspace and packages; declared and undeclared dependencies; Docker;
+   - per-package install mechanics; copy vs symlink;
+   - where configuration is read from; the F-6-3/F-7-4 timeline and the detection commands;
+   - a proposed revision-tied clean build (NOT EXECUTED); the config freshness loop; environment
+     reproduction;
+   - the launch-file table; test suites and how to run them; the F-7-5 cwd rule; replica and
+     textual tests;
+   - runtime diagnostics; the `d_safe` example; consequences of modification.
+2. **F-7-5 logged:** the test cwd decides source vs install.
+3. **Ledger:**
+   - documented, ch 14: the 11 build-metadata files and `pin_rt_thread.sh`;
+   - documented: `cbf_utils`, `node_utils`;
+   - read: `control_regression_scenarios.yaml`;
+   - partial (interface level): `rtd_debug`, `handeye_eye_in_hand_node`, the 2 hand-eye launches,
+     `camera_EE_extrinsic.yaml`;
+   - **every remaining `pending` test → `partial`**, meaning static traceability only (imports,
+     infrastructure, test counts, docstrings, machine-extracted by `test_traceability.py`);
+     assertions not read except those named in ch 14 §7.4.
+4. **Exact next action:** `15_code_status.md` (classification), then 16, the guide comparison,
+   A/B/C, REFACTORING_READINESS, `check_docs.py`.
+
+## C-044 — 2026-11-11 — Stage 7 — chapter 15 written
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent (Stage 7 edits uncommitted)
+1. **`15_code_status.md`:**
+   - the classes and evidence routes;
+   - classification tables for every production file of both packages: nodes, the Pipeline A core,
+     perception, alternatives, no-consumer files, configuration, scripts, simulation;
+   - the `TODO[LEGACY]` marker reconciliation (4 of 22 false or misleading);
+   - the flag layer; the summary; removal rules.
+2. **Corrections made while writing:**
+   - the ISO nodes are not started by default (launch_defaults L292/L301);
+   - `obstacle_sim`'s gate is `sim_obstacle.enabled`.
+3. **Exact next action:** `16_issues_and_discrepancies.md`. Read all of PROGRESS §4 (F-0-1 …
+   F-7-5); categorize, prioritize, cross-link; then the guide comparison.
+
+## C-045 — 2026-11-11 — Stage 7 — chapter 16 Parts A–D written
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent (Stage 7 edits uncommitted)
+1. **`16_issues_and_discrepancies.md`:** all 120 findings (F-0-1 … F-7-6) categorized into 11
+   tables, with severity, priority, confidence, Num, CL, direction and links.
+   - Part C: 12 root-cause groups, 10 corrections and 4 contradictions discussed.
+   - Part D: the P0–P3 lists.
+2. **Re-verified at the baseline** (independent of earlier stages):
+   - F-4-1 (`obstacle_slack_mode: family`);
+   - F-4-12 (`_update_constraints` needs both `_js` and `_obs`);
+   - F-4-6 (the effort clip is under `iso_enabled`);
+   - F-4-7 (`rt_torque_controller.cpp` L121: "nessuna saturazione SW").
+3. **New: F-7-6** (a false comment about clipping).
+4. **Script attributions in the Num column** were checked against the PROGRESS evidence and the
+   stage READMEs; 7 corrected.
+5. **Exact next action:** the guide comparison (Part E of ch. 16). Then A/B/C, REFACTORING_READINESS,
+   `check_docs.py`, and the 00_INDEX rewrite.
+
+## C-046 — 2026-11-11 — Stage 7 — chapter 16 Part E (guide vs code) written; resumed in a new account
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / check_state exit 1 before this entry (expected
+  mid-stage: PROGRESS §2 counts not refreshed since Stage 6; link to the not-yet-written
+  `REFACTORING_READINESS.md` from ch. 14). Stage 7 edits uncommitted.
+- **Resumption:** the previous account stopped after C-045 (usage limit). This session re-read
+  CLAUDE.md, PROGRESS §0/§4, C-040…C-045, ch. 16, and the untracked Stage 7 files. Nothing had been
+  saved after C-045: Part E was a 3-line stub; B, C, `REFACTORING_READINESS.md`, `check_docs.py`,
+  and the Stage 7 README/run_all/results did not exist. The PROGRESS §0 resume card was still at C-040
+  (the previous session did not overwrite it at C-041…C-045); corrected now.
+1. **Analysed:** the old guide against the baseline, mechanically (`check_guide_vs_code.py`: §15.2,
+   §15.3, §15.6/§15.11.5 digests, links, §15.1/§15.4 identifiers, `d_safe`, E1–E11) and by reading
+   (§1.1, §6.7, §7.3–7.4, §8.7, §9.1–9.4, §10.2–10.4, §12.7, §13.1).
+   - Key fact: the guide hashed **dirty trees**; identity is taken from its digests, not `ce80f36`.
+2. **Remaining in this stage:** appendices A (regenerate), B (equation index), C (glossary);
+   `REFACTORING_READINESS.md`; the coverage audit; the cross-chapter consistency pass;
+   `check_docs.py` (ch. 16 already promises it), the Stage 7 README, `run_all.sh`, recorded results;
+   00_INDEX final; final verification.
+3. **Files read:** the guide (sections above); at the baseline: `cbf_safety_filter._solve`,
+   `cbf_qp_assembly.build_row_rhs` (docstring), `test_rate_scaling.py` L240–360, `fr3_control.yaml`
+   (the post-guide keys, `joint_limits`), `fr3_complete.yaml` (`tracking`), `experiment_logger`
+   L150–160, `handeye_eye_in_hand_node` L200, `torque_control_stack` diff `ce80f36..ba68077`.
+   No ledger status changed (all already `documented`/`partial` with their chapters).
+4. **Documentation updated:** ch. 16 Part E (E.1–E.9), header (123 findings, "Part E"), B.8/B.9/B.11
+   rows, D.3/D.4; PROGRESS §4 (F-7-7…F-7-9), §5 (Q-7-1…Q-7-4, which ch. 15/16 already cited but
+   were never defined); new script `tools/stage7_verification/check_guide_vs_code.py` (21/21 PASS).
+5. **Findings:** F-7-7 (shipped-config test contradicts the YAML; static), F-7-8 (the guide is stale;
+   summary), F-7-9 (private rclpy attribute). F-0-9's "19 commits" is 20 by `git rev-list` (noted in
+   E.1, F-0-9 not edited). Q-7-1…Q-7-4 added.
+6. **Exact next action:** regenerate `A_file_index.md` from `ledger/ledger.json` (chapter, status,
+   class from ch. 15); then write `B_equation_index.md` by collecting the numbered equations of
+   chapters 04–13 with their `file::function` references.
+
+## C-047 — 2026-11-11 — Stage 7 — appendices A, B, C written
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / check_state exit 1 (only the missing
+  `REFACTORING_READINESS.md` link remains; §2 counts refreshed below)
+1. **Analysed / written:**
+   - `A_file_index.md` regenerated by the new `tools/stage7_verification/gen_file_index.py` (stdout →
+     file) from `ledger.json`, `inventory.json` and ch. 15: 346 files by primary chapter, with status,
+     ch. 15 class, production importers, launch references, tests, citing chapters.
+   - `B_equation_index.md` generated by the new `gen_equation_index.py`: 122 numbered equations of
+     ch. 04–13; 106 with a code pointer (chapter tokens plus a `MANUAL` table whose every symbol was
+     checked with `git grep` at the baseline); 16 without, listed (derivation steps and theory, e.g.
+     (4.9)/(9.1) dynamics, (7.6)/(7.8) HOCBF theory).
+   - `C_glossary.md` (hand-written): symbols, terms, and the cross-chapter symbol collisions
+     (σ, s, α, λ, γ, C).
+2. **Remaining:** `REFACTORING_READINESS.md`; coverage audit; consistency pass; `check_docs.py`; Stage 7
+   README, `run_all.sh`, results; final `00_INDEX.md`; final verification.
+3. **Ledger:** the old guide → `partial` (ch. 16, stage 7: the sections listed in 16 E.1). Counts now
+   pending 18, partial 228, read 3, documented 97.
+4. **Documentation updated:** A, B, C; PROGRESS §2.
+5. **Findings / uncertainties:** none new. The ch. 15 class column in A is parsed from ch. 15 tables;
+   grouped rows (e.g. `depth_intrinsics`/`rgb_intrinsics`) carry the group's combined class.
+6. **Exact next action:** write `REFACTORING_READINESS.md` (10 sections of the stage prompt), using
+   ch. 14 §5–§7 (build/tests), ch. 15 §8–§9 (classes, removal rules), ch. 16 Part D (priorities) and
+   `SIMULATION_VALIDATION_PROTOCOL.md` (baseline runs).
+
+## C-048 — 2026-11-11 — Stage 7 — REFACTORING_READINESS.md written
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / (run after this entry)
+1. **Written:** `REFACTORING_READINESS.md`, the 10 sections of the stage prompt: readiness verdict
+   (plan yes, execute no); investigations I-1…I-6; removable candidates; do-not-remove list;
+   regression tests by component (from `inventory.json`); missing tests (11 gaps); baseline
+   simulations; user decisions; workstreams W0–W10; the safest sequence and the per-change gate.
+   ch. 14 §7.4 link corrected to §6 (the gaps section).
+2. **Remaining:** coverage audit (pending/partial production files), consistency pass, `check_docs.py`,
+   Stage 7 README / `run_all.sh` / recorded results, final `00_INDEX.md`, final verification.
+3. **Files read:** `inventory.json` (test importers of 32 safety-critical files), ch. 14 §7,
+   ch. 15 §8–§9, protocol §0 and §10. No ledger change.
+4. **Documentation updated:** `REFACTORING_READINESS.md` (new), ch. 14 L407.
+5. **Findings:** none new. Test-importer counts are static (`inventory.py`), not executed coverage.
+6. **Exact next action:** coverage audit: list `pending`/`partial` non-test production files from
+   `ledger.json`; read the small safety-relevant ones not yet read; record the remaining gaps in
+   PROGRESS §2 (Stage 7 block) and in 00_INDEX.
+
+## C-049 — 2026-11-11 — Stage 7 — coverage audit
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent at C-048
+1. **Analysed:** the `pending`/`partial` non-test files of the ledger, prioritising the shipped path.
+   Read in full at the baseline: `utils/rate_scaling.py` (`FrameRateEstimator`, `tau_for_alpha`),
+   `utils/timing_law.py` (`ExponentialTimingLaw`, `TrapezoidalTimingLaw`), `utils/params.py`.
+   Added coverage addenda: ch. 03 §9, ch. 06 §14, ch. 08 §10.
+2. **Remaining:** consistency pass; `check_docs.py`; Stage 7 README / `run_all.sh` / results; final
+   `00_INDEX.md`; final verification.
+3. **Ledger:** `params.py` → documented (ch 03), `timing_law.py` → documented (ch 06),
+   `rate_scaling.py` → documented (ch 08). Totals: documented 100, read 3, partial 225, pending 18.
+   PROGRESS §2 has the Stage 7 block with the full gap list (inventoried-only vs partially reviewed).
+4. **Documentation updated:** ch. 03, 06, 08 addenda; PROGRESS §2, §4; ch. 16 (F-7-10 row, 124
+   findings); REFACTORING_READINESS (count).
+5. **Findings:** F-7-10 (`params.py` drops `description`; no descriptor; validation at declaration
+   only). Runtime `ros2 param set` validation: Unverified.
+6. **Exact next action:** write `tools/stage7_verification/check_docs.py` (findings ↔ ch. 16 rows,
+   Q-IDs defined, ch. 15 names every non-test production file, equation references resolve, links,
+   chapter template sections); run it; fix what it finds.
+
+## C-050 — 2026-11-11 — Stage 7 — check_docs.py and the consistency pass
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / consistent at C-049
+1. **Written:** `tools/stage7_verification/check_docs.py` (11 documentation checks: findings ↔ ch. 16
+   rows and total, cited F/Q IDs defined, ch. 15 names every non-test production file, equation
+   references resolve, "Consequences" sections, links, generated appendices current, verification
+   directories complete, resume card, no superseded QP-size statements). 13/14 PASS; the remaining
+   FAIL is the missing Stage 7 README/run_all/results (next action).
+2. **Consistency pass** (grep across all chapters): no chapter claims six slack families or ℝ¹³;
+   every `d_safe` 0.15 mention is qualified (install, comment, docstring, or 1.5·d_safe); rates
+   agree (perception 90 Hz, rebuild 50 Hz, QP 300 Hz, commander 100 Hz, joint states and RT 1 kHz);
+   topic names agree, with the short forms noted as shorthand in C §1.
+3. **Fixes made because of the checks:** ch. 15 §6.1 now names the two hand-eye launch files; ch. 15
+   §6.3 gets a row for `franka_logs/plot_franka_log.py`; A regenerated.
+4. **Findings:** F-7-11 (Stage 0's `franka_logs/` exclusion hides one tracked tool from the ledger;
+   recorded, ledger not extended). 125 findings in total.
+5. **Exact next action:** write `tools/stage7_verification/README.md` and `run_all.sh`; run all Stage 7
+   host scripts; save `results/observed_2026-11-11.txt`; then the final `00_INDEX.md`.
+
+## C-051 — 2026-11-11 — Stage 7 — complete; stopped for review
+
+- Baseline / HEAD / check: `ba68077052e8` / `476109b` / check_state consistent (run after this entry)
+1. **Done in this step:** `tools/stage7_verification/README.md` (the three kinds of check:
+   defect reproduction, correct behaviour, static/documentation), `run_all.sh`,
+   `results/observed_2026-11-11.txt` (47/47, exit 0; `inventory.py` and `test_traceability.py`
+   refreshed their results first, then A was regenerated); final `00_INDEX.md` (status, chapter
+   table with 14/15/16/R/A/B/C, reading paths, the Stage 7 tools row, the `franka_logs` exception).
+2. **Final verification:**
+   - Stages 2–6 `run_all.sh` re-run: 126 + 85 + 61 + 92 + 69 = 433/433 PASS (outputs not re-recorded;
+     the stage `results/observed_2026-11-11.txt` files are unchanged);
+   - Stage 7: 9 + 21 + 14 + 3 = 47/47 PASS (plus the two refresh scripts);
+   - `check_docs.py`: findings ↔ ch. 16 (125), IDs, ch. 15 coverage, equation references, links,
+     appendices current, resume card — 14/14;
+   - `git diff --name-only ba68077 -- . ':!docs/framework_study' ':!CLAUDE.md'`: empty; no untracked
+     file outside `docs/framework_study/`; 3 stashes untouched; branch `humble-mattia`.
+3. **Remaining uncertainties:** every closed-loop consequence of the P0 findings (no baseline run
+   exists, F-6-1, F-7-4); test outcomes at the baseline (not run, Q-7-3); the 11 "not re-checked"
+   rows of 16 E.6; the coverage gaps of PROGRESS §2 (Stage 7 block).
+4. **Exact next action:** wait for the user's review of Stage 7 and a decision on committing it. The
+   refactor needs separate, per-change approval (REFACTORING_READINESS §10).

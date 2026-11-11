@@ -6,12 +6,15 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-11, checkpoint C-039 (Stage 6 complete; stopped for review)
-- **Project status:** read-only documentation phase. Stages 0–5 are done, committed and pushed (HEAD `bb71534`).
-  Stage 6 is done and **not committed** (the user commits on request).
-- **Last completed stage:** Stage 6 (Simulation), 2026-11-11.
-- **Next pending stage:** Stage 7 (Synthesis). **Not approved.**
-- **Stage in progress:** none.
+- **Last updated:** 2026-11-11, checkpoint C-051 (**Stage 7 complete**; stopped for review)
+- **Project status:** the read-only documentation phase is **complete** (Stages 0–7). Stages 0–6
+  are committed and pushed (HEAD `476109b`). **Stage 7 is uncommitted** in the working tree
+  (ch. 14, 15, 16, appendices A/B/C, `REFACTORING_READINESS.md`, `tools/stage7_verification/`, and
+  edits to ch. 03, 06, 08, 00_INDEX, PROGRESS, CHECKPOINTS, ledger).
+- **Last completed stage:** Stage 7 (Synthesis), 2026-11-11.
+- **Next pending stage:** none in the documentation plan. The **refactoring phase is NOT approved**:
+  every production change needs the user's explicit, per-change approval and follows
+  [REFACTORING_READINESS.md](REFACTORING_READINESS.md) §10 and the validation protocol.
 - **Pinned branch:** `humble-mattia`
 - **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
   ROS 2 source the chapters describe; the history is in §8.
@@ -19,69 +22,22 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
     move HEAD but leave the baseline valid.
   - Any change to the source since this commit makes `tools/check_state.py` report REVIEW (exit code 2).
   - Stashes: 3, never touched.
-- **Completed documentation files:**
-  - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`,
-    `04_math_foundations.md`, `05_perception_and_distance.md`, `06_nominal_motion.md`,
-    `07_cbf_obstacle_barrier.md`, `08_constraints_and_qp.md`, `09_torque_realization.md`,
-    `10_alternative_controllers.md`, `11_iso_safety_layer.md`, `12_simulation.md`,
-    `13_observability_and_tools.md`, `SIMULATION_VALIDATION_PROTOCOL.md`;
-  - `ledger/*`;
-  - the tools `stage0_extract.py`, `ledger_status.py` and `check_state.py` (baseline-aware since C-003);
-  - `tools/stage2_verification/`: 9 read-only scripts reproducing every numerical result of ch. 04 and
-    05, `run_all.sh`, a README, and the recorded output `results/observed_2026-11-11.txt`
-    (126 of 126 checks passed);
-  - Stage 3 audit records: 06 §13, 07 §14;
-  - `tools/stage4_verification/`: 5 scripts + `_common4.py` (4 container scripts on the deployed
-    osqp 0.6.7 and Pinocchio 4.0.0, 1 host), `run_all.sh`, a README, and
-    `results/observed_2026-11-11.txt` (61 of 61 passed);
-  - `tools/stage5_verification/`: 5 scripts + `_common5.py` (4 container scripts calling production
-    methods unbound on stubs, with the deployed qpsolvers 4.3.3 / osqp 0.6.7; 1 host), `run_all.sh`,
-    a README, and `results/observed_2026-11-11.txt` (92 of 92 passed);
-  - `tools/stage6_verification/`: 6 scripts + `_common6.py` (3 host, 3 container; production laws,
-    catalog, conditions, scorers, reflex checker, emulation, depth conversion, robot/world builders;
-    the recorded-run audit; the installed-vs-source state check), `run_all.sh`, a README, and
-    `results/observed_2026-11-11.txt` (69 of 69 passed);
-  - `tools/stage3_verification/`: 6 scripts + 2 helpers (4 host, 2 container driving the real
-    `ConstraintBuilder`), `run_all.sh`, a README, `results/observed_2026-11-11.txt` (85 of 85 passed);
-  - `CHECKPOINTS.md` and `RESUME_PROMPT.md`;
-  - the root `CLAUDE.md`.
-- **Draft or stale:** `A_file_index.md` was generated in Stage 0 and does not reflect the Stage 1 chapter
-  reassignments (§2). It gets regenerated in Stage 7.
-- **Incomplete work carried forward:**
-  - 134 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
-    the algorithms belong to the stage that owns the chapter. Stage 3 partials are listed in §2.
-  - Ch. 05 files still `pending` or `partial`, read at interface level only: the eye-in-hand node, the
-    hand-eye launch files, `rtd_debug.py`, `node_utils.py`, the remaining calibration YAMLs, and most
-    ch. 05 tests (names cross-referenced only). They are covered by the chapter at interface level;
-    a deeper read is optional (Stage 7 coverage pass).
-  - Unreachability candidates (F-0-4) are not yet confirmed (Stage 7); Stage 2 confirmed
-    `static_scene.py`, `surface_velocity.py` and `self_shadow.void_spheres_from_rays` as unused.
-  - The guide-versus-code cross-check has not started (Stage 7, chapter 16).
-  - User questions: Q-1-4, Q-1-5, Q-2-2, Q-3-1, Q-4-1, Q-4-2. External or hardware: Q-4-3. Runtime
-    tests that need approval: Q-2-3, Q-2-4, Q-3-2. Answered: Q-2-1 (F-3-2, F-3-13), Q-1-1 (09 §5.1).
-  - Ch. 08 files not read in Stage 4: `self_collision.py` (capsule parsing and segment distance,
-    used through `SelfCollisionRowBuilder`), `singularity_recovery.py` (the commander's recovery, 06
-    §4.4), `pin_rt_thread.sh`, and the ch. 08 tests (names only). Stage 7 coverage pass.
-  - Stage 5 partials (§2): the 25 ch. 13 analysis scripts, the visualisation nodes and the ch. 13
-    tests were read at interface level; `iso_evidence_report.py`, `iso_constants_measure.py`,
-    `iso_pfl_speed.py`, `watchman_profile.md` and the ten `test_iso_*` in the parts ch. 11 cites;
-    `pentagon_torque_commander.py` (the orientation law and the interface).
-  - Stage 5 questions: Q-5-1 to Q-5-4 (§5).
-  - Stage 6 partials (§2): `estimator_metrics`, `report`, `attribution`, `offline`, `graph_contract`,
-    `control_regression`, `gz_trajectory_markers`, `pin_process`, `plot_control_regression`,
-    `check_self_occlusion`, `gz_plant`/`gz_circle_demo` launch, `mppi_it08.yaml`, `scenarios.yaml` and
-    `conditions.yaml` (resolved through the production code, not line-read), and the 24 sim tests
-    (docstrings). `control_regression_scenarios.yaml` is still `pending`.
-  - Stage 6 questions: Q-6-1 to Q-6-5 (§5). Q-6-3 (the protocol's thresholds) must be answered
-    before the first refactoring change.
-  - **State warning (F-6-3):** on 2026-11-11 the container's installed workspace did not match the
-    baseline source. Rebuild (with approval) before any simulation run.
-  - A parallel session wrote into Stage 5 files on 2026-11-11; it was reconciled at C-035 (its
-    findings are F-5-24…F-5-27, its ch. 11 draft is in `drafts/`). Before resuming, make sure only
-    one session writes to `docs/framework_study/`.
-- **Exact next action:** wait for the user's review of Stage 6. Stage 7 (Synthesis: chapters 14,
-  15, 16, appendices A–C, the guide-versus-code cross-check, the coverage pass) needs a separate,
-  explicit approval. Do not start it without one.
+- **Stage 7 deliverables:** ch. 14, 15, 16 (Parts A–E); appendices A (generated), B (generated), C;
+  `REFACTORING_READINESS.md`; `tools/stage7_verification/` (8 scripts, README, `run_all.sh`,
+  `results/observed_2026-11-11.txt`: 47/47); findings F-7-1…F-7-11 (125 in total); questions
+  Q-7-1…Q-7-4; the coverage audit (§2, Stage 7 block).
+- **Verification on 2026-11-11 (C-051):** Stages 2–7 suites 480/480 PASS (433 re-run + 47 Stage 7);
+  `check_docs.py` 14/14; `check_state.py` consistent; no file outside `docs/framework_study/` differs
+  from the baseline.
+- **Open items for the user** (§5): Q-7-3 (approve a clean rebuild and a baseline test run, the first
+  prerequisite), Q-6-3 (validation thresholds), Q-6-4, Q-4-1, Q-4-2, Q-1-4/Q-5-1/Q-7-1, Q-7-2,
+  Q-7-4, Q-5-2, Q-3-1, Q-2-2, Q-1-5, Q-5-4; runtime: Q-2-3, Q-2-4, Q-3-2, Q-5-3, Q-6-5; external:
+  Q-4-3. Q-6-2 remains a reading task.
+  - **State warning (F-6-3, F-7-4):** the container's installed workspace is a mixed build of the
+    other branch `fr3-student-sim`. Rebuild (with approval) before any simulation or test run.
+  - Before resuming, make sure only one session writes to `docs/framework_study/`.
+- **Exact next action:** wait for the user's review of Stage 7 and for a decision on committing it.
+  Do not start the refactor without explicit approval.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -96,7 +52,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 | 4 — QP & actuation | `08`, `09`; `tools/stage4_verification/` | ch. 08: 28 · 09: 6 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 5 — Alternatives, ISO, tools | `10`, `11`, `13`; `tools/stage5_verification/` | ch. 10: 9 · 11: 18 · 13: 43 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 6 — Simulation | `12`, `SIMULATION_VALIDATION_PROTOCOL.md`; `tools/stage6_verification/` | ch. 12: 63 | **done** (2026-11-11; not committed) | `ba68077` | approved 2026-11-11 |
-| 7 — Synthesis | `14`, `15`, `16`, `B`, `C`, final `00`/`A` | ch. 14: 22 · 16: 13 | not started | | |
+| 7 — Synthesis | `14`, `15`, `16`, `B`, `C`, final `00`/`A`, `REFACTORING_READINESS.md`; `tools/stage7_verification/` | ch. 14: 22 · 16: 13 | **done** (2026-11-11, C-051; awaiting review; not committed) | `ba68077` | approved 2026-11-11; re-approved on resumption |
 
 The per-chapter file counts come from the provisional assignment in
 [ledger/coverage_ledger.md](ledger/coverage_ledger.md). Files are reassigned by hand when reading
@@ -106,10 +62,10 @@ shows a better home, and the counts here are then updated.
 
 | Status | Files |
 |---|---:|
-| pending | 130 |
-| partial | 134 |
-| read | 2 |
-| documented | 80 |
+| pending | 18 |
+| partial | 225 |
+| read | 3 |
+| documented | 100 |
 
 `partial` was added in Stage 1. It means the parts the stage needed were read; for nodes, that is
 the constructor interfaces. Chapter reassignments made in Stage 1:
@@ -199,6 +155,43 @@ Stage 6 (2026-11-11):
     block of `torque_control_stack`;
   - from launch_ros / rclpy (installed, for F-6-2): `evaluate_parameter_dict`,
     `_create_params_file_from_dict`, `Node._apply_descriptor`.
+
+Stage 7 (2026-11-11) — coverage audit (C-049):
+- `documented` in Stage 7: the 11 build-metadata files and `pin_rt_thread.sh` (ch. 14);
+  `self_collision.py`, `rate_scaling.py` (ch. 08); `singularity_recovery.py`, `timing_law.py`
+  (ch. 06); `cbf_state_rows.py`, `cbf_safety_filter.py` (all functions now covered by ch. 07/08/11);
+  `cbf_utils.py`, `node_utils.py`; `params.py` (ch. 03 §9).
+- `read`: `control_regression_scenarios.yaml`.
+- `partial` (interface level): `rtd_debug`, `handeye_eye_in_hand_node`, the 2 hand-eye launches,
+  `camera_EE_extrinsic.yaml`; the old guide (the sections of 16 E.1).
+- **Every remaining test file is `partial` = static traceability only** (imports, infrastructure,
+  counts, docstrings by `test_traceability.py`); assertions read only where a chapter cites them.
+- **Final distribution** (346 files): documented 100, read 3, partial 225, pending 18.
+  - pending 18 = **inventoried only, not examined**: 8 documentation leads (`README.md` ×2,
+    `LEGACY.md`, `SAFETY.md`, `approach_speed_envelope.md`, `ball_throw_closed_loop.md`,
+    `reactivity_evasion_report.md`, `next_step.md`), 4 doc assets (plots, node graph), 6
+    calibration/display configs (`camera_intrinsics`, `rgb_intrinsics`, `ee_tag_extrinsics`,
+    `dataset_handeye_eye_in_hand`, two hand-eye `.rviz`). None is on the control path; the
+    intrinsics files have no reader or a display-only reader (F-1-14, ch. 15 §6.2).
+  - partial 225 = **partially reviewed**: 133 tests (static only), 25 offline scripts (interface),
+    16 ROS nodes, 20 util modules, 7 launch files, 9 configs, 10 simulation files, 2 messages,
+    3 doc files.
+- **Remaining gaps on or near the shipped control path** (partially reviewed, listed for a later
+  pass; none blocks planning):
+  - `pentagon_qddot_commander.py`: all but `_tick_isolation` (the non-default isolation-test mode) and
+    the logger internals;
+  - `config.py`, `launch_support.py`, `node_runtime.py`, `ros.py`: the functions on the shipped path
+    were read (ch. 03, 09, 14); the rest (CLI helpers, alternative-stack YAML writers) were not;
+  - `fr3_control.yaml` (2672 lines) and `fr3_complete.yaml`: every key the shipped code reads was
+    resolved through the code (ch. 03, 07, 08), but the files were not line-read; the old-guide
+    comparison (16 E.2) confirms 0 changed values against the guide's copy;
+  - `self_shadow.py` (SSB, off), `obstacle_sim.py`, `experiment_logger.py` (plot functions),
+    `logging_utils.py` (beyond `format_cbf_diag`);
+  - the simulation `conditions.yaml`/`scenarios.yaml` (resolved through the code, not line-read).
+- **Outside the ledger by the Stage 0 exclusion (F-7-11):** `franka_logs/plot_franka_log.py`
+  (docstring only).
+- **Not examined at all:** the out-of-scope trees (`franka_rl/`, `fr3_student_sim/`,
+  `integration_launch_testing/`, `franka_description/` beyond the files ch. 04 uses, libfranka).
 
 ## 3. How later stages are tracked (procedure)
 
@@ -379,6 +372,22 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | F-6-13 | **F-5-21 scope in simulation.** It affects every sim `experiment_log.csv` (q/q̇/τ columns), `experiment_summary.py` (run only by `runner.digest_cell`, called only by a slow test), and any analysis built on those CSVs. It does **not** affect the batch scores (`cells.csv`, `report.py`). Those come from `truth.npz`, the bag (`/NS_1/franka/joint_states`, mapped by name), `reflex_*` and `launch.log`. | 12 §8.6 | Verified (`check_scoring.py` 5) |
 | F-6-14 | **The simulated camera cannot reproduce a calibration error.** The Gazebo depth camera is placed from the same `camera_extrinsics` file that `real_time_distance` projects with (`gz_world.configure_world`, the stack's `camera_extrinsics_yaml` = the scene's). Depth is exact: the adapter's noise, dropout and delay are off by default. A sim run with `perception:=true` therefore tests the perception code, but not its sensitivity to hand-eye error, depth noise or latency. | 12 §4.3 | Verified (code) |
 
+### Stage 7 findings
+
+| ID | Finding | Evidence | Label |
+|---|---|---|---|
+| F-7-1 | **Singularity recovery: the return trajectory does not end at rest, and with a fast start it never converges.** `singularity_recovery.quintic_coeffs` sets c₃ = 10d/T³, c₄ = −15d/T⁴, c₅ = 6d/T⁵ with d = q₁ − q₀ − v₀T. Then q(T) = q₁ and q̈(T) = 0, but **q̇(T) = v₀**, not 0 as the docstring states (the c₃…c₅ terms contribute (30 − 60 + 30)d/T = 0 to q̇(T), so q̇(T) = c₁ = v₀). When SETTLING starts, the reference steps from (q_home, v₀) to (q_home, 0). Worse, `plan_duration` tests \|q̇(τ)\| ≤ vmax on samples that include τ = 0, where q̇ = v₀. If any \|v₀,ᵢ\| > `recovery_vmax` (0.5 rad/s), no T passes. The loop then returns T₀·1.1⁶⁰ ≈ 457 s, and the reference q(τ) = q₀ + v₀τ + d·(10s³ − 15s⁴ + 6s⁵) leaves the joint range by tens of radians (v₀ = 1 rad/s on joint 2: max \|q − q₀\| = 67 rad). The detector's docstring names exactly that state (σ_min ≈ 0.036, \|q̇\| ≈ 1 rad/s, limit-cycling) as the motivating hardware case. `singularity_recovery_enabled` defaults to **true** in `pentagon_qddot_commander` and no YAML or launch file overrides it. The commander then publishes q̈ = q̈_d + 40(q_d − q) + 12(q̇_d − q̇), clipped to ±qddot_max. The only things that keep the arm inside its range are the CBF joint-limit rows and the hard position box downstream (ch. 08). `test_singularity_recovery.py::test_quintic_boundary_conditions` checks the end conditions only with v₀ = 0. | `utils/singularity_recovery.py::quintic_coeffs`, `::plan_duration`, `SingularityRecovery._begin`; `nodes/pentagon_qddot_commander.py::_tick_recovery`, parameters L305–316; `tools/stage7_verification/check_unread_functions.py` | Verified (numerical, production functions); closed-loop effect Unverified |
+| F-7-2 | **The in-code `TODO[LEGACY]` markers (22, all "flagged: 2026-09-01") are leads, not evidence. At least four contradict the baseline.** (a) `utils/self_collision.py` says "imported only by test/test_cbf_hard_constraints.py", but `utils/cbf_state_rows.py` imports it at module level (L49), and `build_self_collision_builder` uses it when `self_collision_rows_enabled` is true (the shipped value, `fr3_control.yaml` L1031). (b) `utils/avoidance_math.py` says "only importer is utils/simulation_imports.py", but `utils/ros_setup.py` imports it, and `cbf_velocity_filter` gets its Pinocchio model (`build_reduced_pinocchio_model_from_urdf`) and its joint ordering through it. (c) `cbf_velocity_filter.py` and (d) `ee_pentagon_velocity_commander.py` are marked "superseded", yet both are started by `velocity_cbf_control_stack.launch.py`: they are an alternative pipeline, not dead code. A refactor that deleted code on the strength of these markers would break production paths. | `grep -rn "TODO\[LEGACY\]"`; `tools/stage7_verification/results/inventory.json`; `check_legacy_markers.py` | Verified (static) |
+| F-7-3 | `cbf_utils.select_gamma` docstring: "δ = 0.1 m: γ ≈ 6.0". The code gives γ = 2 + 10·e^{−1.8} = 3.65 s⁻¹ at conf = 1. Chapter 10 (10.4) already uses the code's value. A stale comment, not a behaviour defect. | `utils/cbf_utils.py::select_gamma`; `check_unread_functions.py` | Verified |
+| F-7-4 | **Cause of F-6-3: the container's install tree is a mixed build, mostly of the other branch `fr3-student-sim`.** The last colcon build (`log/latest_build`, 2026-11-10 14:42 UTC) ran `colcon build --packages-select franka_experiments franka_simulation_experiments` with `symlink_install=False`. The installed `fr3_control.yaml` has mtime 14:39:00 UTC = 15:39:00 +0100, the exact second of the reflog entry `checkout: moving from humble-mattia to fr3-student-sim`. The checkout back to `humble-mattia` (`ba68077`) came at 17:12:54 +0100, with no rebuild since. Byte comparison of all 156 mapped installed files: 141 equal `42df80e` (`fr3-student-sim`), 126 equal the baseline. The 14 files absent from `42df80e` are leftovers of earlier `humble-mattia` builds (Nov 1–10), among them `static_scene.py`, `surface_velocity.py`, `go_around.py`, `run_metadata.py`, a pre-commit `self_shadow.py`, and `fr3_control.yaml.orig`/`.bak_baseline`. They are leftovers because a copy-mode install overwrites and adds but never deletes. `ba68077` is not an ancestor of `42df80e` (15 and 34 commits apart). Consequence: any run or test that sources `/ros2_ws/install` since 2026-11-10 15:42 +0100 executed **neither** revision. Removing a module from the source does not remove it from such an install, so an import of deleted code still succeeds. Supersedes the "why" part of Q-6-1. The dependency `franka_simulation` is installed differently: its scripts are **symlinks** into the source (an earlier `--symlink-install` build, 2026-10-29), so they follow the checked-out tree (`gz_world.py` equals the baseline). Its compiled `libfranka_scenario_obstacles.so` was built on 2026-11-05 15:20 UTC, before commit `277d446` added the `wander` law, yet the binary contains the string `wander`. It was therefore built from an uncommitted tree, and its equivalence with the baseline `.cpp` is Unverified. The build logs show both `--symlink-install` and copy builds of the same packages, so the install mode is a per-package accident of the last build. | container `/ros2_ws/log/latest_build/logger_all.log`; `stat` of installed files; `git reflog`; `tools/stage7_verification/check_install_provenance.py` | Verified (static, container state 2026-11-11) |
+| F-7-5 | **Which code a pytest run tests depends on the working directory.** In the container (`source /ros2_ws/install/setup.bash`), `import franka_experiments` resolves to `/ros2_ws/src/franka_experiments/franka_experiments` only when the current directory is the package directory (`python3 -m pytest` puts the cwd first on `sys.path`). From the repository root (`/ros2_ws/src`), the package directory is only a namespace portion. The path finder keeps scanning and returns the **installed** regular package, which is the mixed tree of F-7-4. There is no `pytest` script on the container's `PATH`, so tests run as `python3 -m pytest`. `franka_simulation_experiments/test/conftest.py` puts `scripts/` first, so `simexp` always comes from the source, but the `franka_experiments` modules that `simexp` imports (`cbf_hard_limits`, `cbf_scenarios` via F-0-5) follow the same cwd rule. Since 2026-11-10, a test run from the repository root has silently tested the wrong revision. | container probe (import resolution only, no test run) 2026-11-11; Python path-finder semantics (regular package beats namespace portion) | Verified (import resolution); effect on past test results Unverified |
+| F-7-6 | `qddot_to_torque.py` L80 comment: "rt_torque_controller ALREADY clips". `rt_torque_controller.cpp` L121 states the opposite ("Nessun LPF e nessuna saturazione SW"), and its law τ = s·τ_ff + K_p p + K_d e has no torque clamp, only velocity-error and velocity-ceiling clamps (L126–154). The node comment gives false assurance about F-4-6/F-4-7: with `iso_enabled` false, no software layer clips τ. | `nodes/qddot_to_torque.py` L76–88; `franka_rt_controllers/src/rt_torque_controller.cpp` L116–154 | Verified |
+| F-7-7 | **A shipped-configuration test contradicts the shipped configuration** (a lead from the old guide §13.1, re-verified). `test/test_rate_scaling.py::test_the_shipped_config_states_durations` asserts `trk['max_coast_s'] == pytest.approx(0.167)`, but the baseline `fr3_complete.yaml` has `tracking.max_coast_s: 0.8` (L900, changed on 2026-11-01; the YAML comment L896–898 records the change and that `gate_max_m` should be re-derived, Q-2-2). The test must therefore fail at the baseline when it reads the source YAML. Not run (pytest needs approval). Under F-7-5 a run from the repository root would read the installed YAML instead, so the observed outcome depends on the cwd. | `test_rate_scaling.py` L328–337; `fr3_complete.yaml` L900; `check_guide_vs_code.py` E7 | Verified (static: assertion and value); test outcome Derived, not observed |
+| F-7-8 | **The old technical guide is stale, and in places describes a different control law.** Against the baseline: the QP is x ∈ ℝ¹⁴ with seven slack families, not ℝ¹³ with six (`N_SLACK = 7`); a failed QP brakes by default (`qp_failure_policy: brake`), it does not first solve a box-only QP toward the target; the state box wins over a disjoint slew window (`slew_yields_to_state_box: true`); the QP thread is not FIFO (`qp_thread_fifo_prio: 0`, the guide says priority 50); `experiment_logger` declares `truth_topic` again. It misses ten mechanisms added later (per-row ℓ1 slack, curvature term, evidence margin, obstacle memory, self-shadow barrier, …). Its printed configuration values still match, but 51 keys are missing; 19 of its 267 file digests no longer match; 23 of its links point outside this repository, including every script behind its §15.9–15.11 numbers. Of its own 57 findings, 40 still hold, 3 are superseded, 11 were not re-checked. | ch. 16 Part E; `tools/stage7_verification/check_guide_vs_code.py` (21/21) | Verified |
+| F-7-9 | `handeye_eye_in_hand_node.__init__` L200 builds its parameter dict with `for name in self._parameters`, the private attribute of `rclpy.node.Node`. It works with the installed rclpy but depends on a private API. The old guide reports that the repository's own `test_node_self_references` fails on it; that outcome was not re-run. | `nodes/handeye_eye_in_hand_node.py` L200; `check_guide_vs_code.py` E9 | Verified (code); test outcome Unverified |
+| F-7-10 | `utils/params.py`: every `declare_*` helper takes a `description` argument and never uses it (no `ParameterDescriptor` is passed to `declare_parameter`). The module docstring calls the parameters "self-documenting" and the helper docstrings say the text is "shown by `ros2 param describe`"; it is not, and the bounds are not registered with ROS. Validation happens once, at declaration. | `utils/params.py` L58–225 (grep: `description` appears only in signatures and docstrings) | Verified |
+| F-7-11 | **Inventory gap.** `tools/stage0_extract.py` excludes `/franka_logs/` as a data directory (`EXCLUDE`, L21–22), but that directory holds one tracked source file, `franka_experiments/franka_logs/plot_franka_log.py` (468 lines, an offline matplotlib analysis of the commander CSV; no importer at the baseline). It is therefore not in the 346-file ledger. Found by `check_docs.py` check 4; classified in ch. 15 §6.3; not read beyond its docstring. The ledger is not extended (its 346 entries are the Stage 0 baseline); the gap is recorded here and in PROGRESS §2. | `stage0_extract.py` L21–22; `git ls-tree ba68077 franka_experiments/franka_logs` | Verified |
+
 ## 5. Decisions and open questions
 
 **Open questions added in Stage 5:**
@@ -449,11 +458,20 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 
 | ID | Question | Who can close it |
 |---|---|---|
-| Q-6-1 | F-6-3: why does the container's installed workspace differ from the baseline (installed `d_safe` 0.15 against the source's 0.10, a 58-line `conditions.yaml`, different stack nodes)? Was it rebuilt from another checkout after the recorded runs, all of which used 0.10? Rebuilding needs approval. | **user** |
+| Q-6-1 | F-6-3: why does the container's installed workspace differ from the baseline (installed `d_safe` 0.15 against the source's 0.10, a 58-line `conditions.yaml`, different stack nodes)? Was it rebuilt from another checkout after the recorded runs, all of which used 0.10? Rebuilding needs approval. | **user** | **Answered in Stage 7 (F-7-4):** it is a build of `fr3-student-sim` (`42df80e`) made on 2026-11-10 at 15:42 +0100, plus stale files from earlier builds. Still the user's: approve a clean rebuild of the baseline before any run.
 | Q-6-2 | Do all `report.py` tables exclude non-ok cells, or only `t_quality` counts them? (`report.py` was read only in the parts that define its row selection.) | Stage 7 reading |
 | Q-6-3 | The validation protocol's REQUIRES USER APPROVAL items: the reference cell set, the seed count, every threshold (clearance tolerance, penetration, slack/fallback/fault counts, staleness, motion/tracking bands, RTF bar) and the statistical decision rule. | **user**, before the first modification |
 | Q-6-4 | Should the harness defects F-6-5 (truth holes), F-6-4 (`qp_rate_hz` for the Phase 5 conditions), F-6-11 (provenance snapshot) and F-6-2 (dotted literal) be fixed first, each as one protocol modification, so that later evidence is trustworthy? | **user** |
 | Q-6-5 | Runtime confirmations that need an approved run: the type the node holds for `obstacle_row_osqp_eps_rel` (F-6-2); the cause of the truth holes (F-6-5); the pentagon phase at the episode start (F-6-12); Gazebo run-to-run determinism for a fixed seed (F-6-9). | **user** (approval of a run) |
+
+**Open questions added in Stage 7:**
+
+| ID | Question | Who can close it |
+|---|---|---|
+| Q-7-1 | Extends Q-1-4 and Q-5-1. Are `use_torque_controller:=cbf` (`CBFTorqueController`, F-4-8) or Pipeline B (velocity CBF: F-5-2, F-5-3, F-5-7) ever used on hardware? If yes, those findings become P0 (ch. 16 D.1). | **user** |
+| Q-7-2 | The experimental, unwired or no-consumer files (`static_scene.py`, `surface_velocity.py`, `cbf_constraints.py`, `cbf_qp.py`, `avoidance.py`, `distance_visualization_node.py`, ch. 15 §4): keep as experiment record, wire, or remove? Several encode experiment intent that only the user knows. | **user** |
+| Q-7-3 | Approve a clean, revision-stamped rebuild of the baseline in the container (14 §5.3), followed by a full `python3 -m pytest` run from the package directories, to replace the static evidence of F-7-5, F-7-7, F-0-10 with observed results. Prerequisite of every later validation. | **user** (approval of build and tests) |
+| Q-7-4 | What happens to `FRAMEWORK_COMPLETE_TECHNICAL_GUIDE.md` (F-7-8): update it from ch. 16 Part E, mark it historical, or replace it with this documentation? | **user** |
 
 ## 6. Checkpoint protocol
 

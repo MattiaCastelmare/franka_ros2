@@ -10,7 +10,9 @@ places where they disagree with the code are collected in chapter 16.
 It is meant to be studied, not only looked up. Later, during a refactor, it also serves as a
 reference for what each change will affect.
 
-> **Status: Stages 0–6 complete (Stage 6 awaiting review; not committed); Stage 7 not yet approved.** The live status is in the resume card,
+> **Status: Stages 0–7 complete (Stage 7, the synthesis, awaiting review; not committed).** The
+> read-only documentation phase is finished; the refactor has **not** started and needs separate,
+> per-change approval ([REFACTORING_READINESS.md](REFACTORING_READINESS.md)). The live status is in the resume card,
 > [PROGRESS.md](PROGRESS.md) §0. Project rules and the resume procedure are in
 > [/CLAUDE.md](../../CLAUDE.md). The session history is in [CHECKPOINTS.md](CHECKPOINTS.md). To
 > resume in a new session, paste [RESUME_PROMPT.md](RESUME_PROMPT.md).
@@ -80,18 +82,29 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | 12 | [`12_simulation.md`](12_simulation.md) | Gazebo plant, spawn, controller activation, sim nodes, perception modes, scenarios and obstacle laws, conditions, ground truth, reflex monitor, batch runs, what each metric means | 6 | **written** (Stage 6) |
 | P | [`SIMULATION_VALIDATION_PROTOCOL.md`](SIMULATION_VALIDATION_PROTOCOL.md) | The per-modification procedure of the refactor: the ten-step rule, Phases 1–6, acceptance criteria (thresholds marked for user approval), evidence, revert. Documented, not executed | 6 | **written** (Stage 6) |
 | 13 | [`13_observability_and_tools.md`](13_observability_and_tools.md) | Logger, `/cbf_status` schema, bags and replay, overlays, analysis-tool inventory, misleading diagnostics | 5 | **written** (Stage 5) |
-| 14 | `14_build_launch_test.md` | Build, launch recipes, test suites, validation | 7 | not written |
-| 15 | `15_code_status.md` | Current / experimental / legacy / unused, with the evidence for each | 7 | not written |
-| 16 | `16_issues_and_discrepancies.md` | Bugs, inconsistencies, math vs. code, undocumented assumptions, existing guide vs. code | 7 | not written |
-| A | [A_file_index.md](A_file_index.md) | File → role → chapter | 0 → 7 | **draft** |
-| B | `B_equation_index.md` | Equation → `file::function` | 7 | not written |
-| C | `C_glossary.md` | Symbols and acronyms | 7 | not written |
+| 14 | [`14_build_launch_test.md`](14_build_launch_test.md) | Workspace, Docker, how colcon installs each package, source vs install (F-6-3/F-7-4), launch files, test suites and which code a test run exercises (F-7-5), runtime diagnostics | 7 | **written** (Stage 7) |
+| 15 | [`15_code_status.md`](15_code_status.md) | Every production file classified CURRENT / ALTERNATIVE / EXPERIMENTAL / LEGACY / UNUSED CANDIDATE / UNKNOWN, with evidence and confidence; the `TODO[LEGACY]` markers checked (F-7-2); removal rules | 7 | **written** (Stage 7) |
+| 16 | [`16_issues_and_discrepancies.md`](16_issues_and_discrepancies.md) | All 125 findings by category with severity, priority, confidence, reproduction and direction (Part B); shared causes and corrections (C); P0–P3 (D); the old technical guide vs. the code (E) | 7 | **written** (Stage 7) |
+| R | [`REFACTORING_READINESS.md`](REFACTORING_READINESS.md) | Is the framework ready for refactoring: prerequisites, removable vs protected code, regression tests and gaps, baseline simulations, user decisions, workstreams, safest order | 7 | **written** (Stage 7) |
+| A | [A_file_index.md](A_file_index.md) | File → role → chapter → coverage status → code class → importers/launch/tests (generated) | 0 → 7 | **generated** (Stage 7) |
+| B | [`B_equation_index.md`](B_equation_index.md) | 122 numbered equations → chapter line → code pointers (generated) | 7 | **generated** (Stage 7) |
+| C | [`C_glossary.md`](C_glossary.md) | Symbols, terms, and the symbols that mean different things in different chapters | 7 | **written** (Stage 7) |
 
-**Reading paths** (to be refined once the chapters exist):
+**Reading paths:**
 
-- **First pass, the whole picture:** 01 → 02 → 06 (intuition sections) → 07 (intuition) → 08 (intuition) → 12 → 14.
-- **Mathematical path:** 04 → 05 → 07 → 08 → 09 → 10, with B and C open alongside.
-- **Before refactoring a module:** 15 (its status) → its chapter's "Consequences of modification" → 16 (known issues) → A (every file involved).
+- **First pass, the whole picture:** 01 → 02 → 06 (intuition sections) → 07 (intuition) → 08
+  (intuition) → 09 (intuition) → 12 (intuition) → 14 §1 and §5 → 16 Part D. Keep C open.
+- **Mathematical path:** 04 → 05 → 06 → 07 → 08 → 09 → 10 → 11, with B and C open alongside.
+  Each chapter's verification scripts (`tools/stageN_verification/`) reproduce its numbers.
+- **The safety argument and where it breaks:** 07 §2 (HOCBF) → 08 §2 and §5 (soft rows, box, brake)
+  → 09 (torque) → 16 Part D.1 (P0 list) → 11 (what the ISO layer does and does not add).
+- **Before refactoring anything:** [REFACTORING_READINESS.md](REFACTORING_READINESS.md) → 14 §5
+  (make the install match the source) → [SIMULATION_VALIDATION_PROTOCOL.md](SIMULATION_VALIDATION_PROTOCOL.md).
+- **Before refactoring one module:** A (the file's row: chapter, class, importers, tests) → 15 (its
+  class and evidence) → its chapter's "Consequences of modification" → 16 (its findings) → B (its
+  equations).
+- **Do not use** `franka_experiments/docs/FRAMEWORK_COMPLETE_TECHNICAL_GUIDE.md` as a reference: it
+  is stale at the baseline (16 Part E, F-7-8).
 
 ## 5. Stage 0 artefacts (inventory)
 
@@ -112,6 +125,7 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | [tools/stage4_verification/](tools/stage4_verification/README.md) | QP assembly, slack semantics, box and brake, inverse dynamics and controller-source checks of chapters 08–09, built from the production QP builders and solved with the deployed OSQP 0.6.7 in the container (`run_all.sh`; 61 of 61 on 2026-11-11) |
 | [tools/stage5_verification/](tools/stage5_verification/README.md) | Velocity-CBF, OSCBF, torque-commander, ISO and observability checks of chapters 10, 11 and 13, calling production methods unbound on stubs, with the deployed qpsolvers/OSQP in the container (`run_all.sh`; 92 of 92 on 2026-11-11) |
 | [tools/stage6_verification/](tools/stage6_verification/README.md) | Conditions, obstacle laws and catalog, scorers, reflex checker, emulation, depth conversion, robot/world builders of chapter 12 on production code; the recorded-run audit; the installed-vs-source state check (`run_all.sh`; 69 of 69 on 2026-11-11) |
+| [tools/stage7_verification/](tools/stage7_verification/README.md) | Static inventory and test traceability; the Stage 7 defect reproductions (F-7-1, F-7-3, F-7-4); the old guide against the baseline; documentation consistency (`check_docs.py`); the generators of appendices A and B (`run_all.sh`; 47 of 47 on 2026-11-11) |
 | [drafts/](drafts/11_iso_safety_layer.parallel_session.md) | A parallel session's draft of chapter 11, kept verbatim at the reconciliation (C-035); not a chapter |
 | [CHECKPOINTS.md](CHECKPOINTS.md) / [RESUME_PROMPT.md](RESUME_PROMPT.md) | Append-only session log, and the prompt for resuming in a new session |
 
@@ -126,4 +140,6 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
   `franka_bringup`, `franka_fr3_moveit_config`, `franka_hardware`, `franka_gripper`, `libfranka`.
 - **Excluded as data:** `sim_runs/` (its copied `provenance/` code is not re-read),
   `experiment_logs/`, `franka_logs/`, `docs/paper_draft/`, `Papers/`, `Videos/`, `.pytest_cache/`.
-  Their layouts are described from the code that writes them.
+  Their layouts are described from the code that writes them. Exception found in Stage 7:
+  `franka_logs/` holds one tracked tool, `plot_franka_log.py`, which is therefore outside the ledger
+  (F-7-11; classified in ch. 15 §6.3).

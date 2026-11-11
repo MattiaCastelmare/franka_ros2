@@ -342,3 +342,28 @@ Logged in [PROGRESS.md](PROGRESS.md):
 - F-1-12: the undeclared `robot_config_path`;
 - F-1-13: the orphan `conditions.d/`;
 - plus the dead keys and files listed in §3.1, §5.2 and §5.3.
+
+## 9. Stage 7 coverage addendum (2026-11-11, C-049): `utils/params.py` read in full
+
+Every function of `utils/params.py` was read at the baseline (`_fail`, `declare_float`,
+`declare_int`, `declare_bool`, `declare_str`, `declare_vec`, `declare_from_spec`). (Verified)
+
+- Each helper declares the parameter with its default, reads it back, validates it **once**, and
+  returns the value; a failure logs at ERROR and raises `ValueError`, so the node dies in
+  `__init__`. `declare_float` rejects NaN/±inf, `positive`, and `[minimum, maximum]`;
+  `declare_int` the same without the finiteness test; `declare_bool` does no validation;
+  `declare_str` rejects empty strings (unless `allow_empty`) and values outside `choices`;
+  `declare_vec` checks the length and finiteness.
+- `declare_from_spec` raises `KeyError` naming every spec key missing from the YAML block (the
+  message points at the **installed** file, F-7-4), then calls the helper with
+  `cast[kind]` applied to `values[name]`, so the YAML value is the default and the spec holds only bounds.
+- **F-7-10:** the `description` argument of every helper is never used: no `ParameterDescriptor`
+  is passed to `declare_parameter`. The module docstring calls the parameters "self-documenting",
+  and the helper docstrings say the text is "shown by `ros2 param describe`"; it is not, and the
+  bounds are not registered with ROS either. Validation therefore happens at declaration only.
+  Whether a later `ros2 param set` is validated depends on per-node callbacks, which were not
+  examined (Unverified).
+- Consequence for the refactor: moving the bounds into ROS descriptors would change the declared
+  parameter types and ranges seen by `ros2 param describe` and by launch-time overrides; the
+  identity tests (`test_torque_stack_external_plant_off_identical`) pin the launch parameter list,
+  not the descriptors.

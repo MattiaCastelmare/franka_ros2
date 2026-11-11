@@ -1,0 +1,2523 @@
+{
+ "component_to_tests": {
+  "franka_experiments/franka_experiments/__init__.py": [
+   "franka_simulation_experiments/test/test_run_provenance.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py": [
+   "franka_experiments/test/smoke_cbf_construct.py",
+   "franka_experiments/test/smoke_cbf_safety_filter.py",
+   "franka_experiments/test/test_brake_slew_limited.py",
+   "franka_experiments/test/test_cbf_row_l1_slack.py",
+   "franka_experiments/test/test_iso_dsafe_floor.py",
+   "franka_experiments/test/test_iso_perception_failclosed.py",
+   "franka_experiments/test/test_iso_status_contract.py",
+   "franka_experiments/test/test_iso_torque_limits.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py",
+   "franka_experiments/test/test_safety_failure_policy.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/experiment_logger.py": [
+   "franka_experiments/test/test_experiment_log_columns.py",
+   "franka_experiments/test/test_experiment_logger_truth_off_identical.py",
+   "franka_experiments/test/test_iso_status_contract.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py": [
+   "franka_experiments/test/test_iso_monitor.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/qddot_to_torque.py": [
+   "franka_experiments/test/test_iso_torque_limits.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/real_time_distance.py": [
+   "franka_experiments/test/test_rate_scaling.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/rl_policy_commander.py": [
+   "franka_experiments/test/smoke_rl_policy_commander.py"
+  ],
+  "franka_experiments/franka_experiments/utils/avoidance.py": [
+   "franka_experiments/test/test_avoidance.py"
+  ],
+  "franka_experiments/franka_experiments/utils/ballistic_prediction.py": [
+   "franka_experiments/test/test_ballistic_prediction.py"
+  ],
+  "franka_experiments/franka_experiments/utils/calibration_check.py": [
+   "franka_experiments/test/test_calibration_check.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_diagnostics.py": [
+   "franka_experiments/test/test_iso_status_contract.py",
+   "franka_experiments/test/test_safety_failure_policy.py",
+   "franka_experiments/test/test_ssb_qp_rows.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_evasion.py": [
+   "franka_experiments/test/test_cbf_lateral_evasion.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_hard_limits.py": [
+   "franka_experiments/test/test_accel_box_decoupling.py",
+   "franka_experiments/test/test_cbf_diag_line.py",
+   "franka_experiments/test/test_cbf_hard_constraints.py",
+   "franka_experiments/test/test_cbf_multi_cp_qp.py",
+   "franka_experiments/test/test_cbf_phase1_reactivity.py",
+   "franka_experiments/test/test_cbf_qp_fallback.py",
+   "franka_experiments/test/test_cbf_state_rows.py",
+   "franka_experiments/test/test_fr3_velocity_envelope.py",
+   "franka_experiments/test/test_safety_failure_policy.py",
+   "franka_experiments/test/test_state_governor.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py": [
+   "franka_experiments/test/test_cbf_curvature_term.py",
+   "franka_experiments/test/test_cbf_evidence_trust.py",
+   "franka_experiments/test/test_cbf_multi_cp_qp.py",
+   "franka_experiments/test/test_cbf_phase1_reactivity.py",
+   "franka_experiments/test/test_cbf_qp_fallback.py",
+   "franka_experiments/test/test_cbf_row_l1_slack.py",
+   "franka_experiments/test/test_cbf_row_padding.py",
+   "franka_experiments/test/test_cbf_tangential_bias.py",
+   "franka_experiments/test/test_cbf_zone_ladder.py",
+   "franka_experiments/test/test_iso_flags_off_identical.py",
+   "franka_experiments/test/test_iso_speed_rows.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py",
+   "franka_experiments/test/test_livelock.py",
+   "franka_experiments/test/test_retreat_excess_speed.py",
+   "franka_experiments/test/test_vobs_in_hdot.py",
+   "franka_simulation_experiments/test/test_closed_loop.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_singularity.py": [
+   "franka_experiments/test/test_cbf_singularity.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_state_rows.py": [
+   "franka_experiments/test/_cbf_builder_harness.py",
+   "franka_experiments/test/test_brake_slew_limited.py",
+   "franka_experiments/test/test_cbf_curvature_term.py",
+   "franka_experiments/test/test_cbf_diag_line.py",
+   "franka_experiments/test/test_cbf_evidence_trust.py",
+   "franka_experiments/test/test_cbf_fast_track.py",
+   "franka_experiments/test/test_cbf_latency_compensation.py",
+   "franka_experiments/test/test_cbf_lateral_evasion.py",
+   "franka_experiments/test/test_cbf_link_speed.py",
+   "franka_experiments/test/test_cbf_link_speed_relative.py",
+   "franka_experiments/test/test_cbf_normal_rotation_guard.py",
+   "franka_experiments/test/test_cbf_obstacle_identity.py",
+   "franka_experiments/test/test_cbf_outrun_evasion.py",
+   "franka_experiments/test/test_cbf_phase1_reactivity.py",
+   "franka_experiments/test/test_cbf_qp_fallback.py",
+   "franka_experiments/test/test_cbf_retreat_authority.py",
+   "franka_experiments/test/test_cbf_retreat_cap.py",
+   "franka_experiments/test/test_cbf_risk_weighted_slack.py",
+   "franka_experiments/test/test_cbf_row_l1_slack.py",
+   "franka_experiments/test/test_cbf_selfcollision_anticipation.py",
+   "franka_experiments/test/test_cbf_sensor_range_uncertainty.py",
+   "franka_experiments/test/test_cbf_state_rows.py",
+   "franka_experiments/test/test_cbf_static_scene.py",
+   "franka_experiments/test/test_cbf_surface_velocity.py",
+   "franka_experiments/test/test_cbf_tangential_bias.py",
+   "franka_experiments/test/test_cbf_tracker_source.py",
+   "franka_experiments/test/test_cbf_uncertainty_margin.py",
+   "franka_experiments/test/test_cbf_velocity_feedforward.py",
+   "franka_experiments/test/test_cbf_velocity_standoff.py",
+   "franka_experiments/test/test_cbf_vobs_rate_independent.py",
+   "franka_experiments/test/test_cbf_zone_ladder.py",
+   "franka_experiments/test/test_compare_range_noise.py",
+   "franka_experiments/test/test_control_point_derivatives.py",
+   "franka_experiments/test/test_evasion_direction.py",
+   "franka_experiments/test/test_iso_flags_off_identical.py",
+   "franka_experiments/test/test_iso_speed_rows.py",
+   "franka_experiments/test/test_iso_status_contract.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py",
+   "franka_experiments/test/test_livelock.py",
+   "franka_experiments/test/test_safety_failure_policy.py",
+   "franka_experiments/test/test_ssb_qp_rows.py",
+   "franka_experiments/test/test_vobs_in_hdot.py",
+   "franka_simulation_experiments/test/test_closed_loop.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_utils.py": [
+   "franka_experiments/test/smoke_rl_policy_commander.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_zones.py": [
+   "franka_experiments/test/test_cbf_zone_ladder.py"
+  ],
+  "franka_experiments/franka_experiments/utils/config.py": [
+   "franka_experiments/test/test_fr3_velocity_envelope.py",
+   "franka_experiments/test/test_track_lifecycle.py"
+  ],
+  "franka_experiments/franka_experiments/utils/constants.py": [
+   "franka_experiments/test/smoke_rl_policy_commander.py"
+  ],
+  "franka_experiments/franka_experiments/utils/distance_engine.py": [
+   "franka_experiments/test/test_ballistic_prediction.py",
+   "franka_experiments/test/test_distance_surface_semantics.py",
+   "franka_experiments/test/test_iso_perception_failclosed.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py",
+   "franka_experiments/test/test_mask_depth_gate.py",
+   "franka_experiments/test/test_multi_obstacle_rows.py",
+   "franka_experiments/test/test_obstacle_track_pipeline.py",
+   "franka_experiments/test/test_self_reject_and_obstacle_floor.py",
+   "franka_experiments/test/test_sensor_range_field.py",
+   "franka_experiments/test/test_ssb_perception.py"
+  ],
+  "franka_experiments/franka_experiments/utils/distance_utils.py": [
+   "franka_experiments/test/test_control_point_derivatives.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py"
+  ],
+  "franka_experiments/franka_experiments/utils/evasion_direction.py": [
+   "franka_experiments/test/test_cbf_outrun_evasion.py",
+   "franka_experiments/test/test_evasion_direction.py"
+  ],
+  "franka_experiments/franka_experiments/utils/go_around.py": [
+   "franka_experiments/test/test_go_around.py"
+  ],
+  "franka_experiments/franka_experiments/utils/handeye_solver.py": [
+   "franka_experiments/test/test_handeye_solver.py"
+  ],
+  "franka_experiments/franka_experiments/utils/iso_ssm.py": [
+   "franka_experiments/test/test_iso_monitor.py",
+   "franka_experiments/test/test_iso_speed_rows.py",
+   "franka_experiments/test/test_iso_ssm.py"
+  ],
+  "franka_experiments/franka_experiments/utils/kinematics.py": [
+   "franka_experiments/test/smoke_cbf_construct.py",
+   "franka_experiments/test/smoke_rl_policy_commander.py",
+   "franka_experiments/test/test_cbf_phase1_reactivity.py",
+   "franka_experiments/test/test_control_point_derivatives.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py",
+   "franka_experiments/test/test_self_shadow_derivatives.py"
+  ],
+  "franka_experiments/franka_experiments/utils/livelock.py": [
+   "franka_experiments/test/test_livelock.py"
+  ],
+  "franka_experiments/franka_experiments/utils/logging_utils.py": [
+   "franka_experiments/test/test_cbf_diag_line.py",
+   "franka_experiments/test/test_iso_status_contract.py"
+  ],
+  "franka_experiments/franka_experiments/utils/mask_builder.py": [
+   "franka_experiments/test/test_mask_depth_gate.py"
+  ],
+  "franka_experiments/franka_experiments/utils/obstacle_clusters.py": [
+   "franka_experiments/test/test_obstacle_clusters.py",
+   "franka_experiments/test/test_obstacle_scene_guard.py"
+  ],
+  "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py": [
+   "franka_experiments/test/test_multi_obstacle_rows.py",
+   "franka_experiments/test/test_obstacle_track_pipeline.py"
+  ],
+  "franka_experiments/franka_experiments/utils/obstacle_tracker.py": [
+   "franka_experiments/test/test_cbf_latency_compensation.py",
+   "franka_experiments/test/test_obstacle_imm.py",
+   "franka_experiments/test/test_obstacle_kalman.py",
+   "franka_experiments/test/test_obstacle_tracker.py",
+   "franka_experiments/test/test_rate_scaling.py",
+   "franka_experiments/test/test_track_eviction.py",
+   "franka_experiments/test/test_track_lifecycle.py"
+  ],
+  "franka_experiments/franka_experiments/utils/perception_msgs.py": [
+   "franka_experiments/test/test_cp_label_agreement.py",
+   "franka_experiments/test/test_distance_surface_semantics.py",
+   "franka_experiments/test/test_iso_perception_failclosed.py",
+   "franka_experiments/test/test_kinematics_fix_regression.py",
+   "franka_experiments/test/test_multi_obstacle_rows.py",
+   "franka_experiments/test/test_obstacle_track_pipeline.py",
+   "franka_experiments/test/test_self_detection.py",
+   "franka_experiments/test/test_sensor_range_field.py",
+   "franka_simulation_experiments/test/slow/test_phase5_batch.py",
+   "franka_simulation_experiments/test/test_emulation.py"
+  ],
+  "franka_experiments/franka_experiments/utils/rate_scaling.py": [
+   "franka_experiments/test/test_rate_scaling.py"
+  ],
+  "franka_experiments/franka_experiments/utils/rl_policy.py": [
+   "franka_experiments/test/smoke_rl_policy_commander.py",
+   "franka_experiments/test/test_rl_policy.py"
+  ],
+  "franka_experiments/franka_experiments/utils/ros.py": [
+   "franka_experiments/test/launch/test_torque_fake.launch.py",
+   "franka_experiments/test/launch/test_velocity_fake.launch.py"
+  ],
+  "franka_experiments/franka_experiments/utils/run_metadata.py": [
+   "franka_experiments/test/test_run_metadata.py"
+  ],
+  "franka_experiments/franka_experiments/utils/self_collision.py": [
+   "franka_experiments/test/test_cbf_hard_constraints.py",
+   "franka_experiments/test/test_cbf_selfcollision_anticipation.py",
+   "franka_experiments/test/test_cbf_state_rows.py"
+  ],
+  "franka_experiments/franka_experiments/utils/self_detection.py": [
+   "franka_experiments/test/test_rate_scaling.py",
+   "franka_experiments/test/test_self_detection.py"
+  ],
+  "franka_experiments/franka_experiments/utils/self_shadow.py": [
+   "franka_experiments/test/test_self_shadow_derivatives.py",
+   "franka_experiments/test/test_self_shadow_geometry.py",
+   "franka_experiments/test/test_ssb_perception.py"
+  ],
+  "franka_experiments/franka_experiments/utils/singularity_recovery.py": [
+   "franka_experiments/test/test_singularity_recovery.py"
+  ],
+  "franka_experiments/franka_experiments/utils/state_governor.py": [
+   "franka_experiments/test/test_cbf_diag_line.py",
+   "franka_experiments/test/test_directional_fade.py",
+   "franka_experiments/test/test_state_governor.py"
+  ],
+  "franka_experiments/franka_experiments/utils/static_scene.py": [
+   "franka_experiments/test/test_cbf_static_scene.py",
+   "franka_experiments/test/test_cbf_surface_velocity.py"
+  ],
+  "franka_experiments/franka_experiments/utils/surface_velocity.py": [
+   "franka_experiments/test/test_cbf_surface_velocity.py"
+  ],
+  "franka_experiments/franka_experiments/utils/trajectory_overlay.py": [
+   "franka_experiments/test/test_trajectory_overlay.py"
+  ],
+  "franka_experiments/franka_experiments/utils/trajectory_trace.py": [
+   "franka_experiments/test/test_trajectory_trace.py",
+   "franka_simulation_experiments/test/test_gz_trajectory_markers.py"
+  ],
+  "franka_experiments/scripts/compare_range_noise.py": [
+   "franka_experiments/test/test_compare_range_noise.py"
+  ],
+  "franka_experiments/scripts/range_noise_calibration.py": [
+   "franka_experiments/test/test_compare_range_noise.py",
+   "franka_experiments/test/test_range_noise_calibration.py"
+  ],
+  "franka_simulation_experiments/scripts/gz_trajectory_markers.py": [
+   "franka_simulation_experiments/test/test_gz_trajectory_markers.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/analysis.py": [
+   "franka_simulation_experiments/test/slow/test_phase3_perception.py",
+   "franka_simulation_experiments/test/slow/test_phase4_obstacles.py",
+   "franka_simulation_experiments/test/slow/test_phase5_batch.py",
+   "franka_simulation_experiments/test/test_analysis.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/attribution.py": [
+   "franka_simulation_experiments/test/test_offline_and_attribution.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/batch.py": [
+   "franka_simulation_experiments/test/slow/test_phase5_batch.py",
+   "franka_simulation_experiments/test/test_batch.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/closed_loop.py": [
+   "franka_simulation_experiments/test/test_closed_loop.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/conditions.py": [
+   "franka_simulation_experiments/test/test_conditions.py",
+   "franka_simulation_experiments/test/test_offline_and_attribution.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/control_regression.py": [
+   "franka_simulation_experiments/test/test_control_regression.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/emulation.py": [
+   "franka_simulation_experiments/test/test_emulation.py",
+   "franka_simulation_experiments/test/test_offline_and_attribution.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/estimator_metrics.py": [
+   "franka_simulation_experiments/test/test_estimator_metrics.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/graph_contract.py": [
+   "franka_simulation_experiments/test/launch/launch_test_graph_contract.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/obstacle_laws.py": [
+   "franka_simulation_experiments/test/slow/test_phase4_obstacles.py",
+   "franka_simulation_experiments/test/test_obstacle_law_wander.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/offline.py": [
+   "franka_simulation_experiments/test/test_offline_and_attribution.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/procs.py": [
+   "franka_simulation_experiments/test/launch/launch_test_graph_contract.py",
+   "franka_simulation_experiments/test/slow/test_phase1_plant.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/provenance.py": [
+   "franka_simulation_experiments/test/test_run_provenance.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/reflex_checks.py": [
+   "franka_simulation_experiments/test/test_reflex_checks.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/report.py": [
+   "franka_simulation_experiments/test/slow/test_phase5_batch.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/runner.py": [
+   "franka_simulation_experiments/test/slow/test_phase2_closed_loop.py",
+   "franka_simulation_experiments/test/slow/test_phase3_perception.py",
+   "franka_simulation_experiments/test/slow/test_phase4_obstacles.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/scenario_catalog.py": [
+   "franka_simulation_experiments/test/test_batch.py",
+   "franka_simulation_experiments/test/test_control_regression.py",
+   "franka_simulation_experiments/test/test_obstacle_law_wander.py",
+   "franka_simulation_experiments/test/test_scenario_catalog.py",
+   "franka_simulation_experiments/test/test_ssb_scenarios.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/scenario_laws.py": [
+   "franka_simulation_experiments/test/test_scenario_laws.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/sim_config.py": [
+   "franka_simulation_experiments/test/launch/launch_test_graph_contract.py",
+   "franka_simulation_experiments/test/slow/test_phase1_plant.py",
+   "franka_simulation_experiments/test/slow/test_phase2_closed_loop.py",
+   "franka_simulation_experiments/test/slow/test_phase3_perception.py",
+   "franka_simulation_experiments/test/slow/test_phase4_obstacles.py",
+   "franka_simulation_experiments/test/slow/test_phase5_batch.py",
+   "franka_simulation_experiments/test/test_sim_config.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/truth_geometry.py": [
+   "franka_simulation_experiments/test/test_scenario_catalog.py",
+   "franka_simulation_experiments/test/test_ssb_scenarios.py"
+  ]
+ },
+ "tests": {
+  "franka_experiments/test/_cbf_builder_harness.py": {
+   "doc": "A real ConstraintBuilder driven headless, for the row-level regression tests.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/_launch_snapshot.py": {
+   "doc": "Expand torque_control_stack.launch.py into a comparable snapshot, without launching anything.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/launch/test_rl_fake.launch.py": {
+   "doc": "Test launch: Safe-RL (ONNX policy) accel pipeline with fake hardware.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/launch/test_torque_fake.launch.py": {
+   "doc": "Test launch: torque pipeline with fake hardware.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/ros.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/ros.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/launch/test_velocity_fake.launch.py": {
+   "doc": "Test launch: velocity pipeline with fake hardware.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/ros.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/ros.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/smoke_cbf_construct.py": {
+   "doc": "Construct CBFSafetyFilter with stubbed ROS/pinocchio, to catch __init__ errors.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/smoke_cbf_safety_filter.py": {
+   "doc": "Smoke test for the decoupled cbf_safety_filter (run inside the container).",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py"
+   ],
+   "infra": [
+    "config",
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/smoke_rl_policy_commander.py": {
+   "doc": "Smoke test for rl_policy_commander (run inside the container).",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/rl_policy_commander.py",
+    "franka_experiments/franka_experiments/utils/cbf_utils.py",
+    "franka_experiments/franka_experiments/utils/constants.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/franka_experiments/utils/rl_policy.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/rl_policy_commander.py",
+    "franka_experiments/franka_experiments/utils/cbf_utils.py",
+    "franka_experiments/franka_experiments/utils/constants.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/franka_experiments/utils/rl_policy.py"
+   ],
+   "infra": [
+    "ml",
+    "pinocchio",
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_accel_box_decoupling.py": {
+   "doc": "qddot_accel_limits widens the COMMAND box without touching the braking curve",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_avoidance.py": {
+   "doc": "Unit tests for utils/avoidance.py (pure numpy \u2014 no ROS environment needed).",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/avoidance.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/avoidance.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 20,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_ballistic_prediction.py": {
+   "doc": "utils.ballistic_prediction: predicted impact points as extra obstacle hits.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/ballistic_prediction.py",
+    "franka_experiments/franka_experiments/utils/distance_engine.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/ballistic_prediction.py",
+    "franka_experiments/franka_experiments/utils/distance_engine.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 7,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_brake_slew_limited.py": {
+   "doc": "The level-2 brake obeys the jerk bound where the state box lets it.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [
+    "data"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_calibration_check.py": {
+   "doc": "Calibration drift: does the projected robot model land on the measured arm?",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/calibration_check.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/calibration_check.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_curvature_term.py": {
+   "doc": "cbf.enable_curvature_term \u2014 the \u03ba = n\u0302\u0307\u1d40v_rel term of \u1e27 (Task 2).",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 18,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_diag_line.py": {
+   "doc": "The CBFDIAG line: the three velocities that say who is winning.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/logging_utils.py",
+    "franka_experiments/franka_experiments/utils/state_governor.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/logging_utils.py",
+    "franka_experiments/franka_experiments/utils/state_governor.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_evidence_trust.py": {
+   "doc": "Evidence-conditioned barrier trust: the three mechanisms of 2026-11-06.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 28,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_fast_track.py": {
+   "doc": "obstacle_velocity_fast_trust: a young track is trusted only when its closing",
+   "imports": [
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 7,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_hard_constraints.py": {
+   "doc": "Unit tests for the hard-constraint math of the acceleration-level CBF.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/self_collision.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/self_collision.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 26,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_latency_compensation.py": {
+   "doc": "Phase 4: move the obstacle forward by the blind time, tighten by the",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_lateral_evasion.py": {
+   "doc": "Lateral evasion: when braking cannot work, and which way to step aside.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_evasion.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_evasion.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 32,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_link_speed.py": {
+   "doc": "Task-space speed rows: no control point may outrun its own clearance.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_link_speed_relative.py": {
+   "doc": "Obstacle link-speed cap scaled with d_safe.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_multi_cp_qp.py": {
+   "doc": "Feasibility of the CBF QP under simultaneous multi-control-point activation.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+   ],
+   "infra": [
+    "config",
+    "replica"
+   ],
+   "markers": [],
+   "n_tests": 11,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_normal_rotation_guard.py": {
+   "doc": "The residual's rotation guard: reject the frame, never the approach.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_obstacle_identity.py": {
+   "doc": "Two obstacles, and the state that must not be shared between them.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_outrun_evasion.py": {
+   "doc": "enable_outrun_evasion on the real ConstraintBuilder: inert unless a closing",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/evasion_direction.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/evasion_direction.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 11,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_phase1_reactivity.py": {
+   "doc": "Phase 1 closed loop: the commanded retreat follows the obstacle's speed.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_qp_fallback.py": {
+   "doc": "Phase 3a/3b: the QP always answers, and the box is never negotiable.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_retreat_authority.py": {
+   "doc": "Retreat authority: how fast a control point CAN back away, exactly.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 16,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_retreat_cap.py": {
+   "doc": "The retreat cap: an upper bound on how fast the filter may run away.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 20,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_risk_weighted_slack.py": {
+   "doc": "Phase-2 risk-weighted slack: the weight, and what it does to a conflict.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 23,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_row_l1_slack.py": {
+   "doc": "Per-row l1 obstacle slack (obstacle_slack_mode: row_l1) vs the shared quadratic",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_row_padding.py": {
+   "doc": "Quantising the QP's row count, so OSQP stops re-factorizing every tick.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_selfcollision_anticipation.py": {
+   "doc": "Self-collision rows: engage EARLY on a fast approach, and stop flickering.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/self_collision.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/self_collision.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 11,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_sensor_range_uncertainty.py": {
+   "doc": "The sensor-range tightening: off is exactly off, never negative, and grows",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 23,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_singularity.py": {
+   "doc": "The singularity HOCBF row: gradient, activation window, and drift sign.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_singularity.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_singularity.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 11,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_state_rows.py": {
+   "doc": "HOCBF rows for joint limits and self-collision, and what they fix.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/self_collision.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/self_collision.py"
+   ],
+   "infra": [
+    "replica"
+   ],
+   "markers": [],
+   "n_tests": 43,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_static_scene.py": {
+   "doc": "The static-scene hold and the two continuity gates: identity, not arithmetic.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/static_scene.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/static_scene.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 16,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_surface_velocity.py": {
+   "doc": "The centroid may not outrun the surface (P4), and the place-keyed scene (P3).",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/static_scene.py",
+    "franka_experiments/franka_experiments/utils/surface_velocity.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/static_scene.py",
+    "franka_experiments/franka_experiments/utils/surface_velocity.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 34,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_tangential_bias.py": {
+   "doc": "Tangential steering: go AROUND a close obstacle, not just back off it.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 23,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_tracker_source.py": {
+   "doc": "obstacle_velocity_source: the switch, and the proof the default path is inert.",
+   "imports": [
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 30,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_uncertainty_margin.py": {
+   "doc": "The uncertainty-derived tightening: off is exactly off, and more doubt is",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_velocity_feedforward.py": {
+   "doc": "Phase-1 obstacle-velocity feedforward: the two terms, and the flag-off path.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_velocity_filter.py": {
+   "doc": "Unit tests for the ZCBF velocity QP solver and select_gamma.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "replica"
+   ],
+   "markers": [],
+   "n_tests": 7,
+   "stale": {},
+   "status": "documented"
+  },
+  "franka_experiments/test/test_cbf_velocity_standoff.py": {
+   "doc": "cbf.enable_velocity_standoff \u2014 barrier moved out in proportion to v_app.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 7,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_vobs_rate_independent.py": {
+   "doc": "v_obs must be conditioned the same way whatever rate perception runs at.",
+   "imports": [
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 19,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cbf_zone_ladder.py": {
+   "doc": "The gap ladder: four rungs, no steps, and a hold that is not a freeze.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/cbf_zones.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/cbf_zones.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 30,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_compare_range_noise.py": {
+   "doc": "Phase 4: scripts/compare_range_noise.py's `synthetic` mode.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/scripts/compare_range_noise.py",
+    "franka_experiments/scripts/range_noise_calibration.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/scripts/compare_range_noise.py",
+    "franka_experiments/scripts/range_noise_calibration.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_control_point_derivatives.py": {
+   "doc": "Derivatives of the actual perception geometry, not a second CP model.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/distance_utils.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/distance_utils.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py"
+   ],
+   "infra": [
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_cp_label_agreement.py": {
+   "doc": "One definition of the control-point label, and both sides of the wire on it.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_directional_fade.py": {
+   "doc": "",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/state_governor.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/state_governor.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_distance_surface_semantics.py": {
+   "doc": "Surface-gap semantics of the depth-space distance pipeline.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 13,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_evasion_direction.py": {
+   "doc": "Escape direction: retreat while the obstacle can be outrun, step aside when",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/evasion_direction.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/evasion_direction.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 18,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_experiment_log_columns.py": {
+   "doc": "The experiment log's column contract, and the summary that reads it back.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/experiment_logger.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/experiment_logger.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 27,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_experiment_logger_truth_off_identical.py": {
+   "doc": "experiment_logger's truth_topic ships OFF, and with it off nothing moved.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/experiment_logger.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/experiment_logger.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_fr3_velocity_envelope.py": {
+   "doc": "The FR3 position-based joint-velocity envelope, and the box that obeys it.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/config.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/config.py"
+   ],
+   "infra": [
+    "data"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_go_around.py": {
+   "doc": "utils.go_around: the go-around is smooth (rate limits), keeps its side, and",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/go_around.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/go_around.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_handeye_solver.py": {
+   "doc": "Eye-in-hand hand-eye solver: does it recover a known camera mount?",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/handeye_solver.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/handeye_solver.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_dsafe_floor.py": {
+   "doc": "The ISO d_safe floor, the S_h parameterisation and the PFL ceiling.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_evidence_report.py": {
+   "doc": "Verdict logic of scripts/iso_evidence_report.py.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [],
+   "markers": [],
+   "n_tests": 23,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_flags_off_identical.py": {
+   "doc": "With every ISO flag off, nothing moved. The ground rule, as assertions.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 8,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_monitor.py": {
+   "doc": "The independent SSM monitor and its non-safety-rated stop (roadmap Step 6).",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py",
+    "franka_experiments/franka_experiments/utils/iso_ssm.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py",
+    "franka_experiments/franka_experiments/utils/iso_ssm.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 18,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_perception_failclosed.py": {
+   "doc": "Fail-closed perception: the three silent \"no constraint\" paths (Step 7).",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [
+    "config",
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_pfl_ceiling.py": {
+   "doc": "The PFL ceiling and the reduced-speed derate (roadmap Step 9).",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 9,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_speed_rows.py": {
+   "doc": "The SSM bound driving the task-space speed rows (roadmap Step 5).",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/iso_ssm.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/iso_ssm.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_ssm.py": {
+   "doc": "The SSM closed forms of ISO 10218-2:2025 Annex L (utils/iso_ssm).",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/iso_ssm.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/iso_ssm.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_status_contract.py": {
+   "doc": "The ISO status contract, the CBFDIAG fields and the CSV columns (Step 10).",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/nodes/experiment_logger.py",
+    "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/logging_utils.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/nodes/experiment_logger.py",
+    "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/logging_utils.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_iso_torque_limits.py": {
+   "doc": "Command feasibility: torque limits and braking authority (roadmap Step 8).",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/nodes/qddot_to_torque.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/nodes/qddot_to_torque.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_kinematics_fix_regression.py": {
+   "doc": "Independent FD/classical-acceleration and perception-to-QP regressions.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/distance_utils.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/distance_utils.py",
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [
+    "ros",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 3,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_link_distance_track_fields.py": {
+   "doc": "The LinkDistance track fields: defaults, round-trip, and safety of the zeros.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_livelock.py": {
+   "doc": "Phase 3c/3d: the livelock detector, the nullspace escape, and the proof",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/livelock.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/franka_experiments/utils/livelock.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 15,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_mask_depth_gate.py": {
+   "doc": "The robot mask knows how FAR AWAY the robot is, not just where it is.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/mask_builder.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/mask_builder.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 22,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_multi_obstacle_rows.py": {
+   "doc": "perception.multi_obstacle_k \u2014 top-k obstacle points per control point.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 9,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_node_self_references.py": {
+   "doc": "Every ``self._foo(...)`` a node calls must actually be defined.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [],
+   "markers": [],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_obstacle_clusters.py": {
+   "doc": "Obstacle pixels \u2192 clusters: separation, centroid accuracy, and the empty case.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 16,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_obstacle_imm.py": {
+   "doc": "IMMTrack: does the ballistic hypothesis actually buy faster convergence,",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_obstacle_kalman.py": {
+   "doc": "The constant-acceleration Kalman track: does it actually beat a difference?",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 19,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_obstacle_scene_guard.py": {
+   "doc": "The scene guard: a room-sized blob is not an obstacle.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 7,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_obstacle_track_pipeline.py": {
+   "doc": "End-to-end pipeline: a synthetic depth sequence \u2192 tracked velocity on every",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 13,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_obstacle_tracker.py": {
+   "doc": "Track lifecycle: identity across a crossing, across an occlusion, and against",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 21,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_phase_governor.py": {
+   "doc": "Obstacle-driven phase governor and the bounded-return error cap.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "replica"
+   ],
+   "markers": [],
+   "n_tests": 14,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_phase_governor_staging.py": {
+   "doc": "The phase governor must ease off BEFORE the barrier starts pushing.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_range_noise_calibration.py": {
+   "doc": "Phase 2: the offline half of scripts/range_noise_calibration.py.",
+   "imports": [
+    "franka_experiments/scripts/range_noise_calibration.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/scripts/range_noise_calibration.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_rate_scaling.py": {
+   "doc": "Frame counts derived from durations, and the rate estimate behind them.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/real_time_distance.py",
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
+    "franka_experiments/franka_experiments/utils/rate_scaling.py",
+    "franka_experiments/franka_experiments/utils/self_detection.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/real_time_distance.py",
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
+    "franka_experiments/franka_experiments/utils/rate_scaling.py",
+    "franka_experiments/franka_experiments/utils/self_detection.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 34,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_retreat_excess_speed.py": {
+   "doc": "retreat_excess_speed_max: the k0 term of a violated obstacle row sees h\u0304 no deeper than",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 2,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_rl_policy.py": {
+   "doc": "Unit tests for utils/rl_policy.py \u2014 the sim\u2194real contract of the Safe-RL",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/rl_policy.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/rl_policy.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 44,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_run_metadata.py": {
+   "doc": "Runtime provenance must work with the installed ROS API before SIM starts.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/run_metadata.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/run_metadata.py"
+   ],
+   "infra": [
+    "ros",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 1,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_safety_failure_policy.py": {
+   "doc": "Exercise the production solver path under forced failures, not a mirror.",
+   "imports": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/test_iso_status_contract.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+    "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_self_detection.py": {
+   "doc": "Self-detection: telling the robot's own arm apart from an obstacle.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_experiments/franka_experiments/utils/self_detection.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_experiments/franka_experiments/utils/self_detection.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 14,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_self_reject_and_obstacle_floor.py": {
+   "doc": "Two things the depth buffer was computing but nothing was acting on.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 8,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_self_shadow_derivatives.py": {
+   "doc": "SSB barrier derivatives against independent finite differences.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/franka_experiments/utils/self_shadow.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/kinematics.py",
+    "franka_experiments/franka_experiments/utils/self_shadow.py"
+   ],
+   "infra": [
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 9,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_self_shadow_geometry.py": {
+   "doc": "The Self-Shadow Barrier's geometry, against the filter the pipeline runs.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/self_shadow.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/self_shadow.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 19,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_sensor_range_field.py": {
+   "doc": "Phase 3 plumbing: the raw range `range_m` from camera pixel to CBF row.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/perception_msgs.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 11,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_shipped_smoothness_config.py": {
+   "doc": "Guards on the shipped avoidance-smoothness settings (2026-09-30, docs/ball_throw_closed_loop.md).",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_singularity_recovery.py": {
+   "doc": "Singularity recovery: detector, quintic return to q_home, automatic resume.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/singularity_recovery.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/singularity_recovery.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_ssb_perception.py": {
+   "doc": "SSB through the REAL DistanceEngine, on frames built from the gate's numbers.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/self_shadow.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/distance_engine.py",
+    "franka_experiments/franka_experiments/utils/self_shadow.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 17,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_ssb_qp_rows.py": {
+   "doc": "The Self-Shadow Barrier as a CONSTRAINT: rows, slack, and inertness.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 19,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_state_governor.py": {
+   "doc": "The state governor: task attenuation keyed on the arm's own state.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/state_governor.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+    "franka_experiments/franka_experiments/utils/state_governor.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 12,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_torque_stack_external_plant_off_identical.py": {
+   "doc": "external_plant / motion_source:=none ship OFF, and with them off nothing moved.",
+   "imports": [
+    "franka_experiments/test/_launch_snapshot.py"
+   ],
+   "imports_transitive": [],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 7,
+   "stale": {},
+   "status": "documented"
+  },
+  "franka_experiments/test/test_track_eviction.py": {
+   "doc": "TrackManager(evict_stale_tentative=True): a full table must not refuse a new",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_track_lifecycle.py": {
+   "doc": "Why tracks die, and the threshold that stops a two-frame track being believed.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/config.py",
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/config.py",
+    "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 13,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_trajectory_overlay.py": {
+   "doc": "The EE overlay on the camera image: what lands where, and what is refused.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/trajectory_overlay.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/trajectory_overlay.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 29,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_trajectory_trace.py": {
+   "doc": "The EE trajectory overlay: what gets drawn, and what deliberately does not.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/trajectory_trace.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/trajectory_trace.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 26,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_experiments/test/test_vobs_in_hdot.py": {
+   "doc": "cbf.enable_vobs_in_hdot \u2014 tracked obstacle velocity inside \u1e23.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/test/_cbf_builder_harness.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+   ],
+   "infra": [],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 7,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/conftest.py": {
+   "doc": "Put scripts/ (simexp, the nodes) and franka_simulation's scripts/ (utils) on sys.path,",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/launch/launch_test_graph_contract.py": {
+   "doc": "launch_testing: the Gazebo graph reproduces the Phase 0 contract on the safety path.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/graph_contract.py",
+    "franka_simulation_experiments/scripts/simexp/procs.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/graph_contract.py",
+    "franka_simulation_experiments/scripts/simexp/procs.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "ros"
+   ],
+   "markers": [
+    "launch_test"
+   ],
+   "n_tests": 2,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/slow/_rosprobe.py": {
+   "doc": "rclpy helpers for the slow Gazebo tests: record topics, publish commands, wait on sim time.",
+   "imports": [],
+   "imports_transitive": [],
+   "infra": [
+    "ros"
+   ],
+   "markers": [],
+   "n_tests": 0,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/slow/test_phase1_plant.py": {
+   "doc": "Phase 1: the FR3 + RtTorqueController in Gazebo (plan \u00a78, steps 1.3-1.4).",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/procs.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py",
+    "franka_simulation_experiments/test/slow/_rosprobe.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/procs.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "gazebo",
+    "pinocchio",
+    "ros"
+   ],
+   "markers": [
+    "slow"
+   ],
+   "n_tests": 4,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/slow/test_phase2_closed_loop.py": {
+   "doc": "Phase 2: pentagon -> cbf_safety_filter -> qddot_to_torque -> RtTorqueController, no obstacles.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/runner.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/runner.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "gazebo",
+    "ros"
+   ],
+   "markers": [
+    "slow"
+   ],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/slow/test_phase3_perception.py": {
+   "doc": "Phase 3: the simulated D455 through the UNCHANGED real_time_distance (plan \u00a78, 3.2-3.4).",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/analysis.py",
+    "franka_simulation_experiments/scripts/simexp/runner.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/analysis.py",
+    "franka_simulation_experiments/scripts/simexp/runner.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "config",
+    "gazebo",
+    "ros"
+   ],
+   "markers": [
+    "slow"
+   ],
+   "n_tests": 3,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/slow/test_phase4_obstacles.py": {
+   "doc": "Phase 4: ScenarioObstacles holds the law at the physics rate; ground truth reaches the log.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/analysis.py",
+    "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+    "franka_simulation_experiments/scripts/simexp/runner.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/analysis.py",
+    "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+    "franka_simulation_experiments/scripts/simexp/runner.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "gazebo",
+    "ros"
+   ],
+   "markers": [
+    "parametrize",
+    "slow"
+   ],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/slow/test_phase5_batch.py": {
+   "doc": "Phase 5/6: one cell through the batch runner; emulated perception is exact; the report builds.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_simulation_experiments/scripts/simexp/analysis.py",
+    "franka_simulation_experiments/scripts/simexp/batch.py",
+    "franka_simulation_experiments/scripts/simexp/report.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_simulation_experiments/scripts/simexp/analysis.py",
+    "franka_simulation_experiments/scripts/simexp/batch.py",
+    "franka_simulation_experiments/scripts/simexp/report.py",
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "gazebo",
+    "ros"
+   ],
+   "markers": [
+    "slow"
+   ],
+   "n_tests": 3,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_analysis.py": {
+   "doc": "Reading a run back: CBFDIAG fields, the qdd ratio, the pentagon tracking error.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/analysis.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/analysis.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 2,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_batch.py": {
+   "doc": "simexp.batch: the Phase 5 grid and the flat row.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/batch.py",
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/batch.py",
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_closed_loop.py": {
+   "doc": "simexp.closed_loop on a synthetic run directory (no bag): truth, log window, counters.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_simulation_experiments/scripts/simexp/closed_loop.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+    "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+    "franka_simulation_experiments/scripts/simexp/closed_loop.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_conditions.py": {
+   "doc": "Every experiment toggle is explicit per run (ground rule 3, plan H12).",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/conditions.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/conditions.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 9,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_control_regression.py": {
+   "doc": "",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/control_regression.py",
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/control_regression.py",
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+   ],
+   "infra": [
+    "config"
+   ],
+   "markers": [],
+   "n_tests": 3,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_emulation.py": {
+   "doc": "simexp.emulation: cbf_scenarios' perception emulation, through the real message constructor.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_simulation_experiments/scripts/simexp/emulation.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/perception_msgs.py",
+    "franka_simulation_experiments/scripts/simexp/emulation.py"
+   ],
+   "infra": [
+    "config",
+    "ros",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_estimator_metrics.py": {
+   "doc": "simexp.estimator_metrics on synthetic series with known answers (spec Phase 5.1).",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/estimator_metrics.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/estimator_metrics.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 8,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_gz_trajectory_markers.py": {
+   "doc": "The Gazebo marker request: its field names are real, and the trail is redrawn when it moves.",
+   "imports": [
+    "franka_experiments/franka_experiments/utils/trajectory_trace.py",
+    "franka_simulation_experiments/scripts/gz_trajectory_markers.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/utils/trajectory_trace.py",
+    "franka_simulation_experiments/scripts/gz_trajectory_markers.py"
+   ],
+   "infra": [],
+   "markers": [
+    "skipif"
+   ],
+   "n_tests": 9,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_obstacle_law_wander.py": {
+   "doc": "The ``wander`` obstacle law: a quasi-random tour of a box.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 10,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_offline_and_attribution.py": {
+   "doc": "simexp.offline (column 1) and simexp.attribution (the causes) without Gazebo.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/attribution.py",
+    "franka_simulation_experiments/scripts/simexp/conditions.py",
+    "franka_simulation_experiments/scripts/simexp/emulation.py",
+    "franka_simulation_experiments/scripts/simexp/offline.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/attribution.py",
+    "franka_simulation_experiments/scripts/simexp/conditions.py",
+    "franka_simulation_experiments/scripts/simexp/emulation.py",
+    "franka_simulation_experiments/scripts/simexp/offline.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_reflex_checks.py": {
+   "doc": "Where the real FR3 would have stopped (plan H5): the checks, on constructed states.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/reflex_checks.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/reflex_checks.py"
+   ],
+   "infra": [],
+   "markers": [],
+   "n_tests": 7,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_run_provenance.py": {
+   "doc": "",
+   "imports": [
+    "franka_experiments/franka_experiments/__init__.py",
+    "franka_simulation_experiments/scripts/simexp/provenance.py"
+   ],
+   "imports_transitive": [
+    "franka_experiments/franka_experiments/__init__.py",
+    "franka_simulation_experiments/scripts/simexp/provenance.py"
+   ],
+   "infra": [
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 1,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_scenario_catalog.py": {
+   "doc": "config/scenarios.yaml reproduces the Python definitions it ports (spec Phase 4).",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+    "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+    "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [
+    "parametrize"
+   ],
+   "n_tests": 9,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_scenario_laws.py": {
+   "doc": "The scenario commander's laws ARE cbf_scenarios.run_scenario's (spec Phase 4).",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/scenario_laws.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/scenario_laws.py"
+   ],
+   "infra": [
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 5,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_sim_config.py": {
+   "doc": "Sim-only files that must not drift from the hardware files they derive from.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/sim_config.py"
+   ],
+   "infra": [
+    "config",
+    "data",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 11,
+   "stale": {},
+   "status": "partial"
+  },
+  "franka_simulation_experiments/test/test_ssb_scenarios.py": {
+   "doc": "The SSB scenarios put the obstacle in the self-filter's deleted band.",
+   "imports": [
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+    "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+   ],
+   "imports_transitive": [
+    "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+    "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+   ],
+   "infra": [
+    "config",
+    "textual"
+   ],
+   "markers": [],
+   "n_tests": 6,
+   "stale": {},
+   "status": "partial"
+  }
+ }
+}

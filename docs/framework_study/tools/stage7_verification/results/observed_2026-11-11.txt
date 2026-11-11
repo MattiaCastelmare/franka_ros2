@@ -1,0 +1,534 @@
+# Stage 7 verification — run_all.sh output, 2026-11-11T17:09Z, HEAD 476109b734b0, baseline ba68077052e8 (checkpoint C-051)
+
+### inventory.py
+inventory: 346 ledger files, 283 Python; 32 entry points; 20 launch files scanned -> results/inventory.{json,md}
+
+### test_traceability.py
+128 test files, 1487 test functions; infra: {'pure': 74, 'ros': 22, 'config': 25, 'ml': 1, 'pinocchio': 2, 'data': 3, 'replica': 4, 'textual': 20, 'gazebo': 5}
+13 files reach no production module (replica, config-only, textual or helper):
+  franka_experiments/test/_launch_snapshot.py: ['ros']
+  franka_experiments/test/launch/test_rl_fake.launch.py: ['ros']
+  franka_experiments/test/test_cbf_velocity_filter.py: ['replica']
+  franka_experiments/test/test_iso_evidence_report.py: []
+  franka_experiments/test/test_iso_pfl_ceiling.py: ['config']
+  franka_experiments/test/test_link_distance_track_fields.py: ['ros']
+  franka_experiments/test/test_node_self_references.py: []
+  franka_experiments/test/test_phase_governor.py: ['replica']
+  franka_experiments/test/test_phase_governor_staging.py: ['config', 'textual']
+  franka_experiments/test/test_shipped_smoothness_config.py: ['config']
+  franka_experiments/test/test_torque_stack_external_plant_off_identical.py: ['config', 'textual']
+  franka_simulation_experiments/test/conftest.py: []
+  franka_simulation_experiments/test/slow/_rosprobe.py: ['ros']
+replica: ['test_cbf_multi_cp_qp.py', 'test_cbf_state_rows.py', 'test_cbf_velocity_filter.py', 'test_phase_governor.py']
+0 files with stale imports:
+
+### check_unread_functions.py
+=== Stage 7 — functions first reviewed in Stage 7 (F-7-1, F-7-3, (8.10)) ===
+repository: /home/mattia/Git/franka_ros2
+[INFO] imported from source: franka_experiments/franka_experiments/utils/singularity_recovery.py
+[PASS] REPRO F-7-1 quintic ends at q̇(T) = v₀ (docstring says 0): q̇(T) = [1.0, -0.5, 0.2] = v₀ = [1.0, -0.5, 0.2]; q(T), q̈(T) as specified
+[PASS] REPRO F-7-1 plan_duration: converges for |v₀| ≤ vmax, returns T₀·1.1⁶⁰ for |v₀| > vmax: |v₀|=0.3: T=1.50 s, peak 0.500; |v₀|=0.6: T=456.7 s = T₀·1.1⁶⁰ (T₀=1.500)
+[PASS] NUM   F-7-1 joint-2 reference LEAVES the ±1.7628 rad range (checked as −max|q₂| ≤ −1.7628): -4.025e+01 <= -1.8e+00  (max |q₂ ref| = 40.3 rad: the reference leaves the joint range)
+[PASS] REPRO F-7-1 state machine: velocity reference steps by ≈ v₀ at RETURNING → SETTLING: 452 RETURNING ticks; step in q̇_ref at SETTLING = 0.300 rad/s (v₀ = 0.3)
+[PASS] NUM   F-7-3 select_gamma at δ = 0.1 m, conf 1 (docstring says ≈ 6.0): observed 3.65299 vs reported 3.65299 (|diff| 0.00e+00 <= 1.0e-09)  (formula transcribed (import failed on host: ament_index_python))
+[PASS] NUM   risk_slack_weight ∈ [1, w_max], monotone non-increasing, knee at ρ/2: range [1.0000, 5.0000], w(ρ/2) = 3.000000
+[PASS] NUM   joint_limit_risk_margin: closing h − q̇²/2a, receding h: closing 0.0650, receding 0.4000
+[PASS] NUM   segment_segment_closest ≤ brute-force grid minimum (202 pairs): 0.000e+00 <= 1.0e-12  (the grid can only over-estimate the true minimum)
+[PASS] NUM   retreat_displacement_reachable = ∫ retreat_speed_reachable: 1.218e-08 <= 1.0e-06
+--- Stage 7 — functions first reviewed in Stage 7 (F-7-1, F-7-3, (8.10)): 9 passed, 0 failed ---
+
+### check_guide_vs_code.py
+=== Stage 7 — the old technical guide against the baseline (ch. 16 Part E) ===
+repository: /home/mattia/Git/franka_ros2
+[INFO] baseline ba68077052e8; guide 5813 lines, last changed ce80f36 2026-11-04
+[PASS] FACT  commits touching the packages since the guide: 20
+[INFO] — 1. §15.2 configuration values —
+[PASS] FACT  15.2: YAML blocks with a source link parsed: 10 blocks: fr3_control.yaml, fr3_complete.yaml, launch_defaults.yaml, fr3_distance.yaml, fake_hw_controller_params.yaml, oscbf_params.yaml, camera_extrinsics.yaml, camera_link_extrinsics.yaml, ee_tag_extrinsics.yaml, camera_EE_extrinsic.yaml
+[INFO]   fr3_control.yaml (franka_experiments/config/fr3_control.yaml): guide keys 263, baseline keys 308; changed 0, only in guide 0, only in baseline 45
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (45):
+[INFO]     params.brake_slew_limited
+[INFO]     params.curvature_kappa_max
+[INFO]     params.curvature_normal_rate_floor
+[INFO]     params.curvature_normal_window_s
+[INFO]     params.curvature_obstacle_radius
+[INFO]     params.curvature_radius_from_normal
+[INFO]     params.enable_curvature_term
+[INFO]     params.enable_evidence_margin
+[INFO]     params.enable_obstacle_memory
+[INFO]     params.evidence_coast_grace_s
+[INFO]     params.evidence_margin_coasting_m
+[INFO]     params.evidence_margin_fresh_m
+[INFO]     params.evidence_margin_untracked_m
+[INFO]     params.evidence_margin_young_m
+[INFO]     params.memory_camera_x
+[INFO]     params.memory_camera_y
+[INFO]     params.memory_camera_z
+[INFO]     params.memory_hold_s
+[INFO]     params.memory_inflate_speed_mps
+[INFO]     params.memory_mask_depth_tol_m
+[INFO]     params.memory_mask_halo_rad
+[INFO]     params.memory_min_frames
+[INFO]     params.memory_require_occlusion
+[INFO]     params.memory_self_radius_m
+[INFO]     params.memory_trigger_gap_m
+[INFO]     params.obstacle_row_osqp_eps_rel
+[INFO]     params.obstacle_row_slack_eps
+[INFO]     params.obstacle_row_slack_slots
+[INFO]     params.obstacle_slack_max
+[INFO]     params.obstacle_slack_mode
+[INFO]     params.qp_failure_policy
+[INFO]     params.qp_thread_fifo_prio
+[INFO]     params.rho_slack_l1
+[INFO]     params.rho_slack_ssb
+[INFO]     params.slew_dt_ratio_max
+[INFO]     params.slew_rate_compensation
+[INFO]     params.slew_yields_to_state_box
+[INFO]     params.ssb_d_safe
+[INFO]     params.ssb_hold_s
+[INFO]     params.ssb_inflate_speed_mps
+[INFO]     params.ssb_max_rows
+[INFO]     params.ssb_row_horizon
+[INFO]     params.ssb_row_release
+[INFO]     params.ssb_rows_enabled
+[INFO]     params.ssb_slack_max
+[INFO]   fr3_complete.yaml (franka_experiments/config/fr3_complete.yaml): guide keys 102, baseline keys 108; changed 0, only in guide 0, only in baseline 6
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (6):
+[INFO]     distance.ssb_enabled
+[INFO]     distance.ssb_guard_m
+[INFO]     distance.ssb_log_throttle_s
+[INFO]     distance.ssb_min_support_px
+[INFO]     distance.ssb_model_clearance_m
+[INFO]     distance.ssb_model_points_stride
+[INFO]   launch_defaults.yaml (franka_experiments/config/launch_defaults.yaml): guide keys 89, baseline keys 89; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   fr3_distance.yaml (franka_experiments/config/fr3_distance.yaml): guide keys 3, baseline keys 3; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   fake_hw_controller_params.yaml (franka_experiments/config/fake_hw_controller_params.yaml): guide keys 1, baseline keys 1; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   oscbf_params.yaml (franka_experiments/config/oscbf_params.yaml): guide keys 21, baseline keys 21; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   camera_extrinsics.yaml (franka_experiments/config/camera_extrinsics.yaml): guide keys 9, baseline keys 9; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   camera_link_extrinsics.yaml (franka_experiments/config/camera_link_extrinsics.yaml): guide keys 9, baseline keys 9; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   ee_tag_extrinsics.yaml (franka_experiments/config/ee_tag_extrinsics.yaml): guide keys 9, baseline keys 9; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[INFO]   camera_EE_extrinsic.yaml (franka_experiments/config/camera_EE_extrinsic.yaml): guide keys 37, baseline keys 37; changed 0, only in guide 0, only in baseline 0
+[INFO]     changed value (guide → baseline) (0):
+[INFO]     only in guide (removed or renamed) (0):
+[INFO]     only in baseline (added since the guide) (0):
+[PASS] FACT  15.2: comparison evaluated for every parsed block: 51 key-level differences in total
+[INFO] — 2. §15.3 node parameter index —
+[PASS] FACT  15.3: node parameter tables parsed: 21 nodes, 384 rows
+[INFO]   experiment_logger: 21 listed, 0 not found at baseline, 0 line moved, 1 literal declarations not listed
+[INFO]     declared but not listed (1):
+[INFO]     truth_topic
+[PASS] FACT  15.3: parameter rows checked: 0 absent at baseline, 40 at another line, 1 literal declarations not listed
+[INFO] — 3. §15.6 / §15.11.5 source identity —
+[PASS] FACT  15.6/15.11.5: path + full SHA-256 rows found: 281 rows
+[INFO]   latest guide digest per path: 267 paths; equal to the baseline blob 217, different 19, path absent 31
+[INFO]     equal (217):
+[INFO]     franka_bringup/config/franka.config.yaml
+[INFO]     franka_bringup/launch/example.launch.py
+[INFO]     franka_bringup/launch/franka.launch.py
+[INFO]     franka_bringup/launch/joint_impedance_with_ik_example_controller.launch.py
+[INFO]     franka_experiments/config/camera_EE_extrinsic.yaml
+[INFO]     franka_experiments/config/camera_extrinsics.yaml
+[INFO]     franka_experiments/config/camera_intrinsics.yaml
+[INFO]     franka_experiments/config/camera_link_extrinsics.yaml
+[INFO]     franka_experiments/config/dataset_handeye_eye_in_hand.yaml
+[INFO]     franka_experiments/config/depth_intrinsics.yaml
+[INFO]     franka_experiments/config/ee_tag_extrinsics.yaml
+[INFO]     franka_experiments/config/fake_hw_controller_params.yaml
+[INFO]     franka_experiments/config/fr3_distance.yaml
+[INFO]     franka_experiments/config/launch_defaults.yaml
+[INFO]     franka_experiments/config/oscbf_params.yaml
+[INFO]     franka_experiments/config/rgb_intrinsics.yaml
+[INFO]     franka_experiments/franka_experiments/__init__.py
+[INFO]     franka_experiments/franka_experiments/nodes/__init__.py
+[INFO]     franka_experiments/franka_experiments/nodes/capsule_overlay_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/cbf_OSCBF_filter.py
+[INFO]     franka_experiments/franka_experiments/nodes/cbf_velocity_filter.py
+[INFO]     franka_experiments/franka_experiments/nodes/distance_visualization_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/ee_circle_velocity_commander.py
+[INFO]     franka_experiments/franka_experiments/nodes/ee_pentagon_velocity_commander.py
+[INFO]     franka_experiments/franka_experiments/nodes/ee_random_waypoints_velocity_commander.py
+[INFO]     franka_experiments/franka_experiments/nodes/frame_grabber.py
+[INFO]     franka_experiments/franka_experiments/nodes/handeye_calibration_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/handeye_eye_in_hand_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/image_rectifier_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/iso_evidence_logger.py
+[INFO]     franka_experiments/franka_experiments/nodes/iso_safety_monitor.py
+[INFO]     franka_experiments/franka_experiments/nodes/pentagon_qddot_commander.py
+[INFO]     franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py
+[INFO]     franka_experiments/franka_experiments/nodes/qddot_to_torque.py
+[INFO]     franka_experiments/franka_experiments/nodes/rl_policy_commander.py
+[INFO]     franka_experiments/franka_experiments/nodes/tag_overlay_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/trajectory_overlay_node.py
+[INFO]     franka_experiments/franka_experiments/nodes/trajectory_visualization_node.py
+[INFO]     franka_experiments/franka_experiments/utils/__init__.py
+[INFO]     franka_experiments/franka_experiments/utils/avoidance.py
+[INFO]     franka_experiments/franka_experiments/utils/avoidance_math.py
+[INFO]     franka_experiments/franka_experiments/utils/ballistic_prediction.py
+[INFO]     franka_experiments/franka_experiments/utils/calibration_check.py
+[INFO]     franka_experiments/franka_experiments/utils/camera_yaml.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_constraints.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_evasion.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_kinematics.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_qp.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_singularity.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_utils.py
+[INFO]     franka_experiments/franka_experiments/utils/cbf_zones.py
+[INFO]     franka_experiments/franka_experiments/utils/constants.py
+[INFO]     franka_experiments/franka_experiments/utils/distance_utils.py
+[INFO]     franka_experiments/franka_experiments/utils/evasion_direction.py
+[INFO]     franka_experiments/franka_experiments/utils/go_around.py
+[INFO]     franka_experiments/franka_experiments/utils/handeye_solver.py
+[INFO]     franka_experiments/franka_experiments/utils/iso_ssm.py
+[INFO]     franka_experiments/franka_experiments/utils/launch_support.py
+[INFO]     franka_experiments/franka_experiments/utils/livelock.py
+[INFO]     franka_experiments/franka_experiments/utils/math_utils.py
+[INFO]     franka_experiments/franka_experiments/utils/node_runtime.py
+[INFO]     franka_experiments/franka_experiments/utils/node_utils.py
+[INFO]     franka_experiments/franka_experiments/utils/obstacle_clusters.py
+[INFO]     franka_experiments/franka_experiments/utils/obstacle_sim.py
+[INFO]     franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py
+[INFO]     franka_experiments/franka_experiments/utils/obstacle_tracker.py
+[INFO]     franka_experiments/franka_experiments/utils/params.py
+[INFO]     franka_experiments/franka_experiments/utils/rate_scaling.py
+[INFO]     franka_experiments/franka_experiments/utils/rl_policy.py
+[INFO]     franka_experiments/franka_experiments/utils/ros.py
+[INFO]     franka_experiments/franka_experiments/utils/ros_setup.py
+[INFO]     franka_experiments/franka_experiments/utils/rtd_debug.py
+[INFO]     franka_experiments/franka_experiments/utils/self_collision.py
+[INFO]     franka_experiments/franka_experiments/utils/self_detection.py
+[INFO]     franka_experiments/franka_experiments/utils/simulation_imports.py
+[INFO]     franka_experiments/franka_experiments/utils/singularity_recovery.py
+[INFO]     franka_experiments/franka_experiments/utils/state_governor.py
+[INFO]     franka_experiments/franka_experiments/utils/tf_manager.py
+[INFO]     franka_experiments/franka_experiments/utils/timing_law.py
+[INFO]     franka_experiments/franka_experiments/utils/trajectory.py
+[INFO]     franka_experiments/franka_experiments/utils/trajectory_overlay.py
+[INFO]     franka_experiments/franka_experiments/utils/trajectory_trace.py
+[INFO]     franka_experiments/franka_experiments/utils/visualization.py
+[INFO]     franka_experiments/franka_logs/plot_franka_log.py
+[INFO]     franka_experiments/launch/bag_replay.launch.py
+[INFO]     franka_experiments/launch/handeye_calibration_bringup.launch.py
+[INFO]     franka_experiments/launch/handeye_eye_in_hand_calibration.launch.py
+[INFO]     franka_experiments/launch/minimal.launch.py
+[INFO]     franka_experiments/launch/thales.launch.py
+[INFO]     franka_experiments/launch/torque_control_stack.launch.py
+[INFO]     franka_experiments/launch/velocity_cbf_control_stack.launch.py
+[INFO]     franka_experiments/package.xml
+[INFO]     franka_experiments/scripts/analyze_isolation_ab.py
+[INFO]     franka_experiments/scripts/approach_envelope.py
+[INFO]     franka_experiments/scripts/approach_probe.py
+[INFO]     franka_experiments/scripts/bag_to_mp4.py
+[INFO]     franka_experiments/scripts/ball_closed_loop.py
+[INFO]     franka_experiments/scripts/ball_throw_eval.py
+[INFO]     franka_experiments/scripts/cbf_phase4_check.py
+[INFO]     franka_experiments/scripts/cbf_scenarios.py
+[INFO]     franka_experiments/scripts/compare_range_noise.py
+[INFO]     franka_experiments/scripts/compare_vobs.py
+[INFO]     franka_experiments/scripts/experiment_summary.py
+[INFO]     franka_experiments/scripts/gen_zero_gain_controllers_yaml.py
+[INFO]     franka_experiments/scripts/iso_constants_measure.py
+[INFO]     franka_experiments/scripts/iso_evidence_report.py
+[INFO]     franka_experiments/scripts/iso_pfl_speed.py
+[INFO]     franka_experiments/scripts/iso_preflight_check.py
+[INFO]     franka_experiments/scripts/latency_budget.py
+[INFO]     franka_experiments/scripts/pass_plot.py
+[INFO]     franka_experiments/scripts/pin_rt_thread.sh
+[INFO]     franka_experiments/scripts/pipeline_rate_monitor.py
+[INFO]     franka_experiments/scripts/plot_rl_timing.py
+[INFO]     franka_experiments/scripts/range_noise_calibration.py
+[INFO]     franka_experiments/scripts/smoothness_report.py
+[INFO]     franka_experiments/scripts/throw_actuation.py
+[INFO]     franka_experiments/scripts/throw_clearance.py
+[INFO]     franka_experiments/scripts/throw_lead.py
+[INFO]     franka_experiments/scripts/watch_obstacle_tracks.py
+[INFO]     franka_experiments/setup.py
+[INFO]     franka_experiments/test/_launch_snapshot.py
+[INFO]     franka_experiments/test/config/test_defaults.yaml
+[INFO]     franka_experiments/test/e2e_pentagon_moveit.sh
+[INFO]     franka_experiments/test/launch/test_rl_fake.launch.py
+[INFO]     franka_experiments/test/launch/test_torque_fake.launch.py
+[INFO]     franka_experiments/test/launch/test_velocity_fake.launch.py
+[INFO]     franka_experiments/test/scripts/check_topics.sh
+[INFO]     franka_experiments/test/smoke_cbf_construct.py
+[INFO]     franka_experiments/test/smoke_cbf_safety_filter.py
+[INFO]     franka_experiments/test/smoke_rl_policy_commander.py
+[INFO]     franka_experiments/test/test_accel_box_decoupling.py
+[INFO]     franka_experiments/test/test_avoidance.py
+[INFO]     franka_experiments/test/test_ballistic_prediction.py
+[INFO]     franka_experiments/test/test_calibration_check.py
+[INFO]     franka_experiments/test/test_cbf_diag_line.py
+[INFO]     franka_experiments/test/test_cbf_fast_track.py
+[INFO]     franka_experiments/test/test_cbf_latency_compensation.py
+[INFO]     franka_experiments/test/test_cbf_lateral_evasion.py
+[INFO]     franka_experiments/test/test_cbf_link_speed.py
+[INFO]     franka_experiments/test/test_cbf_link_speed_relative.py
+[INFO]     franka_experiments/test/test_cbf_multi_cp_qp.py
+[INFO]     franka_experiments/test/test_cbf_normal_rotation_guard.py
+[INFO]     franka_experiments/test/test_cbf_obstacle_identity.py
+[INFO]     franka_experiments/test/test_cbf_outrun_evasion.py
+[INFO]     franka_experiments/test/test_cbf_phase1_reactivity.py
+[INFO]     franka_experiments/test/test_cbf_qp_fallback.py
+[INFO]     franka_experiments/test/test_cbf_retreat_authority.py
+[INFO]     franka_experiments/test/test_cbf_retreat_cap.py
+[INFO]     franka_experiments/test/test_cbf_risk_weighted_slack.py
+[INFO]     franka_experiments/test/test_cbf_row_padding.py
+[INFO]     franka_experiments/test/test_cbf_selfcollision_anticipation.py
+[INFO]     franka_experiments/test/test_cbf_sensor_range_uncertainty.py
+[INFO]     franka_experiments/test/test_cbf_singularity.py
+[INFO]     franka_experiments/test/test_cbf_tracker_source.py
+[INFO]     franka_experiments/test/test_cbf_uncertainty_margin.py
+[INFO]     franka_experiments/test/test_cbf_velocity_feedforward.py
+[INFO]     franka_experiments/test/test_cbf_velocity_filter.py
+[INFO]     franka_experiments/test/test_cbf_velocity_standoff.py
+[INFO]     franka_experiments/test/test_cbf_vobs_rate_independent.py
+[INFO]     franka_experiments/test/test_cbf_zone_ladder.py
+[INFO]     franka_experiments/test/test_compare_range_noise.py
+[INFO]     franka_experiments/test/test_cp_label_agreement.py
+[INFO]     franka_experiments/test/test_directional_fade.py
+[INFO]     franka_experiments/test/test_distance_surface_semantics.py
+[INFO]     franka_experiments/test/test_evasion_direction.py
+[INFO]     franka_experiments/test/test_experiment_log_columns.py
+[INFO]     franka_experiments/test/test_experiment_logger_truth_off_identical.py
+[INFO]     franka_experiments/test/test_fr3_velocity_envelope.py
+[INFO]     franka_experiments/test/test_go_around.py
+[INFO]     franka_experiments/test/test_handeye_solver.py
+[INFO]     franka_experiments/test/test_iso_dsafe_floor.py
+[INFO]     franka_experiments/test/test_iso_evidence_report.py
+[INFO]     franka_experiments/test/test_iso_flags_off_identical.py
+[INFO]     franka_experiments/test/test_iso_monitor.py
+[INFO]     franka_experiments/test/test_iso_perception_failclosed.py
+[INFO]     franka_experiments/test/test_iso_pfl_ceiling.py
+[INFO]     franka_experiments/test/test_iso_speed_rows.py
+[INFO]     franka_experiments/test/test_iso_ssm.py
+[INFO]     franka_experiments/test/test_iso_torque_limits.py
+[INFO]     franka_experiments/test/test_kinematics_fix_regression.py
+[INFO]     franka_experiments/test/test_link_distance_track_fields.py
+[INFO]     franka_experiments/test/test_livelock.py
+[INFO]     franka_experiments/test/test_mask_depth_gate.py
+[INFO]     franka_experiments/test/test_multi_obstacle_rows.py
+[INFO]     franka_experiments/test/test_node_self_references.py
+[INFO]     franka_experiments/test/test_obstacle_clusters.py
+[INFO]     franka_experiments/test/test_obstacle_imm.py
+[INFO]     franka_experiments/test/test_obstacle_kalman.py
+[INFO]     franka_experiments/test/test_obstacle_scene_guard.py
+[INFO]     franka_experiments/test/test_obstacle_track_pipeline.py
+[INFO]     franka_experiments/test/test_obstacle_tracker.py
+[INFO]     franka_experiments/test/test_phase_governor.py
+[INFO]     franka_experiments/test/test_phase_governor_staging.py
+[INFO]     franka_experiments/test/test_range_noise_calibration.py
+[INFO]     franka_experiments/test/test_rate_scaling.py
+[INFO]     franka_experiments/test/test_retreat_excess_speed.py
+[INFO]     franka_experiments/test/test_rl_policy.py
+[INFO]     franka_experiments/test/test_self_detection.py
+[INFO]     franka_experiments/test/test_sensor_range_field.py
+[INFO]     franka_experiments/test/test_shipped_smoothness_config.py
+[INFO]     franka_experiments/test/test_singularity_recovery.py
+[INFO]     franka_experiments/test/test_state_governor.py
+[INFO]     franka_experiments/test/test_torque_stack_external_plant_off_identical.py
+[INFO]     franka_experiments/test/test_track_eviction.py
+[INFO]     franka_experiments/test/test_track_lifecycle.py
+[INFO]     franka_experiments/test/test_trajectory_overlay.py
+[INFO]     franka_experiments/test/test_trajectory_trace.py
+[INFO]     franka_experiments/test/test_vobs_in_hdot.py
+[INFO]     franka_hardware/src/robot.cpp
+[INFO]     franka_rt_controllers/config/cbf_torque_controller.yaml
+[INFO]     franka_rt_controllers/config/rt_velocity_blender.yaml
+[INFO]     franka_rt_controllers/include/franka_rt_controllers/cbf_torque_controller.hpp
+[INFO]     franka_rt_controllers/include/franka_rt_controllers/rt_torque_controller.hpp
+[INFO]     franka_rt_controllers/include/franka_rt_controllers/rt_velocity_blender_controller.hpp
+[INFO]     franka_rt_controllers/src/cbf_torque_controller.cpp
+[INFO]     franka_rt_controllers/src/rt_torque_controller.cpp
+[INFO]     franka_rt_controllers/src/rt_velocity_blender_controller.cpp
+[INFO]     different (19):
+[INFO]     franka_experiments/config/fr3_complete.yaml (guide L5151)
+[INFO]     franka_experiments/config/fr3_control.yaml (guide L5152)
+[INFO]     franka_experiments/franka_experiments/nodes/cbf_safety_filter.py (guide L5801)
+[INFO]     franka_experiments/franka_experiments/nodes/experiment_logger.py (guide L5167)
+[INFO]     franka_experiments/franka_experiments/nodes/real_time_distance.py (guide L5177)
+[INFO]     franka_experiments/franka_experiments/utils/cbf_hard_limits.py (guide L5190)
+[INFO]     franka_experiments/franka_experiments/utils/cbf_qp_assembly.py (guide L5193)
+[INFO]     franka_experiments/franka_experiments/utils/cbf_state_rows.py (guide L5800)
+[INFO]     franka_experiments/franka_experiments/utils/config.py (guide L5198)
+[INFO]     franka_experiments/franka_experiments/utils/distance_engine.py (guide L5200)
+[INFO]     franka_experiments/franka_experiments/utils/kinematics.py (guide L5799)
+[INFO]     franka_experiments/franka_experiments/utils/logging_utils.py (guide L5208)
+[INFO]     franka_experiments/franka_experiments/utils/mask_builder.py (guide L5209)
+[INFO]     franka_experiments/franka_experiments/utils/perception_msgs.py (guide L5807)
+[INFO]     franka_experiments/test/_cbf_builder_harness.py (guide L5271)
+[INFO]     franka_experiments/test/test_cbf_hard_constraints.py (guide L5288)
+[INFO]     franka_experiments/test/test_cbf_state_rows.py (guide L5306)
+[INFO]     franka_experiments/test/test_cbf_tangential_bias.py (guide L5307)
+[INFO]     franka_experiments/test/test_iso_status_contract.py (guide L5332)
+[INFO]     absent at baseline (31):
+[INFO]     analysis/guide_update_20261103/verify_dynamics.py (guide L5811)
+[INFO]     analysis/kinematics_verification_20261103/verify_kinematics.py (guide L5810)
+[INFO]     franka_description/end_effectors/common/ee_with_one_link.xacro (guide L5114)
+[INFO]     franka_description/end_effectors/common/franka_hand.xacro (guide L5115)
+[INFO]     franka_description/end_effectors/common/utils.xacro (guide L5116)
+[INFO]     franka_description/end_effectors/franka_hand/franka_hand.srdf.xacro (guide L5117)
+[INFO]     franka_description/end_effectors/franka_hand/franka_hand.urdf.xacro (guide L5118)
+[INFO]     franka_description/end_effectors/franka_hand/franka_hand_arguments.xacro (guide L5119)
+[INFO]     franka_description/end_effectors/franka_hand/inertials.yaml (guide L5120)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link0.stl (guide L5121)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link1.stl (guide L5122)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link2.stl (guide L5123)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link3.stl (guide L5124)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link4.stl (guide L5125)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link5.stl (guide L5126)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link6.stl (guide L5127)
+[INFO]     franka_description/meshes/robot_arms/fr3/collision/link7.stl (guide L5128)
+[INFO]     franka_description/meshes/robot_ee/franka_hand_white/collision/hand.stl (guide L5129)
+[INFO]     franka_description/robots/common/franka_arm.ros2_control.xacro (guide L5130)
+[INFO]     franka_description/robots/common/franka_arm.srdf.xacro (guide L5131)
+[INFO]     franka_description/robots/common/franka_arm.xacro (guide L5132)
+[INFO]     franka_description/robots/common/franka_robot.xacro (guide L5133)
+[INFO]     franka_description/robots/common/group_definition.xacro (guide L5134)
+[INFO]     franka_description/robots/common/utils.xacro (guide L5135)
+[INFO]     franka_description/robots/fr3/accelerometers.yaml (guide L5136)
+[INFO]     franka_description/robots/fr3/dynamics.yaml (guide L5137)
+[INFO]     franka_description/robots/fr3/fr3.srdf.xacro (guide L5138)
+[INFO]     franka_description/robots/fr3/fr3.urdf.xacro (guide L5139)
+[INFO]     franka_description/robots/fr3/inertials.yaml (guide L5140)
+[INFO]     franka_description/robots/fr3/joint_limits.yaml (guide L5141)
+[INFO]     franka_description/robots/fr3/kinematics.yaml (guide L5142)
+[PASS] FACT  15.6/15.11.5: digests compared: 217/267 still identify the baseline file
+[INFO] — 4. links —
+[INFO]   relative links whose target is absent at baseline (23):
+[INFO]     L194: ../../franka_description
+[INFO]     L197: ../../libfranka
+[INFO]     L478: ../../KINEMATICS_FIX_VALIDATION.md
+[INFO]     L535: ../../franka_description/robots/fr3/fr3.urdf.xacro
+[INFO]     L535: ../../franka_description/robots/fr3/kinematics.yaml
+[INFO]     L535: ../../franka_description/robots/fr3/inertials.yaml
+[INFO]     L535: ../../franka_description/robots/fr3/dynamics.yaml
+[INFO]     L535: ../../franka_description/robots/fr3/joint_limits.yaml
+[INFO]     L5378: ../Papers/Flacco_2012_ICRA.pdf
+[INFO]     L5379: ../Papers/Safety_Barrier_Functions_for_HumanRobot_Interaction_with_Industrial_Manipulators.pdf
+[INFO]     L5386: ../Papers/A_Control_Barrier_Function_Approach_for_Maximizing_Performance_While_Fulfilling_to_ISO_TS_15066_Regulations.pdf
+[INFO]     L5387: ../Papers/Safety_and_Efficiency_in_Robotics_The_Control_Barrier_Functions_Approach.pdf
+[INFO]     L5388: ../Papers/OSCBF.pdf
+[INFO]     L5390: paper_draft/main.pdf
+[INFO]     L5390: paper_draft/Castelmare_DeLuca_IRIM26_EA.pdf
+[INFO]     L5704: ../../KINEMATICS_CRITICAL_ISSUES_VERIFICATION.md
+[INFO]     L5704: ../../KINEMATICS_FIX_VALIDATION.md
+[INFO]     L5724: ../../analysis/kinematics_fix_20261103
+[INFO]     L5749: ../../analysis/guide_update_20261103/verify_dynamics.py
+[INFO]     L5751: ../../analysis/guide_update_20261103/dynamics_results.json
+[INFO]     L5751: ../../analysis/guide_update_20261103/dynamics_corrected_results.json
+[INFO]     L5784: ../../analysis/diag_bag_review_20261103/diag_final/summary.json
+[INFO]     L5784: ../../analysis/diag_bag_review_20261103/diag_bag_findings.png
+[PASS] FACT  links: relative targets checked: 248 links, 23 absent at baseline
+[INFO] — 5. §15.1 / §15.4 identifiers —
+[INFO]   identifiers with no baseline definition (removed, renamed, or a non-code label) (0):
+[PASS] FACT  15.1/15.4: implementation identifiers checked: 359 identifiers, 359 defined at baseline, 0 not found
+[INFO] — 6. d_safe statements —
+[INFO]   baseline fr3_control.yaml params: d_safe=0.1, d_safe_default=0.15
+[INFO]   guide lines stating a d_safe value (20):
+[INFO]     L5: **Source audit history:** 30 October 2026; independently re-audited after commit `bc279b3`, completed by a continuation audit on the same date whose r
+[INFO]     L1112: **The coast was lengthened on 1 November 2026, from 0.167 s to 0.8 s, and this is a behavioural change rather than a re-expression of the same duratio
+[INFO]     L1470: **And since 1 November 2026 the two no longer agree on $d_{\rm safe}$ either.** `config/fr3_control.yaml` carries `0.10`; `franka_rl/config.yaml` stil
+[INFO]     L1767: with the **scalar** gains $k_0=$ `k0_cbf` $=25.0\ {\rm s^{-2}}$, $k_1=$ `k1_cbf` $=10.5\ {\rm s^{-1}}$ and $d_s=$ `d_safe` $=0.10$ m. Expanded through
+[INFO]     L2697: missing $-\alpha_1\dot h$ from differentiating $\psi=\dot h+\alpha_1h$. Thus it is not the exact second-order formulation described by its comments or
+[INFO]     L2889: | `d_safe` | m; subtracted from the wire surface gap in `ConstraintBuilder.build` ($h_{\rm raw}=d-d_s$). It is the single most coupled number in the c
+[INFO]     L3191: | Policy auto-discovery retains an old directory name, and the parity tests skip because of it | `find_sim_root` searches `franka_sim`; current source
+[INFO]     L3494: d_safe: 0.1
+[INFO]     L4567: | `d_safe` | `0.20 if cfg_dsafe is None else cfg_dsafe` | `minimum=0.0, maximum=2.0` | 134 |
+[INFO]     L5082: | `franka_experiments/config/fr3_control.yaml` | *(manifest)* | `d0703967376b72d379b6094d4d00731607b7a4191602a96d5ecd5bc927c3c189` | `d_safe` 0.15 → 0
+[INFO]     L5418: One rule was added by the second continuation, because it is the rule that change broke. **When a constant moves, find everything that is a multiple o
+[INFO]     L5439: | Chapter 14, every numeric step | Recompute (14.2)–(14.10) in NumPy from the cited YAML values | **Reproduced to all printed digits**: $m_{\rm dil}=0
+[INFO]     L5440: | Chapter 14's parameter citations | Read each from `fr3_control.yaml` | All confirmed: `velocity_standoff_time_s 0.25`, `latency_t_blind 0.085`, `lat
+[INFO]     L5497: The mismatch is purely the directory name: `franka_rl/` already contains `config.yaml`, `envs/obs_layout.py`, `export_onnx.py` and `models/` at exactl
+[INFO]     L5556: | `d_safe` 0.15 → 0.10 m; `max_coast_s` 0.167 → 0.8 s | working tree (1 Nov) | Two numbers, with arithmetic consequences in five chapters |
+[INFO]     L5558: The last row is the reason this continuation exists rather than a changelog entry. `d_safe` is a **scale**, not a setting: the four zone-ladder bounda
+[INFO]     L5575: | Chapter 14.2's governor threshold | Read `pentagon_qddot_commander` lines 359–360 and `fr3_control.yaml` | `governor_r_full`$=1.5$, `governor_r_stop
+[INFO]     L5578: | `franka_rl` ↔ `fr3_control` parity | Read `d_safe` and `joint_limits` on both sides | **Now divergent**: `0.10` against `0.15`. `joint_limits` still
+[INFO]     L5650: One housekeeping item is outstanding and is named so it is not rediscovered: `franka_rl/config.yaml` still carries `d_safe: 0.15`. It was not edited b
+[INFO]     L5652: A closing observation about the package's own documentation, because it bears on how the retune should be read. `SAFETY.md` is **not** behind the YAML
+[PASS] FACT  d_safe: baseline value read: 20 guide lines quote a value
+[INFO] — 7. specific guide statements, at the guide revision and at the baseline —
+[PASS] FACT  E1 (1.1)/(9.1): guide x ∈ R^13 (6 family slacks) — guide rev N_SLACK=6, baseline 7: N_SLACK ce80f36=6, baseline=7; baseline NX = 7 + 7 = 14 (family mode)
+[PASS] FACT  E2 §9.4: guide "box-only QP first, then brake"; baseline default policy = brake: fr3_control.yaml qp_failure_policy='brake'; policy absent at ce80f36: True
+[PASS] FACT  E3 §9.1: per-row ℓ1 obstacle slack exists at baseline (guide: family only); shipped mode: obstacle_slack_mode='family', slots=32
+[PASS] FACT  E4 §10.3: guide "SCHED_FIFO 50 for the QP thread"; baseline qp_thread_fifo_prio: qp_thread_fifo_prio=0 (0 = no per-thread elevation)
+[PASS] FACT  E5 mechanisms added after the guide: all four flags absent at the guide rev, off at baseline: enable_curvature_term=False, enable_evidence_margin=False, enable_obstacle_memory=False, ssb_rows_enabled=False
+[PASS] FACT  E6 §12.7/§13.1: guide "ExperimentLogger no longer declares truth_topic" — superseded: declared at baseline, absent at the guide rev (restored by 7da68ac)
+[PASS] FACT  E7 §13.1: test_rate_scaling::test_the_shipped_config_states_durations asserts 0.167 against the shipped coast (still true at baseline: the test must fail): shipped tracking.max_coast_s=0.8
+[PASS] FACT  E8 §13.1: fr3_control.yaml joint_limits effort column (guide: 500 for all joints): effort column values [500.0]
+[PASS] FACT  E9 §13.1: handeye_eye_in_hand_node reads the private rclpy `self._parameters` (still at baseline): the test outcome the guide reports was not re-run (pytest needs approval)
+[PASS] FACT  E10 §6.7 (6.24): guide already states q̇(T)=v₀ — the formula is unchanged at baseline: file identical at the guide rev and the baseline; F-7-1 quantifies the divergence
+[PASS] FACT  E11 launch defaults: the guide's digests of launch_defaults.yaml and the three stack launch files equal the baseline blobs: 4/4 equal; torque_control_stack differs between the commit ce80f36 and the baseline: True (the guide hashed a dirty tree)
+--- Stage 7 — the old technical guide against the baseline (ch. 16 Part E): 21 passed, 0 failed ---
+
+### check_docs.py
+=== Stage 7 — documentation consistency (check_docs.py) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  1a: each PROGRESS finding defined once: 125 defined; duplicates []
+[PASS] FACT  1b: each finding has exactly one ch. 16 Part B row (F-4-9 pointer allowed): missing [], repeated [], unknown []
+[PASS] FACT  1c: ch. 16 total matches: ch. 16 says 125, PROGRESS defines 125
+[PASS] FACT  2: every cited finding ID is defined: 125 cited; undefined []
+[PASS] FACT  3: every cited question ID is defined in PROGRESS §5: 27 defined, 27 cited; undefined []
+[PASS] FACT  4: ch. 15 names every non-test production file (by basename): 171 files; not named: []
+[PASS] FACT  5: equation references resolve: unresolved: []
+[PASS] FACT  6: every chapter 01–16 has a "Consequences of modification" section: missing in []
+[PASS] FACT  7: relative links resolve: 258 links; broken []
+[PASS] FACT  8: A_file_index.md equals a fresh run of gen_file_index.py: regenerate with the command in the generator docstring if not
+[PASS] FACT  8: B_equation_index.md equals a fresh run of gen_equation_index.py: regenerate with the command in the generator docstring if not
+[PASS] FACT  9: each stage 2–7 has README, run_all.sh and recorded results: missing []
+[PASS] FACT  11: no chapter states the old QP size (six families, ℝ¹³) outside 16 Part E: []
+[PASS] FACT  10: the resume card names the newest checkpoint: newest C-050
+--- Stage 7 — documentation consistency (check_docs.py): 14 passed, 0 failed ---
+
+### check_install_provenance.py
+=== Stage 7 — install-tree provenance (ch. 14 §5; F-6-3, F-7-4) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  install tree read and mapped: 156 installed files mapped to source paths
+[INFO] ba68077 (baseline): 126/156 identical, 27 differ, 3 not in that revision
+[INFO] 9c0c0ab (dani-thesis): 116/156 identical, 17 differ, 23 not in that revision
+[INFO] 42df80e (fr3-student-sim): 141/156 identical, 1 differ, 14 not in that revision
+[INFO] b9f2a41 (humble): 0/156 identical, 0 differ, 156 not in that revision
+[INFO] 476109b (humble-mattia): 126/156 identical, 27 differ, 3 not in that revision
+[INFO] 1b7f9b0 (tesi_federico_urbini): 52/156 identical, 28 differ, 76 not in that revision
+[INFO] 9e3e216 (thesis_TAS): 9/156 identical, 23 differ, 124 not in that revision
+[PASS] FACT  install is NOT a build of the baseline (F-6-3 holds): 30 of 156 files differ from or are absent in ba68077
+[PASS] FACT  the install is a MIXED tree: no revision matches every file; the best match is 42df80e (fr3-student-sim) and most of its exceptions are files that revision does not contain (left behind by earlier builds: a copy-mode install never deletes): best 42df80e: 141/156 identical; 14 absent from it, 1 differing
+[INFO]   stale (absent from 42df80e): franka_experiments/config/fr3_control.yaml.bak_baseline
+[INFO]   stale (absent from 42df80e): franka_experiments/config/fr3_control.yaml.orig
+[INFO]   stale (absent from 42df80e): franka_experiments/franka_experiments/utils/cbf_diagnostics.py
+[INFO]   stale (absent from 42df80e): franka_experiments/franka_experiments/utils/go_around.py
+[INFO]   stale (absent from 42df80e): franka_experiments/franka_experiments/utils/run_metadata.py
+[INFO]   stale (absent from 42df80e): franka_experiments/franka_experiments/utils/self_shadow.py
+[INFO]   stale (absent from 42df80e): franka_experiments/franka_experiments/utils/static_scene.py
+[INFO]   stale (absent from 42df80e): franka_experiments/franka_experiments/utils/surface_velocity.py
+[INFO]   stale (absent from 42df80e): franka_experiments/scripts/check_control_derivatives.py
+[INFO]   stale (absent from 42df80e): franka_simulation_experiments/config/conditions.d/mppi_it08.yaml
+[INFO]   stale (absent from 42df80e): franka_simulation_experiments/config/control_regression_scenarios.yaml
+[INFO]   stale (absent from 42df80e): franka_simulation_experiments/scripts/gz_trajectory_markers.py
+[INFO]   stale (absent from 42df80e): franka_simulation_experiments/scripts/plot_control_regression.py
+[INFO]   stale (absent from 42df80e): franka_simulation_experiments/scripts/run_control_regression.py
+[INFO]   differs from 42df80e: franka_simulation_experiments/scripts/run_gz_scenarios.py
+--- Stage 7 — install-tree provenance (ch. 14 §5; F-6-3, F-7-4): 3 passed, 0 failed ---
+run_all.sh exit code: 0

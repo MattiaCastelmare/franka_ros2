@@ -198,6 +198,18 @@ singularities and larger exactly where λ² is raised.
   improve for 3 s, the node runs a joint-space PD (k_p = 40, k_d = 12) along a profiled return to
   q_home, settles, then restarts the trajectory from there.
 
+  > **Stage 7 correction (F-7-1, Verified numerically).** The "profiled return" is
+  > `singularity_recovery.quintic_coeffs`:
+  >
+  >   q(τ) = q₀ + v₀τ + d·(10s³ − 15s⁴ + 6s⁵),  s = τ/T,  d = q_home − q₀ − v₀T   (6.R1)
+  >
+  > It reaches q_home with q̈ = 0 but with **q̇(T) = v₀**, not 0. SETTLING then steps the
+  > reference velocity from v₀ to 0. `plan_duration` searches T until the sampled peaks satisfy
+  > \|q̇\| ≤ `recovery_vmax` = 0.5 rad/s and \|q̈\| ≤ `recovery_amax` = 2 rad/s². The sample at τ = 0
+  > has q̇ = v₀, so for any \|v₀,ᵢ\| > 0.5 rad/s no T passes. The search then returns its last
+  > candidate (≈ 457 s from T₀ = 1.5 s), and (6.R1) runs tens of radians outside the joint range.
+  > See chapter 16, F-7-1.
+
 ---
 
 ## 5. The phase governor and F-3-3
@@ -559,3 +571,20 @@ and F-3-18.
 **Not re-read** (no claim in this chapter depends on them): the reference profiles of
 `ee_circle_velocity_commander` and `ee_random_waypoints_velocity_commander`; `avoidance.py`
 beyond `tangential_redirect` and its import graph; `avoidance_math.py`.
+
+## 14. Stage 7 coverage addendum (2026-11-11, C-049): `utils/timing_law.py` read in full
+
+The two laws not read in Stage 3 (Verified at the baseline):
+
+- `ExponentialTimingLaw(k, s_target)`: ṡ = k(s_target − s), s̈ = −kṡ, explicit Euler s ← s + ṡΔt.
+  It settles and does not cycle (its docstring says so). The commander builds it with
+  `s_target = _approach_span` (`pentagon_qddot_commander.py` L1336).
+- `TrapezoidalTimingLaw(rate, accel)`: ṡ ramps from 0 at constant `accel` (floored at 1e-9) up to
+  `rate`, then holds; s ← s + ṡΔt with the **updated** ṡ (semi-implicit). On the step where the
+  ramp saturates it still reports s̈ = `accel`, so s̈ is a one-step approximation at the corner.
+  It does not override `reset`; the base class zeroes ṡ, which restarts the ramp.
+- Both are selected only by `timing_law` ≠ `linear` (`pentagon_qddot_commander` L141, L1336–1339);
+  the shipped value is `linear`. F-3-3 (the governor scales Δt, not the derivatives) applies to
+  all three laws identically, because the governor acts on the `step(dt)` argument.
+
+No new finding.
