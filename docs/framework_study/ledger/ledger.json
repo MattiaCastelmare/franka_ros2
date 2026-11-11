@@ -1,0 +1,4233 @@
+{
+ "ledger": [
+  {
+   "path": "franka_experiments/.gitignore",
+   "lines": 34,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/LEGACY.md",
+   "lines": 193,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/MANIFEST.in",
+   "lines": 4,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/README.md",
+   "lines": 438,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/SAFETY.md",
+   "lines": 302,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/camera_EE_extrinsic.yaml",
+   "lines": 51,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/camera_extrinsics.yaml",
+   "lines": 11,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/camera_intrinsics.yaml",
+   "lines": 56,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/camera_link_extrinsics.yaml",
+   "lines": 16,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/dataset_handeye_eye_in_hand.yaml",
+   "lines": 310,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/depth_intrinsics.yaml",
+   "lines": 56,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/ee_tag_extrinsics.yaml",
+   "lines": 11,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/fake_hw_controller_params.yaml",
+   "lines": 7,
+   "role": "config (parameters)",
+   "ch": "03",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/config/fr3_complete.yaml",
+   "lines": 930,
+   "role": "config (parameters)",
+   "ch": "03",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/config/fr3_control.yaml",
+   "lines": 2672,
+   "role": "config (parameters)",
+   "ch": "03",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/config/fr3_distance.yaml",
+   "lines": 23,
+   "role": "config (parameters)",
+   "ch": "03",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "documented"
+  },
+  {
+   "path": "franka_experiments/config/handeye_eye_in_hand_rviz.rviz",
+   "lines": 120,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/handeye_rviz.rviz",
+   "lines": 150,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/launch_defaults.yaml",
+   "lines": 333,
+   "role": "config (parameters)",
+   "ch": "03",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "documented"
+  },
+  {
+   "path": "franka_experiments/config/oscbf_params.yaml",
+   "lines": 63,
+   "role": "config (parameters)",
+   "ch": "03",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/config/rgb_intrinsics.yaml",
+   "lines": 56,
+   "role": "config (calibration)",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/safety/watchman_profile.md",
+   "lines": 153,
+   "role": "doc (lead)",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/config/trajectory_rviz.rviz",
+   "lines": 120,
+   "role": "config (rviz)",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/FRAMEWORK_COMPLETE_TECHNICAL_GUIDE.md",
+   "lines": 5813,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/approach_speed_envelope.md",
+   "lines": 227,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/ball_throw_closed_loop.md",
+   "lines": 144,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/make_ros_node_graph.py",
+   "lines": 298,
+   "role": "doc tool",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/plots/bt3_nom_vs_safe.png",
+   "lines": 323,
+   "role": "doc asset",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/plots/bt3_passes.png",
+   "lines": 1148,
+   "role": "doc asset",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/reactivity_evasion_report.md",
+   "lines": 220,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/ros_node_graph.png",
+   "lines": 2334,
+   "role": "doc asset",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/docs/ros_node_graph.svg",
+   "lines": 195,
+   "role": "doc asset",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/__init__.py",
+   "lines": 0,
+   "role": "package init",
+   "ch": "03",
+   "note": "",
+   "reach": "test",
+   "ext": false,
+   "status": "read"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/__init__.py",
+   "lines": 0,
+   "role": "package init",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/capsule_overlay_node.py",
+   "lines": 796,
+   "role": "ROS node",
+   "ch": "13",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/cbf_OSCBF_filter.py",
+   "lines": 971,
+   "role": "ROS node",
+   "ch": "10",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "lines": 2085,
+   "role": "ROS node",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/cbf_velocity_filter.py",
+   "lines": 623,
+   "role": "ROS node",
+   "ch": "10",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/distance_visualization_node.py",
+   "lines": 402,
+   "role": "ROS node",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/ee_circle_velocity_commander.py",
+   "lines": 472,
+   "role": "ROS node",
+   "ch": "06",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/ee_pentagon_velocity_commander.py",
+   "lines": 360,
+   "role": "ROS node",
+   "ch": "06",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/ee_random_waypoints_velocity_commander.py",
+   "lines": 537,
+   "role": "ROS node",
+   "ch": "06",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/experiment_logger.py",
+   "lines": 1125,
+   "role": "ROS node",
+   "ch": "13",
+   "note": "",
+   "reach": "entry,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/frame_grabber.py",
+   "lines": 155,
+   "role": "ROS node",
+   "ch": "05",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/handeye_calibration_node.py",
+   "lines": 2561,
+   "role": "ROS node",
+   "ch": "05",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/handeye_eye_in_hand_node.py",
+   "lines": 962,
+   "role": "ROS node",
+   "ch": "05",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/image_rectifier_node.py",
+   "lines": 107,
+   "role": "ROS node",
+   "ch": "05",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/iso_evidence_logger.py",
+   "lines": 621,
+   "role": "ROS node",
+   "ch": "11",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py",
+   "lines": 417,
+   "role": "ROS node",
+   "ch": "11",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/pentagon_qddot_commander.py",
+   "lines": 1688,
+   "role": "ROS node",
+   "ch": "06",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py",
+   "lines": 496,
+   "role": "ROS node",
+   "ch": "10",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/qddot_to_torque.py",
+   "lines": 317,
+   "role": "ROS node",
+   "ch": "09",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/real_time_distance.py",
+   "lines": 1255,
+   "role": "ROS node",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/rl_policy_commander.py",
+   "lines": 753,
+   "role": "ROS node",
+   "ch": "06",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/tag_overlay_node.py",
+   "lines": 160,
+   "role": "ROS node",
+   "ch": "13",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/trajectory_overlay_node.py",
+   "lines": 449,
+   "role": "ROS node",
+   "ch": "13",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/nodes/trajectory_visualization_node.py",
+   "lines": 171,
+   "role": "ROS node",
+   "ch": "13",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/__init__.py",
+   "lines": 6,
+   "role": "util module",
+   "ch": "03",
+   "note": "",
+   "reach": "entry,script,launch,test",
+   "ext": false,
+   "status": "read"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/avoidance.py",
+   "lines": 165,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/avoidance_math.py",
+   "lines": 1309,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/ballistic_prediction.py",
+   "lines": 202,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/calibration_check.py",
+   "lines": 235,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/camera_yaml.py",
+   "lines": 17,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_constraints.py",
+   "lines": 218,
+   "role": "util module",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+   "lines": 65,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_evasion.py",
+   "lines": 306,
+   "role": "util module",
+   "ch": "07",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "lines": 456,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,sim-exec,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_kinematics.py",
+   "lines": 9,
+   "role": "util module",
+   "ch": "04",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_qp.py",
+   "lines": 114,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "lines": 598,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_singularity.py",
+   "lines": 214,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "lines": 4354,
+   "role": "util module",
+   "ch": "07",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "lines": 46,
+   "role": "util module",
+   "ch": "07",
+   "note": "",
+   "reach": "entry,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/cbf_zones.py",
+   "lines": 356,
+   "role": "util module",
+   "ch": "07",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/config.py",
+   "lines": 806,
+   "role": "util module",
+   "ch": "03",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/constants.py",
+   "lines": 18,
+   "role": "util module",
+   "ch": "04",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false,
+   "status": "read"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "lines": 1014,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "lines": 307,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/evasion_direction.py",
+   "lines": 264,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/go_around.py",
+   "lines": 160,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/handeye_solver.py",
+   "lines": 422,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/iso_ssm.py",
+   "lines": 210,
+   "role": "util module",
+   "ch": "11",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/kinematics.py",
+   "lines": 665,
+   "role": "util module",
+   "ch": "04",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/launch_support.py",
+   "lines": 589,
+   "role": "util module",
+   "ch": "03",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/livelock.py",
+   "lines": 163,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "lines": 504,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "entry,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "lines": 312,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/math_utils.py",
+   "lines": 87,
+   "role": "util module",
+   "ch": "04",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "lines": 170,
+   "role": "util module",
+   "ch": "03",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/node_utils.py",
+   "lines": 42,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "pending",
+   "stage": 2
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/obstacle_clusters.py",
+   "lines": 376,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/obstacle_sim.py",
+   "lines": 153,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "lines": 312,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
+   "lines": 1048,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/params.py",
+   "lines": 293,
+   "role": "util module",
+   "ch": "03",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "lines": 484,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "lines": 199,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/rl_policy.py",
+   "lines": 499,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/ros.py",
+   "lines": 245,
+   "role": "util module",
+   "ch": "03",
+   "note": "",
+   "reach": "entry,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/ros_setup.py",
+   "lines": 200,
+   "role": "util module",
+   "ch": "10",
+   "note": "",
+   "reach": "entry",
+   "ext": false,
+   "status": "pending",
+   "stage": 5
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/rtd_debug.py",
+   "lines": 370,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/run_metadata.py",
+   "lines": 36,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "test",
+   "ext": false,
+   "status": "pending",
+   "stage": 5
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/self_collision.py",
+   "lines": 224,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/self_detection.py",
+   "lines": 226,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/self_shadow.py",
+   "lines": 685,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,sim-exec,script,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/simulation_imports.py",
+   "lines": 96,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/singularity_recovery.py",
+   "lines": 205,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/state_governor.py",
+   "lines": 266,
+   "role": "util module",
+   "ch": "08",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/static_scene.py",
+   "lines": 505,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/surface_velocity.py",
+   "lines": 279,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/tf_manager.py",
+   "lines": 223,
+   "role": "util module",
+   "ch": "05",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/timing_law.py",
+   "lines": 135,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/trajectory.py",
+   "lines": 887,
+   "role": "util module",
+   "ch": "06",
+   "note": "",
+   "reach": "entry,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/trajectory_overlay.py",
+   "lines": 322,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "entry,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/trajectory_trace.py",
+   "lines": 258,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "entry,sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/franka_experiments/utils/visualization.py",
+   "lines": 154,
+   "role": "util module",
+   "ch": "13",
+   "note": "",
+   "reach": "entry,script,test",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/launch/bag_replay.launch.py",
+   "lines": 201,
+   "role": "launch file",
+   "ch": "01",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/launch/handeye_calibration_bringup.launch.py",
+   "lines": 166,
+   "role": "launch file",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "pending",
+   "stage": 2
+  },
+  {
+   "path": "franka_experiments/launch/handeye_eye_in_hand_calibration.launch.py",
+   "lines": 335,
+   "role": "launch file",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "pending",
+   "stage": 2
+  },
+  {
+   "path": "franka_experiments/launch/minimal.launch.py",
+   "lines": 526,
+   "role": "launch file",
+   "ch": "01",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/launch/thales.launch.py",
+   "lines": 371,
+   "role": "launch file",
+   "ch": "01",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/launch/torque_control_stack.launch.py",
+   "lines": 1527,
+   "role": "launch file",
+   "ch": "01",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "documented"
+  },
+  {
+   "path": "franka_experiments/launch/velocity_cbf_control_stack.launch.py",
+   "lines": 441,
+   "role": "launch file",
+   "ch": "01",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "documented"
+  },
+  {
+   "path": "franka_experiments/package.xml",
+   "lines": 47,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/resource/franka_experiments",
+   "lines": 0,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/analyze_isolation_ab.py",
+   "lines": 300,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/approach_envelope.py",
+   "lines": 124,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/approach_probe.py",
+   "lines": 416,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/bag_to_mp4.py",
+   "lines": 160,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/ball_closed_loop.py",
+   "lines": 780,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/ball_throw_eval.py",
+   "lines": 408,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/cbf_phase4_check.py",
+   "lines": 285,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/cbf_scenarios.py",
+   "lines": 734,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/check_control_derivatives.py",
+   "lines": 73,
+   "role": "offline/aux script",
+   "ch": "04",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/compare_range_noise.py",
+   "lines": 464,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/compare_vobs.py",
+   "lines": 730,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/experiment_summary.py",
+   "lines": 255,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/gen_zero_gain_controllers_yaml.py",
+   "lines": 79,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/iso_constants_measure.py",
+   "lines": 644,
+   "role": "offline/aux script",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/iso_evidence_report.py",
+   "lines": 678,
+   "role": "offline/aux script",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/iso_pfl_speed.py",
+   "lines": 155,
+   "role": "offline/aux script",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/iso_preflight_check.py",
+   "lines": 254,
+   "role": "offline/aux script",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/latency_budget.py",
+   "lines": 695,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/pass_plot.py",
+   "lines": 38,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/pin_rt_thread.sh",
+   "lines": 73,
+   "role": "shell script",
+   "ch": "09",
+   "note": "RT pinning",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/pipeline_rate_monitor.py",
+   "lines": 414,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/plot_rl_timing.py",
+   "lines": 123,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/range_noise_calibration.py",
+   "lines": 283,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/smoothness_report.py",
+   "lines": 163,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/throw_actuation.py",
+   "lines": 71,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/throw_clearance.py",
+   "lines": 46,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/throw_lead.py",
+   "lines": 46,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/scripts/watch_obstacle_tracks.py",
+   "lines": 153,
+   "role": "offline/aux script",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/setup.cfg",
+   "lines": 8,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/setup.py",
+   "lines": 69,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/README.md",
+   "lines": 401,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/_cbf_builder_harness.py",
+   "lines": 390,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/_launch_snapshot.py",
+   "lines": 138,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/config/test_defaults.yaml",
+   "lines": 38,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/data/README_snapshot.md",
+   "lines": 32,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/data/experiment_log_header_94cd7b0.json",
+   "lines": 341,
+   "role": "test",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/data/torque_control_stack_94cd7b0_snapshot.json",
+   "lines": 2756,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/e2e_pentagon_moveit.sh",
+   "lines": 48,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/launch/test_rl_fake.launch.py",
+   "lines": 78,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/launch/test_torque_fake.launch.py",
+   "lines": 108,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_experiments/test/launch/test_velocity_fake.launch.py",
+   "lines": 99,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/scripts/check_topics.sh",
+   "lines": 229,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/smoke_cbf_construct.py",
+   "lines": 110,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/smoke_cbf_safety_filter.py",
+   "lines": 180,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/smoke_rl_policy_commander.py",
+   "lines": 268,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_accel_box_decoupling.py",
+   "lines": 67,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_avoidance.py",
+   "lines": 191,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_ballistic_prediction.py",
+   "lines": 108,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_brake_slew_limited.py",
+   "lines": 100,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_calibration_check.py",
+   "lines": 186,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_curvature_term.py",
+   "lines": 346,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_diag_line.py",
+   "lines": 191,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_evidence_trust.py",
+   "lines": 457,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_fast_track.py",
+   "lines": 81,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_hard_constraints.py",
+   "lines": 405,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_latency_compensation.py",
+   "lines": 174,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_lateral_evasion.py",
+   "lines": 296,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_link_speed.py",
+   "lines": 151,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_link_speed_relative.py",
+   "lines": 39,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_multi_cp_qp.py",
+   "lines": 303,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_normal_rotation_guard.py",
+   "lines": 216,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_obstacle_identity.py",
+   "lines": 251,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_outrun_evasion.py",
+   "lines": 173,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_phase1_reactivity.py",
+   "lines": 286,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_qp_fallback.py",
+   "lines": 199,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_retreat_authority.py",
+   "lines": 204,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_retreat_cap.py",
+   "lines": 347,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_risk_weighted_slack.py",
+   "lines": 330,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_row_l1_slack.py",
+   "lines": 129,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_row_padding.py",
+   "lines": 222,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_selfcollision_anticipation.py",
+   "lines": 243,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_sensor_range_uncertainty.py",
+   "lines": 227,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_singularity.py",
+   "lines": 198,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_state_rows.py",
+   "lines": 828,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_static_scene.py",
+   "lines": 325,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_surface_velocity.py",
+   "lines": 561,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_tangential_bias.py",
+   "lines": 353,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_tracker_source.py",
+   "lines": 400,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_uncertainty_margin.py",
+   "lines": 176,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_velocity_feedforward.py",
+   "lines": 159,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_velocity_filter.py",
+   "lines": 205,
+   "role": "test",
+   "ch": "10",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_velocity_standoff.py",
+   "lines": 81,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_vobs_rate_independent.py",
+   "lines": 414,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_zone_ladder.py",
+   "lines": 468,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_compare_range_noise.py",
+   "lines": 121,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_control_point_derivatives.py",
+   "lines": 109,
+   "role": "test",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_cp_label_agreement.py",
+   "lines": 99,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_directional_fade.py",
+   "lines": 28,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_distance_surface_semantics.py",
+   "lines": 355,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_evasion_direction.py",
+   "lines": 192,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_experiment_log_columns.py",
+   "lines": 333,
+   "role": "test",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_experiment_logger_truth_off_identical.py",
+   "lines": 64,
+   "role": "test",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_fr3_velocity_envelope.py",
+   "lines": 186,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_go_around.py",
+   "lines": 64,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_handeye_solver.py",
+   "lines": 209,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_dsafe_floor.py",
+   "lines": 155,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_evidence_report.py",
+   "lines": 246,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_flags_off_identical.py",
+   "lines": 142,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_monitor.py",
+   "lines": 267,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_perception_failclosed.py",
+   "lines": 243,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_pfl_ceiling.py",
+   "lines": 119,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_speed_rows.py",
+   "lines": 206,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_ssm.py",
+   "lines": 158,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_status_contract.py",
+   "lines": 232,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_iso_torque_limits.py",
+   "lines": 211,
+   "role": "test",
+   "ch": "11",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_kinematics_fix_regression.py",
+   "lines": 177,
+   "role": "test",
+   "ch": "13",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_link_distance_track_fields.py",
+   "lines": 125,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_livelock.py",
+   "lines": 218,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_mask_depth_gate.py",
+   "lines": 338,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_multi_obstacle_rows.py",
+   "lines": 294,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_node_self_references.py",
+   "lines": 219,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_obstacle_clusters.py",
+   "lines": 263,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_obstacle_imm.py",
+   "lines": 270,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_obstacle_kalman.py",
+   "lines": 257,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_obstacle_scene_guard.py",
+   "lines": 111,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_obstacle_track_pipeline.py",
+   "lines": 267,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_obstacle_tracker.py",
+   "lines": 363,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_phase_governor.py",
+   "lines": 195,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_phase_governor_staging.py",
+   "lines": 97,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_range_noise_calibration.py",
+   "lines": 123,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_rate_scaling.py",
+   "lines": 388,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_retreat_excess_speed.py",
+   "lines": 42,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_rl_policy.py",
+   "lines": 772,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_run_metadata.py",
+   "lines": 30,
+   "role": "test",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_safety_failure_policy.py",
+   "lines": 78,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_self_detection.py",
+   "lines": 213,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_self_reject_and_obstacle_floor.py",
+   "lines": 179,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_self_shadow_derivatives.py",
+   "lines": 302,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_self_shadow_geometry.py",
+   "lines": 237,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_sensor_range_field.py",
+   "lines": 268,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_shipped_smoothness_config.py",
+   "lines": 54,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_singularity_recovery.py",
+   "lines": 162,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_ssb_perception.py",
+   "lines": 327,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_ssb_qp_rows.py",
+   "lines": 463,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_state_governor.py",
+   "lines": 199,
+   "role": "test",
+   "ch": "08",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_torque_stack_external_plant_off_identical.py",
+   "lines": 117,
+   "role": "test",
+   "ch": "10",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_track_eviction.py",
+   "lines": 70,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_track_lifecycle.py",
+   "lines": 198,
+   "role": "test",
+   "ch": "05",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_trajectory_overlay.py",
+   "lines": 290,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_trajectory_trace.py",
+   "lines": 304,
+   "role": "test",
+   "ch": "06",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_experiments/test/test_vobs_in_hdot.py",
+   "lines": 127,
+   "role": "test",
+   "ch": "07",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/.gitignore",
+   "lines": 2,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/CMakeLists.txt",
+   "lines": 23,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/README.md",
+   "lines": 673,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/config/conditions.d/mppi_it08.yaml",
+   "lines": 57,
+   "role": "config (sim experiment axes)",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/config/conditions.yaml",
+   "lines": 1516,
+   "role": "config (sim experiment axes)",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/config/control_regression_scenarios.yaml",
+   "lines": 29,
+   "role": "config (sim experiment axes)",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/config/scenarios.yaml",
+   "lines": 629,
+   "role": "config (sim experiment axes)",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/launch/gz_cbf_stack.launch.py",
+   "lines": 273,
+   "role": "launch file",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "read"
+  },
+  {
+   "path": "franka_simulation_experiments/launch/gz_circle_demo.launch.py",
+   "lines": 145,
+   "role": "launch file",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/launch/gz_plant.launch.py",
+   "lines": 66,
+   "role": "launch file",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/next_step.md",
+   "lines": 71,
+   "role": "doc (lead)",
+   "ch": "16",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/package.xml",
+   "lines": 44,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/pytest.ini",
+   "lines": 7,
+   "role": "build metadata",
+   "ch": "14",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/check_self_occlusion.py",
+   "lines": 107,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/emulated_perception.py",
+   "lines": 149,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/episode_supervisor.py",
+   "lines": 224,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/ground_truth_node.py",
+   "lines": 141,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/gz_trajectory_markers.py",
+   "lines": 256,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/pin_process.py",
+   "lines": 72,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/plot_control_regression.py",
+   "lines": 70,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/reflex_monitor.py",
+   "lines": 155,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/run_gz_scenarios.py",
+   "lines": 94,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/scenario_commander.py",
+   "lines": 95,
+   "role": "sim node / tool",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "lines": 1,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "lines": 217,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/attribution.py",
+   "lines": 132,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/batch.py",
+   "lines": 305,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/closed_loop.py",
+   "lines": 292,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/conditions.py",
+   "lines": 135,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/control_regression.py",
+   "lines": 131,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/emulation.py",
+   "lines": 121,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/estimator_metrics.py",
+   "lines": 308,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/graph_contract.py",
+   "lines": 165,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+   "lines": 114,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/offline.py",
+   "lines": 66,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/procs.py",
+   "lines": 105,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/provenance.py",
+   "lines": 49,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/reflex_checks.py",
+   "lines": 149,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/report.py",
+   "lines": 365,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/runner.py",
+   "lines": 131,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+   "lines": 225,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/scenario_laws.py",
+   "lines": 87,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/sim_config.py",
+   "lines": 217,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,launch,test",
+   "ext": false,
+   "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/truth_geometry.py",
+   "lines": 87,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "",
+   "reach": "sim-exec,launch,test",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/conftest.py",
+   "lines": 11,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/launch/launch_test_graph_contract.py",
+   "lines": 142,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/slow/_rosprobe.py",
+   "lines": 97,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/slow/test_phase1_plant.py",
+   "lines": 215,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/slow/test_phase2_closed_loop.py",
+   "lines": 81,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/slow/test_phase3_perception.py",
+   "lines": 176,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/slow/test_phase4_obstacles.py",
+   "lines": 128,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/slow/test_phase5_batch.py",
+   "lines": 90,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_analysis.py",
+   "lines": 31,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_batch.py",
+   "lines": 76,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_closed_loop.py",
+   "lines": 144,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_conditions.py",
+   "lines": 173,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_control_regression.py",
+   "lines": 43,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_emulation.py",
+   "lines": 102,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_estimator_metrics.py",
+   "lines": 108,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_gz_trajectory_markers.py",
+   "lines": 143,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_obstacle_law_wander.py",
+   "lines": 143,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_offline_and_attribution.py",
+   "lines": 102,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_reflex_checks.py",
+   "lines": 76,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_run_provenance.py",
+   "lines": 28,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_scenario_catalog.py",
+   "lines": 193,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_scenario_laws.py",
+   "lines": 92,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_sim_config.py",
+   "lines": 158,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_ssb_scenarios.py",
+   "lines": 217,
+   "role": "test",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": false
+  },
+  {
+   "path": "franka_rt_controllers/src/rt_torque_controller.cpp",
+   "lines": 623,
+   "role": "C++ controller (external, executed)",
+   "ch": "09",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  },
+  {
+   "path": "franka_rt_controllers/src/cbf_torque_controller.cpp",
+   "lines": 332,
+   "role": "C++ controller (external, executed)",
+   "ch": "09",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  },
+  {
+   "path": "franka_rt_controllers/src/rt_velocity_blender_controller.cpp",
+   "lines": 424,
+   "role": "C++ controller (external, executed)",
+   "ch": "10",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  },
+  {
+   "path": "franka_rt_controllers/config/cbf_torque_controller.yaml",
+   "lines": 6,
+   "role": "C++ controller (external, executed)",
+   "ch": "09",
+   "note": "",
+   "reach": "",
+   "ext": true
+  },
+  {
+   "path": "franka_rt_controllers/config/rt_velocity_blender.yaml",
+   "lines": 89,
+   "role": "C++ controller (external, executed)",
+   "ch": "10",
+   "note": "",
+   "reach": "",
+   "ext": true
+  },
+  {
+   "path": "franka_rt_controllers/franka_rt_controllers.xml",
+   "lines": 10,
+   "role": "C++ controller (external, executed)",
+   "ch": "09",
+   "note": "",
+   "reach": "",
+   "ext": true
+  },
+  {
+   "path": "franka_rt_controllers/rt_velocity_blender_controller.xml",
+   "lines": 25,
+   "role": "C++ controller (external, executed)",
+   "ch": "10",
+   "note": "",
+   "reach": "",
+   "ext": true
+  },
+  {
+   "path": "franka_simulation/launch/gz_fr3_plant.launch.py",
+   "lines": 180,
+   "role": "launch file (external, executed)",
+   "ch": "12",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "read"
+  },
+  {
+   "path": "franka_msgs/msg/MultiLinkDistance.msg",
+   "lines": 11,
+   "role": "message definition (external)",
+   "ch": "02",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  },
+  {
+   "path": "franka_msgs/msg/LinkDistance.msg",
+   "lines": 186,
+   "role": "message definition (external)",
+   "ch": "02",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  },
+  {
+   "path": "franka_msgs/msg/MultiDistance.msg",
+   "lines": 19,
+   "role": "message definition (external)",
+   "ch": "02",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  },
+  {
+   "path": "franka_msgs/msg/HumanRobotDistance.msg",
+   "lines": 30,
+   "role": "message definition (external)",
+   "ch": "02",
+   "note": "",
+   "reach": "",
+   "ext": true,
+   "status": "partial"
+  }
+ ],
+ "entry": {
+  "ee_pentagon_velocity_commander": "franka_experiments/franka_experiments/nodes/ee_pentagon_velocity_commander.py",
+  "ee_circle_velocity_commander": "franka_experiments/franka_experiments/nodes/ee_circle_velocity_commander.py",
+  "ee_random_waypoints_velocity_commander": "franka_experiments/franka_experiments/nodes/ee_random_waypoints_velocity_commander.py",
+  "cbf_velocity_filter": "franka_experiments/franka_experiments/nodes/cbf_velocity_filter.py",
+  "pentagon_qddot_commander": "franka_experiments/franka_experiments/nodes/pentagon_qddot_commander.py",
+  "rl_policy_commander": "franka_experiments/franka_experiments/nodes/rl_policy_commander.py",
+  "qddot_to_torque": "franka_experiments/franka_experiments/nodes/qddot_to_torque.py",
+  "cbf_safety_filter": "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+  "iso_safety_monitor": "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py",
+  "iso_evidence_logger": "franka_experiments/franka_experiments/nodes/iso_evidence_logger.py",
+  "pentagon_torque_commander": "franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py",
+  "cbf_oscbf_filter": "franka_experiments/franka_experiments/nodes/cbf_OSCBF_filter.py",
+  "real_time_distance": "franka_experiments/franka_experiments/nodes/real_time_distance.py",
+  "experiment_logger": "franka_experiments/franka_experiments/nodes/experiment_logger.py",
+  "capsule_overlay_node": "franka_experiments/franka_experiments/nodes/capsule_overlay_node.py",
+  "trajectory_visualization_node": "franka_experiments/franka_experiments/nodes/trajectory_visualization_node.py",
+  "trajectory_overlay_node": "franka_experiments/franka_experiments/nodes/trajectory_overlay_node.py",
+  "handeye_calibration_node": "franka_experiments/franka_experiments/nodes/handeye_calibration_node.py",
+  "handeye_eye_in_hand_node": "franka_experiments/franka_experiments/nodes/handeye_eye_in_hand_node.py",
+  "image_rectifier_node": "franka_experiments/franka_experiments/nodes/image_rectifier_node.py",
+  "tag_overlay_node": "franka_experiments/franka_experiments/nodes/tag_overlay_node.py",
+  "frame_grabber": "franka_experiments/franka_experiments/nodes/frame_grabber.py"
+ },
+ "sim_exec": {
+  "check_self_occlusion": "franka_simulation_experiments/scripts/check_self_occlusion.py",
+  "emulated_perception": "franka_simulation_experiments/scripts/emulated_perception.py",
+  "episode_supervisor": "franka_simulation_experiments/scripts/episode_supervisor.py",
+  "ground_truth_node": "franka_simulation_experiments/scripts/ground_truth_node.py",
+  "gz_trajectory_markers": "franka_simulation_experiments/scripts/gz_trajectory_markers.py",
+  "pin_process": "franka_simulation_experiments/scripts/pin_process.py",
+  "plot_control_regression": "franka_simulation_experiments/scripts/plot_control_regression.py",
+  "reflex_monitor": "franka_simulation_experiments/scripts/reflex_monitor.py",
+  "run_gz_scenarios": "franka_simulation_experiments/scripts/run_gz_scenarios.py",
+  "scenario_commander": "franka_simulation_experiments/scripts/scenario_commander.py"
+ },
+ "launched_execs": [
+  "['bash', '-c', f'until ros2 control list_controllers --cont\u2026",
+  "['bash', PathJoinSubstitution([FindPackageShare('franka_exp\u2026",
+  "['python3', PathJoinSubstitution([FindPackageShare('franka_\u2026",
+  "['ros2', 'bag', 'record', '--output', bag_dir] + ROSBAG_TOP\u2026",
+  "['ros2', 'bag', 'record', '--use-sim-time', '-o', os.path.j\u2026",
+  "['ros2', 'bag', 'record', '--use-sim-time', '-o', out, ptop\u2026",
+  "['ros2', 'bag', 'record', '-o', out, '--compression-mode', \u2026",
+  "['ros2', 'topic', 'pub', js_topic, 'sensor_msgs/msg/JointSt\u2026",
+  "[os.path.join(get_package_prefix('franka_simulation_experim\u2026",
+  "apriltag_node",
+  "cbf_safety_filter",
+  "cbf_velocity_filter",
+  "cmd",
+  "ee_pentagon_velocity_commander",
+  "emulated_perception",
+  "episode_supervisor",
+  "experiment_logger",
+  "ground_truth_node",
+  "gz_trajectory_markers",
+  "handeye_calibration_node",
+  "handeye_eye_in_hand_node",
+  "image_publisher",
+  "image_rectifier_node",
+  "iso_evidence_logger",
+  "iso_safety_monitor",
+  "pentagon_qddot_commander",
+  "play_cmd",
+  "qddot_to_torque",
+  "real_time_distance",
+  "reflex_monitor",
+  "rl_policy_commander",
+  "rqt_image_view",
+  "rviz2",
+  "scenario_commander",
+  "spawner",
+  "static_transform_publisher",
+  "tag_overlay_node",
+  "trajectory_overlay_node",
+  "trajectory_visualization_node"
+ ],
+ "test_launched_execs": [
+  "ee_pentagon_velocity_commander",
+  "pentagon_torque_commander"
+ ],
+ "candidates_unused": [
+  "franka_experiments/franka_experiments/nodes/__init__.py",
+  "franka_experiments/franka_experiments/nodes/distance_visualization_node.py",
+  "franka_experiments/franka_experiments/utils/avoidance.py",
+  "franka_experiments/franka_experiments/utils/cbf_constraints.py",
+  "franka_experiments/franka_experiments/utils/cbf_qp.py",
+  "franka_experiments/franka_experiments/utils/node_utils.py",
+  "franka_experiments/franka_experiments/utils/rtd_debug.py",
+  "franka_experiments/franka_experiments/utils/run_metadata.py",
+  "franka_experiments/franka_experiments/utils/static_scene.py",
+  "franka_experiments/franka_experiments/utils/surface_velocity.py",
+  "franka_simulation_experiments/scripts/simexp/control_regression.py",
+  "franka_simulation_experiments/scripts/simexp/graph_contract.py",
+  "franka_simulation_experiments/scripts/simexp/provenance.py"
+ ],
+ "graph": {
+  "franka_experiments/franka_experiments/nodes/capsule_overlay_node.py": [
+   "franka_experiments/franka_experiments/utils/camera_yaml.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/simulation_imports.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/cbf_OSCBF_filter.py": [
+   "franka_experiments/franka_experiments/utils/cbf_kinematics.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py": [
+   "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/cbf_zones.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/go_around.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/livelock.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "franka_experiments/franka_experiments/utils/state_governor.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/cbf_velocity_filter.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/ros_setup.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/distance_visualization_node.py": [
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py",
+   "franka_experiments/franka_experiments/utils/visualization.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/ee_circle_velocity_commander.py": [
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/ee_pentagon_velocity_commander.py": [
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/ros.py",
+   "franka_experiments/franka_experiments/utils/trajectory.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/ee_random_waypoints_velocity_commander.py": [
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/ros.py",
+   "franka_experiments/franka_experiments/utils/trajectory.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/experiment_logger.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/params.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/frame_grabber.py": [
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/handeye_calibration_node.py": [
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/ros.py",
+   "franka_experiments/franka_experiments/utils/trajectory.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/handeye_eye_in_hand_node.py": [
+   "franka_experiments/franka_experiments/utils/__init__.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/handeye_solver.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/iso_evidence_logger.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/iso_ssm.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/params.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/iso_ssm.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/pentagon_qddot_commander.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/singularity_recovery.py",
+   "franka_experiments/franka_experiments/utils/timing_law.py",
+   "franka_experiments/franka_experiments/utils/trajectory.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py": [
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/ros.py",
+   "franka_experiments/franka_experiments/utils/trajectory.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/qddot_to_torque.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/params.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/real_time_distance.py": [
+   "franka_experiments/franka_experiments/utils/ballistic_prediction.py",
+   "franka_experiments/franka_experiments/utils/calibration_check.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "franka_experiments/franka_experiments/utils/obstacle_sim.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/params.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "franka_experiments/franka_experiments/utils/self_detection.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py",
+   "franka_experiments/franka_experiments/utils/visualization.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/rl_policy_commander.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/rl_policy.py",
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/trajectory_overlay_node.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/params.py",
+   "franka_experiments/franka_experiments/utils/trajectory_overlay.py",
+   "franka_experiments/franka_experiments/utils/trajectory_trace.py"
+  ],
+  "franka_experiments/franka_experiments/nodes/trajectory_visualization_node.py": [
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/params.py",
+   "franka_experiments/franka_experiments/utils/trajectory_trace.py"
+  ],
+  "franka_experiments/franka_experiments/utils/avoidance_math.py": [
+   "franka_experiments/franka_experiments/utils/math_utils.py"
+  ],
+  "franka_experiments/franka_experiments/utils/ballistic_prediction.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py"
+  ],
+  "franka_experiments/franka_experiments/utils/camera_yaml.py": [
+   "franka_experiments/franka_experiments/utils/config.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_constraints.py": [
+   "franka_experiments/franka_experiments/utils/cbf_kinematics.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_kinematics.py": [
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_state_rows.py": [
+   "franka_experiments/franka_experiments/utils/cbf_evasion.py",
+   "franka_experiments/franka_experiments/utils/cbf_singularity.py",
+   "franka_experiments/franka_experiments/utils/cbf_zones.py",
+   "franka_experiments/franka_experiments/utils/evasion_direction.py",
+   "franka_experiments/franka_experiments/utils/iso_ssm.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "franka_experiments/franka_experiments/utils/self_collision.py",
+   "franka_experiments/franka_experiments/utils/self_shadow.py"
+  ],
+  "franka_experiments/franka_experiments/utils/cbf_utils.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py"
+  ],
+  "franka_experiments/franka_experiments/utils/config.py": [
+   "franka_experiments/franka_experiments/utils/params.py"
+  ],
+  "franka_experiments/franka_experiments/utils/distance_engine.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_clusters.py",
+   "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "franka_experiments/franka_experiments/utils/self_shadow.py"
+  ],
+  "franka_experiments/franka_experiments/utils/distance_utils.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/franka_experiments/utils/evasion_direction.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/franka_experiments/utils/kinematics.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/params.py"
+  ],
+  "franka_experiments/franka_experiments/utils/launch_support.py": [
+   "franka_experiments/franka_experiments/utils/config.py"
+  ],
+  "franka_experiments/franka_experiments/utils/logging_utils.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/cbf_zones.py"
+  ],
+  "franka_experiments/franka_experiments/utils/node_runtime.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/constants.py"
+  ],
+  "franka_experiments/franka_experiments/utils/node_utils.py": [
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_clusters.py",
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/franka_experiments/utils/perception_msgs.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py"
+  ],
+  "franka_experiments/franka_experiments/utils/rl_policy.py": [
+   "franka_experiments/franka_experiments/utils/constants.py"
+  ],
+  "franka_experiments/franka_experiments/utils/ros.py": [
+   "franka_experiments/franka_experiments/utils/__init__.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/launch_support.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/math_utils.py",
+   "franka_experiments/franka_experiments/utils/node_runtime.py",
+   "franka_experiments/franka_experiments/utils/trajectory.py"
+  ],
+  "franka_experiments/franka_experiments/utils/ros_setup.py": [
+   "franka_experiments/franka_experiments/utils/avoidance_math.py"
+  ],
+  "franka_experiments/franka_experiments/utils/self_shadow.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+  ],
+  "franka_experiments/franka_experiments/utils/state_governor.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_zones.py"
+  ],
+  "franka_experiments/franka_experiments/utils/tf_manager.py": [
+   "franka_experiments/franka_experiments/utils/distance_utils.py"
+  ],
+  "franka_experiments/franka_experiments/utils/trajectory.py": [
+   "franka_experiments/franka_experiments/utils/math_utils.py"
+  ],
+  "franka_experiments/launch/bag_replay.launch.py": [
+   "franka_experiments/franka_experiments/utils/config.py"
+  ],
+  "franka_experiments/launch/minimal.launch.py": [
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/launch/thales.launch.py": [
+   "franka_experiments/franka_experiments/nodes/experiment_logger.py",
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/launch/torque_control_stack.launch.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/launch_support.py"
+  ],
+  "franka_experiments/launch/velocity_cbf_control_stack.launch.py": [
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/scripts/approach_probe.py": [
+   "franka_experiments/franka_experiments/nodes/real_time_distance.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
+   "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py"
+  ],
+  "franka_experiments/scripts/ball_closed_loop.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/__init__.py",
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/scripts/ball_throw_eval.py": [
+   "franka_experiments/franka_experiments/utils/distance_utils.py"
+  ],
+  "franka_experiments/scripts/cbf_scenarios.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/livelock.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "franka_experiments/franka_experiments/utils/obstacle_sim.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py"
+  ],
+  "franka_experiments/scripts/check_control_derivatives.py": [
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/scripts/compare_range_noise.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py"
+  ],
+  "franka_experiments/scripts/compare_vobs.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "franka_experiments/franka_experiments/utils/obstacle_sim.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/self_detection.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py"
+  ],
+  "franka_experiments/scripts/gen_zero_gain_controllers_yaml.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/launch_support.py"
+  ],
+  "franka_experiments/scripts/iso_constants_measure.py": [
+   "franka_experiments/franka_experiments/utils/calibration_check.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py"
+  ],
+  "franka_experiments/scripts/iso_pfl_speed.py": [
+   "franka_experiments/franka_experiments/utils/iso_ssm.py"
+  ],
+  "franka_experiments/scripts/latency_budget.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py",
+   "franka_experiments/franka_experiments/utils/obstacle_sim.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_experiments/franka_experiments/utils/tf_manager.py"
+  ],
+  "franka_experiments/scripts/smoothness_report.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py"
+  ],
+  "franka_experiments/scripts/throw_clearance.py": [
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/test/_cbf_builder_harness.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/launch/test_torque_fake.launch.py": [
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/test/launch/test_velocity_fake.launch.py": [
+   "franka_experiments/franka_experiments/utils/ros.py"
+  ],
+  "franka_experiments/test/smoke_cbf_construct.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/test/smoke_cbf_safety_filter.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py"
+  ],
+  "franka_experiments/test/smoke_rl_policy_commander.py": [
+   "franka_experiments/franka_experiments/nodes/rl_policy_commander.py",
+   "franka_experiments/franka_experiments/utils/cbf_utils.py",
+   "franka_experiments/franka_experiments/utils/constants.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/rl_policy.py"
+  ],
+  "franka_experiments/test/test_accel_box_decoupling.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py"
+  ],
+  "franka_experiments/test/test_avoidance.py": [
+   "franka_experiments/franka_experiments/utils/avoidance.py"
+  ],
+  "franka_experiments/test/test_ballistic_prediction.py": [
+   "franka_experiments/franka_experiments/utils/ballistic_prediction.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py"
+  ],
+  "franka_experiments/test/test_brake_slew_limited.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_calibration_check.py": [
+   "franka_experiments/franka_experiments/utils/calibration_check.py"
+  ],
+  "franka_experiments/test/test_cbf_curvature_term.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_diag_line.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py",
+   "franka_experiments/franka_experiments/utils/state_governor.py"
+  ],
+  "franka_experiments/test/test_cbf_evidence_trust.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_hard_constraints.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/self_collision.py"
+  ],
+  "franka_experiments/test/test_cbf_latency_compensation.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/test/test_cbf_lateral_evasion.py": [
+   "franka_experiments/franka_experiments/utils/cbf_evasion.py"
+  ],
+  "franka_experiments/test/test_cbf_link_speed.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_link_speed_relative.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_multi_cp_qp.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+  ],
+  "franka_experiments/test/test_cbf_normal_rotation_guard.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_obstacle_identity.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_outrun_evasion.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/evasion_direction.py"
+  ],
+  "franka_experiments/test/test_cbf_phase1_reactivity.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/test/test_cbf_qp_fallback.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_retreat_authority.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_retreat_cap.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_risk_weighted_slack.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_row_l1_slack.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_row_padding.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+  ],
+  "franka_experiments/test/test_cbf_selfcollision_anticipation.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/self_collision.py"
+  ],
+  "franka_experiments/test/test_cbf_sensor_range_uncertainty.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_singularity.py": [
+   "franka_experiments/franka_experiments/utils/cbf_singularity.py"
+  ],
+  "franka_experiments/test/test_cbf_state_rows.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/self_collision.py"
+  ],
+  "franka_experiments/test/test_cbf_static_scene.py": [
+   "franka_experiments/franka_experiments/utils/static_scene.py"
+  ],
+  "franka_experiments/test/test_cbf_surface_velocity.py": [
+   "franka_experiments/franka_experiments/utils/static_scene.py",
+   "franka_experiments/franka_experiments/utils/surface_velocity.py"
+  ],
+  "franka_experiments/test/test_cbf_tangential_bias.py": [
+   "franka_experiments/franka_experiments/utils/__init__.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_uncertainty_margin.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_velocity_feedforward.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_velocity_standoff.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_cbf_zone_ladder.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/cbf_zones.py"
+  ],
+  "franka_experiments/test/test_compare_range_noise.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_control_point_derivatives.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_experiments/test/test_cp_label_agreement.py": [
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_directional_fade.py": [
+   "franka_experiments/franka_experiments/utils/state_governor.py"
+  ],
+  "franka_experiments/test/test_distance_surface_semantics.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_evasion_direction.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/evasion_direction.py"
+  ],
+  "franka_experiments/test/test_experiment_log_columns.py": [
+   "franka_experiments/franka_experiments/nodes/experiment_logger.py"
+  ],
+  "franka_experiments/test/test_experiment_logger_truth_off_identical.py": [
+   "franka_experiments/franka_experiments/nodes/experiment_logger.py"
+  ],
+  "franka_experiments/test/test_fr3_velocity_envelope.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/config.py"
+  ],
+  "franka_experiments/test/test_go_around.py": [
+   "franka_experiments/franka_experiments/utils/go_around.py"
+  ],
+  "franka_experiments/test/test_handeye_solver.py": [
+   "franka_experiments/franka_experiments/utils/handeye_solver.py"
+  ],
+  "franka_experiments/test/test_iso_dsafe_floor.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py"
+  ],
+  "franka_experiments/test/test_iso_flags_off_identical.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+  ],
+  "franka_experiments/test/test_iso_monitor.py": [
+   "franka_experiments/franka_experiments/nodes/iso_safety_monitor.py",
+   "franka_experiments/franka_experiments/utils/iso_ssm.py"
+  ],
+  "franka_experiments/test/test_iso_perception_failclosed.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_iso_speed_rows.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/iso_ssm.py"
+  ],
+  "franka_experiments/test/test_iso_ssm.py": [
+   "franka_experiments/franka_experiments/utils/iso_ssm.py"
+  ],
+  "franka_experiments/test/test_iso_status_contract.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/nodes/experiment_logger.py",
+   "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/logging_utils.py"
+  ],
+  "franka_experiments/test/test_iso_torque_limits.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/nodes/qddot_to_torque.py"
+  ],
+  "franka_experiments/test/test_kinematics_fix_regression.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/distance_utils.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_livelock.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/livelock.py"
+  ],
+  "franka_experiments/test/test_mask_depth_gate.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/mask_builder.py"
+  ],
+  "franka_experiments/test/test_multi_obstacle_rows.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_obstacle_clusters.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+  ],
+  "franka_experiments/test/test_obstacle_imm.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/test/test_obstacle_kalman.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/test/test_obstacle_scene_guard.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_clusters.py"
+  ],
+  "franka_experiments/test/test_obstacle_track_pipeline.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_obstacle_tracker.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/test/test_rate_scaling.py": [
+   "franka_experiments/franka_experiments/nodes/real_time_distance.py",
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
+   "franka_experiments/franka_experiments/utils/rate_scaling.py",
+   "franka_experiments/franka_experiments/utils/self_detection.py"
+  ],
+  "franka_experiments/test/test_retreat_excess_speed.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+  ],
+  "franka_experiments/test/test_rl_policy.py": [
+   "franka_experiments/franka_experiments/utils/rl_policy.py"
+  ],
+  "franka_experiments/test/test_run_metadata.py": [
+   "franka_experiments/franka_experiments/utils/run_metadata.py"
+  ],
+  "franka_experiments/test/test_safety_failure_policy.py": [
+   "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
+   "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_self_detection.py": [
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_experiments/franka_experiments/utils/self_detection.py"
+  ],
+  "franka_experiments/test/test_self_reject_and_obstacle_floor.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py"
+  ],
+  "franka_experiments/test/test_self_shadow_derivatives.py": [
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/self_shadow.py"
+  ],
+  "franka_experiments/test/test_self_shadow_geometry.py": [
+   "franka_experiments/franka_experiments/utils/self_shadow.py"
+  ],
+  "franka_experiments/test/test_sensor_range_field.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py"
+  ],
+  "franka_experiments/test/test_singularity_recovery.py": [
+   "franka_experiments/franka_experiments/utils/singularity_recovery.py"
+  ],
+  "franka_experiments/test/test_ssb_perception.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py",
+   "franka_experiments/franka_experiments/utils/self_shadow.py"
+  ],
+  "franka_experiments/test/test_ssb_qp_rows.py": [
+   "franka_experiments/franka_experiments/utils/cbf_diagnostics.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py"
+  ],
+  "franka_experiments/test/test_state_governor.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/state_governor.py"
+  ],
+  "franka_experiments/test/test_track_eviction.py": [
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/test/test_track_lifecycle.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/obstacle_tracker.py"
+  ],
+  "franka_experiments/test/test_trajectory_overlay.py": [
+   "franka_experiments/franka_experiments/utils/trajectory_overlay.py"
+  ],
+  "franka_experiments/test/test_trajectory_trace.py": [
+   "franka_experiments/franka_experiments/utils/trajectory_trace.py"
+  ],
+  "franka_experiments/test/test_vobs_in_hdot.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py"
+  ],
+  "franka_simulation_experiments/launch/gz_cbf_stack.launch.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/conditions.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py",
+   "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+  ],
+  "franka_simulation_experiments/launch/gz_circle_demo.launch.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/launch/gz_plant.launch.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/scripts/check_self_occlusion.py": [
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/analysis.py"
+  ],
+  "franka_simulation_experiments/scripts/emulated_perception.py": [
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/emulation.py",
+   "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+  ],
+  "franka_simulation_experiments/scripts/episode_supervisor.py": [
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/scripts/ground_truth_node.py": [
+   "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+  ],
+  "franka_simulation_experiments/scripts/gz_trajectory_markers.py": [
+   "franka_experiments/franka_experiments/utils/trajectory_trace.py"
+  ],
+  "franka_simulation_experiments/scripts/reflex_monitor.py": [
+   "franka_simulation_experiments/scripts/simexp/reflex_checks.py"
+  ],
+  "franka_simulation_experiments/scripts/run_gz_scenarios.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/batch.py",
+   "franka_simulation_experiments/scripts/simexp/report.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/scripts/scenario_commander.py": [
+   "franka_simulation_experiments/scripts/simexp/scenario_laws.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/attribution.py": [
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/estimator_metrics.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/batch.py": [
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/attribution.py",
+   "franka_simulation_experiments/scripts/simexp/closed_loop.py",
+   "franka_simulation_experiments/scripts/simexp/estimator_metrics.py",
+   "franka_simulation_experiments/scripts/simexp/runner.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/closed_loop.py": [
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/reflex_checks.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/control_regression.py": [
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/closed_loop.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/emulation.py": [
+   "franka_experiments/franka_experiments/utils/distance_engine.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/estimator_metrics.py": [
+   "franka_experiments/franka_experiments/utils/kinematics.py",
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/conditions.py",
+   "franka_simulation_experiments/scripts/simexp/emulation.py",
+   "franka_simulation_experiments/scripts/simexp/offline.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/offline.py": [
+   "franka_simulation_experiments/scripts/simexp/conditions.py",
+   "franka_simulation_experiments/scripts/simexp/emulation.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/provenance.py": [
+   "franka_experiments/franka_experiments/__init__.py",
+   "franka_experiments/franka_experiments/utils/cbf_diagnostics.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/reflex_checks.py": [
+   "franka_experiments/franka_experiments/utils/cbf_hard_limits.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_experiments/franka_experiments/utils/config.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/report.py": [
+   "franka_simulation_experiments/scripts/simexp/offline.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/runner.py": [
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/procs.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/scenario_catalog.py": [
+   "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+   "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/scenario_laws.py": [
+   "franka_experiments/franka_experiments/utils/kinematics.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/sim_config.py": [
+   "franka_experiments/franka_experiments/utils/config.py",
+   "franka_experiments/franka_experiments/utils/launch_support.py"
+  ],
+  "franka_simulation_experiments/scripts/simexp/truth_geometry.py": [
+   "franka_experiments/franka_experiments/utils/distance_utils.py"
+  ],
+  "franka_simulation_experiments/test/launch/launch_test_graph_contract.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/graph_contract.py",
+   "franka_simulation_experiments/scripts/simexp/procs.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/slow/test_phase1_plant.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/procs.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/slow/test_phase2_closed_loop.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/runner.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/slow/test_phase3_perception.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/runner.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/slow/test_phase4_obstacles.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+   "franka_simulation_experiments/scripts/simexp/runner.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/slow/test_phase5_batch.py": [
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/analysis.py",
+   "franka_simulation_experiments/scripts/simexp/batch.py",
+   "franka_simulation_experiments/scripts/simexp/report.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/test_analysis.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/analysis.py"
+  ],
+  "franka_simulation_experiments/test/test_batch.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/batch.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+  ],
+  "franka_simulation_experiments/test/test_closed_loop.py": [
+   "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
+   "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/closed_loop.py"
+  ],
+  "franka_simulation_experiments/test/test_conditions.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/conditions.py"
+  ],
+  "franka_simulation_experiments/test/test_control_regression.py": [
+   "franka_simulation_experiments/scripts/simexp/control_regression.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+  ],
+  "franka_simulation_experiments/test/test_emulation.py": [
+   "franka_experiments/franka_experiments/utils/perception_msgs.py",
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/emulation.py"
+  ],
+  "franka_simulation_experiments/test/test_estimator_metrics.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/estimator_metrics.py"
+  ],
+  "franka_simulation_experiments/test/test_gz_trajectory_markers.py": [
+   "franka_experiments/franka_experiments/utils/trajectory_trace.py",
+   "franka_simulation_experiments/scripts/gz_trajectory_markers.py"
+  ],
+  "franka_simulation_experiments/test/test_obstacle_law_wander.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py"
+  ],
+  "franka_simulation_experiments/test/test_offline_and_attribution.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/attribution.py",
+   "franka_simulation_experiments/scripts/simexp/conditions.py",
+   "franka_simulation_experiments/scripts/simexp/emulation.py",
+   "franka_simulation_experiments/scripts/simexp/offline.py"
+  ],
+  "franka_simulation_experiments/test/test_reflex_checks.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/reflex_checks.py"
+  ],
+  "franka_simulation_experiments/test/test_run_provenance.py": [
+   "franka_experiments/franka_experiments/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/provenance.py"
+  ],
+  "franka_simulation_experiments/test/test_scenario_catalog.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+   "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+  ],
+  "franka_simulation_experiments/test/test_scenario_laws.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_laws.py"
+  ],
+  "franka_simulation_experiments/test/test_sim_config.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/sim_config.py"
+  ],
+  "franka_simulation_experiments/test/test_ssb_scenarios.py": [
+   "franka_simulation_experiments/scripts/simexp/__init__.py",
+   "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
+   "franka_simulation_experiments/scripts/simexp/truth_geometry.py"
+  ]
+ }
+}
