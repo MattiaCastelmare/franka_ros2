@@ -6,13 +6,12 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-11, checkpoint C-025 (Stage 4 complete; stopped for review)
-- **Project status:** read-only documentation phase. Stages 0–4 are done. Stages 0–3 are committed and
-  pushed (HEAD `fd1b957`); the Stage 4 work is **uncommitted** (the user commits).
-- **Last completed stage:** Stage 4 (QP and actuation): `08_constraints_and_qp.md`,
-  `09_torque_realization.md`, `tools/stage4_verification/`. **Awaiting the user's review.**
-- **Next pending stage:** Stage 5 (Alternatives, ISO, tools): `10`, `11`, `13`. **Not approved.**
-- **Stage in progress:** none.
+- **Last updated:** 2026-11-11, checkpoint C-035 (Stage 5 complete; parallel-session reconciliation recorded; awaiting review)
+- **Project status:** read-only documentation phase. Stages 0–4 are done, committed and pushed (HEAD `a66a134`).
+  Stage 5 is done in the working tree, **not committed** (the user did not ask for a commit).
+- **Last completed stage:** Stage 5 (awaiting review).
+- **Next pending stage:** Stage 6 (Simulation): `12`. **Not approved.**
+- **Stage in progress:** none. Stage 5 (approved 2026-11-11, ONLY Stage 5) finished at C-035.
 - **Pinned branch:** `humble-mattia`
 - **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
   ROS 2 source the chapters describe; the history is in §8.
@@ -23,7 +22,8 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 - **Completed documentation files:**
   - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`,
     `04_math_foundations.md`, `05_perception_and_distance.md`, `06_nominal_motion.md`,
-    `07_cbf_obstacle_barrier.md`, `08_constraints_and_qp.md`, `09_torque_realization.md`;
+    `07_cbf_obstacle_barrier.md`, `08_constraints_and_qp.md`, `09_torque_realization.md`,
+    `10_alternative_controllers.md`, `11_iso_safety_layer.md`, `13_observability_and_tools.md`;
   - `ledger/*`;
   - the tools `stage0_extract.py`, `ledger_status.py` and `check_state.py` (baseline-aware since C-003);
   - `tools/stage2_verification/`: 9 read-only scripts reproducing every numerical result of ch. 04 and
@@ -33,6 +33,9 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - `tools/stage4_verification/`: 5 scripts + `_common4.py` (4 container scripts on the deployed
     osqp 0.6.7 and Pinocchio 4.0.0, 1 host), `run_all.sh`, a README, and
     `results/observed_2026-11-11.txt` (61 of 61 passed);
+  - `tools/stage5_verification/`: 5 scripts + `_common5.py` (4 container scripts calling production
+    methods unbound on stubs, with the deployed qpsolvers 4.3.3 / osqp 0.6.7; 1 host), `run_all.sh`,
+    a README, and `results/observed_2026-11-11.txt` (92 of 92 passed);
   - `tools/stage3_verification/`: 6 scripts + 2 helpers (4 host, 2 container driving the real
     `ConstraintBuilder`), `run_all.sh`, a README, `results/observed_2026-11-11.txt` (85 of 85 passed);
   - `CHECKPOINTS.md` and `RESUME_PROMPT.md`;
@@ -40,7 +43,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 - **Draft or stale:** `A_file_index.md` was generated in Stage 0 and does not reflect the Stage 1 chapter
   reassignments (§2). It gets regenerated in Stage 7.
 - **Incomplete work carried forward:**
-  - 61 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
+  - 107 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
     the algorithms belong to the stage that owns the chapter. Stage 3 partials are listed in §2.
   - Ch. 05 files still `pending` or `partial`, read at interface level only: the eye-in-hand node, the
     hand-eye launch files, `rtd_debug.py`, `node_utils.py`, the remaining calibration YAMLs, and most
@@ -54,9 +57,16 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - Ch. 08 files not read in Stage 4: `self_collision.py` (capsule parsing and segment distance,
     used through `SelfCollisionRowBuilder`), `singularity_recovery.py` (the commander's recovery, 06
     §4.4), `pin_rt_thread.sh`, and the ch. 08 tests (names only). Stage 7 coverage pass.
-- **Exact next action:** STOP. Wait for the user's review of Stage 4 and an explicit approval of
-  Stage 5. On approval: run `check_state.py` and the three `run_all.sh` (stages 2–4; expect exit
-  0), append a "Stage 5 started" checkpoint, then read `nodes/cbf_velocity_filter.py` (ch. 10).
+  - Stage 5 partials (§2): the 25 ch. 13 analysis scripts, the visualisation nodes and the ch. 13
+    tests were read at interface level; `iso_evidence_report.py`, `iso_constants_measure.py`,
+    `iso_pfl_speed.py`, `watchman_profile.md` and the ten `test_iso_*` in the parts ch. 11 cites;
+    `pentagon_torque_commander.py` (the orientation law and the interface).
+  - Stage 5 questions: Q-5-1 to Q-5-4 (§5).
+  - A parallel session wrote into Stage 5 files on 2026-11-11; it was reconciled at C-035 (its
+    findings are F-5-24…F-5-27, its ch. 11 draft is in `drafts/`). Before resuming, make sure only
+    one session writes to `docs/framework_study/`.
+- **Exact next action:** wait for the user's review of Stage 5 and, separately, an explicit approval
+  of Stage 6 (`12_simulation.md`). Do not start Stage 6 without it.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -69,7 +79,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 | 2 — Foundations & perception | `04`, `05` | ch. 04: 5 · 05: 62 | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 3 — Nominal motion & barrier | `06`, `07`; `tools/stage3_verification/` | ch. 06: 25 · 07: 30 (see §2 for what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 (re-approved in a new session after an interruption) |
 | 4 — QP & actuation | `08`, `09`; `tools/stage4_verification/` | ch. 08: 28 · 09: 6 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
-| 5 — Alternatives, ISO, tools | `10`, `11`, `13` | ch. 10: 9 · 11: 18 · 13: 43 | not started | | |
+| 5 — Alternatives, ISO, tools | `10`, `11`, `13`; `tools/stage5_verification/` | ch. 10: 9 · 11: 18 · 13: 43 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 6 — Simulation | `12` | ch. 12: 63 | not started | | |
 | 7 — Synthesis | `14`, `15`, `16`, `B`, `C`, final `00`/`A` | ch. 14: 22 · 16: 13 | not started | | |
 
@@ -81,10 +91,10 @@ shows a better home, and the counts here are then updated.
 
 | Status | Files |
 |---|---:|
-| pending | 239 |
-| partial | 61 |
+| pending | 178 |
+| partial | 107 |
 | read | 4 |
-| documented | 42 |
+| documented | 57 |
 
 `partial` was added in Stage 1. It means the parts the stage needed were read; for nodes, that is
 the constructor interfaces. Chapter reassignments made in Stage 1:
@@ -127,6 +137,27 @@ Stage 4 (2026-11-11):
   `_generate_cbf_base_yaml`, `minimal.launch.py` (controller selection), `gz_fr3_plant.launch.py`,
   `gz_robot_description` (docstring, ARMATURE), `sim_config.rt_controllers_yaml`,
   `franka_ign_ros2_control/src/ign_system.cpp::write` (interface-only package).
+
+Stage 5 (2026-11-11):
+- `documented`, chapter 10: `cbf_velocity_filter.py`, `cbf_OSCBF_filter.py`,
+  `rt_velocity_blender_controller.cpp`, `rt_velocity_blender.yaml`, `rt_velocity_blender_controller.xml`,
+  `test_cbf_velocity_filter.py`, `test_torque_stack_external_plant_off_identical.py`.
+- `documented`, chapter 11: `iso_ssm.py`, `iso_safety_monitor.py`, `iso_evidence_logger.py`,
+  `iso_preflight_check.py`.
+- `documented`, chapter 13: `cbf_diagnostics.py`, `run_metadata.py`, `simulation_imports.py`,
+  `nodes/__init__.py` (empty).
+- `partial`, chapter 10: `ros_setup.py`, `pentagon_torque_commander.py`.
+- `partial`, chapter 11: `iso_evidence_report.py`, `iso_constants_measure.py`, `iso_pfl_speed.py`,
+  `watchman_profile.md`, the ten `test_iso_*` (the assertions ch. 11 cites).
+- `partial`, chapter 13: `experiment_logger.py` (constructor, header, every callback, `sample` up to
+  the row build, the manifest; the plot functions not read), `logging_utils.py` (`format_cbf_diag`),
+  the five visualisation nodes and three utils modules, `trajectory_rviz.rviz`, the 25 scripts
+  (interface level: docstring, inputs, outputs, whether they move the arm), the ch. 13 tests and the
+  golden header (names and docstrings), `docs/make_ros_node_graph.py`.
+- Also read, outside the assignment: the torque-stack rosbag block and finger publisher, the
+  `bag_replay.launch.py` header, `frame_grabber`'s status test, `cbf_safety_filter._iso_configure`,
+  `_publish_status` and the ISO-stop branch of `_qp_tick` (ch. 11), the velocity stack launch and
+  `franka_rt_controllers/launch/rt_velocity_blender.launch.py`.
 
 ## 3. How later stages are tracked (procedure)
 
@@ -256,7 +287,48 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | F-4-12 | **No rows at all and no fault before the first distance message.** `_update_constraints` (L958–961) needs both `_js` and `_obs`. Until perception publishes once, `_qp_tick` takes the "no snapshot" branch: a box-only QP with the unchanged nominal, without joint-limit, self-collision or singularity rows, and fault = 0. Stale distances, by contrast, brake (L1153–1161). The joint-state-only families depend on perception being alive. | 08 §5.1 | Verified (code) |
 | F-4-13 | `qddot_to_torque`'s module docstring states "`rt_torque_controller` adds g(q) internally". It does not (F-4-7); on hardware the firmware compensates gravity, in Gazebo the plugin does. This is the node-side counterpart of F-1-3. | 09 §2 | Verified |
 
+### Stage 5 findings
+
+| ID | Finding | Where | Label |
+|---|---|---|---|
+| F-5-1 | **`bypass_cbf` defaults to `false` in `velocity_cbf_control_stack.launch.py`** (`DeclareLaunchArgument` L434–436), so the velocity QP is active by default. The launch docstring (L19: "Phase 1 (bypass_cbf:=true, default)") and **ch. 01 §4.2** state the opposite; ch. 01 is corrected with the old wording kept. | 10 §2.1, 01 §4.2 | Verified (`check_velocity_cbf.py` 4) |
+| F-5-2 | **The velocity filter fails open.** Stale or never-received distances → clip(q̇_nom) pass-through; QP failure → 0.5·clip(q̇_nom). No braking path. It reads q, q̇ from the 30 Hz `/NS_1/joint_states` with no age check, and keys activation hysteresis by `robot_link_name`, which is shared by several control points. | 10 §2 | Verified (`check_velocity_cbf.py` 4) |
+| F-5-3 | **The velocity filter's post-QP rate clamp can undo the barrier.** The published q̇ is q̇_prev + clip(q̇_QP − q̇_prev, ±q̈_max·dt), with q̈_max = min(decel limit, jerk·1 ms·0.8/2) = (3, 1.5, 2, 2.5, 3, 4, 4) rad/s². Approaching at 0.3 m/s, the QP output met the ZCBF row (residue 4e-4) but the published command violated it by 0.099 m/s in that tick. The ZCBF row is also a single-slack penalty, like F-4-1. | 10 §2.3 | Numerically reproduced with the production QP (`check_velocity_cbf.py` 1–2) |
+| F-5-4 | **The OSCBF obstacle row omits α₁ḣ.** `_build_obstacle_cbf` enforces ḧ ≥ −α₂ḣ − α₁α₂h; the HOCBF chain (and the same file's joint-position and workspace rows) requires ḧ ≥ −(α₁+α₂)ḣ − α₁α₂h. At α = 10, 10 the loop is s² + 10s + 100 (ζ = 0.5, 16.3 % impulse undershoot). In a 1-D binding approach at 1 m/s from h = 0.20 m, the coded law reaches h = −29.8 mm while the HOCBF law stops at 0. | 10 §3.3 | Numerically reproduced with the production builder (`check_oscbf.py` 2–3) |
+| F-5-5 | **The OSCBF obstacle path is inert or optimistic as shipped.** Its h = ‖p_r − p_h‖ − 0.15: the centre distance with a hard-coded d_safe, ignoring `LinkDistance.distance` (the surface gap). `enable_obstacle_cbf` defaults to false; the distance subscription is RELIABLE against a BEST_EFFORT publisher (F-1-6); stale distances skip the rows silently. An infeasible QP passes τ_nom unfiltered; a stale nominal gives τ = 0; the output `/NS_1/torque_safe` has no consumer. The node reads joint states from the 30 Hz topic. | 10 §3 | Verified + numerically checked (`check_oscbf.py` 4, 6) |
+| F-5-6 | **`pentagon_torque_commander` has an orientation-loop sign error.** e_rot = ½vee(R_dᵀR − RᵀR_d) ≈ +θ (desired → current, in R_d's frame) is fed back with +K_rot, so θ̈ = +K_p θ − K_d θ̇ is unstable (root 2.62 s⁻¹ at 20/5). It is the form `pentagon_qddot_commander` replaced (its comment: "frame/segno errati"). There is no a_d feedforward. The node is test-only (F-0-2). | 10 §3.1 | Verified + numerically illustrated (`check_torque_commander.py`) |
+| F-5-7 | **`RtVelocityExecutorController` has no command watchdog.** `timeout_threshold_s` and `timeout_ramp_s` are read but "reserved – not used in RT path" (header L88–89). The last q̇ is held indefinitely if the filter stops publishing, although `launch_defaults` sets 0.5 / 1.0 s. On hardware, libfranka's own communication checks are Unverified. | 10 §2.4 | Verified (`check_velocity_cbf.py` 5) |
+| F-5-8 | **The ISO S_h uses the measured approach speed, not the normative human speed.** The monitor (`_evaluate`), the QP SSM rows (`spd_pts` v_app) and the evidence logger feed `protective_separation` / `ssm_speed_cap` with v_app = max(n̂ᵀv_track, 0): 0 for an untracked person, and not gated on `frames_seen`. `iso_v_human` = 2.0 is used only for the standoff (F-5-14). At the shipped constants S_p shrinks by v_h(T_r + T_s): by 1.20 m at v_r = 0.5 m/s, and the cap at d = 1.5 m rises from 0.174 to 0.982 m/s. | 11 §3 | Verified + numerically evaluated (`check_iso.py` 3, 7) |
+| F-5-9 | **The ISO layer cannot be enabled in this cell as shipped.** C = 0.85 m (body detection, no detection-capability record) gives the floor C + Z_d + Z_r = 0.92 m, which exceeds the FR3 reach (0.855 m). `_iso_configure` raises for d_safe = 0.10 (fail closed); passing needs d_safe ≥ 0.92, i.e. a barrier larger than the workspace. This is the "STRUCTURAL / D1" verdict of `iso_evidence_report`. | 11 §4 | Verified + numerically reproduced (`check_iso.py` 4) |
+| F-5-10 | **ISO wiring gaps (subagent report, spot-checked).** (a) The launch preflight is given only `--config <share>/fr3_control.yaml`: it sees the YAML `iso_enabled: false` and exits 0, so a command-line `iso_enabled:=true` and the speed overrides are never preflight-checked; the filter's `_iso_configure` is the effective gate. (b) The evidence logger is not passed `iso_enabled` / `iso_mode` / `iso_ssm_speed_rows` / `iso_monitor_enabled`, so its manifest and reduced-mode checks use the YAML values. | 11 §5 | Verified (launch L536–556, L833–850; `check_iso.py` 6) |
+| F-5-11 | `iso_v_pfl` = 0.68 m/s is the hands-and-fingers value of `iso_pfl_speed.py`'s own table. Other regions give chest 0.328, thigh 0.349, abdomen 0.408, forearm 0.482, upper-arm 0.521 m/s, and the script itself says the minimum over reachable regions binds. | 11 §3.4 | Numerically reproduced (`check_iso.py` 2) |
+| F-5-12 | `iso_distance_hold_max_s` (0.10 s, the F-2-11 hold) is read by `real_time_distance` without any `iso_enabled` check, contrary to `launch_defaults`' "ALL FALSE … adds no behaviour". | 11 §6 | Verified |
+| F-5-13 | `fr3_control.yaml` comment (L91) says "d_safe stays at its tuned research value (0.15 m, above)"; the value above is 0.10 (L66). `test_iso_dsafe_floor` repeats 0.15. A second comment in the same block (L109–112, "IN SYNC WITH SIM … franka_sim/config.yaml carries 0.15 m and so does this file") is also contradicted by L66 (added in the resumed session). | 11 §4 | Verified |
+| F-5-14 | The ISO standoff sets time = T_r + v_h/a_s, using the HUMAN speed in the stopping-time slot, where the standard's T_s = v_r/a_s is the robot's. It is conservative only while v_r ≤ v_h (true with `link_speed_max` ≤ v_PFL < v_h). Max = min(v_h·t, 2 m). | 11 §3.3 | Derived (`check_iso.py` 4) |
+| F-5-15 | The OSCBF cost Hessian P_arm is positive definite but badly conditioned (eigenvalues 0.06 … 2.7·10⁵ at q_home), relevant to OSQP's ~1e-3 accuracy. | 10 §3.2 | Numerically evaluated (`check_oscbf.py` 5) |
+| F-5-16 | **Stale velocity-executor configuration and diagnostics.** (a) `franka_rt_controllers/config/rt_velocity_blender.yaml` (`qdot_max` 0.4, `max_accel` 4.0, timeouts 0.3/0.8) is loaded only by `franka_rt_controllers/launch/rt_velocity_blender.launch.py`; the velocity stack generates its own YAML from `launch_defaults.yaml` (1.5 / 1.5 / 0.5 / 1.0). (b) `launch_support.build_wrapper_log_actions` would print the timeouts as `[ACTIVE]`, although the controller ignores them (F-5-7); no launch file calls it. (c) The `ee_pentagon_velocity_commander` docstring names `rt_velocity_blender_controller` as its consumer; the consumer is `cbf_velocity_filter`. | 10 §5.1 | Verified (`check_velocity_cbf.py` 6) |
+| F-5-17 | **ISO stop-latch deadlock (dormant: needs `iso_enabled` and `iso_monitor_enabled`).** While the monitor's latch is set, `cbf_safety_filter._qp_tick` brakes and publishes `/cbf_status` with `fault_braking = 1.0` (L1071–1088). The monitor reads `data[2] ≥ 1` as a live safety-chain fault (`_tick`), so `_live = REASON_FAULT`; `_on_reset` refuses while `_live ≠ NONE`, and auto-resume (`iso_stop_requires_reset: false`) also needs `_live = NONE`. The latch can therefore never be cleared from inside the system. The same loop turns any transient filter fault (stale perception, frozen joint state) into a permanent stop once it lasts 9 ticks. That includes `_brake_authority_fault`, documented as "Diagnostic only — no stop": it also sets `fault = 1.0` (L1504), so with the monitor on it becomes a stop. `test_iso_monitor` tests the monitor alone (`test_a_chain_fault_also_blocks_the_reset` pins the refusal), so the loop between the two nodes is untested. | 11 §5.3 | Derived; reproduced with the production monitor methods, the filter side transcribed from verified source (`check_iso.py` 8); runtime Unverified |
+| F-5-18 | **Two meanings of "S_p" on `/cbf_status[5]`.** With a fresh monitor message the field is the monitor's S_p at the current closing speed of the most binding point. Otherwise it is the row builder's `diag_ssm_sp` = max over points of `protective_separation(cap, v_app)`, which equals the gap d itself wherever the cap is not saturated (identity to 2e-16). Example: d = 1.2 m, closing at 0.2 m/s gives monitor 0.960 m vs builder 1.200 m. Also, the SSM speed row bounds ‖ṗ‖ along the current travel direction, while the monitor trips on the closing component −n̂ᵀṗ (consistent, the row being stricter); the rows use the conditioned v_obs, the monitor and the evidence logger the raw `obstacle_velocity`. | 11 §3.5, 13 | Numerically reproduced (`check_iso.py` 9) |
+| F-5-19 | **The monitor's liveness model is one-sided.** (a) It trips STALE 9 ticks (30 ms) after start when any input is missing, and latches. (b) `_on_status` stores the fault flag with no timestamp: a filter that stops publishing is invisible to the monitor, and the last flag is kept forever. (c) Inferred boot race: the filter (started at `torque_dynamics_delay_s` 2 s) brakes with fault = 1 once no `/iso_safety` has arrived for `distance_timeout` 0.5 s, and the monitor starts at `torque_iso_monitor_delay_s` 3 s. Whether the monitor sees 9 fault ticks before the filter sees its first unlatched message, and whether perception is publishing by then, is timing-dependent; if either happens, F-5-17 locks the stop from boot. | 11 §5.3 | (a)(b) Verified + reproduced (`check_iso.py` 10); (c) Inferred, runtime Unverified |
+| F-5-20 | **The preflight's placeholder gate exists only in the preflight.** `iso_preflight_check` refuses the four shipped placeholder constants (T_r 0.10, a_s 1.0, Z_d 0.06, Z_r 0.01), but the launch runs it on the YAML only (F-5-10a) and never with `--wait`, and `_iso_configure` has no placeholder check. A command-line `iso_enabled:=true` therefore runs on placeholders as long as the d_safe floor and the PFL ceiling pass. | 11 §6 | Verified (source) |
+| F-5-21 | **`experiment_logger` records corrupted arm rows in about a quarter of the samples.** `torque_control_stack` starts, unconditionally, a 10 Hz `ros2 topic pub` of a finger-only `JointState` (`fr3_finger_joint1/2`, all zeros) on `/NS_1/joint_states` (L613–633). That topic is the logger's default `joint_state_topic`, and the launch passes the logger no parameters. For a finger message, `_vector_from_joint_state` fails the by-name mapping and falls back to **positional** copying: q₁ = q₂ = 0 and q₃…q₇ = NaN. The same happens to q̇ and τ_effort, and the Cartesian block (`tcp_*`, `tcp_speed`) becomes NaN. The row stays like that until the next 30 Hz arm message. Recorded: 26.3–26.7 % of rows in four Gazebo runs (`sim_runs/{leakfix_20261106,ra2,ra3,rb3}`) show exactly q₁ = q₂ = 0 with q₃ and `tcp_speed` NaN. The plots built from these columns, and any offline metric that does not drop the pattern, inherit it. | 13 §2.2 | Verified (code) + Runtime (recorded; the logger is unchanged since 7da68ac of 2026-11-05, before the 2026-11-06 run; the manifests' `git.sha` is null); reproduced on the production method (`check_observability.py` 1) |
+| F-5-22 | **The run bag misses the channels that explain a stop.** `torque_control_stack start_rosbag:=true` records 19 topics, but not `/rosout` (so no CBFDIAG line, fallback warning or ISO error), `/NS_1/iso_safety`, `/NS_1/torque_saturation` or `/NS_1/q_des_state`. A bag of an ISO-enabled run therefore holds only `/cbf_status[8]` for the monitor (and F-5-18 applies to `[5..7]`). The recorder writes zstd file compression, while the shared `ball_throw_eval.read_bag` (also used by `throw_*`, `pass_plot`, `smoothness_report`) opens only uncompressed `*.db3` through sqlite3 and asks for a manual `zstd -d`. | 13 §3 | Verified (`check_observability.py` 3) |
+| F-5-23 | **Misleading or missing diagnostics in the loggers.** (a) `experiment_logger.sample` holds every last value with no age check: NaN means "never received", but a channel that dies mid-run keeps printing its last value. (b) `qddot_*` is a finite difference of the 30 Hz `/NS_1/joint_states` velocities, EMA-smoothed (α 0.35), not the 1 kHz realised acceleration. (c) The legacy `min_h`, `cbf{k}_h` and `cbf_violation_count` are `MultiDistance.distance − d_safe` from `/human_robot/multi_distance`, without the filter's margins, beside `cbf_n_violated`, which counts the QP rows with h̄ < 0: two "violation" counts with different meanings. (d) `iso_evidence_logger.tau_max_abs` is max \|τ\| of `/NS_1/torque_cmd`, which excludes gravity (09), so it is not comparable with the effort limits. (e) The recorded runs' `run_manifest.json` carry `git.sha = null` (the container install is not a git checkout), and `utils/run_metadata.write_runtime_metadata`, documented as "enabled by the experiment runner", has no caller outside tests (see also F-5-27). (f) `frame_grabber only_when_cbf_active` tests `cbf_status[0]` (`n_rows`, every row in the QP, binding or not) instead of `[3]` (`n_violated`). (g) The logger's default `experiment_name` is `bag_02_dynamic_test`, and the torque stack passes no parameters, so every run directory is named after that one bag (all the recorded `sim_runs/*/logger/*_bag_02_dynamic_test`). | 13 §2–§4 | Verified (`check_observability.py` 2, 4) + Runtime (recorded) for (e) |
+| F-5-24 | *(Recorded as F-5-16 by a parallel session on 2026-11-11 and renumbered at the reconciliation, C-035; the ID F-5-16 stays with the earlier row of that number.)* **The experiment log does not hold the QP's own diagnostics.** `/cbf_status` has 41 fields (schema v3), but `experiment_logger` reads only data[0..10]. Fallback level, solve time, tick gap, the three perception/snapshot ages, the per-family slacks and the per-family raw/relaxed violations (data[11..40]) are never written to the CSV. The torque launch's bag (`start_rosbag`) records `/NS_1/cbf_status`, so they survive only in bags. It does not record `/NS_1/iso_safety`, `/NS_1/torque_saturation`, `/NS_1/q_des_state` or `/rosout`, so CBFDIAG lines are lost. The logger also samples at 100 Hz the 300 Hz status (single-tick events can be missed) and holds stale values without an age check. | 13 §2.4, §3, §8, §9 | Verified (`check_observability.py` 5, 9) + subagent inventory (sampling, holding) |
+| F-5-25 | *(Recorded as F-5-17 by a parallel session on 2026-11-11 and renumbered at the reconciliation, C-035; the ID F-5-17 stays with the earlier row of that number.)* **Misleading logger columns.** (a) `min_h`, `cbf{k}_h` and `cbf_violation_count` are the logger's OWN d − d_safe, computed on the legacy per-segment `/human_robot/multi_distance` with its own d_safe, not the filter's h̄. (b) `qddot_nom_*` is the topic (the commander's published command), while the commander's own CSV uses `qddot_nom_*` for its ideal open-loop channel (F-3-7); the commander's publish parameter is even named `qddot_safe_topic`. (c) `qddot_delta_norm` compares the commander's command with q̈_safe, not with the filter's shaped nominal. (d) `qddot_i` is an EMA finite difference of the 30 Hz `/NS_1/joint_states` velocities. (e) `experiment_name` defaults to `bag_02_dynamic_test` and the torque launch passes no parameters, so every run carries that name. | 13 §2.2, §2.4, §9 | Verified (a, b, d, e: `check_observability.py` 6, 7, 11) + subagent (c) |
+| F-5-26 | *(Recorded as F-5-18 by a parallel session on 2026-11-11 and renumbered at the reconciliation, C-035; the ID F-5-18 stays with the earlier row of that number.)* Stale tool defaults: `watch_obstacle_tracks` listens to `/cbf/per_link_distances_tracked` (published by nothing); `throw_clearance` loads `<pkg>/rosbag/<BAG>_truth.npz` (no such directory); `pipeline_rate_monitor` expects `/NS_1/qddot_safe` and `/NS_1/cbf_status` at 100 Hz (`qp_rate_hz` 300) and distances at 30 Hz (camera 90); `iso_constants_measure uncertainty` defaults to `/cams/d455/...` (the shipped topics are `/camera/camera/...`). | 13 §7 | Verified (`check_observability.py` 10) |
+| F-5-27 | *(Recorded as F-5-19 by a parallel session on 2026-11-11 and renumbered at the reconciliation, C-035; the ID F-5-19 stays with the earlier row of that number.)* `utils/run_metadata.write_runtime_metadata` has no caller outside its test on this branch, and nothing sets `FRANKA_RUN_METADATA_DIR`. 297 archived node copies under `sim_runs/*/provenance` (data, out of scope) do call it; they probably come from other code versions (not on this branch's history, `git log -S`). | 13 §2.1 | Verified (`check_observability.py` 4, 8); origin of the archived copies Inferred |
+
 ## 5. Decisions and open questions
+
+**Open questions added in Stage 5:**
+
+| ID | Question | Who can close it |
+|---|---|---|
+| Q-5-1 | Extends Q-1-4. Pipelines B (velocity CBF) and C (OSCBF) carry the defects F-5-2, F-5-3, F-5-4, F-5-6 and F-5-7. Should they be fixed, kept as historical, or removed in the refactor? The answer decides whether ch. 10 is reference or archaeology. | **user** |
+| Q-5-2 | F-5-17: what is the intended ISO reset semantics? Should the filter publish `fault_braking` only for its own faults, should the monitor ignore a fault the ISO stop caused, or should the reset clear both? | **user** |
+| Q-5-3 | F-5-19: does the monitor trip STALE at boot (it starts at 3 s, the filter at 2 s; STALE after 9 ticks of a missing input)? Needs a Gazebo run with `iso_enabled` and `iso_monitor_enabled`, which first needs the F-5-9 gate satisfied. | runtime (user approval needed) |
+| Q-5-4 | F-5-21: were any reported results computed from the affected logger columns (`q_*`, `qdot_*` of joints 1–2, `tcp_speed`), e.g. through `analyze_isolation_ab.py`? If so, they need re-computing on rows with `q_3` finite. | **user** |
 
 **Open questions added in Stage 4:**
 

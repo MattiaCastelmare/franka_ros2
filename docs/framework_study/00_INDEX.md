@@ -10,7 +10,7 @@ places where they disagree with the code are collected in chapter 16.
 It is meant to be studied, not only looked up. Later, during a refactor, it also serves as a
 reference for what each change will affect.
 
-> **Status: Stages 0–4 complete (Stage 4 awaiting review); Stage 5 not yet approved.** The live status is in the resume card,
+> **Status: Stages 0–5 complete (Stage 5 awaiting review); Stage 6 not yet approved.** The live status is in the resume card,
 > [PROGRESS.md](PROGRESS.md) §0. Project rules and the resume procedure are in
 > [/CLAUDE.md](../../CLAUDE.md). The session history is in [CHECKPOINTS.md](CHECKPOINTS.md). To
 > resume in a new session, paste [RESUME_PROMPT.md](RESUME_PROMPT.md).
@@ -75,10 +75,10 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | 07 | [`07_cbf_obstacle_barrier.md`](07_cbf_obstacle_barrier.md) | HOCBF derivation, the implemented obstacle rows, velocity estimation, margins, evidence gates, zone ladder, F-2-10/F-2-11 traced through the barrier | 3 | **written** (Stage 3) |
 | 08 | [`08_constraints_and_qp.md`](08_constraints_and_qp.md) | The QP actually solved (objective, OSQP form), every constraint family (hard box vs soft rows), slack modes and their safety meaning, OSQP numerics, fallback ladder, command ordering | 4 | **written** (Stage 4) |
 | 09 | [`09_torque_realization.md`](09_torque_realization.md) | Inverse dynamics (`qddot_to_torque`), the C++ `ros2_control` controllers, multi-rate timing, Gazebo vs FR3 (gravity: Q-1-1; inertia) | 4 | **written** (Stage 4) |
-| 10 | `10_alternative_controllers.md` | Velocity CBF plus executor, Dynamic-OSCBF, RL path | 5 | not written |
-| 11 | `11_iso_safety_layer.md` | ISO speed-and-separation math, monitor, evidence logger | 5 | not written |
+| 10 | [`10_alternative_controllers.md`](10_alternative_controllers.md) | Velocity CBF plus executor, Dynamic-OSCBF, RL path; the barrier family across relative degrees | 5 | **written** (Stage 5) |
+| 11 | [`11_iso_safety_layer.md`](11_iso_safety_layer.md) | ISO-inspired speed-and-separation and PFL math, the configuration gate, monitor, preflight, evidence logger; monitoring vs enforcement (no compliance claim) | 5 | **written** (Stage 5) |
 | 12 | `12_simulation.md` | Gazebo plant, spawn, controller activation, sim nodes, experiment axes, batch runs, scoring | 6 | not written |
-| 13 | `13_observability_and_tools.md` | Logger, overlays, offline scripts, bag replay | 5 | not written |
+| 13 | [`13_observability_and_tools.md`](13_observability_and_tools.md) | Logger, `/cbf_status` schema, bags and replay, overlays, analysis-tool inventory, misleading diagnostics | 5 | **written** (Stage 5) |
 | 14 | `14_build_launch_test.md` | Build, launch recipes, test suites, validation | 7 | not written |
 | 15 | `15_code_status.md` | Current / experimental / legacy / unused, with the evidence for each | 7 | not written |
 | 16 | `16_issues_and_discrepancies.md` | Bugs, inconsistencies, math vs. code, undocumented assumptions, existing guide vs. code | 7 | not written |
@@ -109,6 +109,8 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | [tools/stage2_verification/](tools/stage2_verification/README.md) | Read-only scripts that reproduce every numerical result of chapters 04 and 05 (`run_all.sh`; host and container parts), with expected vs observed values and the list of what still needs runtime validation (added after Stage 2) |
 | [tools/stage3_verification/](tools/stage3_verification/README.md) | Read-only scripts reproducing the numerical results of chapters 06 and 07, two of which drive the real `ConstraintBuilder` in the container (`run_all.sh`; 85 of 85 checks on 2026-11-11) |
 | [tools/stage4_verification/](tools/stage4_verification/README.md) | QP assembly, slack semantics, box and brake, inverse dynamics and controller-source checks of chapters 08–09, built from the production QP builders and solved with the deployed OSQP 0.6.7 in the container (`run_all.sh`; 61 of 61 on 2026-11-11) |
+| [tools/stage5_verification/](tools/stage5_verification/README.md) | Velocity-CBF, OSCBF, torque-commander, ISO and observability checks of chapters 10, 11 and 13, calling production methods unbound on stubs, with the deployed qpsolvers/OSQP in the container (`run_all.sh`; 92 of 92 on 2026-11-11) |
+| [drafts/](drafts/11_iso_safety_layer.parallel_session.md) | A parallel session's draft of chapter 11, kept verbatim at the reconciliation (C-035); not a chapter |
 | [CHECKPOINTS.md](CHECKPOINTS.md) / [RESUME_PROMPT.md](RESUME_PROMPT.md) | Append-only session log, and the prompt for resuming in a new session |
 
 ## 6. Scope

@@ -223,8 +223,11 @@ ee_pentagon_velocity_commander ──/NS_1/tracking_qdot──▶ cbf_velocity_f
 ```
 
 - **Launch files:**
-  - `velocity_cbf_control_stack.launch.py`. Phase 1, `bypass_cbf:=true`, is the default and is a
-    pure pass-through. Phase 2 is `bypass_cbf:=false`.
+  - `velocity_cbf_control_stack.launch.py`. ~~Phase 1, `bypass_cbf:=true`, is the default and is a
+    pure pass-through. Phase 2 is `bypass_cbf:=false`.~~ **Corrected in Stage 5 (F-5-1):** the
+    launch argument is declared with `default_value='false'` (L434–436), so **Phase 2, the CBF QP,
+    is the default**. `bypass_cbf:=true` gives the pass-through. The launch docstring (L19) says the
+    opposite, and the superseded sentence above repeated it. See 10 §2.1.
   - `minimal.launch.py` and `thales.launch.py` start the **velocity executor controller and
     perception only**. They start neither a commander nor a filter, so those must be started by
     hand.

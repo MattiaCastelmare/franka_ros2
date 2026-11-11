@@ -641,3 +641,271 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    - every F-4 ID cited in a chapter exists in PROGRESS §4.
 5. **Exact next action:** STOP. Wait for the user's review of Stage 4 and an explicit approval of
    Stage 5 (`10_alternative_controllers.md`, `11_iso_safety_layer.md`, `13_observability_and_tools.md`).
+
+## C-026 — 2026-11-11 — Stage 5 — started
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` (Stage 4 committed by the user) / check_state exit 0
+- The user explicitly approved **Stage 5 ONLY**: `10_alternative_controllers.md`,
+  `11_iso_safety_layer.md`, `13_observability_and_tools.md`, `tools/stage5_verification/`.
+1. **Plan:**
+   - read myself:
+     - ch. 10: `cbf_velocity_filter.py`, `ros_setup.py`, `rt_velocity_blender_controller.cpp`
+       + YAML/XML, `ee_pentagon_velocity_commander` (already in 06 §8), `cbf_OSCBF_filter.py`,
+       `pentagon_torque_commander.py`;
+     - ch. 11: `iso_ssm.py`, `iso_safety_monitor.py` and the ISO hooks in `cbf_safety_filter`
+       (`_iso_configure`, the ISO rows);
+   - subagents (read-only; their output is labelled and spot-checked): the ch. 13 inventory, and
+     the ISO evidence logger / preflight / scripts / tests.
+   - RL: 06 §7 (audited) is reused; only the training-vs-deployment specifics are added.
+2. **Exact next action:** read `nodes/cbf_velocity_filter.py`.
+
+## C-027 — 2026-11-11 — Stage 5 — velocity pipeline (Pipeline B) read
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / check_state exit 0
+1. **Read (all Verified):** `cbf_velocity_filter.py` (all), `cbf_utils.select_gamma`,
+   `ros_setup.init_pinocchio_only` / `make_joint_state_callback`,
+   `rt_velocity_blender_controller.cpp` (all) + its header field comments,
+   `velocity_cbf_control_stack.launch.py` (filter node and `bypass_cbf` argument).
+2. **Facts:**
+   - ZCBF of relative degree 1, aᵀq̇ + s ≥ −γh, with a = n̂ᵀJ_p, n̂ = the PERCEPTION
+     direction (not pr−ph), h = d − d_safe, γ = select_gamma (2…12 · conf) and no v_obs. One
+     slack, ρ = rho_slack. Box: |q̇| ≤ q̇_max from the joint_limits table (no position limits).
+     qpsolvers `solve_qp` with `qp_solver` (osqp).
+   - Activation hysteresis by `robot_link_name` (d < d_safe + 0.10 on, d > d_safe + 0.15 off), shared
+     across a link's control points (order-dependent).
+   - Fallbacks: distances stale or never received → clip(q̇_nom) PASS-THROUGH; QP failure →
+     0.5·clip(q̇_nom).
+   - Post-QP: a per-joint rate clamp min(decel_col3, jerk·1 ms·0.8/2), which can undo the CBF row.
+     100 Hz timer; joint state from the 30 Hz `/NS_1/joint_states`, with no staleness check.
+   - Executor: linear interpolation between samples, rate limit `max_accel` (1.5), clamp
+     `qdot_max` (1.5). **`timeout_threshold_s` / `timeout_ramp_s` are unused**: a stale command
+     is held forever (header: "reserved – not used in RT path").
+   - **ch. 01 error:** `bypass_cbf` defaults to **false** (`DeclareLaunchArgument`, L434–436), so
+     the QP is active by default. The launch docstring and ch. 01 §4.2 (L226–227) said the opposite.
+3. **Exact next action:** read `nodes/cbf_OSCBF_filter.py`, then `nodes/pentagon_torque_commander.py`.
+
+## C-028 — 2026-11-11 — Stage 5 — OSCBF, torque commander, ISO core read
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / check_state exit 0
+1. **Read (Verified):** `cbf_OSCBF_filter.py` (all functions), `pentagon_torque_commander.py` (law,
+   L385–470), `iso_ssm.py` (all), `iso_safety_monitor.py` (`_tick`, `_evaluate`, `_on_reset`,
+   `__init__`), `cbf_safety_filter._iso_configure`, `torque_control_stack._speed_ceiling_overrides`,
+   the ISO block of `launch_defaults.yaml`.
+2. **Facts and suspected bugs (to verify numerically):**
+   - OSCBF: decision τ (7) + 1 slack; cost ½‖w_j M⁻¹Nᵀ(τ−τ_n)‖² + ½‖w_o J M⁻¹(τ−τ_n)‖²;
+     q̈ = M⁻¹(τ − Cq̇) (gravity assumed added downstream).
+   - **The OSCBF obstacle row omits α₁ḣ:** it enforces ḧ ≥ −α₂(ḣ + α₁h), where the HOCBF chain
+     needs ḧ ≥ −(α₁+α₂)ḣ − α₁α₂h. The joint-position and workspace rows are correct. α = 10, 10.
+   - The OSCBF obstacle h = ‖p_r − p_h‖ − 0.15 (centre distance, d_safe hard-coded);
+     `enable_obstacle_cbf` defaults to false; RELIABLE subscription vs BEST_EFFORT publisher (F-1-6);
+     joint state from the 30 Hz topic; stale distances → rows silently skipped; infeasible → τ_nom
+     passed; stale nominal → τ = 0; `/NS_1/torque_safe` has no consumer.
+   - **pentagon_torque_commander orientation sign:** e_rot = vee((R_dᵀR − RᵀR_d)/2) ≈ +θ (current
+     − desired), fed with +K_p ⇒ θ̈ = +K_p θ − K_d θ̇ (unstable). No a_d feedforward. Test-only
+     node.
+   - ISO: S_p, speed cap and v_PFL closed forms match the standard formulas.
+     - The monitor and the QP SSM rows use the MEASURED track approach speed v_app (0 when
+       untracked; ungated by frames_seen) for S_h, not `iso_v_human` (2.0).
+     - `iso_v_human` is used only for the standoff (t = T_r + v_h/a_s).
+     - `iso_enabled` fails closed unless `link_speed_max` ≤ v_PFL and the cap < link max.
+3. **Exact next action:** write `tools/stage5_verification/` (velocity CBF, OSCBF, torque
+   commander, ISO); then await the subagent reports (ch. 13 inventory; ISO evidence/preflight).
+
+## C-029 — 2026-11-11 — Stage 5 — ch. 10/11 scripts written; findings logged
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / check_state exit 0
+1. **Done:** `tools/stage5_verification/`:
+   - `_common5.py`;
+   - `check_velocity_cbf.py` 16/16, `check_oscbf.py` 16/16, `check_iso.py` 14/14 (container);
+   - `check_torque_commander.py` 5/5 (host).
+2. **Test errors fixed (production untouched):** a tolerance mismatch with qpsolvers' ~1e-3
+   default; a wrong rate-clamp scenario (q̇_prev = 0 helps; the realistic one is q̇_prev = q̇_n); a
+   missing `P.config_path` in the stub.
+3. **Findings:** F-5-1 … F-5-15 in PROGRESS §4. The ISO subagent's F1/F2/F3/F7 were spot-checked and
+   are now F-5-10/F-5-13/F-5-12.
+4. **Pending:** the ch. 13 subagent report; ch. 01 §4.2 correction (F-5-1); write 10, 11, 13;
+   README/run_all; ledger; 00_INDEX.
+5. **Exact next action:** apply the ch. 01 correction, then write `10_alternative_controllers.md`.
+
+## C-030 — 2026-11-11 — Stage 5 — resumed in a new session (another account)
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / check_state exit 1 (only problem: the
+  ch. 10 link to the not-yet-written `tools/stage5_verification/README.md`)
+- The user re-authorised **Stage 5 ONLY** in this session (resume and complete; STOP before Stage 6).
+1. **Recovered from the repository (nothing else was available):**
+   - C-026 … C-029; F-5-1 … F-5-15 in PROGRESS §4;
+   - the ch. 01 §4.2 correction (F-5-1), applied after C-029, with the old wording struck through;
+   - `10_alternative_controllers.md` drafted (§1–§7, 308 lines);
+   - `tools/stage5_verification/`: 4 scripts + `_common5.py`. Re-run now: velocity 16/16,
+     OSCBF 16/16, ISO 14/14 (container), torque commander 5/5 (host).
+2. **Lost:** the ch. 13 inventory subagent report was never persisted. Of the ISO
+   evidence/preflight subagent, only the spot-checked items F-5-10/12/13 survive. Both are redone by
+   reading the source in this session; no unpersisted claim is reused.
+3. **Exact next action:** spot-check and finish ch. 10 (equation numbering, practical example,
+   status classes, remaining ch. 10 files), then read the ISO files for ch. 11.
+
+## C-031 — 2026-11-11 — Stage 5 — chapter 10 complete
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / (link to README still pending)
+1. **Done:**
+   - ch. 10 spot-checked against the source (velocity filter hysteresis/QoS/limits, OSCBF row
+     constants L338 vs L526, RL model discovery incl. the container layout, executor YAML).
+   - Equations renumbered (10.1)–(10.12); (10.1) unifies the three relative degrees.
+   - Added §5.1 (status classes), §6 (worked example, numbers from the scripts) and
+     §7 (test coverage).
+   - `check_velocity_cbf.py` now 19/19 (new check 6 = F-5-16).
+2. **Ledger:** documented: `cbf_velocity_filter.py`, `cbf_OSCBF_filter.py`,
+   `rt_velocity_blender_controller.cpp`, `rt_velocity_blender.yaml`,
+   `rt_velocity_blender_controller.xml`, `test_cbf_velocity_filter.py`,
+   `test_torque_stack_external_plant_off_identical.py`. Partial: `ros_setup.py`
+   (`init_pinocchio_and_capsules` and `make_planning_scene_callback` are not read; they are
+   re-exported by `simulation_imports.py`), `pentagon_torque_commander.py` (only the law).
+3. **New finding:** F-5-16 (stale executor YAML, dormant `[ACTIVE]` log, commander docstring).
+4. **Exact next action:** ch. 11. Read `utils/iso_ssm.py` in full, then `iso_safety_monitor.py`,
+   `iso_evidence_logger.py`, `scripts/iso_preflight_check.py`, `iso_evidence_report.py`,
+   `iso_pfl_speed.py`, `iso_constants_measure.py`, the ISO rows of `cbf_safety_filter` and the ISO
+   tests (names and asserted constants).
+
+## C-032 — 2026-11-11 — Stage 5 — ISO sources read; ch. 11 scripts extended
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / (README link still pending)
+1. **Read in this session (Verified):**
+   - `iso_ssm.py` (all); `iso_safety_monitor.py` (all);
+   - `iso_evidence_logger.py` (constructor, `_tick`, `_evaluate`, columns, events);
+   - `iso_preflight_check.py` (all); `iso_evidence_report.py` (D1, separation, cross-check, the
+     check list); `iso_pfl_speed.py` (docstring); `iso_constants_measure.py` (`cmd_stop`,
+     `c_from_detection_capability`, sub-commands);
+   - filter ISO hooks: `_iso_configure`, the ISO-stop branch of `_qp_tick`, `_iso_stop_active`,
+     `_brake_authority_fault`, `_empty_frame_fault`, the `/cbf_status` ISO tail;
+   - `cbf_state_rows` SSM speed rows (L3478–3570) and `link_speed_row`;
+   - the torque-stack ISO wiring (monitor delay 3 s, preflight, evidence logger);
+   - the commander's `_iso_safety_cb`;
+   - ISO test names; `watchman_profile.md` and `SAFETY.md` headings (leads only).
+2. **`check_iso.py` now 22/22:**
+   - 8: stop-latch deadlock, reproduced with the production monitor methods;
+   - 9: the builder's S_p diagnostic equals the gap;
+   - 10: STALE latch at start, and no age on the cbf_status flag.
+3. **Findings:** F-5-17 (deadlock), F-5-18 (two S_p meanings), F-5-19 (liveness, boot race
+   Inferred), F-5-20 (placeholder gate preflight-only); F-5-13 extended.
+4. **Exact next action:** write `11_iso_safety_layer.md` (this checkpoint's facts plus F-5-8 …
+   F-5-14 and F-5-17 … F-5-20), then update the ledger for the ch. 11 files.
+
+## C-033 — 2026-11-11 — Stage 5 — chapter 11 written
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / (README link still pending)
+1. **Done:**
+   - `11_iso_safety_layer.md` §1–§10, equations (11.1)–(11.9), with a worked example pinned by
+     `check_iso.py` 11 (now 28/28) and an explicit non-claim of conformity;
+   - the remaining parts of `iso_evidence_logger` read (`_write_manifest`, input callbacks).
+2. **Ledger:**
+   - documented: `iso_ssm.py`, `iso_safety_monitor.py`, `iso_evidence_logger.py`,
+     `iso_preflight_check.py`;
+   - partial: `iso_evidence_report.py`, `iso_constants_measure.py`, `iso_pfl_speed.py`,
+     `watchman_profile.md`, the 10 ISO tests (names only).
+3. **Noted for ch. 13:** the evidence logger's `tau_max_abs` comes from `/NS_1/torque_cmd`, which
+   excludes gravity (09), so it is not the joint torque.
+4. **Exact next action:** ch. 13 inventory. Read `experiment_logger.py`, then `logging_utils.py`
+   and `cbf_diagnostics.py`, then the overlay and visualisation nodes, then the scripts (docstrings,
+   inputs, outputs).
+
+## C-034 — 2026-11-11 — Stage 5 — ch. 13 sources inventoried; observability checks written
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / (README link still pending)
+1. **Read (Verified):**
+   - `experiment_logger.py`: constructor, header, every callback, the start of `sample`,
+     `_write_manifest`, `_build_kinematics`, the plot list;
+   - `cbf_diagnostics.py`;
+   - `logging_utils.py`: structure, `format_cbf_diag` docstring and call site;
+   - `run_metadata.py`, `simulation_imports.py`;
+   - the headers and interfaces of `trajectory_overlay.py`, `trajectory_trace.py`,
+     `visualization.py`, `capsule_overlay_node`, `distance_visualization_node`, `tag_overlay_node`,
+     `trajectory_overlay_node`, `trajectory_visualization_node`;
+   - every ch. 13 script: summary, inputs (live/bag/CSV), outputs;
+   - `ball_throw_eval.read_bag`, `latency_budget` (header, publishers `/lb/*`), `bag_replay.launch.py`
+     (header), the torque-stack rosbag block;
+   - the names of the ch. 13 tests; `make_ros_node_graph.py` and `trajectory_rviz.rviz` (interface).
+2. **`check_observability.py` 11/11:**
+   - F-5-21 reproduced on `ExperimentLogger.joint_state_cb`; Runtime (recorded) pattern in 26 % of
+     the rows of four sim runs;
+   - no age check; legacy h; the bag topic list; zstd vs `.db3`; `tau_max_abs`; `run_metadata`.
+3. **Findings:** F-5-21 (finger rows corrupt the logger), F-5-22 (bag gaps), F-5-23 (misleading
+   logger diagnostics).
+4. **Exact next action:** write `13_observability_and_tools.md`; then README/`run_all.sh`/results
+   for `tools/stage5_verification/`, the ledger, 00_INDEX, and the final checks.
+
+## C-030 — 2026-11-11 — Stage 5 — chapter 10 written; ch. 13 inventory received
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / check_state (to run)
+1. **Done:**
+   - `10_alternative_controllers.md` (§1–7, equations 10.2–10.12);
+   - ch. 01 §4.2 corrected (F-5-1, old wording kept).
+2. **Ch. 13 subagent report received (UNVERIFIED until spot-checked).** Leads:
+   - the logger reads only `/cbf_status` data[0..10] of 41;
+   - the `cbf*`/`min_h` columns come from the legacy MultiDistance with the logger's own d_safe;
+   - `write_runtime_metadata` has no production caller;
+   - the TCS bag omits `/NS_1/iso_safety`, `/NS_1/torque_saturation` and `/rosout`;
+   - the logger's `experiment_name` default is `"bag_02_dynamic_test"`;
+   - `watch_obstacle_tracks` defaults to an unpublished topic;
+   - `throw_clearance` hard-codes a nonexistent `rosbag/` dir;
+   - `pipeline_rate_monitor` has stale nominal rates;
+   - the `iso_constants_measure uncertainty` topic default is `/cams/d455/...`;
+   - `distance_visualization_node` duplicates `real_time_distance`'s overlay.
+3. **Exact next action:** spot-check those leads in a host script
+   `tools/stage5_verification/check_observability.py`; then write `11_iso_safety_layer.md` and
+   `13_observability_and_tools.md`.
+
+## C-031 — 2026-11-11 — Stage 5 — observability facts verified
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / check_state (to run)
+1. **Done:** `check_observability.py` (host) 13/13. It turned the subagent's main leads into Verified
+   facts (two of my own slicing errors fixed; the `sim_runs` data directory is excluded from the
+   caller scan).
+2. **Findings:** F-5-16 … F-5-19 added to PROGRESS §4.
+3. **Exact next action:** write `11_iso_safety_layer.md`, then `13_observability_and_tools.md`,
+   then the stage5 README/run_all, ledger, 00_INDEX, final checks.
+
+## C-035 — 2026-11-11 — Stage 5 — complete; parallel-session reconciliation; stopped for review
+
+- Baseline / HEAD / check: `ba68077052e8` / `a66a134` / `check_state.py` consistent (exit 0)
+1. **Parallel session (record).** A second Claude session (another terminal) worked on Stage 5 at
+   the same time as this one. Its entries are the second C-030 and C-031 above, appended after
+   C-034. They are left as written (append-only log): their numbers duplicate this session's
+   C-030/C-031, and they are the parallel session's account, not a continuation of C-034.
+   At 16:23–16:25 the parallel session:
+   - replaced `tools/stage5_verification/check_observability.py` with its own seven host checks;
+   - added four rows numbered F-5-16…F-5-19 to PROGRESS §4 (IDs already in use, with other
+     meanings);
+   - set the §0 "Last updated" to its C-031;
+   - saved its own version of `11_iso_safety_layer.md` over this session's chapter.
+2. **Reconciliation (approved by the user in this session; the other session was stopped first).**
+   Nothing was deleted:
+   - `11_iso_safety_layer.md`: this session's chapter was restored from the session record, because
+     it is the version that F-5-17…F-5-20, `check_iso.py` 8–11, ch. 13 and the README cite. One
+     verified row was added from the parallel draft (the test gaps). The parallel draft is kept
+     verbatim in `drafts/11_iso_safety_layer.parallel_session.md`; only its relative links were
+     changed, plus a header note.
+   - `check_observability.py`: the two versions were merged. This session's checks are 1–4 and the
+     parallel session's are 5–11, renumbered only; 24/24 pass.
+   - PROGRESS §4: the four duplicate rows were renumbered **F-5-24…F-5-27**. Each row keeps its text
+     and a note of its original ID; the check numbers now follow the merged script, and the section
+     numbers follow the written ch. 13. The F-5-16…F-5-19 cited in the parallel C-031 and in the
+     preserved draft mean F-5-24…F-5-27.
+   - Ch. 13 integrates F-5-24…F-5-27: §2.1 (`run_metadata`), §2.4 (three columns), §4 (ages not
+     in the CSV), §7 (stale tool defaults), §9 rows 14–16, §12.
+3. **Stage 5 deliverables:**
+   - `10_alternative_controllers.md`, `11_iso_safety_layer.md`, `13_observability_and_tools.md`;
+   - `tools/stage5_verification/`: README, `run_all.sh`, `results/observed_2026-11-11.txt`;
+     **92/92 pass** (host 5; container 19 + 16 + 28 + 24);
+   - ledger: pending 178, partial 107, read 4, documented 57; 00_INDEX rows 10/11/13 written and a
+     stage5 artefact row; PROGRESS §0/§1/§2/§5 (Q-5-1…Q-5-4).
+4. **Final checks:**
+   - every script was re-run after the last edit;
+   - the equation references of the scripts and the README were checked against chapters 10/11/13
+     (the old numbering in `check_oscbf.py` and `check_iso.py` was corrected);
+   - cross-chapter `NN §x.y` references were checked against the headings;
+   - `check_state.py` reports the relative links consistent;
+   - `git diff --stat ba68077` on the five ROS packages is empty, and `git status` shows changes only
+     under `docs/framework_study/`.
+5. **Findings Stage 5:** F-5-1…F-5-27 (F-5-24…27 renumbered as above).
+6. **Exact next action:** wait for the user's review of Stage 5. Stage 6 (`12_simulation.md`) is
+   identified, **not started and not approved**.

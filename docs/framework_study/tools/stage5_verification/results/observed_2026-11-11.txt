@@ -1,0 +1,138 @@
+=== check_torque_commander (chapter 10 §3.1) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  1. e_rot = ½(R_err[2,1] − R_err[1,2], …) with R_err = R_dᵀR:
+[PASS] FACT  1. angular acceleration = +kp_rot·e_rot + kd_rot·(−J_ang q̇); position error = p_d − p_ee:
+[PASS] FACT  4. no a_d term: xddot6[:3] = kp·e + kd·ė only:
+[PASS] NUM   2. e_rot(code) at R = R_d·exp([θ]) ≈ +θ (desired→current, R_d frame): observed [-0.  ,  0.01, -0.  ] vs reported [0.  , 0.01, 0.  ] (|diff| 1.67e-07 <= 1.0e-06)
+[INFO] 3. unstable root of θ̈ = K_p θ − K_d θ̇: 2.623 s⁻¹ (×190 in 2 s)
+[PASS] FACT  3. 2 s from a 0.011 rad error: code sign → 1.023 rad (grows); fixed sign → 7.66e-05 rad (decays): illustrative: ideal tracking, no translation, no saturation
+--- check_torque_commander (chapter 10 §3.1): 5 passed, 0 failed ---
+
+/home/user/.local/lib/python3.10/site-packages/qpsolvers/conversions/ensure_sparse_matrices.py:24: UserWarning: Converted P to scipy.sparse.csc.csc_matrix
+For best performance, build P as a scipy.sparse.csc_matrix rather than as a numpy.ndarray
+  warnings.warn(
+/home/user/.local/lib/python3.10/site-packages/qpsolvers/conversions/ensure_sparse_matrices.py:24: UserWarning: Converted G to scipy.sparse.csc.csc_matrix
+For best performance, build G as a scipy.sparse.csc_matrix rather than as a numpy.ndarray
+  warnings.warn(
+=== check_velocity_cbf (chapter 10 §2) ===
+repository: /ros2_ws/src
+[PASS] NUM   1. (10.3) closed form q̇ = q̇_n + λa (independent tight solve): observed [ 0.      ,  0.113378,  0.      , -0.296042,  0.      , -0.113378,
+  0.      ] vs reported [ 0.      ,  0.113378,  0.      , -0.296042,  0.      , -0.113378,
+  0.      ] (|diff| 5.55e-17 <= 1.0e-08)
+[PASS] NUM   1. (10.3) residual violation b − aᵀq̇ = (b − aᵀq̇_n)/(1 + ρ‖a‖²) [m/s]: observed 0.000420177 vs reported 0.000420177 (|diff| 4.55e-17 <= 1.0e-09)  (γ = 8.977, h = 0.02 m: the shared slack makes the ZCBF row a penalty (cf. F-4-1))
+[PASS] NUM   1. production _solve_cbf_qp (qpsolvers → OSQP, its default tolerance) vs the exact optimum, max |Δq̇|: 1.107e-03 <= 5.0e-03  (OSQP at ~1e-3 accuracy through qpsolvers)
+[INFO] 2. qddot_max (min of decel limit and jerk·1ms·0.8/2) = [3.0, 1.5, 2.0, 2.5, 3.0, 4.0, 4.0] rad/s²; dt = 0.01 s
+[PASS] FACT  2. from q̇_prev = q̇_n (approaching at 0.3 m/s): QP output has aᵀq̇ − b = -0.0004 (penalty residue only), the rate-clamped published command has aᵀq̇ − b = -0.0988: post-QP processing violates the barrier this tick:
+[INFO] 2. closing speed along n̂: allowed −γh = -0.1795 m/s, QP output -0.1800 m/s, published -0.2783 m/s (‖a‖ = 0.535)
+[PASS] NUM   3. γ(d − d_safe = 0.0, conf = 1.0): observed 12 vs reported 12 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   3. γ(d − d_safe = 0.05, conf = 1.0): observed 6.0657 vs reported 6.0657 (|diff| 1.78e-15 <= 1.0e-12)
+[PASS] NUM   3. γ(d − d_safe = 0.1, conf = 1.0): observed 3.65299 vs reported 3.65299 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   3. γ(d − d_safe = 0.0, conf = 0.3): observed 6 vs reported 6 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] FACT  4. launch: DeclareLaunchArgument('bypass_cbf', default_value='false') — the CBF QP is ACTIVE by default:
+[PASS] FACT  4. launch docstring nevertheless says 'Phase 1  (bypass_cbf:=true, default)':
+[PASS] FACT  4. stale or never-received distances → target = clip(q̇_nom) (pass-through, no braking):
+[PASS] FACT  4. QP failure → 0.5·clip(q̇_nom):
+[PASS] FACT  4. the row normal is the PERCEPTION direction (ld.direction), not pr − ph:
+[PASS] FACT  4. joint state from topics.joint_states_topic (the 30 Hz /NS_1/joint_states); no age check:
+[PASS] FACT  5. executor update() never reads timeout_threshold_s_ / timeout_ramp_s_ (no watchdog):
+[PASS] FACT  5. header: "reserved – not used in RT path":
+[INFO] 5. launch_defaults nonetheless set timeout_threshold_s = 0.5, timeout_ramp_s = 1.0, qdot_max = 1.5, max_accel = 1.5
+[PASS] FACT  6. rt_velocity_blender.yaml sets qdot_max 0.4 / max_accel 4.0 and is loaded only by franka_rt_controllers/launch/rt_velocity_blender.launch.py: ['franka_rt_controllers/launch/rt_velocity_blender.launch.py']:
+[PASS] FACT  6. build_wrapper_log_actions (prints the timeouts as [ACTIVE]) is called by no launch file:
+[PASS] FACT  6. ee_pentagon_velocity_commander docstring names rt_velocity_blender_controller as the consumer (the consumer is cbf_velocity_filter via /NS_1/tracking_qdot):
+--- check_velocity_cbf (chapter 10 §2): 19 passed, 0 failed ---
+
+=== check_oscbf (chapter 10 §3) ===
+repository: /ros2_ws/src
+[PASS] NUM   1. lower joint rows imply q̈ ≥ −(α₁+α₂)q̇ − α₁α₂(q − q_min): observed [-57.088898, -50.181241, -57.619899, -43.293376, -51.717693, -48.023785,
+ -54.830419] vs reported [-57.088898, -50.181241, -57.619899, -43.293376, -51.717693, -48.023785,
+ -54.830419] (|diff| 7.11e-15 <= 1.0e-10)
+[PASS] NUM   2. obstacle row A = n̂ᵀJ_p M⁻¹: observed [-0.069341, -0.285319, -0.07054 , -0.120458,  0.202601,  0.186325,
+ -0.563634] vs reported [-0.069341, -0.285319, -0.07054 , -0.120458,  0.202601,  0.186325,
+ -0.563634] (|diff| 1.67e-16 <= 1.0e-10)
+[PASS] NUM   2. the row implies ḧ ≥ −α₂ḣ − α₁α₂h (as coded): observed -9.57175 vs reported -9.57175 (|diff| 1.78e-15 <= 1.0e-10)
+[PASS] FACT  2. F-5-4: the HOCBF chain needs ḧ ≥ -8.5701; the row demands -9.5718; the missing term α₁ḣ = -1.0017:
+[PASS] NUM   3. coded obstacle loop s² + α₂s + α₁α₂: ζ: observed 0.5 vs reported 0.5 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   3. impulse-response negative lobe exp(−ζπ/√(1−ζ²)): observed 0.163034 vs reported 0.163 (|diff| 3.35e-05 <= 5.0e-04)
+[PASS] FACT  3. 1-D approach at 1.0 m/s from h = 0.20 m (rows binding exactly): coded law min h = -29.8 mm, HOCBF law min h = +0.0 mm: illustrative: ḧ = the row bound whenever it is positive
+[PASS] FACT  4. the row is identical whatever LinkDistance.distance says (h from ‖p_r − p_h‖ − 0.15): centre distance 0.2557 m vs distance field 0.123/0.9
+[PASS] FACT  5. P_arm positive definite (eigenvalues 5.940e-02 … 2.655e+05):
+[PASS] NUM   5. unconstrained optimum −P⁻¹q = τ_nom: 5.268e-11 <= 1.0e-06
+[PASS] NUM   5. ½ΔτᵀPΔτ = ½‖M⁻¹NᵀΔτ‖² + ½‖JM⁻¹Δτ‖² (w_j = w_o = 1): observed 60230.4 vs reported 60230.4 (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] FACT  6. enable_obstacle_cbf defaults to False:
+[PASS] FACT  6. distance subscription with an integer depth (default RELIABLE QoS):
+[PASS] FACT  6. real_time_distance publishes per_link_distances BEST_EFFORT (so a RELIABLE subscriber gets nothing): F-1-6
+[PASS] FACT  6. output /NS_1/torque_safe; input /NS_1/torque_cmd; joint state from topics.joint_states_topic (30 Hz):
+[PASS] FACT  6. infeasible QP → τ_nom passed unfiltered; stale nominal → τ = 0; stale distances → rows skipped:
+--- check_oscbf (chapter 10 §3): 16 passed, 0 failed ---
+
+=== check_iso (chapter 11) ===
+repository: /ros2_ws/src
+[INFO] shipped constants: T_r 0.1 s, a_s 1.0 m/s², C 0.85 m, Z_d 0.06, Z_r 0.01 → floor C+Z_d+Z_r = 0.92 m; v_h 2.0; v_PFL 0.68
+[PASS] NUM   1. protective_separation(ssm_speed_cap(d, v_h), v_h) = d (1921 cases with a positive cap) [m]: 1.332e-15 <= 1.0e-09
+[PASS] FACT  1. cap = 0 at d = floor and inside it:
+[PASS] NUM   1. stopping_distance = v T_r + v²/(2a_s) at v = 0.5: observed 0.175 vs reported 0.175 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] REPRO 2. v_PFL hands-and-fingers (F 140 N, k 75 N/mm, m_H 0.6 kg, m_R = 17.8/2) = iso_v_pfl: observed 0.68185 vs reported 0.68 (|diff| 1.85e-03 <= 5.0e-03)
+[INFO] 2. v_PFL per region (script table, no payload): chest 0.328, thigh 0.349, abdomen 0.408, forearm 0.482, upper-arm 0.521, hands-and-fingers 0.682
+[PASS] FACT  2. iso_v_pfl is the hands-and-fingers value; the binding (minimum) region is chest at 0.328 m/s:
+[INFO] 3. v_r = 0.25: S_p with measured v_h = 0 → 0.976 m; with normative v_h = 2.0 → 1.676 m (S_h = 0.700 m)
+[INFO] 3. v_r = 0.5: S_p with measured v_h = 0 → 1.095 m; with normative v_h = 2.0 → 2.295 m (S_h = 1.200 m)
+[PASS] FACT  3. at d = 1.5 m the SSM speed cap is 0.982 m/s with v_h = 0 and 0.174 m/s with v_h = 2.0:
+[PASS] FACT  4. flag off: _iso_configure returns without touching P:
+[PASS] FACT  4. shipped values + iso_enabled → ValueError (fail closed): ISO 10218-2:2025 Annex L: d_safe=0.100 m is below the irreducible part of the protective separation distance, C + Z_d + Z_r = 0.850 + 0.060 + 0.010 = 0.920 m.
+[PASS] NUM   4. with d_safe 0.95 / link 0.68 / cap 0.60: standoff time = T_r + v_h/a_s [s], max = min(v_h·t, 2) [m]: observed [2.1, 2. ] vs reported [2.1, 2. ] (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] FACT  4. d_safe must exceed the FR3 reach (0.855 m, iso_evidence_logger manifest) for the gate to pass: floor 0.92 m — the D1 "structural" deviation of iso_evidence_report
+[PASS] NUM   5. trip_ticks at qp_rate_hz 300 (iso_monitor_ticks 3) → 9 ticks = 30 ms: observed 9 vs reported 9 (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  6. preflight on the shipped YAML: exit 0 "nothing to check" (it never sees a command-line iso_enabled): iso_preflight_check: iso_enabled is false — ISO layer not in use, nothing to check.
+[PASS] FACT  6. the launch passes only --config <share>/config/fr3_control.yaml to the preflight:
+[PASS] FACT  7. monitor: v_app = max(n̂·obstacle_velocity, 0) fed to ssm_speed_cap/protective_separation; iso_v_human appears only in a log line:
+[PASS] FACT  8. filter (verified): while _iso_stop_active the tick brakes and publishes status with fault=1.0 (data[2] = fault_braking, the field the monitor reads as a chain fault):
+[PASS] FACT  8. iso_stop_requires_reset=True: latched at tick 9; 10 s after the scene cleared it is still latched = True; /safety_reset success = False: REFUSED: safety-chain fault on cbf_status is still true (S_p=0.000 m,
+[PASS] FACT  8. iso_stop_requires_reset=False: latched at tick 9; 10 s after the scene cleared it is still latched = True; /safety_reset success = False: REFUSED: safety-chain fault on cbf_status is still true (S_p=0.000 m,
+[PASS] NUM   9. builder diag S_p = protective_separation(cap(d), v_app) − d, over 58 unsaturated gaps [m]: 2.220e-16 <= 1.0e-09  (the "largest S_p this rebuild" is the largest unsaturated gap, not a demand)
+[INFO] 9. same scene, d = 1.2 m, closing at 0.2 m/s, v_app = 0: builder S_p = 1.200 m, monitor S_p = 0.960 m
+[PASS] FACT  9. builder: sp_i = protective_separation(v_obst, v_app_i, …) with v_obst = the cap:
+[PASS] FACT  9. the SSM speed row bounds ‖Jp q̇‖ along v̂ = Jp q̇/‖Jp q̇‖ (link_speed_row), the monitor trips on −n̂ᵀJp q̇:
+[PASS] FACT  10. no joint state yet: latched with reason 4 (4 = stale) after 9 ticks (30 ms):
+[PASS] FACT  10. _on_status stores data[2] with no time stamp: the last fault flag is kept forever, and a filter that stops publishing is invisible to the monitor:
+[PASS] FACT  11. the example uses the shipped YAML constants:
+[PASS] NUM   11. S_p(v_r = 0.2, v_h = 0) [m]: observed 0.96 vs reported 0.96 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   11. S_p(v_r = 0.2, v_h = 2.0) [m]: observed 1.56 vs reported 1.56 (|diff| 2.22e-16 <= 1.0e-12)
+[PASS] NUM   11. cap(d = 1.2, v_h = 0) [m/s]: observed 0.654983 vs reported 0.654983 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   11. cap(d = 1.2, v_h = 2.0) [m/s]: observed 0.0377558 vs reported 0.0377558 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   11. stopping_distance(0.68) [m]: observed 0.2992 vs reported 0.2992 (|diff| 0.00e+00 <= 1.0e-12)
+--- check_iso (chapter 11): 28 passed, 0 failed ---
+
+=== check_observability (chapter 13) ===
+repository: /ros2_ws/src
+[PASS] NUM   1. arm message in scrambled order: last_q mapped by name: observed [ 0.1 , -0.2 ,  0.3 , -1.9 ,  0.05,  1.6 ,  0.7 ] vs reported [ 0.1 , -0.2 ,  0.3 , -1.9 ,  0.05,  1.6 ,  0.7 ] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  1. finger-only message: last_q = [0.0, 0.0, nan, nan, nan, nan, nan] (positional fallback: q1 = q2 = 0, q3..q7 NaN); last_qdot and last_tau_effort likewise:
+[PASS] FACT  1. launch: finger publisher on f"/{namespace}/joint_states" at top level of the function (unconditional):
+[PASS] FACT  1. launch: experiment_logger is started with no parameters (default joint_state_topic = '/NS_1/joint_states'):
+[INFO] 1. Runtime (recorded) franka_simulation_experiments/sim_runs/ra2/logger/20261029_181500_bag_02_dy: 1038/3891 rows (26.7 %) with q1 = q2 = 0 and q3 NaN; tcp_speed NaN in 1038
+[INFO] 1. Runtime (recorded) franka_simulation_experiments/sim_runs/rb3/logger/20261029_181609_bag_02_dy: 1026/3898 rows (26.3 %) with q1 = q2 = 0 and q3 NaN; tcp_speed NaN in 1026
+[INFO] 1. Runtime (recorded) franka_simulation_experiments/sim_runs/ra3/logger/20261029_181717_bag_02_dy: 22768/85171 rows (26.7 %) with q1 = q2 = 0 and q3 NaN; tcp_speed NaN in 22768
+[INFO] 1. Runtime (recorded) franka_simulation_experiments/sim_runs/leakfix_20261106/logger/20261106_093: 1030/3903 rows (26.4 %) with q1 = q2 = 0 and q3 NaN; tcp_speed NaN in 1030
+[PASS] FACT  2. sample() compares no message age: every last_* value is held until the next message:
+[PASS] NUM   2. legacy min_h = MultiDistance.distance − d_safe (the logger's own d_safe, no margins): observed 0.15 vs reported 0.15 (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] FACT  3. start_rosbag records 19 topics; not recorded: ['/rosout', '/NS_1/iso_safety', '/NS_1/torque_saturation', '/NS_1/q_des_state']:
+[PASS] FACT  3. the recorder compresses per file with zstd:
+[PASS] FACT  3. ball_throw_eval.read_bag (also used by throw_*, pass_plot, smoothness_report) opens only *.db3 through sqlite3 and asks for a manual `zstd -d` otherwise:
+[PASS] FACT  4. evidence logger tau_max_abs = max|τ| of /NS_1/torque_cmd (gravity excluded, 09 §2):
+[PASS] FACT  4. run_metadata.write_runtime_metadata has no caller outside tests (its docstring says "enabled by the experiment runner"); data directories excluded: []
+[PASS] FACT  5. STATUS_FIELDS has 41 fields; the logger reads indices [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+[INFO] 5. never logged: fallback_level, slew_conflict_joints, solve_wall_ms, tick_gap_ros_s, joint_receipt_age_s, distance_capture_age_s, distance_receipt_age_s, constraint_snapshot_age_s, slack_obs, slack_sc, slack_qlim, slack_sing, slack_cap, slack_spd, violation_without_slack_obs, violation_without_slack_sc, violation_without_slack_qlim, violation_without_slack_sing, violation_without_slack_cap, violation_without_slack_spd, violation_with_slack_obs, violation_with_slack_sc, violation_with_slack_qlim, violation_with_slack_sing, violation_with_slack_cap, violation_with_slack_spd, constraint_build_wall_ms, slack_ssb, violation_without_slack_ssb, violation_with_slack_ssb
+[PASS] FACT  6. the logger computes h = d − self.d_safe itself:
+[PASS] FACT  6. …from the legacy MultiDistance topic (DEFAULT_MULTI_DISTANCE_TOPIC):
+[PASS] FACT  7. joint state default is the 30 Hz /NS_1/joint_states:
+[PASS] FACT  7. experiment_name default 'bag_02_dynamic_test':
+[PASS] FACT  7. the torque launch starts experiment_logger with no parameters:
+[PASS] FACT  8. write_runtime_metadata: no caller in the current source outside tests: []
+[INFO] 8. 297 archived node copies under sim_runs/*/provenance (data, out of scope) DID call it: the current nodes dropped the call
+[PASS] FACT  9. bag topic list includes /NS_1/cbf_status and excludes iso_safety, torque_saturation, rosout, q_des_state:
+[PASS] FACT  10. watch_obstacle_tracks defaults to '/cbf/per_link_distances_tracked', which no package module mentions:
+[PASS] FACT  10. throw_clearance loads <pkg>/rosbag/<BAG>_truth.npz; no rosbag/ directory exists:
+[PASS] FACT  10. pipeline_rate_monitor expects /NS_1/qddot_safe at 100 Hz; qp_rate_hz is 300:
+[PASS] FACT  10. iso_constants_measure 'uncertainty' defaults to /cams/d455/...; the shipped camera topics are /camera/camera/...:
+[PASS] FACT  11. commander: declare_parameter('qddot_safe_topic', … '/NS_1/qddot_nom'):
+--- check_observability (chapter 13): 24 passed, 0 failed ---
