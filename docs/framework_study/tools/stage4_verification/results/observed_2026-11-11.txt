@@ -1,0 +1,114 @@
+=== check_controller_sources (chapter 09 §3-§5) ===
+repository: /home/mattia/Git/franka_ros2
+[INFO] 1. effort writes in update(): p_gains_[i] * (q_hold_[i] - q_[i]) - d_gains_[i] * dq_[i] | ffScale(i, input.tau[i]) * input.tau[i] + p_gains_[i] * p + d_gains_[i] * e
+[PASS] FACT  1. the main write is ffScale(i, τ_ff)·τ_ff + p_gains·p + d_gains·e:
+[PASS] FACT  1. no clamp / saturation / filter / gravity applied to the effort command in update():
+[PASS] FACT  2. plugin XML claims an optional low-pass filter and per-joint clipping:
+[PASS] FACT  3. lpf_alpha, tau_max_scale, urdf_path not declared by the controller: declared: ['accel_timeout', 'accel_topic', 'arm_id', 'command_timeout', 'command_topic', 'e_max', 'ff_fade_band', 'gazebo', 'p_max', 'qdot_margin']
+[PASS] FACT  4. not is_real ⇒ d_gains = p_gains = 0; update_rate 1000 if is_real else 100:
+[PASS] FACT  4. Gazebo: rt_controllers_yaml calls the generator with is_real=True, gazebo='true':
+[PASS] FACT  5. Gazebo plugin: joint_efforts = kdl_model_.gravity(q, g) added to JointForceCmd in EFFORT mode:
+[PASS] FACT  6. CBFTorqueController reads the setpoint acceleration from JointState.effort:
+[PASS] FACT  6. update(): the sp-fresh branch uses sp.qddot; /qddot_safe (qddot_buf_) only in the next branch:
+[PASS] FACT  7. the commander publishes its own q̈ (_q_ddot, the NOMINAL) in /q_des_state.effort:
+[INFO] 8. joint 7, feedforward only: realised q̇ after 0.3 s = 0.0090 rad/s vs ∫q̈_safe = 0.3000 (3 %)
+[INFO] 8. joint 7, shipped p_gains[6]=20, d_gains[6]=5: realised q̇ after 0.3 s = 0.2963 rad/s vs ∫q̈_safe = 0.3000 (99 %)
+[PASS] FACT  8. the PD on the integrated reference recovers most of the armature gap (transcribed, illustrative): 0.03 → 0.99
+--- check_controller_sources (chapter 09 §3-§5): 11 passed, 0 failed ---
+
+=== check_qp_assembly (chapter 08 §2-§4) ===
+repository: /ros2_ws/src
+[INFO] osqp 0.6.7.post3
+[INFO] optional builders: sc_rows=on, sing_rows=on, ssb_rows=off
+[PASS] FACT  snapshot built: 4 rows: obs:1, sc:1, qlim:1, cap:1
+[PASS] FACT  OSQP status solved: solved
+[PASS] FACT  P is diagonal: I_7 on q̈, ρ_g on the family slacks: ρ = {'obs': 1000.0, 'sc': 20000.0, 'qlim': 200.0, 'sing': 2000.0, 'cap': 100.0, 'spd': 500.0, 'ssb': 400.0}
+[PASS] FACT  q[:7] = −q̈_nom, q[7:] = 0 (family mode): observed [ 0.      , -4.579076, -0.      , -2.055035, -0.      , -4.946578,
+  0.      ,  0.      ,  0.      ,  0.      ,  0.      ,  0.      ,
+  0.      ,  0.      ] vs reported [ 0.      , -4.579076, -0.      , -2.055035, -0.      , -4.946578,
+  0.      ,  0.      ,  0.      ,  0.      ,  0.      ,  0.      ,
+  0.      ,  0.      ] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] NUM   objective identity ½xᵀPx + qᵀx = ½‖q̈−q̈_nom‖² + Σ½ρ s² − ½‖q̈_nom‖²: observed 980.374 vs reported 980.374 (|diff| 1.14e-13 <= 1.0e-09)
+[PASS] FACT  padded rows: 4 → 16 (qp_row_block 16):
+[PASS] FACT  A pattern is dense and independent of the values (nnz, indptr, indices identical with many zeros): nnz 238 = 16·14 + 14
+[PASS] NUM   update(q, l, u, Ax) then solve == fresh setup then solve (eps 1e-9): max |Δx|: 2.220e-16 <= 1.0e-06
+[INFO] at the PRODUCTION tolerance (OSQP default) warm-updated vs fresh differ by 6.39e-03 rad/s² on q̈ and 3.90e-03 on the slacks
+[PASS] NUM   padding to blocks of 16 vs no padding (eps 1e-9): max |Δx|: 0.000e+00 <= 1.0e-06
+[PASS] FACT  SLSQP converged (Optimization terminated successfully):
+[PASS] NUM   objective: OSQP (eps 1e-9) vs independent SLSQP: observed 981.47 vs reported 981.47 (|diff| 1.42e-10 <= 9.8e-03)
+[PASS] NUM   x: OSQP (eps 1e-9) vs independent SLSQP, max |Δ|: 2.967e-13 <= 1.0e-04
+[INFO] at the PRODUCTION tolerance: q̈ differs from SLSQP by 1.46e-04 rad/s², the objective by -1.097 (-1.12e-03 relative; dominated by ½ρs² with s_obs = 1.399)
+[PASS] FACT  box (state box ∩ slew window) satisfied exactly after accept_iterate:
+[PASS] NUM   relaxed rows: max(Gx − h_qp): 7.835e-04 <= 5.0e-03  (OSQP primal tolerance)
+[INFO] row  0 fr3_link8#2        group obs   h_qp    -0.693  aᵀq̈    -0.707  raw violation +1.40e+00
+[INFO] row  1 q7+                group qlim  h_qp    +2.990  aᵀq̈    +0.000  raw violation -2.99e+00
+[INFO] row  2 sc:_link5/3_hand   group sc    h_qp    +2.019  aᵀq̈    +0.208  raw violation -2.23e+00
+[INFO] row  3 cap:fr3_link8#2    group cap   h_qp    +2.800  aᵀq̈    +0.707  raw violation -3.51e+00
+[INFO] slack per family: obs=1.40e+00, sc=2.80e-08, qlim=3.25e-07, sing=0.00e+00, cap=2.10e-06, spd=0.00e+00, ssb=0.00e+00
+[INFO] q̈_nom = [-0.     4.579  0.     2.055  0.     4.947 -0.   ]; q̈_safe = [ 0.    -2.585  0.     1.555  0.     4.447 -0.   ]
+[INFO] box after slew: lb [-0.5   -2.585 -0.5    1.555 -0.5    4.447 -0.5  ] ub [0.5   2.585 0.5   2.555 0.5   5.447 0.5  ]
+--- check_qp_assembly (chapter 08 §2-§4): 14 passed, 0 failed ---
+
+=== check_slack_and_priority (chapter 08 §3, §5) ===
+repository: /ros2_ws/src
+[PASS] NUM   A. q̈ = q̈_n + λa (closed form): observed [ 0.      , -0.502267,  0.      ,  1.311475,  0.      ,  0.502267,
+  0.      ] vs reported [ 0.      , -0.502267,  0.      ,  1.311475,  0.      ,  0.502267,
+  0.      ] (|diff| 2.22e-16 <= 1.0e-07)
+[PASS] NUM   A. family slack s = (b − aᵀq̈_n)/(1 + ρ‖a‖²): observed 0.00279037 vs reported 0.00279037 (|diff| 4.34e-19 <= 1.0e-08)
+[PASS] NUM   A. unrelaxed violation b − aᵀq̈ equals s: observed 0.00279037 vs reported 0.00279037 (|diff| 1.21e-16 <= 1.0e-08)  (0.35 % of the demand with ρ = 1000, ‖a‖ = 0.535)
+[PASS] FACT  B. row 1 (demand 40.0 m/s², beyond the box) needs slack s = 36.665:
+[PASS] FACT  B. row 2 (demand 0.5, satisfiable alone) is ALSO violated by 0.500 m/s²: the shared slack relaxes every row of the family:
+[INFO] B. row 2 alone: violation 3.31e-03 (the A-type penalty residue only)
+[PASS] FACT  C. row_l1 harness: 32 slots, ρ_l1 = 1000, slot quadratic ε = 1000:
+[PASS] NUM   C. row met exactly: slot slack (hard multiplier λ = 2.80 < ρ_l1): observed -1.96169e-23 vs reported 0 (|diff| 1.96e-23 <= 1.0e-07)
+[PASS] NUM   C. q̈ equals the HARD-constraint solution q̈_n + (b/‖a‖²)a: observed [ 0.      , -0.504025,  0.      ,  1.316066,  0.      ,  0.504025,
+  0.      ] vs reported [ 0.      , -0.504025,  0.      ,  1.316066,  0.      ,  0.504025,
+  0.      ] (|diff| 2.22e-16 <= 1.0e-06)
+[INFO] C. demand 342.8: slot slack 339.5047, box-limited q̈ [ 0.    -2.585  0.     4.     0.     5.5    0.   ]
+[PASS] FACT  C. beyond the exact-penalty threshold (or the box) the slot slack becomes positive:
+[PASS] NUM   D. slew window ±0.5 rad/s² caps aᵀq̈ at Σ|aᵢ|·δ = 0.4150: observed 0.415 vs reported 0.415 (|diff| 5.55e-17 <= 1.0e-06)
+[PASS] NUM   D. the row is relaxed by the shortfall b − Σ|aᵢ|δ: observed 0.385 vs reported 0.385 (|diff| 1.92e-14 <= 1.0e-06)  (the hard box (state ∩ slew) has priority over every CBF row)
+[PASS] NUM   E. (s_obs, s_cap) from the KKT system: observed [0.057544, 0.542456] vs reported [0.057544, 0.542456] (|diff| 1.11e-16 <= 1.0e-07)
+[INFO] E. the cap gives way: s_cap = 0.5425 vs s_obs = 0.0575; aᵀq̈ = 0.9425 (ρ_obs = 1000, ρ_cap = 100)
+[PASS] FACT  F. 200 random conflicting snapshots (family mode, production tolerance): 200/200 solved:
+[PASS] FACT  F. obstacle_slack_max = 0 and an unreachable demand → status "primal infeasible", iterate rejected (the fallback ladder takes over):
+[PASS] FACT  F. OSQP 0.6 returns x as an object array of None when infeasible (dtype object); accept_iterate then RAISES (TypeError) instead of returning None — the node reaches the fallback only through the try/except in _solve (F-4-x):
+--- check_slack_and_priority (chapter 08 §3, §5): 15 passed, 0 failed ---
+
+=== check_box_and_brake (chapter 08 §2.2-§2.4, §6) ===
+repository: /ros2_ws/src
+[INFO] acc box ±[6.    2.585 3.5   4.    6.    5.5   6.   ]; brake authority a_auth = η·brake = [3.6   1.551 2.1   2.4   3.6   3.3   3.6  ]
+[PASS] NUM   1. hard_accel_box == independent formulas (2000 random states): 0.000e+00 <= 1.0e-12
+[PASS] FACT  2. box never empty (lb ≤ ub), also past the limits: 0 empty boxes
+[PASS] NUM   3. max over joints of q − (q_max − margin) when always accelerating at the box edge [rad]: 1.854e-05 <= 1.0e-03  (semi-implicit Euler at the QP rate; ideal tracking)
+[PASS] FACT  4. joint 4: QP-failure brake from v0 = 0.557 rad/s, h = 0.10 rad: stays inside q_max (peak +0.0000 rad vs q_max − margin, -0.0500 vs q_max):
+[PASS] FACT  4. joint 1: QP-failure brake from v0 = 0.729 rad/s, h = 0.10 rad: stays inside q_max (peak +0.0000 rad vs q_max − margin, -0.0500 vs q_max):
+[PASS] NUM   5. joint 1: v0 = 0.729 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed 0.0203095 vs reported 0.0215248 (|diff| 1.22e-03 <= 2.0e-03)  (reverses at t = 0.337 s (1/k = 0.333))
+[PASS] NUM   5. joint 2: v0 = 0.476 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed -0.0213878 vs reported -0.0205938 (|diff| 7.94e-04 <= 2.0e-03)  (reverses at t = 0.337 s (1/k = 0.333))
+[PASS] NUM   5. joint 3: v0 = 0.591 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed -0.00248128 vs reported -0.00149624 (|diff| 9.85e-04 <= 2.0e-03)  (reverses at t = 0.333 s (1/k = 0.333))
+[PASS] NUM   5. joint 4: v0 = 0.557 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed -0.00812609 vs reported -0.00719807 (|diff| 9.28e-04 <= 2.0e-03)  (reverses at t = 0.333 s (1/k = 0.333))
+[PASS] NUM   5. joint 5: v0 = 0.849 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed 0.0400071 vs reported 0.0414214 (|diff| 1.41e-03 <= 2.0e-03)  (reverses at t = 0.337 s (1/k = 0.333))
+[PASS] NUM   5. joint 6: v0 = 0.654 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed 0.00793744 vs reported 0.00902771 (|diff| 1.09e-03 <= 2.0e-03)  (reverses at t = 0.333 s (1/k = 0.333))
+[PASS] NUM   5. joint 7: v0 = 0.849 rad/s; stale-JS brake peak past q_max − margin = v0/(2k) − h [rad]: observed 0.0400071 vs reported 0.0414214 (|diff| 1.41e-03 <= 2.0e-03)  (reverses at t = 0.337 s (1/k = 0.333))
+[INFO] 5. Derived: a constant deceleration k·v0 stops after v0/(2k), so the stale brake overshoots the margin iff v0 > 2k·h; with v0 = √(2 a_auth h) (box binding) iff h < a_auth/(2k²); where the firmware envelope binds first, v0 is smaller and there is no overshoot
+[PASS] FACT  5. from h = 0.10 rad, joints that overshoot q_max − margin under the stale-JS brake: j1 (+0.0203 rad, -0.0297 vs q_max), j5 (+0.0400 rad, -0.0100 vs q_max), j6 (+0.0079 rad, -0.0421 vs q_max), j7 (+0.0400 rad, -0.0100 vs q_max): ideal tracking; whether a 0.1 s+ joint-state stall coincides with such a state is runtime
+[INFO] 6. tick gap    1×dt → δ_eff = 0.50 rad/s² per tick
+[INFO] 6. tick gap    3×dt → δ_eff = 1.50 rad/s² per tick
+[INFO] 6. tick gap   50×dt → δ_eff = 5.00 rad/s² per tick
+[PASS] FACT  6. nominal slew 0.5 rad/s² per 3.33 ms tick = 150 rad/s³, stretched up to ×10 on a late tick:
+--- check_box_and_brake (chapter 08 §2.2-§2.4, §6): 14 passed, 0 failed ---
+
+=== check_torque_realization (chapter 09 §1-§2, §5) ===
+repository: /ros2_ws/src
+[INFO] pinocchio 4.0.0
+[INFO] model nv = 9 (arm 7 + fingers); effort_max = [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0] N·m
+[PASS] NUM   1. _compute_tau == RNEA(q, q̇, q̈) − g(q) (200 random states) [N·m]: 4.086e-14 <= 1.0e-09
+[PASS] NUM   2. gravity excluded: _compute_tau(q, 0, 0) = 0 [N·m]: 2.842e-14 <= 1.0e-12
+[PASS] NUM   3. data.M (arm block) symmetric: 0.000e+00 <= 1.0e-12
+[PASS] FACT  4. iso_enabled = false (the shipped default): τ = 1.5·effort_max goes out UNCLIPPED:
+[PASS] FACT  4. iso_enabled = true: clipped to effort_max AND rate-limited to 13.33 N·m per call:
+[INFO] 5. max |τ| over box vertices at 100 random poses: [29.9, 24.4, 17.5, 15.9, 2.3, 2.5, 0.1] N·m vs effort_max [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+[PASS] FACT  5. box-admissible q̈ that need more than effort_max (no torque row in the QP): 0 of 12800 vertex×pose cases: reported, not asserted: whether a QP solution reaches such a vertex is runtime
+[INFO] 6. diag((M + A)⁻¹M) at q_home — fraction of a single-joint q̈_safe the feedforward alone realises: j1 0.63, j2 0.86, j3 0.78, j4 0.76, j5 0.34, j6 0.32, j7 0.03
+[PASS] FACT  6. with the armature the feedforward under-delivers on every joint (ratio < 1); the 1 kHz PD on the integrated reference (09 §3) is what closes the gap: illustrative: armature modelled as M + diag(A); the plugin adds a disk inertia on the child link
+--- check_torque_realization (chapter 09 §1-§2, §5): 7 passed, 0 failed ---

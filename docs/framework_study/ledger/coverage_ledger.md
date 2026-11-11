@@ -27,7 +27,7 @@
 | `franka_experiments/franka_experiments/nodes/iso_safety_monitor.py` | 417 | ROS node | 11 | 5 | entry,test | partial |
 | `franka_experiments/franka_experiments/nodes/pentagon_qddot_commander.py` | 1688 | ROS node | 06 | 3 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py` | 496 | ROS node | 10 | 5 | entry | partial |
-| `franka_experiments/franka_experiments/nodes/qddot_to_torque.py` | 317 | ROS node | 09 | 4 | entry,test | partial |
+| `franka_experiments/franka_experiments/nodes/qddot_to_torque.py` | 317 | ROS node | 09 | 4 | entry,test | documented |
 | `franka_experiments/franka_experiments/nodes/real_time_distance.py` | 1255 | ROS node | 05 | 2 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/nodes/rl_policy_commander.py` | 753 | ROS node | 06 | 3 | entry,test | partial |
 | `franka_experiments/franka_experiments/nodes/tag_overlay_node.py` | 160 | ROS node | 13 | 5 | entry | pending |
@@ -48,11 +48,11 @@
 | `franka_experiments/franka_experiments/utils/cbf_constraints.py` | 218 | util module | 07 | 3 |  | documented |
 | `franka_experiments/franka_experiments/utils/cbf_diagnostics.py` | 65 | util module | 13 | 5 | entry,script,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_evasion.py` | 306 | util module | 07 | 3 | entry,sim-exec,script,launch,test | documented |
-| `franka_experiments/franka_experiments/utils/cbf_hard_limits.py` | 456 | util module | 08 | 4 | entry,sim-exec,script,test | pending |
+| `franka_experiments/franka_experiments/utils/cbf_hard_limits.py` | 456 | util module | 08 | 4 | entry,sim-exec,script,test | documented |
 | `franka_experiments/franka_experiments/utils/cbf_kinematics.py` | 9 | util module | 04 | 2 | entry | documented |
-| `franka_experiments/franka_experiments/utils/cbf_qp.py` | 114 | util module | 08 | 4 |  | pending |
-| `franka_experiments/franka_experiments/utils/cbf_qp_assembly.py` | 598 | util module | 08 | 4 | entry,script,test | partial |
-| `franka_experiments/franka_experiments/utils/cbf_singularity.py` | 214 | util module | 08 | 4 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/cbf_qp.py` | 114 | util module | 08 | 4 |  | documented |
+| `franka_experiments/franka_experiments/utils/cbf_qp_assembly.py` | 598 | util module | 08 | 4 | entry,script,test | documented |
+| `franka_experiments/franka_experiments/utils/cbf_singularity.py` | 214 | util module | 08 | 4 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/cbf_state_rows.py` | 4354 | util module | 07 | 3 | entry,sim-exec,script,launch,test | partial |
 | `franka_experiments/franka_experiments/utils/cbf_utils.py` | 46 | util module | 07 | 3 | entry,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_zones.py` | 356 | util module | 07 | 3 | entry,sim-exec,script,launch,test | documented |
@@ -89,7 +89,7 @@
 | `franka_experiments/franka_experiments/utils/self_shadow.py` | 685 | util module | 05 | 2 | entry,sim-exec,script,launch,test | partial |
 | `franka_experiments/franka_experiments/utils/simulation_imports.py` | 96 | util module | 13 | 5 | entry | pending |
 | `franka_experiments/franka_experiments/utils/singularity_recovery.py` | 205 | util module | 08 | 4 | entry,test | pending |
-| `franka_experiments/franka_experiments/utils/state_governor.py` | 266 | util module | 08 | 4 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/utils/state_governor.py` | 266 | util module | 08 | 4 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/utils/static_scene.py` | 505 | util module | 05 | 2 | test | partial |
 | `franka_experiments/franka_experiments/utils/surface_velocity.py` | 279 | util module | 05 | 2 | test | partial |
 | `franka_experiments/franka_experiments/utils/tf_manager.py` | 223 | util module | 05 | 2 | entry,script,test | documented |
@@ -410,12 +410,12 @@ Documented in full because they run inside the pipeline; the rest of these packa
 
 | File | Lines | Role | Ch. | Stage | Status |
 |---|---:|---|---|---|---|
-| `franka_rt_controllers/src/rt_torque_controller.cpp` | 623 | C++ controller (external, executed) | 09 | 4 | partial |
-| `franka_rt_controllers/src/cbf_torque_controller.cpp` | 332 | C++ controller (external, executed) | 09 | 4 | partial |
+| `franka_rt_controllers/src/rt_torque_controller.cpp` | 623 | C++ controller (external, executed) | 09 | 4 | documented |
+| `franka_rt_controllers/src/cbf_torque_controller.cpp` | 332 | C++ controller (external, executed) | 09 | 4 | documented |
 | `franka_rt_controllers/src/rt_velocity_blender_controller.cpp` | 424 | C++ controller (external, executed) | 10 | 5 | partial |
-| `franka_rt_controllers/config/cbf_torque_controller.yaml` | 6 | C++ controller (external, executed) | 09 | 4 | pending |
+| `franka_rt_controllers/config/cbf_torque_controller.yaml` | 6 | C++ controller (external, executed) | 09 | 4 | documented |
 | `franka_rt_controllers/config/rt_velocity_blender.yaml` | 89 | C++ controller (external, executed) | 10 | 5 | pending |
-| `franka_rt_controllers/franka_rt_controllers.xml` | 10 | C++ controller (external, executed) | 09 | 4 | pending |
+| `franka_rt_controllers/franka_rt_controllers.xml` | 10 | C++ controller (external, executed) | 09 | 4 | documented |
 | `franka_rt_controllers/rt_velocity_blender_controller.xml` | 25 | C++ controller (external, executed) | 10 | 5 | pending |
 | `franka_simulation/launch/gz_fr3_plant.launch.py` | 180 | launch file (external, executed) | 12 | 6 | read |
 | `franka_msgs/msg/MultiLinkDistance.msg` | 11 | message definition (external) | 05 | 1 | documented |
@@ -436,7 +436,7 @@ Documented in full because they run inside the pipeline; the rest of these packa
 ## Totals
 
 - In-scope files: **346** (109898 lines), of which 12 are executed-path dependency files.
-- Status: pending 244 · partial 66 · read 4 · documented 32.
+- Status: pending 239 · partial 61 · read 4 · documented 42.
 - Unassigned by the rules: 0
 
 | Chapter | Files |

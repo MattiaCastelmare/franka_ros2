@@ -6,12 +6,12 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-11, checkpoint C-019 (Stage 3 audit complete; stopped for review)
-- **Project status:** read-only documentation phase. Stages 0–3 are done, committed and pushed by the
-  user (HEAD `61260f6`). The Stage 3 audit edits are **uncommitted**.
-- **Last completed stage:** Stage 3, followed by a targeted audit: ch. 06 §6.4–§6.7, §7, §8 re-read
-  in the source; ch. 07 core equations and F-3-2/3/12/13 reviewed. See 06 §13 and 07 §14.
-- **Next pending stage:** Stage 4 (QP and actuation): `08`, `09`. **Not approved.**
+- **Last updated:** 2026-11-11, checkpoint C-025 (Stage 4 complete; stopped for review)
+- **Project status:** read-only documentation phase. Stages 0–4 are done. Stages 0–3 are committed and
+  pushed (HEAD `fd1b957`); the Stage 4 work is **uncommitted** (the user commits).
+- **Last completed stage:** Stage 4 (QP and actuation): `08_constraints_and_qp.md`,
+  `09_torque_realization.md`, `tools/stage4_verification/`. **Awaiting the user's review.**
+- **Next pending stage:** Stage 5 (Alternatives, ISO, tools): `10`, `11`, `13`. **Not approved.**
 - **Stage in progress:** none.
 - **Pinned branch:** `humble-mattia`
 - **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
@@ -23,13 +23,16 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 - **Completed documentation files:**
   - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`,
     `04_math_foundations.md`, `05_perception_and_distance.md`, `06_nominal_motion.md`,
-    `07_cbf_obstacle_barrier.md`;
+    `07_cbf_obstacle_barrier.md`, `08_constraints_and_qp.md`, `09_torque_realization.md`;
   - `ledger/*`;
   - the tools `stage0_extract.py`, `ledger_status.py` and `check_state.py` (baseline-aware since C-003);
   - `tools/stage2_verification/`: 9 read-only scripts reproducing every numerical result of ch. 04 and
     05, `run_all.sh`, a README, and the recorded output `results/observed_2026-11-11.txt`
     (126 of 126 checks passed);
   - Stage 3 audit records: 06 §13, 07 §14;
+  - `tools/stage4_verification/`: 5 scripts + `_common4.py` (4 container scripts on the deployed
+    osqp 0.6.7 and Pinocchio 4.0.0, 1 host), `run_all.sh`, a README, and
+    `results/observed_2026-11-11.txt` (61 of 61 passed);
   - `tools/stage3_verification/`: 6 scripts + 2 helpers (4 host, 2 container driving the real
     `ConstraintBuilder`), `run_all.sh`, a README, `results/observed_2026-11-11.txt` (85 of 85 passed);
   - `CHECKPOINTS.md` and `RESUME_PROMPT.md`;
@@ -37,7 +40,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 - **Draft or stale:** `A_file_index.md` was generated in Stage 0 and does not reflect the Stage 1 chapter
   reassignments (§2). It gets regenerated in Stage 7.
 - **Incomplete work carried forward:**
-  - 70 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
+  - 61 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
     the algorithms belong to the stage that owns the chapter. Stage 3 partials are listed in §2.
   - Ch. 05 files still `pending` or `partial`, read at interface level only: the eye-in-hand node, the
     hand-eye launch files, `rtd_debug.py`, `node_utils.py`, the remaining calibration YAMLs, and most
@@ -46,12 +49,14 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - Unreachability candidates (F-0-4) are not yet confirmed (Stage 7); Stage 2 confirmed
     `static_scene.py`, `surface_velocity.py` and `self_shadow.void_spheres_from_rays` as unused.
   - The guide-versus-code cross-check has not started (Stage 7, chapter 16).
-  - User questions: Q-1-4, Q-1-5, Q-2-2, Q-3-1. Runtime tests that need approval: Q-2-3, Q-2-4,
-    Q-3-2. Q-2-1 is answered (F-3-2, F-3-13).
-- **Exact next action:** STOP. Wait for the user's review of Stage 3 and an explicit approval of
-  Stage 4. On approval: run `check_state.py` and both `run_all.sh` (stage 2 and 3; expect exit 0),
-  append a "Stage 4 started" checkpoint, then read `cbf_safety_filter._solve` and
-  `cbf_qp_assembly` (`build_osqp_A`, `build_qp_objective`, `build_osqp_bounds`) for ch. 08.
+  - User questions: Q-1-4, Q-1-5, Q-2-2, Q-3-1, Q-4-1, Q-4-2. External or hardware: Q-4-3. Runtime
+    tests that need approval: Q-2-3, Q-2-4, Q-3-2. Answered: Q-2-1 (F-3-2, F-3-13), Q-1-1 (09 §5.1).
+  - Ch. 08 files not read in Stage 4: `self_collision.py` (capsule parsing and segment distance,
+    used through `SelfCollisionRowBuilder`), `singularity_recovery.py` (the commander's recovery, 06
+    §4.4), `pin_rt_thread.sh`, and the ch. 08 tests (names only). Stage 7 coverage pass.
+- **Exact next action:** STOP. Wait for the user's review of Stage 4 and an explicit approval of
+  Stage 5. On approval: run `check_state.py` and the three `run_all.sh` (stages 2–4; expect exit
+  0), append a "Stage 5 started" checkpoint, then read `nodes/cbf_velocity_filter.py` (ch. 10).
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -63,7 +68,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 | 1 — Architecture & graph | `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`; `tools/ledger_status.py` | ch. 01: 5 · 02: 4 · 03: 13, after reassignment; plus about 30 node, launch and C++ files read at interface level | **done** | `ba68077` (tree clean apart from `docs/framework_study/`) | acknowledged complete 2026-11-11 (Q-1-4, Q-1-5 still open) |
 | 2 — Foundations & perception | `04`, `05` | ch. 04: 5 · 05: 62 | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 3 — Nominal motion & barrier | `06`, `07`; `tools/stage3_verification/` | ch. 06: 25 · 07: 30 (see §2 for what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 (re-approved in a new session after an interruption) |
-| 4 — QP & actuation | `08`, `09` | ch. 08: 28 · 09: 6 | not started | | |
+| 4 — QP & actuation | `08`, `09`; `tools/stage4_verification/` | ch. 08: 28 · 09: 6 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 5 — Alternatives, ISO, tools | `10`, `11`, `13` | ch. 10: 9 · 11: 18 · 13: 43 | not started | | |
 | 6 — Simulation | `12` | ch. 12: 63 | not started | | |
 | 7 — Synthesis | `14`, `15`, `16`, `B`, `C`, final `00`/`A` | ch. 14: 22 · 16: 13 | not started | | |
@@ -76,10 +81,10 @@ shows a better home, and the counts here are then updated.
 
 | Status | Files |
 |---|---:|
-| pending | 244 |
-| partial | 66 |
+| pending | 239 |
+| partial | 61 |
 | read | 4 |
-| documented | 32 |
+| documented | 42 |
 
 `partial` was added in Stage 1. It means the parts the stage needed were read; for nodes, that is
 the constructor interfaces. Chapter reassignments made in Stage 1:
@@ -107,6 +112,21 @@ Stage 3 (2026-11-11):
   `livelock.py` were read in full by the main session → `documented`. `rl_policy.py`,
   `rl_policy_commander.py` and `ee_pentagon_velocity_commander.py` were re-read in the parts the
   chapter uses, so they stay `partial`.
+
+Stage 4 (2026-11-11):
+- `documented`, chapter 09: `qddot_to_torque.py`, `rt_torque_controller.cpp`,
+  `cbf_torque_controller.cpp`, `franka_rt_controllers.xml`, `config/cbf_torque_controller.yaml`
+  (unreferenced).
+- `documented`, chapter 08: `cbf_qp_assembly.py`, `cbf_singularity.py`, `cbf_hard_limits.py`
+  (`workspace_face_rows` and `velocity_accel_box` are noted as unused or superseded),
+  `state_governor.py`, `cbf_qp.py` (no importer).
+- `partial`: `cbf_safety_filter.py` (everything on the QP path; `_report`, `_publish_status`,
+  `_iso_configure` and `_elevate_thread_priority` belong to ch. 11/13), `rate_scaling.py`
+  (`FrameRateEstimator` not read).
+- Also read, outside the Stage 4 assignment: `launch_support._generate_torque_yaml` and
+  `_generate_cbf_base_yaml`, `minimal.launch.py` (controller selection), `gz_fr3_plant.launch.py`,
+  `gz_robot_description` (docstring, ARMATURE), `sim_config.rt_controllers_yaml`,
+  `franka_ign_ros2_control/src/ign_system.cpp::write` (interface-only package).
 
 ## 3. How later stages are tracked (procedure)
 
@@ -218,7 +238,33 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | F-3-19 | RL commander control-point names: the robot labels each control point by its segment's `end_link` (fr3_link4 … fr3_link8, `fr3_complete.yaml`); `franka_rl/config.yaml` lists `fr3_link3` "mirroring segment 3". So `cp:fr3_link3` never matches and stays at (clip, 0, 0, 0). **Audit (C-018):** the matching code was re-read (`perception_msgs.py` L212–216 sets `robot_link_name` = segment end link; `obs_spec_from_config` uses `robot_link` or `body`; `control_point_geometry` matches by exact name). Moreover, each policy slot fr3_link4…7 receives the robot samples of the segment ENDING at that link. | 06 §7 | Verified (config + code, audit C-018) |
 | F-3-20 | Lateral evasion takes its trigger from the conditioned v_o (frame-gated or residual floor) but its direction from the raw `ob.v_vec`, gated only on ‖v_vec‖ ≥ 0.15 m/s, not on `frames_seen` (`escape_direction`; `_escape_row` L3846–3852). A young track's prior velocity can therefore set the escape direction while the residual floor supplies the urgency. | 06 §6.4 | Verified (code) + Derived (consequence); effect Unverified |
 
+### Stage 4 findings
+
+| ID | Finding | Where | Label |
+|---|---|---|---|
+| F-4-1 | **The obstacle barrier is a penalty, not a constraint, in the shipped `family` slack mode.** With ½ρs² on a family slack, a binding row aᵀq̈ + s ≥ b is always solved with s = (b − aᵀq̈_n)/(1 + ρ‖a‖²) > 0 (inside the box): the unrelaxed HOCBF inequality is violated by that amount on every binding tick (0.35 % of the demand at ρ = 1000, ‖a‖ = 0.54). Exact enforcement exists only in `row_l1` mode (exact penalty while the multiplier stays below ρ_l1), which only `minimal_l1` uses. | 08 §3 | Derived + numerically verified (`check_slack_and_priority.py` A, C) |
+| F-4-2 | **One family slack per family couples the rows.** When one obstacle row cannot be met (box, slew, conflict), the shared s_obs also relaxes every other obstacle row: in the test, a second row satisfiable on its own was violated by its full demand (0.5 of 0.5 m/s²). With one obstacle row per control point and per obstacle rank (07 §6), one unreachable row loosens the barrier for the whole arm. | 08 §3.3 | Numerically reproduced (`check_slack_and_priority.py` B) |
+| F-4-3 | **The hard box has priority over every CBF row**, including the slew window ±`max_qddot_delta` = 0.5 rad/s² per 3.33 ms tick (150 rad/s³) around the previous command. An obstacle row that needs a faster change of q̈ is relaxed by exactly the shortfall. Every CBF row is soft; the box (position, velocity, acceleration, slew) is hard. | 08 §2.4, §3.4 | Verified (code) + numerically reproduced (`check_slack_and_priority.py` D; `check_qp_assembly.py`: s_obs = 1.40 when the slew window excluded the barrier's demand) |
+| F-4-4 | `accept_iterate` is meant to return None for a rejected iterate, but with OSQP 0.6.7 an infeasible problem returns `res.x` as an object array of None, and `np.isfinite` raises `TypeError`. `_solve` still reaches the fallback, but only through its generic `try/except`; the logged reason is the TypeError, not the OSQP status. Reachable when a family slack is bounded (`obstacle_slack_max` or `ssb_slack_max` ≤ 0). | 08 §5 | Numerically reproduced (`check_slack_and_priority.py` F) |
+| F-4-5 | **Stale-joint-state fallback is open-loop.** `_qp_tick` L1099–1104 publishes clip(−k_brake·q̇_stale, static acc box) with the same stale q̇ every tick, without the CBF rows, the position/velocity box or the slew limit. Integrated, the commanded velocity reverses after 1/k_brake = 0.33 s and keeps accelerating backward while the stall lasts. From the box's fastest state 0.10 rad before the position margin it overshoots that margin on joints 1, 5, 6 and 7 (by up to 0.040 rad, still inside q_max). | 08 §5.2 | Derived + numerically reproduced, ideal tracking (`check_box_and_brake.py` 5); closed loop Unverified |
+| F-4-6 | `qddot_to_torque`: the effort clip and torque-rate limit act only when `iso_enabled` (shipped false), so τ goes out unclipped. There is no staleness check on its joint state (it computes τ from the last received q, q̇ whenever a `/qddot_safe` arrives). The rate limit is scaled by the installed YAML's `qp_rate_hz`, not the effective one (cf. F-1-10). | 09 §2 | Verified (code) + numerically reproduced (`check_torque_realization.py` 4) |
+| F-4-7 | `RtTorqueController` writes τ = ffScale·τ_ff + K_p p + K_d e with **no torque clamp and no low-pass filter**, although its plugin description says it "applies an optional low-pass filter, clips to per-joint limits". Torque saturation is therefore left to `franka_hardware`/libfranka/firmware (Unverified here) on hardware, and to Gazebo's joint limits in simulation. | 09 §3 | Verified (`check_controller_sources.py` 1–2) |
+| F-4-8 | **`CBFTorqueController` bypasses `/qddot_safe` while `/q_des_state` is fresh.** It computes τ = RNEA(q, q̇, q̈_sp) − g with q̈_sp = the `effort` field of `/q_des_state`, which `pentagon_qddot_commander` fills with its own **nominal** q̈. `/qddot_safe` is used only when `/q_des_state` is older than 0.1 s. It is spawned only by `minimal.launch.py use_torque_controller:=cbf` (F-1-9), which itself starts neither the commander nor the filter, so the bypass needs a user-composed pipeline. | 09 §3.3 | Verified (`check_controller_sources.py` 6–7); runtime use Unverified (Q-1-4) |
+| F-4-9 | **Gazebo plant inertia ≠ dynamics model.** `gz_robot_description` adds the reflected rotor inertia (ARMATURE 0.195 / 0.074 kg·m²) to the plant; `qddot_to_torque`'s Pinocchio model has none. At q_home the feedforward alone realises 63–86 % of q̈_safe on joints 1–4, 32–34 % on joints 5–6 and **3 %** on joint 7 (diagonal approximation). The 1 kHz PD on the integrated reference recovers 99 % of the commanded velocity within 0.3 s (transcribed loop). Barrier rows assume the realised q̈ equals the chosen one, which here holds only through the PD. | 09 §5 | Numerically evaluated, illustrative (`check_torque_realization.py` 6, `check_controller_sources.py` 8) |
+| F-4-10 | The QP solves at OSQP 0.6.7's default tolerance (eps_abs = eps_rel = 1e-3; `max_iter` 20000; `polish` off). Relaxed-row residuals of 7.8e-4 and warm-vs-cold differences of 6.4e-3 rad/s² were observed, and `accept_iterate` then clips q̈ into the box, which can move a relaxed row by the same order. `row_l1` alone tightens eps_rel to 1e-5. | 08 §4 | Numerically reproduced (`check_qp_assembly.py`) |
+| F-4-11 | No workspace rows and no torque rows exist in the running QP. `cbf_hard_limits.workspace_face_rows` has no caller, and the acceleration box is the only actuator-side constraint. At q̇ = 0 no box vertex needs more than effort_max (0 of 12 800 vertex × pose cases); Coriolis and gravity are not in that check. | 08 §2 | Verified (grep) + numerically evaluated |
+| F-4-12 | **No rows at all and no fault before the first distance message.** `_update_constraints` (L958–961) needs both `_js` and `_obs`. Until perception publishes once, `_qp_tick` takes the "no snapshot" branch: a box-only QP with the unchanged nominal, without joint-limit, self-collision or singularity rows, and fault = 0. Stale distances, by contrast, brake (L1153–1161). The joint-state-only families depend on perception being alive. | 08 §5.1 | Verified (code) |
+| F-4-13 | `qddot_to_torque`'s module docstring states "`rt_torque_controller` adds g(q) internally". It does not (F-4-7); on hardware the firmware compensates gravity, in Gazebo the plugin does. This is the node-side counterpart of F-1-3. | 09 §2 | Verified |
+
 ## 5. Decisions and open questions
+
+**Open questions added in Stage 4:**
+
+| ID | Question | Who can close it |
+|---|---|---|
+| Q-4-1 | F-4-1/F-4-2: is the family-slack (penalty) barrier intended for hardware, or is `row_l1` meant to become the default? With family slack a single unreachable obstacle row relaxes all of them. | **user** |
+| Q-4-2 | F-4-5: is the open-loop stale-joint-state brake acceptable, given that the published deceleration reverses the joint after 1/k_brake? | **user** / runtime |
+| Q-4-3 | Where is torque saturated on hardware (F-4-7: not in the controller)? `franka_hardware`/libfranka limits, and whether the firmware compensates gravity in the effort command mode used. | external docs / hardware |
 
 **Open questions added in Stage 3:**
 
@@ -238,7 +284,7 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 
 | ID | Question | Who can close it |
 |---|---|---|
-| Q-1-1 | Who compensates gravity in Gazebo? Neither `qddot_to_torque` nor `rt_torque_controller` adds `g(q)`. | Stage 4/6 (read `franka_ign_ros2_control` / the plant) |
+| Q-1-1 (**answered in Stage 4**, 09 §5) | Who compensates gravity in Gazebo? Neither `qddot_to_torque` nor `rt_torque_controller` adds `g(q)`. **Answer:** `franka_ign_ros2_control/src/ign_system.cpp::IgnitionSystem::write` adds the KDL gravity torque g(q) to every effort command (Verified). On hardware the FR3 firmware compensates gravity (Franka documentation; Unverified here). | Stage 4/6 (read `franka_ign_ros2_control` / the plant) |
 | Q-1-2 (**answered in Stage 2, 05 §5.1**: a deliberate choice, recorded in `fr3_complete.yaml`; root cause open; runtime test proposed) | `real_time_distance` projects the depth image (`camera_depth_optical_frame`) with an extrinsic whose child frame is `camera_color_optical_frame`. Is the depth-to-colour offset handled? | Stage 2 |
 | Q-1-3 (**answered in Stage 2: NO**, F-2-7) | Do `camera_extrinsics.yaml` (projection) and `camera_link_extrinsics.yaml` (TF) describe the same camera pose consistently? | Stage 2 (numeric check) |
 | Q-1-4 | Is Pipeline B (velocity) still run on hardware? Is Pipeline C (OSCBF) abandoned or parked? Is `CBFTorqueController` (`use_torque_controller:=cbf`) still used? | **user** |

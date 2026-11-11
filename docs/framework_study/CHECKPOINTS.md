@@ -513,3 +513,131 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 3. **Ledger:** `cbf_evasion`, `go_around`, `evasion_direction`, `livelock` → documented. Totals:
    pending 244, partial 66, read 4, documented 32.
 4. **Exact next action:** STOP. Wait for the user's review and an explicit approval of Stage 4.
+
+## C-020 — 2026-11-11 — Stage 4 — started
+
+- Baseline / HEAD / check: `ba68077052e8` / `fd1b95735a87` (Stage 3 audit committed by the user) /
+  check_state exit 0
+- The user explicitly approved **Stage 4 ONLY** (Constraints, QP and torque realization):
+  `08_constraints_and_qp.md`, `09_torque_realization.md`, `tools/stage4_verification/`.
+1. **Plan:**
+   1. QP formulation: `cbf_safety_filter` `__init__` (QP set-up), `_solve`, `_warmup`;
+      `cbf_qp_assembly` (`build_osqp_A`, `build_qp_objective`, `pad_rows_to_block`, `accept_iterate`,
+      `box_only_solve`, `braking_command`).
+   2. Constraint families: `cbf_state_rows` (`joint_limit_rows`, rate caps, link speed,
+      `SelfCollisionRowBuilder`, `ShadowRowBuilder`); `cbf_singularity`; `self_collision`;
+      `cbf_hard_limits` (the box, slew).
+   3. Fallbacks: `_qp_tick` and `_solve`, `_brake_authority_fault`, `_empty_frame_fault`, ISO stop.
+   4. Torque: `qddot_to_torque.py`, `franka_rt_controllers` (`rt_torque_controller.cpp`,
+      `cbf_torque_controller.cpp`, the YAML and XML), Gazebo plant (Q-1-1).
+2. **Exact next action:** read `cbf_safety_filter.__init__` from L241 (QP set-up) and `_solve`.
+
+## C-021 — 2026-11-11 — Stage 4 — sources read (QP, constraints, fallback, torque)
+
+- Baseline / HEAD / check: `ba68077052e8` / `fd1b95735a87` / check_state exit 0
+1. **Read:**
+   - `cbf_safety_filter` `__init__` L241–540 (objective, slack boxes, timers), `_warmup`, `_solve`,
+     `_brake_box`, `_slew_delta`, `_joint_state_frozen`, `_brake_authority_fault`,
+     `_empty_frame_fault`, `_iso_stop_active`, `_publish`, `_on_joint_state`, `_on_qddot_nom`,
+     `_qp_tick` (whole, in Stage 3 and again here);
+   - `cbf_qp_assembly`: `build_osqp_A`, `build_qp_objective`, `build_osqp_bounds`,
+     `pad_rows_to_block`, `accept_iterate`, `box_only_solve`, `braking_command`;
+   - `cbf_state_rows`: `joint_limit_rows`, the link-speed functions, the retreat functions,
+     `SelfCollisionRowBuilder`, `build_self_collision_builder`, `build_optional_row_builders`, the
+     rate-cap and speed-row block L3414–3556;
+   - `cbf_singularity.SingularityRowBuilder`; `cbf_hard_limits` (`hard_accel_box`,
+     `position_velocity_accel_box`, `apply_slew_limit`, `fr3_velocity_envelope`, constants);
+   - `qddot_to_torque.py` (all); `rt_torque_controller.cpp` and `cbf_torque_controller.cpp` (all);
+     CMakeLists and the two plugin XMLs;
+   - `launch_support._generate_torque_yaml` / `_generate_cbf_base_yaml`; `minimal.launch.py`
+     controller selection; `torque_control_stack` controller YAML;
+   - `gz_fr3_plant.launch.py`; `gz_robot_description` docstring and ARMATURE;
+     `sim_config.rt_controllers_yaml`; `franka_ign_ros2_control/src/ign_system.cpp::write`.
+2. **Key facts (Verified) for ch. 08/09 (not yet written):**
+   - Objective P = I on q̈ (no weighting), ½ρ_g s_g² per family (7 families); row_l1 adds
+     ε s² + ρ_l1 s per slot. Slack box [0, 1e6]. Rows padded to blocks of 16; OSQP rebuilt
+     only when the padded row count changes.
+   - No torque rows and no workspace rows in the QP (`workspace_face_rows` is unused). The box
+     (position, velocity, acceleration, slew) is HARD; every CBF row is soft.
+   - Post-QP: only `accept_iterate`'s clip to the box.
+   - `qddot_to_torque`: τ = M q̈ + (nle − g); clip and rate limit only if `iso_enabled`; no
+     staleness check on the joint state.
+   - `RtTorqueController`: τ = ffScale·τ_ff + K_p p + K_d e, with q̇_des/q_des integrated from
+     `/qddot_safe` at 1 kHz; **no torque clip and no LPF**, although the XML description says so
+     (new finding); hold on a stale τ (> 0.1 s).
+   - Gazebo: **Q-1-1 answered**: `IgnitionSystem::write` adds the KDL g(q) to every effort command;
+     the controller YAML uses `is_real=True` (same gains, 1 kHz); ARMATURE is added to the links.
+   - `CBFTorqueController`: when `q_des_state` is fresh it computes τ from the COMMANDER's
+     nominal q̈ (`effort` field), bypassing `/qddot_safe` (new finding; minimal launch with
+     `use_torque_controller:=cbf` only).
+3. **Exact next action:** write `tools/stage4_verification/` (QP assembly and solve against an
+   independent solver; slack and slew priority; box and braking; inverse dynamics; realized vs
+   commanded acceleration; effort margins), then ch. 08, then ch. 09.
+
+## C-022 — 2026-11-11 — Stage 4 — verification scripts done; findings logged
+
+- Baseline / HEAD / check: `ba68077052e8` / `fd1b95735a87` / check_state exit 0
+1. **Done:** `tools/stage4_verification/`:
+   - `_common4.py` (`QPHarness` from the production QP builders; `static_limits`; an
+     independent SLSQP solve);
+   - `check_qp_assembly.py` 14/14, `check_slack_and_priority.py` 15/15, `check_box_and_brake.py`
+     14/14, `check_torque_realization.py` 7/7 (all container, osqp 0.6.7, Pinocchio 4.0.0);
+   - `check_controller_sources.py` 11/11 (host);
+   - `run_all.sh`; `results/observed_2026-11-11.txt` (61/61).
+2. **Tests that failed first and why (test errors, all fixed; the implementation was not
+   changed):**
+   - default-tolerance comparisons were rewritten as tight-tolerance identities plus reported
+     spreads;
+   - a double `max_iter` in the harness;
+   - the harness lacked `_solve`'s try/except; it revealed F-4-4;
+   - wrong v0 and threshold in my brake derivation (now h < a/(2k²), with the envelope binding
+     first on joint 4);
+   - two regex/whitespace matches.
+3. **PROGRESS §4:** F-4-1 … F-4-11 logged. Q-1-1 answered. New Q-4-1 … Q-4-3.
+4. **Exact next action:** write `08_constraints_and_qp.md` (QP formulation, families,
+   slack, OSQP, fallback, the command-shaping order), then `09_torque_realization.md`, then the
+   README, ledger, 00_INDEX and final checks.
+
+## C-023 — 2026-11-11 — Stage 4 — chapter 08 written
+
+- Baseline / HEAD / check: `ba68077052e8` / `fd1b95735a87` / check_state exit 0
+1. **Done:** `08_constraints_and_qp.md`, §1–9 (equations 8.1–8.16, Mermaid flow). New F-4-12 (no
+   rows and no fault before the first distance message). OSQP 0.6 settings verified from the
+   solver banner (eps 1e-3, polish off, time_limit off).
+2. **Remaining:** `09_torque_realization.md`; the stage4 README; ledger; 00_INDEX; PROGRESS §0/§1/§2;
+   final checks.
+3. **Exact next action:** write `09_torque_realization.md` from C-021 and the
+   `check_torque_realization` / `check_controller_sources` results.
+
+## C-024 — 2026-11-11 — Stage 4 — chapter 09 written
+
+- Baseline / HEAD / check: `ba68077052e8` / `fd1b95735a87` / check_state (to run at C-025)
+1. **Done:**
+   - `09_torque_realization.md` §1–9 (equations 9.1–9.6, two Mermaid diagrams), with Q-1-1
+     answered;
+   - `tools/stage4_verification/README.md`;
+   - new F-4-13 (the `qddot_to_torque` docstring's false gravity claim).
+2. **Remaining:** ledger statuses, 00_INDEX, PROGRESS §0/§1/§2, rerun `run_all.sh`, link check,
+   source-unchanged check.
+3. **Exact next action:** update the ledger with `tools/ledger_status.py` for the Stage 4 files.
+
+## C-025 — 2026-11-11 — Stage 4 — complete; stopped for review
+
+- Baseline / HEAD / check: `ba68077052e8` / `fd1b95735a87` / check_state exit 0 (92 links consistent)
+1. **Delivered:**
+   - `08_constraints_and_qp.md` §1–9 (8.1–8.16);
+   - `09_torque_realization.md` §1–9 (9.1–9.6);
+   - `tools/stage4_verification/` (5 scripts + `_common4.py`, `run_all.sh`, README,
+     `results/observed_2026-11-11.txt`): **61/61** on the final rerun.
+2. **Findings:** F-4-1 … F-4-13 in PROGRESS §4. Q-1-1 answered (Gazebo plugin adds the KDL g(q)).
+   New Q-4-1 … Q-4-3.
+3. **Ledger:** documented 42, partial 61, read 4, pending 239.
+   - Not read: `self_collision.py`, `singularity_recovery.py`, `pin_rt_thread.sh`, the ch. 08 tests
+     (names only).
+4. **Verification:**
+   - no file outside `docs/framework_study/` differs from `ba68077` (working tree and untracked
+     files included); 3 stashes untouched; nothing committed;
+   - every equation number cited by a script exists in 08/09;
+   - every F-4 ID cited in a chapter exists in PROGRESS §4.
+5. **Exact next action:** STOP. Wait for the user's review of Stage 4 and an explicit approval of
+   Stage 5 (`10_alternative_controllers.md`, `11_iso_safety_layer.md`, `13_observability_and_tools.md`).

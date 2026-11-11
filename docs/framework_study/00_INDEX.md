@@ -10,7 +10,7 @@ places where they disagree with the code are collected in chapter 16.
 It is meant to be studied, not only looked up. Later, during a refactor, it also serves as a
 reference for what each change will affect.
 
-> **Status: Stages 0–3 complete (Stage 3 awaiting review); Stage 4 not yet approved.** The live status is in the resume card,
+> **Status: Stages 0–4 complete (Stage 4 awaiting review); Stage 5 not yet approved.** The live status is in the resume card,
 > [PROGRESS.md](PROGRESS.md) §0. Project rules and the resume procedure are in
 > [/CLAUDE.md](../../CLAUDE.md). The session history is in [CHECKPOINTS.md](CHECKPOINTS.md). To
 > resume in a new session, paste [RESUME_PROMPT.md](RESUME_PROMPT.md).
@@ -73,8 +73,8 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | 05 | [`05_perception_and_distance.md`](05_perception_and_distance.md) | Calibration, depth → points, self-masking, distance engine, tracking, prediction | 2 | **written** (Stage 2) |
 | 06 | [`06_nominal_motion.md`](06_nominal_motion.md) | Commanders, paths and timing laws, Cartesian PD + damped IK + null space, phase governor, filter-side shaping (zone fade, state governor, tangential bias, go-around, evasion, livelock), RL policy, Pipeline B commanders | 3 | **written** (Stage 3) |
 | 07 | [`07_cbf_obstacle_barrier.md`](07_cbf_obstacle_barrier.md) | HOCBF derivation, the implemented obstacle rows, velocity estimation, margins, evidence gates, zone ladder, F-2-10/F-2-11 traced through the barrier | 3 | **written** (Stage 3) |
-| 08 | `08_constraints_and_qp.md` | Other constraint families, QP assembly, slack, fallback, governor | 4 | not written |
-| 09 | `09_torque_realization.md` | q̈ → τ, C++ real-time controllers, rates and threading | 4 | not written |
+| 08 | [`08_constraints_and_qp.md`](08_constraints_and_qp.md) | The QP actually solved (objective, OSQP form), every constraint family (hard box vs soft rows), slack modes and their safety meaning, OSQP numerics, fallback ladder, command ordering | 4 | **written** (Stage 4) |
+| 09 | [`09_torque_realization.md`](09_torque_realization.md) | Inverse dynamics (`qddot_to_torque`), the C++ `ros2_control` controllers, multi-rate timing, Gazebo vs FR3 (gravity: Q-1-1; inertia) | 4 | **written** (Stage 4) |
 | 10 | `10_alternative_controllers.md` | Velocity CBF plus executor, Dynamic-OSCBF, RL path | 5 | not written |
 | 11 | `11_iso_safety_layer.md` | ISO speed-and-separation math, monitor, evidence logger | 5 | not written |
 | 12 | `12_simulation.md` | Gazebo plant, spawn, controller activation, sim nodes, experiment axes, batch runs, scoring | 6 | not written |
@@ -108,6 +108,7 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | [tools/check_state.py](tools/check_state.py) | Read-only consistency check, run at every session start and checkpoint: git position against the pinned HEAD, stray working-tree changes, agreement of the ledger totals, broken links |
 | [tools/stage2_verification/](tools/stage2_verification/README.md) | Read-only scripts that reproduce every numerical result of chapters 04 and 05 (`run_all.sh`; host and container parts), with expected vs observed values and the list of what still needs runtime validation (added after Stage 2) |
 | [tools/stage3_verification/](tools/stage3_verification/README.md) | Read-only scripts reproducing the numerical results of chapters 06 and 07, two of which drive the real `ConstraintBuilder` in the container (`run_all.sh`; 85 of 85 checks on 2026-11-11) |
+| [tools/stage4_verification/](tools/stage4_verification/README.md) | QP assembly, slack semantics, box and brake, inverse dynamics and controller-source checks of chapters 08–09, built from the production QP builders and solved with the deployed OSQP 0.6.7 in the container (`run_all.sh`; 61 of 61 on 2026-11-11) |
 | [CHECKPOINTS.md](CHECKPOINTS.md) / [RESUME_PROMPT.md](RESUME_PROMPT.md) | Append-only session log, and the prompt for resuming in a new session |
 
 ## 6. Scope

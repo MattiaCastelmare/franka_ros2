@@ -343,7 +343,8 @@
    "note": "",
    "reach": "entry,script,test",
    "ext": false,
-   "status": "partial"
+   "status": "partial",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/cbf_velocity_filter.py",
@@ -495,7 +496,8 @@
    "note": "",
    "reach": "entry,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/real_time_distance.py",
@@ -647,7 +649,9 @@
    "ch": "08",
    "note": "",
    "reach": "entry,sim-exec,script,test",
-   "ext": false
+   "ext": false,
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/utils/cbf_kinematics.py",
@@ -666,7 +670,9 @@
    "ch": "08",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/utils/cbf_qp_assembly.py",
@@ -676,7 +682,8 @@
    "note": "",
    "reach": "entry,script,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/utils/cbf_singularity.py",
@@ -685,7 +692,9 @@
    "ch": "08",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/utils/cbf_state_rows.py",
@@ -948,7 +957,8 @@
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
    "ext": false,
-   "status": "partial"
+   "status": "partial",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/utils/rl_policy.py",
@@ -1057,7 +1067,8 @@
    "note": "",
    "reach": "entry,script,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_experiments/franka_experiments/utils/static_scene.py",
@@ -3136,7 +3147,8 @@
    "note": "",
    "reach": "",
    "ext": true,
-   "status": "partial"
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_rt_controllers/src/cbf_torque_controller.cpp",
@@ -3146,7 +3158,8 @@
    "note": "",
    "reach": "",
    "ext": true,
-   "status": "partial"
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_rt_controllers/src/rt_velocity_blender_controller.cpp",
@@ -3165,7 +3178,9 @@
    "ch": "09",
    "note": "",
    "reach": "",
-   "ext": true
+   "ext": true,
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_rt_controllers/config/rt_velocity_blender.yaml",
@@ -3183,7 +3198,9 @@
    "ch": "09",
    "note": "",
    "reach": "",
-   "ext": true
+   "ext": true,
+   "status": "documented",
+   "stage": 4
   },
   {
    "path": "franka_rt_controllers/rt_velocity_blender_controller.xml",
