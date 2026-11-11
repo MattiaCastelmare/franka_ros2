@@ -1,0 +1,260 @@
+=== effective_params (chapters 06-07: what is actually ON) ===
+repository: /home/mattia/Git/franka_ros2
+key                                  |       yaml |         hw |     sim:kf | sim:min_l1
+d_safe                               |        0.1 |        0.1 |        0.1 |        0.1
+k0_cbf                               |       25.0 |       25.0 |       25.0 |       25.0
+k1_cbf                               |       10.5 |       10.5 |       10.5 |       10.5
+cbf_obstacle_horizon                 |        1.2 |        1.2 |        1.2 |        1.2
+min_confidence                       |        0.2 |        0.2 |        0.2 |        0.2
+cbf_min_leverage                     |       0.05 |       0.05 |       0.05 |       0.05
+cbf_h_recovery_alpha                 |        0.8 |        0.8 |        0.8 |        0.0   *
+cbf_hdot_filter_alpha                |        0.6 |        0.6 |        0.6 |        0.0   *
+cbf_update_rate_hz                   |       50.0 |       50.0 |       50.0 |       50.0
+qp_rate_hz                           |      300.0 |      300.0 |      300.0 |      100.0   *
+obstacle_velocity_enabled            |       True |       True |       True |       True
+obstacle_velocity_source             |   residual |    tracker |    tracker |    tracker   *
+obstacle_velocity_residual_floor     |       True |       True |       True |      False   *
+obstacle_velocity_residual_floor_gap |        0.7 |        0.7 |        0.7 |        0.7
+obstacle_velocity_median             |          5 |          5 |          5 |          1   *
+obstacle_velocity_median_s           |        0.3 |        0.3 |        0.3 |        0.0   *
+obstacle_velocity_min_frames         |          8 |          8 |          8 |          8
+obstacle_velocity_min_span_s         |      0.265 |      0.265 |      0.265 |      0.265
+obstacle_input_rate_hz               |       90.0 |       90.0 |       90.0 |       90.0
+obstacle_velocity_fast_trust         |       True |       True |       True |      False   *
+obstacle_velocity_track_deadband     |       0.15 |       0.15 |       0.15 |       0.15
+obstacle_velocity_max                |        2.0 |        2.0 |        2.0 |        2.0
+obstacle_velocity_normal_rot_max     |        0.0 |       0.15 |       0.15 |        0.0   *
+obstacle_velocity_identity_jump      |        0.0 |        0.1 |        0.1 |        0.0   *
+enable_vobs_in_hdot                  |      False |       True |       True |       True   *
+vobs_hdot_max                        |        2.0 |        2.0 |        2.0 |        2.0
+enable_velocity_feedforward          |      False |      False |      False |      False
+enable_uncertainty_margin            |      False |       True |       True |      False   *
+uncertainty_k_sigma                  |        2.0 |        2.0 |        2.0 |        2.0
+link_speed_reaction_s                |        0.2 |        0.2 |        0.2 |        0.2
+uncertainty_margin_alpha             |        0.8 |        0.8 |        0.8 |        0.8
+enable_latency_compensation          |       True |       True |       True |      False   *
+latency_t_blind                      |      0.085 |      0.085 |      0.085 |      0.085
+latency_k_sigma                      |        2.0 |        2.0 |        2.0 |        2.0
+latency_margin_max                   |       0.25 |       0.25 |       0.25 |       0.25
+enable_sensor_range_uncertainty      |      False |      False |      False |      False
+enable_velocity_standoff             |      False |       True |       True |      False   *
+velocity_standoff_time_s             |       0.25 |       0.25 |       0.25 |       0.25
+velocity_standoff_max                |       0.35 |       0.35 |       0.35 |       0.35
+margin_gate_on_approach              |       True |       True |       True |      False   *
+margin_gate_ref_speed                |       0.15 |       0.15 |       0.15 |       0.15
+enable_evidence_margin               |      False |      False |      False |      False
+enable_curvature_term                |      False |      False |      False |      False
+curvature_obstacle_radius            |        0.3 |        0.3 |        0.3 |        0.3
+enable_obstacle_memory               |      False |      False |      False |      False
+enable_zone_ladder                   |      False |       True |       True |      False   *
+retreat_excess_speed_max             |       0.25 |       0.25 |       0.25 |       0.25
+enable_weighted_slack                |      False |      False |      False |      False
+obstacle_slack_mode                  |     family |     family |     family |     row_l1   *
+rho_slack                            |     1000.0 |     1000.0 |     1000.0 |     1000.0
+retreat_cap_enabled                  |       True |       True |       True |      False   *
+link_speed_rows_enabled              |       True |       True |       True |      False   *
+ssb_rows_enabled                     |      False |      False |      False |      False
+iso_enabled                          |      False |      False |      False |      False
+state_governor_enabled               |       True |       True |       True |      False   *
+cbf_tangential_gain                  |        0.5 |        0.5 |        0.5 |        0.0   *
+enable_go_around                     |       True |       True |       True |      False   *
+enable_lateral_evasion               |      False |       True |       True |      False   *
+enable_outrun_evasion                |      False |      False |      False |      False
+enable_livelock_escape               |      False |       True |       True |      False   *
+k_brake                              |        3.0 |        3.0 |        3.0 |        3.0
+(* = differs between configurations)
+[PASS] FACT  03 §5.1: six enable_* flags are false in the YAML and true in a default hardware launch: {'enable_lateral_evasion': (False, True), 'enable_livelock_escape': (False, True), 'enable_uncertainty_margin': (False, True), 'enable_zone_ladder': (False, True), 'enable_vobs_in_hdot': (False, True), 'enable_velocity_standoff': (False, True)}
+[PASS] FACT  03 §5.1: obstacle_velocity_source residual -> tracker; normal guard 0 -> 0.15; identity jump 0 -> 0.10:
+[PASS] FACT  mechanisms OFF in all four configurations (implemented, not shipped): enable_velocity_feedforward, enable_curvature_term, enable_evidence_margin, enable_obstacle_memory, enable_sensor_range_uncertainty, enable_weighted_slack, enable_outrun_evasion, ssb_rows_enabled, iso_enabled
+[PASS] FACT  on in yaml and hw (no launch flag), off in minimal_l1: go-around, state governor, rate caps, tangential bias:
+[PASS] FACT  latency compensation: on in YAML and hw, off in minimal_l1:
+[PASS] FACT  sim:kf (batch default) is identical to the hardware default: 0 keys differ: []
+[PASS] FACT  gains: d_safe 0.10 m, k0 25, k1 10.5 in every configuration:
+[PASS] FACT  obstacle_input_rate_hz = 90 from the camera profile 848x480x90 (hw and sim):
+[PASS] FACT  minimal_l1 slack mode row_l1, every other configuration family slack:
+--- effective_params (chapters 06-07: what is actually ON): 9 passed, 0 failed ---
+
+=== check_timing_governor (chapter 06 §3, §5; F-3-3, F-3-9) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  shipped path: centre, radius, cycle, Kp, Kd: observed [ 0.4 ,  0.  ,  0.45,  0.25,  6.  , 20.  ,  9.  ] vs reported [ 0.4 ,  0.  ,  0.45,  0.25,  6.  , 20.  ,  9.  ] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] NUM   (6.2) sigma=1: |v_d - dp_d/dt| on the cycle [m/s]: 4.785e-08 <= 1.0e-05
+[PASS] NUM   (6.3) sigma=1: |a_d - d2p_d/dt2| on the cycle [m/s^2]: 2.521e-08 <= 1.0e-03
+[PASS] NUM   cycle speed 2 pi r / T [m/s]: observed 0.261799 vs reported 0.261799 (|diff| 0.00e+00 <= 1.0e-09)
+[PASS] NUM   phase at the end of the soft start = S_a/2 (smootherstep integrates to 1/2): observed 0.208342 vs reported 0.208333 (|diff| 8.33e-06 <= 2.0e-05)
+[PASS] NUM   s_dot at the end of the soft start = rate: observed 0.166667 vs reported 0.166667 (|diff| 0.00e+00 <= 1.0e-06)
+[PASS] NUM   time at which s reaches S_a (junction) [s]: observed 3.75 vs reported 3.75 (|diff| 0.00e+00 <= 1.0e-09)  (ramp 2.5 s + the remaining S_a/2 at full rate)
+[PASS] NUM   F-3-3 sigma=0.3: |v_d| / |dp_d/dt| (should be 1; code gives 1/sigma): observed 3.33333 vs reported 3.33333 (|diff| 5.48e-08 <= 1.0e-03)
+[PASS] NUM   F-3-3 sigma=0.3: |a_d| / true centripetal (code gives 1/sigma^2): observed 11.1111 vs reported 11.1111 (|diff| 3.66e-07 <= 1.1e-01)
+[PASS] NUM   F-3-3 sigma=0.05: |v_d| / |dp_d/dt| (should be 1; code gives 1/sigma): observed 20 vs reported 20 (|diff| 9.01e-09 <= 1.0e-03)
+[PASS] NUM   F-3-3 sigma=0.05: |a_d| / true centripetal (code gives 1/sigma^2): observed 400 vs reported 400 (|diff| 3.60e-07 <= 4.0e+00)
+[PASS] NUM   F-3-3 illustrative: steady tangential lead of x over p_d at sigma=0.5 [m]: observed 0.0589877 vs reported 0.0589049 (|diff| 8.29e-05 <= 6.0e-03)  (linear prediction (Kd/Kp)(1-sigma)|v_full| = 0.0589 m below the clip; double-integrator idealisation, not the robot)
+[INFO] F-3-3 illustrative sigma=0.3: linear prediction 0.0825 m exceeds cart_err_max 0.08 m, so the clip binds; simulated lead 0.1263 m, mean |e| 0.1265 m
+[INFO] entry point [0.4  0.25 0.45]; lead-in velocity [ 0.0372  0.1    -0.0148] m/s, cycle velocity [ 0.     -0.      0.2618] m/s at s = S_a
+[PASS] NUM   lead-in at full rate: |dP/ds|/T = |entry - p0| / approach_time [m/s]: observed 0.107725 vs reported 0.107725 (|diff| 1.39e-17 <= 1.0e-09)  (|entry - p0| = 0.2693 m from the home TCP)
+[PASS] NUM   F-3-9 velocity step |dv_d| at the junction [m/s]: observed 0.296432 vs reported 0.296432 (|diff| 0.00e+00 <= 1.0e-09)  (= |v_cycle - (entry - p0)/approach_time|; depends on where the arm starts)
+[INFO] F-3-9 magnitude from the home TCP: |dv_d| = 0.2964 m/s, one-tick a_d impulse not represented (a_d of the lead-in is 0)
+[PASS] FACT  governor radii d_full, d_stop [m]: observed [0.15, 0.08] vs reported [0.15, 0.08] (|diff| 2.78e-17 <= 1.0e-12)
+[PASS] NUM   sigma at d = 0.15 / 0.115 / 0.08 m: observed [1.   , 0.525, 0.05 ] vs reported [1.   , 0.525, 0.05 ] (|diff| 4.44e-16 <= 1.0e-12)
+--- check_timing_governor (chapter 06 §3, §5; F-3-3, F-3-9): 16 passed, 0 failed ---
+
+=== check_hocbf_gains (chapter 07 §2-3, §6; F-3-4, F-3-5) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  zone ladder is ON in the hardware default (enable_zone_ladder):
+[PASS] FACT  ladder boundaries hold/priority/active/notice [m] = (0.25, 0.5, 1.0, 1.5) x d_safe: observed [0.025, 0.05 , 0.1  , 0.15 ] vs reported [0.025, 0.05 , 0.1  , 0.15 ] (|diff| 2.78e-17 <= 1.0e-12)
+[PASS] FACT  blend width [m] = zone_blend_r x d_safe: observed 0.02 vs reported 0.02 (|diff| 3.47e-18 <= 1.0e-12)
+[PASS] NUM   scalar (k0_cbf, k1_cbf) (k0=25, k1=10.5): real factorisation alpha1, alpha2 = 6.8508, 3.6492; zeta = 1.0500:
+[PASS] NUM   rung hold (k0=50, k1=14): k1^2 - 4 k0 = -4 < 0, NO real factorisation; zeta = 0.9899:
+[PASS] NUM   rung priority (k0=50, k1=14): k1^2 - 4 k0 = -4 < 0, NO real factorisation; zeta = 0.9899:
+[PASS] NUM   rung active (k0=25, k1=10.5): real factorisation alpha1, alpha2 = 6.8508, 3.6492; zeta = 1.0500:
+[PASS] NUM   rung notice (k0=12, k1=7): real factorisation alpha1, alpha2 = 4.0000, 3.0000; zeta = 1.0104:
+[PASS] NUM   F-3-5: active->priority blend: priority weight at which k1^2 = 4 k0 (analytic root of 12.25 w^2 - 26.5 w + 10.25): observed 0.504403 vs reported 0.5044 (|diff| 2.63e-06 <= 5.0e-05)
+[PASS] NUM   F-3-5: smallest priority weight with k1^2 < 4 k0, from the real ZoneLadder: observed 0.504425 vs reported 0.504403 (|diff| 2.23e-05 <= 2.0e-03)
+[INFO] F-3-5: complex roots for gaps below 0.0499 m (d_safe = 0.1 m); i.e. once the gap is about 50.1 mm inside d_safe
+[PASS] NUM   scalar (k0_cbf, k1_cbf): impulse response never negative (min g / max g): -0.000e+00 <= 1.0e-12
+[PASS] NUM   rung hold: negative lobe of g relative to its peak (= -exp(-zeta pi/sqrt(1-zeta^2))): observed -2.81427e-10 vs reported -2.81427e-10 (|diff| 6.84e-19 <= 2.8e-13)  (2.81e-10: a second-order differential inequality has no comparison bound, but the violation it allows is this small)
+[PASS] NUM   rung priority: negative lobe of g relative to its peak (= -exp(-zeta pi/sqrt(1-zeta^2))): observed -2.81427e-10 vs reported -2.81427e-10 (|diff| 6.84e-19 <= 2.8e-13)  (2.81e-10: a second-order differential inequality has no comparison bound, but the violation it allows is this small)
+[PASS] NUM   rung active: impulse response never negative (min g / max g): -0.000e+00 <= 1.0e-12
+[PASS] NUM   rung notice: impulse response never negative (min g / max g): -0.000e+00 <= 1.0e-12
+[INFO] scalar (k0_cbf, k1_cbf): static engagement h < (k1/k0)|h_dot|, k1/k0 = 0.4200 s
+[INFO] rung hold: static engagement h < (k1/k0)|h_dot|, k1/k0 = 0.2800 s
+[INFO] rung priority: static engagement h < (k1/k0)|h_dot|, k1/k0 = 0.2800 s
+[INFO] rung active: static engagement h < (k1/k0)|h_dot|, k1/k0 = 0.4200 s
+[INFO] rung notice: static engagement h < (k1/k0)|h_dot|, k1/k0 = 0.5833 s
+[PASS] NUM   k1/k0 for the shipped scalar pair and the notice rung [s]: observed [0.42    , 0.583333] vs reported [0.42  , 0.5833] (|diff| 3.33e-05 <= 1.0e-04)
+[PASS] FACT  F-3-4: ZoneLadder.weights is identical for d_notice = 0.15 and 0.90 m (1 mm grid, 0-1 m):
+[PASS] FACT  F-3-4: notice weight at d_active + blend/2 = 0.11 m (< d_notice = 0.15 m): observed 1 vs reported 1 (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] NUM   (7.10) build_row_rhs = k1(A qdot_cbf - v_obs) + k0 max(h,h_pen) + c + b_ff + kappa; caps (v_cap + a qdot)/T: 0.000e+00 <= 1.0e-12
+[PASS] NUM   zoned=False uses the scalar gains on the barrier rows: 0.000e+00 <= 1.0e-12
+[PASS] NUM   (7.11) bounded depth push: rest excess speed (k0/k1)|max(h, -dv k1/k0)| <= dv = 0.25 m/s for every rung and h in {-0.01, -0.05, -0.2} m:
+[PASS] NUM   1-D closed loop, shipped gains, obstacle closing at 0.3 m/s from h = 0.30 m: min h = 0.001 mm, final separation speed 0.300 m/s:
+[PASS] NUM   1-D closed loop, shipped gains, obstacle closing at 1.0 m/s from h = 0.30 m: min h = 0.000 mm, final separation speed 1.000 m/s:
+--- check_hocbf_gains (chapter 07 §2-3, §6; F-3-4, F-3-5): 23 passed, 0 failed ---
+
+=== check_nominal_shaping (chapter 06 §4, §6, §7) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] NUM   (6.8) solve(JJ^T + l2 I, J)^T = J^T (JJ^T + l2 I)^-1 (200 random J, both l2): 2.180e-13 <= 1.0e-10
+[PASS] NUM   (6.10) singular values of J(I - J+J) = l2 s / (s^2 + l2): 5.423e-14 <= 1.0e-10
+[PASS] NUM   (6.10) worst-case leakage gain sqrt(l2)/2 at lambda_sq_min / lambda_sq_max: observed [0.005   , 0.111803] vs reported [0.005 , 0.1118] (|diff| 3.40e-06 <= 1.0e-04)  (m/s^2 of task acceleration per rad/s^2 of null-space command, at the worst singular value)
+[PASS] FACT  state governor ON in the hardware default:
+[INFO] joint 4 at q_ref,up - 0.30 rad: target w (q_dot=0) = 1.000, (q_dot4 = -1e-6) = 1.000
+[INFO] joint 4 at q_ref,up - 0.20 rad: target w (q_dot=0) = 1.000, (q_dot4 = -1e-6) = 1.000
+[INFO] joint 4 at q_ref,up - 0.10 rad: target w (q_dot=0) = 1.000, (q_dot4 = -1e-6) = 1.000
+[INFO] joint 4 at q_ref,up - 0.05 rad: target w (q_dot=0) = 0.809, (q_dot4 = -1e-6) = 1.000
+[INFO] joint 4 at q_ref,up - 0.02 rad: target w (q_dot=0) = 0.120, (q_dot4 = -1e-6) = 1.000
+[INFO] joint 4 at q_ref,up - 0.00 rad: target w (q_dot=0) = 0.000, (q_dot4 = -1e-6) = 1.000
+[PASS] FACT  asymmetry: at the filter position-box edge (q_ref,up - position_margin_rad = -0.1958 rad) a STOPPED joint 4 gives w = 0.809, the same joint with q_dot4 = -1e-6 gives 1.000: velocity_margin picks the upper envelope when q_dot >= 0 (np.where(qd >= 0.0, up, -lo))
+[PASS] NUM   F-3-10: obstacle centre of a held entry = -r n [m]: observed [-0.04248,  0.     , -0.06784] vs reported [-0.04248, -0.     , -0.06784] (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] NUM   F-3-10: its distance from the base origin [m]: observed 0.0800426 vs reported 0.0800426 (|diff| 1.39e-17 <= 1.0e-12)
+[INFO] F-3-10: finite-difference v_obs jump |c_bad - c_prev| * 90 Hz = 64.3 m/s (|p_h,prev| = 0.714 m)
+[INFO] F-3-10: finite-difference v_obs jump |c_bad - c_prev| * 100 Hz = 71.4 m/s (|p_h,prev| = 0.714 m)
+[PASS] NUM   F-3-10: the jump equals |p_h,prev| / dt when n is unchanged [m/s at 100 Hz]: observed 71.4493 vs reported 71.4493 (|diff| 0.00e+00 <= 1.0e-09)
+--- check_nominal_shaping (chapter 06 §4, §6, §7): 8 passed, 0 failed ---
+
+=== check_held_row (chapter 07 §8.1; F-2-11 -> F-3-2, Q-2-1) ===
+repository: /ros2_ws/src
+[PASS] FACT  _builder3 transcription matches the Obstacle(...) keywords of _on_distances:
+[INFO] fingertip label fr3_link8#2, pr = [0.3069 0.     0.4903] m
+[PASS] FACT  1. held entry is valid and reaches the builder:
+[PASS] FACT  1. held entry closest_point_human [m]: observed [0., 0., 0.] vs reported [0., 0., 0.] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  1. held entry passes the confidence gate: conf 0.800 >= min_confidence 0.2:
+[PASS] FACT  1. held entry inside the horizon: d 0.1111 <= 1.2 m:
+[PASS] FACT  1. held entry track fields are zero (track_id 0, frames_seen 0, v_vec = 0 array, not None):
+[PASS] FACT  2. a row is built for the fingertip on EVERY held frame: 9/9
+[PASS] NUM   2. held row normal = pr/|pr| (base-radial): observed [0.530576, 0.      , 0.847637] vs reported [0.530576, 0.      , 0.847637] (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] REPRO 2. angle between the held row normal and the true normal [deg]: observed 122.044 vs reported 122 (|diff| 4.44e-02 <= 6.0e-02)
+[PASS] NUM   2. held row a = n_held^T J (row of A): observed [-0.      , -0.176682, -0.      ,  0.466142,  0.      ,  0.184421,
+ -0.      ] vs reported [-0.      , -0.176682, -0.      ,  0.466142,  0.      ,  0.184421,
+ -0.      ] (|diff| 0.00e+00 <= 1.0e-12)
+[INFO] identity resets (phase, frame): [('hold', 45), ('back', 56)]
+[PASS] FACT  3. identity guard fires on the first held frame (ph jumps to 0):
+[PASS] FACT  3. identity guard fires again when the obstacle reappears (ph jumps back):
+[PASS] NUM   4. A: true closing rate n_true^T v_tip [m/s]: observed -0.1 vs reported -0.1 (|diff| 2.78e-17 <= 1.0e-09)
+[PASS] NUM   4. A: the same motion along the held normal, n_held^T v_tip [m/s] (> 0: read as separation): observed 0.0530576 vs reported 0.0530576 (|diff| 2.08e-17 <= 1.0e-09)
+[INFO] A: frame  phase   gap_true   h_row     v_obs    A q_dot - v_obs
+[INFO] A:  42  normal   0.1133    0.0133   0.0000   -0.1000
+[INFO] A:  43  normal   0.1122    0.0122   0.0000   -0.1000
+[INFO] A:  44  normal   0.1111    0.0111   0.0000   -0.1000
+[INFO] A:  45  hold     0.1100    0.0111   0.0000    0.0531
+[INFO] A:  46  hold     0.1089    0.0111   0.0000    0.0531
+[INFO] A:  47  hold     0.1078    0.0111   0.0000    0.0531
+[INFO] A:  48  hold     0.1067    0.0111   0.0000    0.0531
+[INFO] A:  49  hold     0.1056    0.0111   0.0000    0.0531
+[INFO] A:  50  hold     0.1044    0.0111   0.0095    0.0435
+[INFO] A:  51  hold     0.1033    0.0111   0.0190    0.0340
+[INFO] A:  52  hold     0.1022    0.0064   0.0190    0.0340
+[INFO] A:  53  hold     0.1011    0.0064   0.0190    0.0340
+[INFO] A:  54  gone     0.1000   (no fingertip row)
+[INFO] A:  55  gone     0.0989   (no fingertip row)
+[INFO] A:  56  back     0.0978   -0.0060   0.0000   -0.1000
+[INFO] A:  57  back     0.0967   -0.0064   0.0000   -0.1000
+[INFO] A:  58  back     0.0956   -0.0069   0.0000   -0.1000
+[PASS] FACT  5. A: before the hold the k1 term sees the approach: A q_dot - v_obs = -0.1000 m/s < 0:
+[PASS] FACT  5. A: during the hold A q_dot - v_obs >= 0 on every frame (the approach is not seen): [0.0531, 0.0531, 0.0531, 0.0531, 0.0531, 0.0435, 0.034, 0.034, 0.034]
+[PASS] FACT  5. A: rows vanish when the entry turns invalid (hold expired):
+[INFO] B: frame  phase   gap_true   h_row     v_obs
+[INFO] B:  42  normal   0.1667   -0.1042   0.5000
+[INFO] B:  43  normal   0.1611   -0.1102   0.5000
+[INFO] B:  44  normal   0.1556   -0.1162   0.5000
+[INFO] B:  45  hold     0.1500   -0.0433   0.0000
+[INFO] B:  46  hold     0.1444   -0.0235   0.0000
+[INFO] B:  47  hold     0.1389   -0.0077   0.0000
+[INFO] B:  48  hold     0.1333    0.0050   0.0000
+[INFO] B:  49  hold     0.1278    0.0151   0.0000
+[INFO] B:  50  hold     0.1222    0.0232   0.0000
+[INFO] B:  51  hold     0.1167    0.0296   0.0000
+[INFO] B:  52  hold     0.1111    0.0348   0.0000
+[INFO] B:  53  hold     0.1056    0.0390   0.0000
+[INFO] B:  54  gone     0.1000   (no fingertip row)
+[INFO] B:  55  gone     0.0944   (no fingertip row)
+[INFO] B:  56  back     0.0889   -0.1468   0.5000
+[INFO] B:  57  back     0.0833   -0.1524   0.5000
+[INFO] B:  58  back     0.0778   -0.1579   0.5000
+[PASS] FACT  6. B: before the hold the row carries the closing speed (v_obs = 0.500 m/s):
+[PASS] FACT  6. B: v_obs = 0 on every held frame (frames_seen 0 -> tracker 0; residual sees a frozen d): [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+[PASS] NUM   6. B: true gap lost between the first and last held frame [m]: observed 0.0444444 vs reported 0.0444444 (|diff| 6.94e-18 <= 1.0e-09)  (0.5 m/s x 8 frame intervals; ~5 cm over the full 0.10 s hold, invisible to the row)
+[INFO] B: row h over the hold: [-0.0433, -0.0235, -0.0077, 0.005, 0.0151, 0.0232, 0.0296, 0.0348, 0.039]
+[PASS] FACT  6. B: the row LOOSENS while the obstacle closes: h -0.1162 -> +0.0390 m (+0.1552) while the true gap changes by -0.0500 m: latency margin (gated on n_seen) drops at once; standoff decays by its EMA; v_obs -> 0
+--- check_held_row (chapter 07 §8.1; F-2-11 -> F-3-2, Q-2-1): 21 passed, 0 failed ---
+
+=== check_cp_label_rows (chapter 07 §8.2; F-2-10 -> F-3-12) ===
+repository: /ros2_ws/src
+[PASS] FACT  multi_obstacle_k is a perception setting; this script publishes 1 extra rank in frames 10-19 (as k = 2 does with a second cluster); cbf_h_recovery_alpha = 0.8:
+[PASS] FACT  1. one cluster: wrist labels: ['fr3_link6#0', 'fr3_link6#1']
+[PASS] FACT  1. two clusters: wrist labels (F-2-10): ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3']
+[PASS] NUM   2. rows of fr3_link6#0 and its twin: max |a0 - a1|, |c0 - c1| over all frames: 5.551e-17 <= 1.0e-12  (duplicates to rounding: the QP carries the same constraint twice)
+[INFO] frame  clusters  h(#0)     h(twin)   twin label
+[INFO]    0      1    0.05000   0.05000  fr3_link6#1
+[INFO]    1      1    0.05067   0.05067  fr3_link6#1
+[INFO]    2      1    0.05187   0.05187  fr3_link6#1
+[INFO]    3      1    0.05349   0.05349  fr3_link6#1
+[INFO]    4      1    0.05546   0.05546  fr3_link6#1
+[INFO]    5      1    0.05770   0.05770  fr3_link6#1
+[INFO]    6      1    0.06016   0.06016  fr3_link6#1
+[INFO]    7      1    0.06280   0.06280  fr3_link6#1
+[INFO]    8      1    0.06557   0.06557  fr3_link6#1
+[INFO]    9      1    0.06846   0.06846  fr3_link6#1
+[INFO]   10      2    0.07143   0.08333  fr3_link6#0.2
+[INFO]   11      2    0.07448   0.08400  fr3_link6#0.2
+[INFO]   12      2    0.07758   0.08520  fr3_link6#0.2
+[INFO]   13      2    0.08073   0.08683  fr3_link6#0.2
+[INFO]   14      2    0.08392   0.08879  fr3_link6#0.2
+[INFO]   15      2    0.08714   0.09104  fr3_link6#0.2
+[INFO]   16      2    0.09038   0.09350  fr3_link6#0.2
+[INFO]   17      2    0.09363   0.09613  fr3_link6#0.2
+[INFO]   18      2    0.09691   0.09890  fr3_link6#0.2
+[INFO]   19      2    0.10019   0.10179  fr3_link6#0.2
+[INFO]   20      1    0.10349   0.07810  fr3_link6#1
+[INFO]   21      1    0.10679   0.08648  fr3_link6#1
+[INFO]   22      1    0.11010   0.09385  fr3_link6#1
+[INFO]   23      1    0.11341   0.10041  fr3_link6#1
+[INFO]   24      1    0.11673   0.10633  fr3_link6#1
+[INFO]   25      1    0.12005   0.11173  fr3_link6#1
+[INFO]   26      1    0.12337   0.11672  fr3_link6#1
+[INFO]   27      1    0.12670   0.12137  fr3_link6#1
+[INFO]   28      1    0.13003   0.12577  fr3_link6#1
+[INFO]   29      1    0.13335   0.12995  fr3_link6#1
+[PASS] FACT  3. frame 10 (flip #1 -> #0.2, a NEW key): twin h 0.08333 > #0 h 0.07143: no _h_smooth entry, so h_raw is taken at once (loosening 11.90 mm in one frame):
+[PASS] FACT  3. frame 20 (flip back to #1, a STALE key): twin h 0.07810 != #0 h 0.10349; the EMA resumes from the value left at frame 9 (0.06846), i.e. 0.8 x 0.06846 + 0.2 x h_raw: the direction depends on the scene; here (receding) it is a tightening
+[PASS] FACT  3. control: with a stable label (frames 1-9) the twin h equals #0 h exactly:
+[PASS] FACT  4. per-label velocity state exists under BOTH twin keys after the flip (#1 and #0.2): ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3', 'fr3_link6#1']
+--- check_cp_label_rows (chapter 07 §8.2; F-2-10 -> F-3-12): 8 passed, 0 failed ---

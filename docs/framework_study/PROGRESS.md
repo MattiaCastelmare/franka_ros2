@@ -6,11 +6,12 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-11, checkpoint C-008 (Stage 2 complete; verification scripts preserved and rerun)
-- **Project status:** read-only documentation phase. Stages 0, 1 and 2 are done.
-- **Last completed stage:** Stage 2 (Foundations and perception): `04_math_foundations.md` and
-  `05_perception_and_distance.md`. It is waiting for the user's review.
-- **Next pending stage:** Stage 3 (Nominal motion and barrier): `06`, `07`. **Not approved.**
+- **Last updated:** 2026-11-11, checkpoint C-016 (Stage 3 complete; stopped for review)
+- **Project status:** read-only documentation phase. Stages 0, 1, 2 and 3 are done.
+- **Last completed stage:** Stage 3 (Nominal motion and barrier): `06_nominal_motion.md`,
+  `07_cbf_obstacle_barrier.md`, `tools/stage3_verification/`. **Awaiting the user's review.** Not
+  committed (the user commits).
+- **Next pending stage:** Stage 4 (QP and actuation): `08`, `09`. **Not approved.**
 - **Stage in progress:** none.
 - **Pinned branch:** `humble-mattia`
 - **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
@@ -21,19 +22,22 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - Stashes: 3, never touched.
 - **Completed documentation files:**
   - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`,
-    `04_math_foundations.md`, `05_perception_and_distance.md`;
+    `04_math_foundations.md`, `05_perception_and_distance.md`, `06_nominal_motion.md`,
+    `07_cbf_obstacle_barrier.md`;
   - `ledger/*`;
   - the tools `stage0_extract.py`, `ledger_status.py` and `check_state.py` (baseline-aware since C-003);
   - `tools/stage2_verification/`: 9 read-only scripts reproducing every numerical result of ch. 04 and
     05, `run_all.sh`, a README, and the recorded output `results/observed_2026-11-11.txt`
     (126 of 126 checks passed);
+  - `tools/stage3_verification/`: 6 scripts + 2 helpers (4 host, 2 container driving the real
+    `ConstraintBuilder`), `run_all.sh`, a README, `results/observed_2026-11-11.txt` (85 of 85 passed);
   - `CHECKPOINTS.md` and `RESUME_PROMPT.md`;
   - the root `CLAUDE.md`.
 - **Draft or stale:** `A_file_index.md` was generated in Stage 0 and does not reflect the Stage 1 chapter
   reassignments (§2). It gets regenerated in Stage 7.
 - **Incomplete work carried forward:**
-  - 54 ledger files are `partial`: for nodes, only the constructor interfaces were read. Their algorithms
-    belong to the stage that owns their chapter.
+  - 70 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
+    the algorithms belong to the stage that owns the chapter. Stage 3 partials are listed in §2.
   - Ch. 05 files still `pending` or `partial`, read at interface level only: the eye-in-hand node, the
     hand-eye launch files, `rtd_debug.py`, `node_utils.py`, the remaining calibration YAMLs, and most
     ch. 05 tests (names cross-referenced only). They are covered by the chapter at interface level;
@@ -41,15 +45,12 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - Unreachability candidates (F-0-4) are not yet confirmed (Stage 7); Stage 2 confirmed
     `static_scene.py`, `surface_velocity.py` and `self_shadow.void_spheres_from_rays` as unused.
   - The guide-versus-code cross-check has not started (Stage 7, chapter 16).
-  - User questions: Q-1-4, Q-1-5, Q-2-2. Runtime tests that need approval: Q-2-3, Q-2-4. Stage 3
-    must open with Q-2-1 (F-2-11).
-- **Exact next action:** wait for the user's review of Stage 2 and explicit approval of Stage 3.
-  Then:
-  1. run `check_state.py` and, if the container is up,
-     `docs/framework_study/tools/stage2_verification/run_all.sh` (expect exit 0);
-  2. append C-009 "Stage 3 started";
-  3. first read: `cbf_state_rows.py` around L2480–2560 (the obstacle-row construction from `pr − ph`)
-     to settle Q-2-1, then `pentagon_qddot_commander.py` for ch. 06.
+  - User questions: Q-1-4, Q-1-5, Q-2-2, Q-3-1. Runtime tests that need approval: Q-2-3, Q-2-4,
+    Q-3-2. Q-2-1 is answered (F-3-2, F-3-13).
+- **Exact next action:** STOP. Wait for the user's review of Stage 3 and an explicit approval of
+  Stage 4. On approval: run `check_state.py` and both `run_all.sh` (stage 2 and 3; expect exit 0),
+  append a "Stage 4 started" checkpoint, then read `cbf_safety_filter._solve` and
+  `cbf_qp_assembly` (`build_osqp_A`, `build_qp_objective`, `build_osqp_bounds`) for ch. 08.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -60,7 +61,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 | 0 — Inventory | `00_INDEX.md`, `PROGRESS.md`, `A_file_index.md` (draft), `ledger/*`, `tools/stage0_extract.py` | 346 enumerated | **done** | `ba68077` | approved 2026-11-11 |
 | 1 — Architecture & graph | `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`; `tools/ledger_status.py` | ch. 01: 5 · 02: 4 · 03: 13, after reassignment; plus about 30 node, launch and C++ files read at interface level | **done** | `ba68077` (tree clean apart from `docs/framework_study/`) | acknowledged complete 2026-11-11 (Q-1-4, Q-1-5 still open) |
 | 2 — Foundations & perception | `04`, `05` | ch. 04: 5 · 05: 62 | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
-| 3 — Nominal motion & barrier | `06`, `07` | ch. 06: 25 · 07: 30 | not started | | |
+| 3 — Nominal motion & barrier | `06`, `07`; `tools/stage3_verification/` | ch. 06: 25 · 07: 30 (see §2 for what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 (re-approved in a new session after an interruption) |
 | 4 — QP & actuation | `08`, `09` | ch. 08: 28 · 09: 6 | not started | | |
 | 5 — Alternatives, ISO, tools | `10`, `11`, `13` | ch. 10: 9 · 11: 18 · 13: 43 | not started | | |
 | 6 — Simulation | `12` | ch. 12: 63 | not started | | |
@@ -74,10 +75,10 @@ shows a better home, and the counts here are then updated.
 
 | Status | Files |
 |---|---:|
-| pending | 262 |
-| partial | 54 |
+| pending | 244 |
+| partial | 70 |
 | read | 4 |
-| documented | 26 |
+| documented | 28 |
 
 `partial` was added in Stage 1. It means the parts the stage needed were read; for nodes, that is
 the constructor interfaces. Chapter reassignments made in Stage 1:
@@ -85,6 +86,22 @@ the constructor interfaces. Chapter reassignments made in Stage 1:
 - `utils/node_utils.py` → ch. 05;
 - `utils/run_metadata.py` → ch. 13;
 - the two hand-eye launch files → ch. 05.
+
+Stage 3 (2026-11-11):
+- `documented`: `utils/cbf_zones.py`, `utils/cbf_constraints.py` (unused; F-3-1).
+- `partial`, chapter 07: `utils/cbf_state_rows.py`. The obstacle family, the assembly and the
+  helpers were read; the self-collision, joint-limit, singularity, SSB, rate-cap and speed-row
+  builders belong to ch. 08. `utils/cbf_evasion.py` was read by a subagent; its call sites were
+  Verified.
+- `partial`, chapter 06: `pentagon_qddot_commander.py` (everything except `_tick_isolation` and
+  the logger internals). Through subagent reading with spot checks: `rl_policy_commander.py`, the
+  three `ee_*` commanders, `timing_law.py` (`LinearTimingLaw` read by me), `trajectory.py` (Circular,
+  Linear, Composite read by me), `evasion_direction.py`, `go_around.py`, `livelock.py`,
+  `rl_policy.py`, `avoidance.py`, `avoidance_math.py`. Also `test/test_phase_governor.py`
+  (constants only).
+- `partial`, chapter 08, read for ch. 06/07: `cbf_qp_assembly.py` (`build_row_rhs`,
+  `tangential_bias`), `state_governor.py`, `rate_scaling.py` (`frames_for`, `ema_alpha_for`).
+- The ch. 06/07 tests remain `pending`: they were cited by name only.
 
 ## 3. How later stages are tracked (procedure)
 
@@ -171,7 +188,38 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | F-2-11 | During the bounded LPF hold (≤ `iso_distance_hold_max_s` = 0.10 s), `DistanceEngine._lpf_pass` emits `closest_obstacle_point=None` with a valid direction. `build_cp_messages` then leaves `closest_point_human` at its wire default (0, 0, 0), but the entry is still `valid = True`. `cbf_safety_filter` reads it into `Obstacle.ph`; `cbf_state_rows` (around L2509) builds the normal from `pr − ph`. For the home-pose fingertip the normal is 122° away from the published direction (radially away from the base). Effect on the barrier: Inferred; Stage 3 must check whether anything rejects ph = 0 (Q-2-1). | 05 §3.5 | Verified (code path) + numerically reproduced (message); filter effect Inferred |
 | F-2-12 | `handeye_calibration_node`: the docstring says Levenberg–Marquardt, the code calls `least_squares(method='trf', loss='huber')` with the default `f_scale` = 1. For residuals of a few mm or mrad, Huber is in its quadratic zone, so the fit is plain least squares; robustness comes only from the MAD rejection. Rotation (rad) and translation (m) residuals have unit weights. Minor, documentation-level. | 05 §9.1 | Verified (code) + Derived |
 
+### Stage 3 findings
+
+| ID | Finding | Where | Label |
+|---|---|---|---|
+| F-3-1 | `utils/cbf_constraints.py` (`build_simple_accel_cbf_constraints`, `build_hocbf_constraints`, `predict_state`, `CBFParams`) is imported by no node, script or test. Its HOCBF differs from the live one: c_i clipped to ±5, n̂̇ divided by max(d, 0.05), rows skipped at cond(J) > 1e5, no margins. Confirms the F-0-4 candidate for this module. The live rows come from `cbf_state_rows.ConstraintBuilder` + `cbf_qp_assembly.build_row_rhs`. | 07 §2 | Verified (grep over both packages) |
+| F-3-2 | **F-2-11 downstream (answers Q-2-1).** No stage rejects or repairs `ph = (0,0,0)`. In the held entry `valid` = True, confidence = `find_pt_confidence` ≥ 0.2, so it passes `min_confidence` (0.2, test `<`). The track fields are zero (`cluster_id` −1, and `track_for_point((0,0,0))` finds no track), so `v_vec` is a zero **array**, not None. `ConstraintBuilder.build` then uses n̂ = pr/‖pr‖ and h = held d − d_safe − margins. Further effects to quantify: the identity guard (0.10 m) resets the per-label velocity state; the residual speed is computed with the wrong a. Numerical reproduction: `stage3_verification/check_held_row.py`. **Added at C-014 (`check_held_row.py`, 21/21):** scenario A (arm approaching at 0.10 m/s): the true approach reads +0.053 m/s along the held normal; the k1 term's ḣ goes from −0.100 to +0.034…+0.053 m/s. Scenario B (tracked obstacle closing at 0.5 m/s): see F-3-13. | 07 §8 | Verified (code path); effect numerically checked (see 07 §8) |
+| F-3-3 | **Phase governor breaks the chain rule.** `pentagon_qddot_commander._tick` calls `_timing.step(actual_dt·σ)`, so in real time s advances at σ·rate. `LinearTimingLaw.step` still returns `s_dot = rate` (and s̈ for timing-law time). `v_d = P′(s)·s_dot` and `a_d = P″ s_dot² + P′ s̈` are therefore **not** the time derivatives of `p_d(t)` while σ < 1: v_d is overstated by 1/σ and the centripetal term by 1/σ². `test_phase_governor.py` assumes the opposite ("v_d = P'(s)*s_dot" carries σ) and never calls the timing law. | 06 §5 | Derived; numerically reproduced (`check_timing_governor.py`) |
+| F-3-4 | `ZoneLadder.weights` builds the partition of unity from `bounds[:3]` only. `d_notice` (= `zone_r_notice`·d_safe) only validates the ordering and is printed by `describe()`. The notice gains apply for every gap > d_active, not from d_notice as the module and class docstrings say. `zone_r_notice` has no effect on the gains. **Correction (C-014):** the YAML comment on `zone_r_active` ("Outside it the notice gains") agrees with the code. Only the module table and the `ZoneLadder` docstring ("d_notice is where the ladder starts having an opinion") imply otherwise. The statement "not from d_notice as the module and class docstrings say" stands for those two docstrings only. Reproduced in `check_hocbf_gains.py`. | 07 §6.4 | Verified |
+| F-3-5 | The priority/hold rungs of the zone ladder use (k0, k1) = (50, 14): k1² − 4k0 = −4 < 0. The characteristic polynomial s² + k1 s + k0 has complex roots, so the two-stage class-K decomposition (ψ1 = ḣ + α1 h, ψ̇1 + α2 ψ1 ≥ 0) of the HOCBF does not exist. The blended gains cross into this region for priority weight w > 0.504. The comparison-lemma guarantee then becomes an underdamped bound whose worst undershoot is numerically negligible (ζ = 0.99). **Precision (C-014):** complex roots only for gaps below 0.0499 m, i.e. more than 5 cm inside d_safe = 0.10 m. The negative lobe of the impulse response is 2.8e-10 of its peak (`check_hocbf_gains.py`). | 07 §6.4 | Derived; numerically evaluated (`check_hocbf_gains.py`) |
+| F-3-6 | Two different evidence gates on the same track. The `v_obs` / curvature / `v_hdot` gate uses `_min_frames_eff` = `frames_for(obstacle_velocity_min_span_s, rate)` = 24 frames at 90 Hz. The uncertainty margin, latency compensation, velocity standoff and evidence class compare `frames_seen` with the raw `obstacle_velocity_min_frames` = 8 (89 ms at 90 Hz), whereas the YAML states that 8 frames "was ~265 ms at 30 Hz". The conditions `minimal_l1` and others set `obstacle_velocity_min_frames: 8` through `cbf_params`, which does not change the span-derived gate. | 07 §5 | Verified (code) + Derived |
+| F-3-7 | The commander's CSV column `qddot_nom` (and `q_nom`, `dq_nom`) is the **open-loop model** of `_step_nominal`. The q̈ actually published on `/NS_1/qddot_nom` is `_q_ddot` from `_tick`. An analysis that reads the CSV column as the published nominal is wrong whenever the arm deviates. **Correction (C-014):** the CSV also logs the published command as `qddot_des_*`, and its header comments call `q_nom/dq_nom/qddot_nom` "ideal". So the defect is a **name collision** with the topic `/NS_1/qddot_nom` (which carries `qddot_des`), not a mislabelled column. `_step_nominal` also omits the `cart_err_max` clip of `_tick`. | 06 §4.6 | Verified |
+| F-3-8 | The `fr3_control.yaml` comments give `path_kp_cart` in N/m and `path_kd_cart` in N·s/m. In the acceleration-level law ẍ = a_d + Kp e + Kd ė they are s⁻² and s⁻¹. | 06 §4.2 | Verified |
+| F-3-9 | `CompositePath` joins the straight lead-in and the cycle with only C⁰ continuity of v_d: P′ jumps from (entry − p0)/S_a to the cycle tangent at s = S_a, so v_d and a_d step at the junction. | 06 §3.3 | Derived; magnitude computed (`check_timing_governor.py`) |
+| F-3-10 | F-2-11 also reaches `rl_policy_commander`. `_obs_cb` keeps valid entries with a unit direction, so a held entry with `p_human` = 0 can become the nearest one. `obstacle_centre` = −r·n̂ (near the base origin), and the finite-difference `v_obs` observation spikes. The effect on the policy is Unverified. | 06 §7 | Derived |
+| F-3-11 | `test/test_phase_governor.py` mirrors `_governor_sigma` with stale defaults (D_FULL 0.05 m, D_STOP 0.02 m) instead of the YAML ratios (1.5, 0.8 × d_safe = 0.15, 0.08 m), and does not exercise the timing law (see F-3-3). | 06 §5 | Verified |
+| F-3-12 | F-2-10 downstream. Labels are per-label state keys in `ConstraintBuilder`: `_h_smooth`, `_obs_vel`, `_obs_vmed`, `_unc_ema`, `_stand_ema`, `_obs_ident`, `_ev_seen` and the memory. With `multi_obstacle_k` = 2 the label of the second wrist control point flips between `fr3_link6#1` (one cluster) and `fr3_link6#0.2` (two clusters), resetting that state. The rows of `#0` and `#1` are identical duplicates. Reproduction: `check_cp_label_rows.py`. **Correction (C-014, `check_cp_label_rows.py`, 8/8):** "resetting that state" is only half right. On the flip to a NEW key (`#1` → `#0.2`) `_h_smooth` is empty, so h_raw is accepted at once: an 11.9 mm loosening in one frame in the test, while the obstacle recedes. On the flip BACK, `#1`'s STALE state from before the flip is resumed, so the EMA restarts from an old value; its direction depends on the scene. Rows `#0`/`#1` agree to 5.6e-17. | 07 §8.2 | Derived; numerically reproduced |
+| F-3-13 | **Held row loosens while a tracked obstacle closes (F-2-11 × evidence gates).** In a held frame `frames_seen` = 0, so the tracker v_obs is 0. The residual sees a frozen d. Every margin gated on `n_seen ≥ obstacle_velocity_min_frames` drops: latency at once, standoff through its EMA. In `check_held_row.py` scenario B (0.5 m/s approach, confirmed track), the row's v_obs goes 0.5 → 0 and h goes −0.116 → +0.039 m over the 0.10 s hold, while the true gap shrinks 4.4 cm. After the hold, the identity guard resets the velocity state a second time. | 07 §8.1 | Numerically reproduced with the real builder; closed-loop effect Unverified (runtime) |
+| F-3-14 | The commander's null-space term uses N = I − J⁺J with the **damped** J⁺. Then J·N ≠ 0: its singular values are λ²σ/(σ² + λ²) ≤ λ/2, so the posture task leaks into the task space by up to 0.005 (λ² = 1e-4) and 0.11 (λ² = 5e-2, near singularities) m/s² per rad/s² of null-space command. | 06 §4.3 | Derived + numerically verified (`check_nominal_shaping.py`) |
+| F-3-15 | `StateGovernor.velocity_margin` uses `np.where(q̇ ≥ 0, up, −lo)`, so a STOPPED joint is scored against its UPPER envelope only. Joint 4 at the filter's position-box edge (q_ref,up − 0.05 rad) gives target w = 0.81 when stopped and 1.0 with q̇₄ = −1e-6. At q_ref,up − 0.02 it gives 0.12, and at q_ref,up it gives 0. The module docstring says a parked joint has full margin. `test_state_governor` covers the lower side only. (A subagent reported this as a latch at w = 0; the w = 0 case is at the box limit itself.) | 06 §6.2 | Verified (code) + numerically evaluated |
+| F-3-16 | The lateral-evasion and outrun biases are EMA-filtered in `_qp_tick` (L1366–1386), but the filtered state is ADDED only while `con.esc_bias` / `con.outrun_bias` is not None. On disengagement the whole filtered bias (≤ 3 rad/s²) drops in one tick, contrary to the "fade out" comment. The livelock bias is added while n_c > 0, so it does fade. The go-around inward `cut` is not jerk-limited (`go_around_step`: only `bias` passes the rate limit). | 06 §6.4–6.6 | Verified |
+| F-3-17 | Lateral evasion maps its Cartesian direction to joint space with J_pᵀ (`evasion_bias`, normalised), whereas outrun and go-around use a damped pseudoinverse. In Cartesian terms, J_pJ_pᵀê is not parallel to ê. | 06 §6.4 | Verified (code) + Derived |
+| F-3-18 | `utils/avoidance.py` (`tangential_redirect`, `feasibility_beta_target`) is imported only by `test/test_avoidance.py`; its docstring "Used by pentagon_qddot_commander" is false. `ee_pentagon_velocity_commander`'s docstring promises minimum-jerk C² sides; the code uses constant speed with Bézier corner blends. | 06 §8 | Verified (grep, code) |
+| F-3-19 | RL commander control-point names: the robot labels each control point by its segment's `end_link` (fr3_link4 … fr3_link8, `fr3_complete.yaml`); `franka_rl/config.yaml` lists `fr3_link3` "mirroring segment 3". So `cp:fr3_link3` never matches and stays at (clip, 0, 0, 0). | 06 §7 | Config Verified; the matching code was read by a subagent (Inferred until re-read) |
+
 ## 5. Decisions and open questions
+
+**Open questions added in Stage 3:**
+
+| ID | Question | Who can close it |
+|---|---|---|
+| Q-3-1 | F-3-6: should the margin gates (8 measurements) follow the span-derived 24-measurement gate of the velocity they protect, or is 8 at 90 Hz (89 ms) intended? | **user** |
+| Q-3-2 | Closed-loop effect of F-3-13 (held row loosens while a tracked obstacle closes) and F-3-3 (governor lead): a Gazebo cell with an occlusion during approach, and a static-obstacle cell with σ < 1. | runtime (user approval needed) |
 
 **Decisions recorded at the Stage 0 review (2026-11-11):**
 - The missing untracked test is recorded and must not be recreated.
@@ -189,7 +237,7 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | Q-1-3 (**answered in Stage 2: NO**, F-2-7) | Do `camera_extrinsics.yaml` (projection) and `camera_link_extrinsics.yaml` (TF) describe the same camera pose consistently? | Stage 2 (numeric check) |
 | Q-1-4 | Is Pipeline B (velocity) still run on hardware? Is Pipeline C (OSCBF) abandoned or parked? Is `CBFTorqueController` (`use_torque_controller:=cbf`) still used? | **user** |
 | Q-1-5 | Is `start_move_group:=true` intended (for example, for another tool), or is it a leftover? | **user** |
-| Q-2-1 | Does anything in `cbf_safety_filter` / `cbf_state_rows` reject or repair an obstacle with `ph = (0, 0, 0)` (F-2-11), or does the held row really use the base-radial normal? | Stage 3 (ch. 07) |
+| Q-2-1 (**answered in Stage 3: NO**, F-3-2) | Does anything in `cbf_safety_filter` / `cbf_state_rows` reject or repair an obstacle with `ph = (0, 0, 0)` (F-2-11), or does the held row really use the base-radial normal? | Stage 3 (ch. 07) |
 | Q-2-2 | `gate_max_m` (0.5 m) against `max_coast_s` (0.8 s): after about 0.5 s of coast the 4σ Mahalanobis gate exceeds 0.5 m, so only the Euclidean gate binds (05 §7.4; the YAML records the same caveat). Is a re-derivation planned before hardware use? | **user** / runtime |
 | Q-2-3 | Q-1-2 root cause: does the hand-eye result really approximate base → depth optical, or was the 2026-09-30 offset trial composed with the wrong direction? Runtime test in 05 §5.1, using the mask coverage and leak statistics (05 §9.3). | runtime (user approval needed) |
 | Q-2-4 | F-2-9 runtime confirmation: compare the mask overlay and the `leak=` counter with joint 7 rotated, with and without the −45° hand rotation. | runtime (user approval needed) |

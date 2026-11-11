@@ -255,3 +255,200 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    - `05_perception_and_distance.md` (header, §3.2, §3.4, §3.5, §4.2, §5.2, §6.2, §7.2–7.4, §11, §13);
    - `PROGRESS.md` (§0, F-2-4, F-2-7, §5 decisions); `00_INDEX.md` (artefact table).
 7. **Exact next action:** STOP. Wait for the user's review and explicit approval of Stage 3.
+
+## C-009 — 2026-11-11 — Stage 3 — Stage 3 started
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` (docs commit of Stage 2) / check_state exit 0
+1. **Analysed:** nothing yet in this stage. The user explicitly approved Stage 3 (ONLY) on 2026-11-11.
+2. **Remaining in this stage:**
+   - ch. 06 (commanders, trajectories, timing law, PD and feedforward, IK and null space, governor,
+     avoidance-first, evasion, go-around, livelock, RL commander);
+   - ch. 07 (HOCBF derivation, obstacle rows in `cbf_state_rows`, `cbf_constraints`, `cbf_zones`,
+     `cbf_evasion`, the filter's obstacle path);
+   - F-2-11 downstream (Q-2-1) and F-2-10 downstream;
+   - `tools/stage3_verification/`.
+3. **Files read:** none yet.
+4. **Documentation files updated:** this entry, the PROGRESS.md resume card and the §1 row.
+5. **Findings and uncertainties:** none yet.
+6. **Exact next action:** read `franka_experiments/franka_experiments/utils/cbf_state_rows.py`
+   L2400–2700.
+
+## C-010 — 2026-11-11 — Stage 3 — obstacle-row builder read
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0 (at C-009)
+1. **Analysed:**
+   - `utils/cbf_state_rows.py`:
+     - `ConstraintBuilder.build` L2335–3816, the whole obstacle loop, memory rows and snapshot
+       assembly;
+     - the helpers L152–946 and L1496–1765;
+     - `__init__` L2120–2333 and the private methods L3963–4354.
+   - `utils/cbf_qp_assembly.py::build_row_rhs` (the HOCBF RHS);
+   - `utils/cbf_zones.py` (all);
+   - `utils/cbf_constraints.py` (all; imported by nothing);
+   - `cbf_safety_filter._on_distances`, `_latency_fields`, `_range_field`;
+   - the hold branch of `distance_engine._lpf_pass`, `perception_msgs.annotate_track_fields` and
+     `find_pt_confidence`, `obstacle_track_pipeline.track_for_point`;
+   - `torque_control_stack.launch.py::_cbf_parameters` and its helpers, `simexp/conditions.py::resolve`,
+     and the conditions `minimal` and `minimal_l1`.
+2. **Still to read for ch. 07:**
+   - `_escape_row`, `_livelock_direction`, `_outrun_bias` (L3818–3962);
+   - `cbf_evasion.py`;
+   - `cbf_qp_assembly.tangential_bias`;
+   - the parts of `cbf_safety_filter._qp_tick` that use the snapshot (`qdot_cbf`, the biases,
+     go-around, livelock, zone task weight).
+
+   Then ch. 06 (commanders) in full.
+3. **Provisional findings (to log in PROGRESS §4 at the next checkpoint):**
+   - F-2-11 downstream: held entry → `Obstacle.ph = 0`, track fields zero, confidence ≥ 0.2, so it
+     passes the `min_confidence` 0.2 gate; n̂ = pr/‖pr‖; the identity guard sees a jump (resets the
+     velocity state); in residual mode the speed is computed with the wrong normal. Numerical
+     reproduction pending.
+   - `cbf_constraints.py` is unused.
+   - `ZoneLadder` ignores `d_notice` in the weights.
+   - The margin gates count `obstacle_velocity_min_frames` = 8 frames (89 ms at 90 Hz), while the
+     `v_obs` gate uses the span (24 frames).
+4. **Documentation files updated:** this entry only.
+5. **Exact next action:** read `cbf_state_rows.py` L3818–3962, then `cbf_evasion.py`, then grep
+   `cbf_safety_filter._qp_tick` for the snapshot consumers.
+
+## C-011 — 2026-11-11 — Stage 3 — resumed after an interrupted session
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0
+- The user re-approved **Stage 3 only** in this new session (the previous one ran out of usage).
+1. **Recovered state:**
+   - After C-010 the previous session wrote F-3-1 … F-3-12 into PROGRESS §4 and closed Q-2-1 there,
+     but wrote no checkpoint for them. Their chapter sections (06, 07) do not exist yet.
+   - Three scripts that the findings cite were **never written**: `check_held_row.py` (F-3-2),
+     `check_hocbf_gains.py` (F-3-5), `check_cp_label_rows.py` (F-3-12). Until they exist and pass,
+     the "numerically reproduced / evaluated" part of those labels is unsupported.
+   - Present in `tools/stage3_verification/`: `_common3.py`, `effective_params.py` (9/9 PASS),
+     `check_timing_governor.py` (16/16 PASS). Rerun at C-011.
+   - The C-010 reading list still stands. The commander-side findings (F-3-3, F-3-7, F-3-8, F-3-9,
+     F-3-10, F-3-11) show that `pentagon_qddot_commander`, `timing_law`, `trajectory`,
+     `rl_policy_commander` and `test_phase_governor` were read too, but no checkpoint records it.
+2. **Policy for this session:** every F-3-* finding is re-checked against the source before a
+   chapter states it; a finding that does not survive is marked superseded, never deleted.
+3. **Files read:** none new yet. Ledger statuses not yet updated for Stage 3.
+4. **Documentation files updated:** this entry and the PROGRESS resume card.
+5. **Exact next action:** re-read `cbf_state_rows.ConstraintBuilder.build` (obstacle loop) and
+   `cbf_qp_assembly.build_row_rhs`; then write `check_held_row.py`, `check_hocbf_gains.py`,
+   `check_cp_label_rows.py`; then write `07_cbf_obstacle_barrier.md`.
+
+## C-012 — 2026-11-11 — Stage 3 — obstacle barrier re-read and findings re-checked
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0
+1. **Analysed (re-read this session, line numbers at the baseline):**
+   - `cbf_state_rows.py`: `Obstacle`/`ObstacleSnap`/`ConstraintSnap` L1768–1991; `__init__`,
+     `_apply_input_rate` L2120–2333; `build` obstacle loop L2489–3158, memory rows L3160–3302,
+     assembly L3556–3816 (zone ladder, depth push floor, slack multipliers, b_ff, κ scatter,
+     evasion/outrun/livelock); `_escape_row`, `_livelock_direction`, `_outrun_bias`,
+     `_retreat_cap`, `_fast_track`, `_obstacle_speed_tracked`, `_obstacle_identity_changed`,
+     `_obstacle_speed`; helpers L152–946, L1496–1765.
+   - `cbf_qp_assembly.build_row_rhs`, `tangential_bias`; `cbf_zones.py` (all);
+     `cbf_safety_filter._on_distances`, `_latency_fields`, `_range_field`, `_track_input_rate`,
+     `_update_constraints`, `_qp_tick` (nominal shaping order); `kinematics.control_point_jacobian`
+     (label → `partition('.')[0]`); `config.load_cbf_config` (P = the YAML `params` block).
+2. **Re-check of the provisional findings:**
+   - F-3-1, F-3-6: code facts confirmed.
+   - F-3-2: code path confirmed. Extra fact: `_on_distances` always builds `v_vec` as an array,
+     so every `v_vec is not None` gate passes; the held entry is stopped only by `frames_seen` = 0.
+   - F-3-4: **needs rewording**. The YAML comment on `zone_r_active` ("Outside it the notice gains")
+     agrees with the code; only the module table and the class docstring imply that the notice
+     rung starts at d_notice. `zone_r_notice` is still inert for the gains.
+   - F-3-5: k1² − 4k0 = −4 confirmed; crossing weight 0.5044 confirmed by hand.
+   - F-3-12: label resolution confirmed (`#0.2` → Jacobian of `#0` = `#1`). New consequence to
+     verify: on a label flip `_h_smooth` has no entry, so the recovery EMA is skipped and a
+     larger h is accepted at once (a one-frame loosening).
+3. **Files read:** see 1. Ledger statuses not yet updated.
+4. **Documentation files updated:** this entry and the resume card.
+5. **Exact next action:** write `tools/stage3_verification/check_hocbf_gains.py` (host),
+   `check_held_row.py` and `check_cp_label_rows.py` (container: real `ConstraintBuilder` +
+   `CBFKinematics`), run them, then write `07_cbf_obstacle_barrier.md`.
+
+## C-013 — 2026-11-11 — Stage 3 — ch. 07 verification scripts written and passing
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0
+1. **Done:** `tools/stage3_verification/`:
+   - `check_hocbf_gains.py` (host, 23/23);
+   - `_builder3.py` (container helper: real `ConstraintBuilder` + `CBFKinematics`, the
+     `_on_distances` mapping transcribed and `ast`-checked);
+   - `check_held_row.py` (container, 21/21);
+   - `check_cp_label_rows.py` (container, 8/8).
+2. **Results to carry into ch. 07:**
+   - F-3-2 (held row), scenario A: the row normal is base-radial, 122° from the true normal. The
+     true approach (−0.10 m/s) reads +0.053 m/s along it. The k1 term's ḣ goes from −0.100 to
+     +0.034…+0.053. The residual floor manufactures v_obs ≈ 0.019 from the wrong a.
+   - F-3-2, scenario B (tracked obstacle closing at 0.5 m/s): v_obs drops 0.5 → 0 for the whole
+     hold. The latency margin vanishes at once (n_seen gate) and the standoff decays by its EMA,
+     so the row's h goes −0.116 → +0.039 m while the true gap shrinks 4.4 cm. **Safety-relevant.**
+   - F-3-12 corrected: a flip to a NEW key (#1 → #0.2) accepts h_raw at once (11.9 mm loosening
+     in the test); the flip BACK resumes the STALE #1 state (direction scene-dependent). Rows are
+     duplicates to 5.6e-17.
+   - F-3-5: complex roots only for gaps < 0.0499 m (> 5 cm inside d_safe = 0.10). Negative
+     impulse lobe 2.8e-10 of the peak.
+3. **Subagent leads for ch. 06 (UNVERIFIED until checked; do not cite as fact):**
+   - The state governor `velocity_margin` takes the upper envelope at q̇ = 0 exactly. A parked
+     joint 4 above q_ref,up gives w = 0 (task suspended).
+   - The lateral-evasion and outrun EMA biases are added only while the snapshot field is not
+     None, so on disengagement they drop in one tick. I read `_qp_tick` L1366–1386 myself:
+     the code does this (Verified).
+   - The go-around inward cut is not jerk-limited.
+   - Lateral evasion maps with J_pᵀ, while outrun and go-around use DLS.
+   - `utils/avoidance.py` is test-only. The three ee_* velocity commanders have no avoidance and
+     no null space; position-only DLS with a max-type singularity boost.
+   - RL commander: q̈_nom = clip(a)·decel_limit·scale. For F-2-11: centre −r·n̂ at the base, and a
+     finite-difference v_obs spike of ≈ 60 m/s (unclipped). The cp names are off by one link
+     (fr3_link3 never filled).
+4. **Exact next action:** verify the governor latch with a host script (`check_nominal_shaping.py`);
+   read `nodes/pentagon_qddot_commander.py` (`_tick`, `_step_nominal`, timing and IK),
+   `utils/timing_law.py`, `utils/trajectory.py` (Circular/Linear/Composite); then write ch. 07,
+   then ch. 06.
+
+## C-014 — 2026-11-11 — Stage 3 — findings consolidated; chapters next
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0
+1. **Done:**
+   - Read `pentagon_qddot_commander` (`_tick`, `_governor_sigma`, `_step_nominal`,
+     `_build_timing_law`, `_start_trajectory`, the parameter declarations, the CSV header),
+     `timing_law.LinearTimingLaw`, `state_governor` (margin/weight/params), and the `go_around`
+     tail.
+   - Confirmed: F-3-3, F-3-8, F-3-11; `avoidance.py` is test-only; the RL held-entry centre is −r·n̂.
+   - New script `check_nominal_shaping.py` (host, 8/8).
+   - PROGRESS §4: F-3-2, F-3-4, F-3-5, F-3-7 and F-3-12 amended (old wording kept); new
+     F-3-13 … F-3-19.
+2. **Remaining:** write `07_cbf_obstacle_barrier.md`, then `06_nominal_motion.md`; README +
+   `run_all.sh` + recorded results for `stage3_verification/`; ledger statuses; 00_INDEX; final
+   checks.
+3. **Exact next action:** write `docs/framework_study/07_cbf_obstacle_barrier.md`. The equation
+   numbers are fixed by the scripts: (7.6) factorisation, (7.8) impulse response, (7.9) engagement,
+   (7.10) `build_row_rhs`, (7.11) bounded push; and (6.1)–(6.3), (6.8), (6.10) for ch. 06.
+
+## C-015 — 2026-11-11 — Stage 3 — chapter 07 written
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0
+1. **Done:** `07_cbf_obstacle_barrier.md`, all sections 1–13. Equations (7.1)–(7.15).
+2. **Remaining:** `06_nominal_motion.md`; the `stage3_verification/` README, `run_all.sh` and
+   recorded results; ledger statuses; 00_INDEX; final checks.
+3. **Exact next action:** read `utils/trajectory.py` (CircularPath, LinearSegmentPath,
+   CompositePath) and `pentagon_qddot_commander._tick_recovery`; then write `06_nominal_motion.md`
+   from the C-013/C-014 notes and the subagent leads (all re-checked or labelled).
+
+## C-016 — 2026-11-11 — Stage 3 — complete; stopped for review
+
+- Baseline / HEAD / check: `ba68077052e8` / `a688768f8a80` / check_state exit 0 (81 links consistent)
+1. **Analysed and written:**
+   - `06_nominal_motion.md` (§1–12);
+   - `07_cbf_obstacle_barrier.md` (§1–13);
+   - `tools/stage3_verification/`: `run_all.sh`, README, `results/observed_2026-11-11.txt`.
+     85/85 checks: host 9 + 16 + 23 + 8, container 21 + 8.
+2. **Remaining in this stage:** none.
+3. **Ledger:** documented +2 (`cbf_zones`, `cbf_constraints`); partial +16 (see PROGRESS §2).
+   Totals: pending 244, partial 70, read 4, documented 28.
+4. **Documentation files updated:** 06, 07, PROGRESS (§0, §1, §2, §4 F-3-1…F-3-19, §5 Q-3-1,
+   Q-3-2, Q-2-1 answered), 00_INDEX (status, chapter rows, artefacts), `ledger/*`, this log.
+5. **Verification:**
+   - No file outside `docs/framework_study/` differs from the baseline (`git diff ba68077`, the
+     working tree and untracked files); 3 stashes untouched.
+   - Every equation number a script cites exists in a chapter.
+6. **Exact next action:** STOP. Wait for the user's review of Stage 3 and an explicit approval of
+   Stage 4.

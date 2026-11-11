@@ -10,7 +10,7 @@ places where they disagree with the code are collected in chapter 16.
 It is meant to be studied, not only looked up. Later, during a refactor, it also serves as a
 reference for what each change will affect.
 
-> **Status: Stages 0–2 complete; Stage 3 not yet approved.** The live status is in the resume card,
+> **Status: Stages 0–3 complete (Stage 3 awaiting review); Stage 4 not yet approved.** The live status is in the resume card,
 > [PROGRESS.md](PROGRESS.md) §0. Project rules and the resume procedure are in
 > [/CLAUDE.md](../../CLAUDE.md). The session history is in [CHECKPOINTS.md](CHECKPOINTS.md). To
 > resume in a new session, paste [RESUME_PROMPT.md](RESUME_PROMPT.md).
@@ -71,8 +71,8 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | 03 | [03_configuration.md](03_configuration.md) | YAML → launch → node parameter flow; configuration key families; dead or overridden keys | 1 | **written (Stage 1)** |
 | 04 | [`04_math_foundations.md`](04_math_foundations.md) | Frames, FR3 kinematics (Pinocchio), control-point Jacobians J and J̇, dynamics M, C, g | 2 | **written** (Stage 2) |
 | 05 | [`05_perception_and_distance.md`](05_perception_and_distance.md) | Calibration, depth → points, self-masking, distance engine, tracking, prediction | 2 | **written** (Stage 2) |
-| 06 | `06_nominal_motion.md` | Commanders, paths and timing laws, avoidance-first redirect, RL policy | 3 | not written |
-| 07 | `07_cbf_obstacle_barrier.md` | HOCBF derivation and the implemented obstacle rows | 3 | not written |
+| 06 | [`06_nominal_motion.md`](06_nominal_motion.md) | Commanders, paths and timing laws, Cartesian PD + damped IK + null space, phase governor, filter-side shaping (zone fade, state governor, tangential bias, go-around, evasion, livelock), RL policy, Pipeline B commanders | 3 | **written** (Stage 3) |
+| 07 | [`07_cbf_obstacle_barrier.md`](07_cbf_obstacle_barrier.md) | HOCBF derivation, the implemented obstacle rows, velocity estimation, margins, evidence gates, zone ladder, F-2-10/F-2-11 traced through the barrier | 3 | **written** (Stage 3) |
 | 08 | `08_constraints_and_qp.md` | Other constraint families, QP assembly, slack, fallback, governor | 4 | not written |
 | 09 | `09_torque_realization.md` | q̈ → τ, C++ real-time controllers, rates and threading | 4 | not written |
 | 10 | `10_alternative_controllers.md` | Velocity CBF plus executor, Dynamic-OSCBF, RL path | 5 | not written |
@@ -107,6 +107,7 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | [tools/ledger_status.py](tools/ledger_status.py) | Sets a file's status, chapter or stage in `ledger.json` and `coverage_ledger.md` at once (added in Stage 1) |
 | [tools/check_state.py](tools/check_state.py) | Read-only consistency check, run at every session start and checkpoint: git position against the pinned HEAD, stray working-tree changes, agreement of the ledger totals, broken links |
 | [tools/stage2_verification/](tools/stage2_verification/README.md) | Read-only scripts that reproduce every numerical result of chapters 04 and 05 (`run_all.sh`; host and container parts), with expected vs observed values and the list of what still needs runtime validation (added after Stage 2) |
+| [tools/stage3_verification/](tools/stage3_verification/README.md) | Read-only scripts reproducing the numerical results of chapters 06 and 07, two of which drive the real `ConstraintBuilder` in the container (`run_all.sh`; 85 of 85 checks on 2026-11-11) |
 | [CHECKPOINTS.md](CHECKPOINTS.md) / [RESUME_PROMPT.md](RESUME_PROMPT.md) | Append-only session log, and the prompt for resuming in a new session |
 
 ## 6. Scope
