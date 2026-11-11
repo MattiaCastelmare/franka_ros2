@@ -196,7 +196,7 @@ def main():
     # 5. stage table
     for line in progress.splitlines():
         m = re.match(r'\| (\d) — [^|]+\|[^|]+\|[^|]+\| ([^|]+) \|', line)
-        if m and 'done' not in m.group(2):
+        if m and not re.match(r'\**done\b', m.group(2).strip()):
             print(f'next stage by §1: Stage {m.group(1)} ({m.group(2).strip()})')
             break
     return finish()

@@ -10,7 +10,7 @@ places where they disagree with the code are collected in chapter 16.
 It is meant to be studied, not only looked up. Later, during a refactor, it also serves as a
 reference for what each change will affect.
 
-> **Status: Stages 0–1 complete; Stage 2 not yet approved.** The live status is in the resume card,
+> **Status: Stages 0–2 complete; Stage 3 not yet approved.** The live status is in the resume card,
 > [PROGRESS.md](PROGRESS.md) §0. Project rules and the resume procedure are in
 > [/CLAUDE.md](../../CLAUDE.md). The session history is in [CHECKPOINTS.md](CHECKPOINTS.md). To
 > resume in a new session, paste [RESUME_PROMPT.md](RESUME_PROMPT.md).
@@ -69,8 +69,8 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | 01 | [01_architecture.md](01_architecture.md) | Both packages and how they relate; the four control pipelines; which launch file selects what | 1 | **written (Stage 1)** |
 | 02 | [02_ros_graph_and_dataflow.md](02_ros_graph_and_dataflow.md) | Nodes, topics, services, parameters, TF tree, rates, QoS, timing chain | 1 | **written (Stage 1)** |
 | 03 | [03_configuration.md](03_configuration.md) | YAML → launch → node parameter flow; configuration key families; dead or overridden keys | 1 | **written (Stage 1)** |
-| 04 | `04_math_foundations.md` | Frames, FR3 kinematics (Pinocchio), control-point Jacobians J and J̇, dynamics M, C, g | 2 | not written |
-| 05 | `05_perception_and_distance.md` | Calibration, depth → points, self-masking, distance engine, tracking, prediction | 2 | not written |
+| 04 | [`04_math_foundations.md`](04_math_foundations.md) | Frames, FR3 kinematics (Pinocchio), control-point Jacobians J and J̇, dynamics M, C, g | 2 | **written** (Stage 2) |
+| 05 | [`05_perception_and_distance.md`](05_perception_and_distance.md) | Calibration, depth → points, self-masking, distance engine, tracking, prediction | 2 | **written** (Stage 2) |
 | 06 | `06_nominal_motion.md` | Commanders, paths and timing laws, avoidance-first redirect, RL policy | 3 | not written |
 | 07 | `07_cbf_obstacle_barrier.md` | HOCBF derivation and the implemented obstacle rows | 3 | not written |
 | 08 | `08_constraints_and_qp.md` | Other constraint families, QP assembly, slack, fallback, governor | 4 | not written |
@@ -106,6 +106,7 @@ Each major subsystem is explained in five parts, followed by a refactoring note:
 | [tools/stage0_extract.py](tools/stage0_extract.py) | The read-only extractor that regenerates the `ledger/*.md` tables (`python3 -I tools/stage0_extract.py <repo> <out_dir>`) |
 | [tools/ledger_status.py](tools/ledger_status.py) | Sets a file's status, chapter or stage in `ledger.json` and `coverage_ledger.md` at once (added in Stage 1) |
 | [tools/check_state.py](tools/check_state.py) | Read-only consistency check, run at every session start and checkpoint: git position against the pinned HEAD, stray working-tree changes, agreement of the ledger totals, broken links |
+| [tools/stage2_verification/](tools/stage2_verification/README.md) | Read-only scripts that reproduce every numerical result of chapters 04 and 05 (`run_all.sh`; host and container parts), with expected vs observed values and the list of what still needs runtime validation (added after Stage 2) |
 | [CHECKPOINTS.md](CHECKPOINTS.md) / [RESUME_PROMPT.md](RESUME_PROMPT.md) | Append-only session log, and the prompt for resuming in a new session |
 
 ## 6. Scope

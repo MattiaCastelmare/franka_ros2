@@ -61,7 +61,8 @@
    "ch": "05",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/config/camera_intrinsics.yaml",
@@ -79,7 +80,8 @@
    "ch": "05",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/config/dataset_handeye_eye_in_hand.yaml",
@@ -97,7 +99,8 @@
    "ch": "05",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/config/ee_tag_extrinsics.yaml",
@@ -406,7 +409,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/handeye_calibration_node.py",
@@ -415,7 +419,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/handeye_eye_in_hand_node.py",
@@ -433,7 +438,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/iso_evidence_logger.py",
@@ -493,7 +499,7 @@
    "note": "",
    "reach": "entry,script,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/rl_policy_commander.py",
@@ -569,7 +575,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,script,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/calibration_check.py",
@@ -578,7 +585,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,script,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/camera_yaml.py",
@@ -587,7 +595,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/cbf_constraints.py",
@@ -632,7 +641,8 @@
    "ch": "04",
    "note": "",
    "reach": "entry",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/cbf_qp.py",
@@ -706,7 +716,7 @@
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
    "ext": false,
-   "status": "read"
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/distance_engine.py",
@@ -715,7 +725,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/distance_utils.py",
@@ -724,7 +735,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/evasion_direction.py",
@@ -751,7 +763,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/iso_ssm.py",
@@ -769,7 +782,8 @@
    "ch": "04",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/launch_support.py",
@@ -806,7 +820,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,script,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/math_utils.py",
@@ -815,7 +830,8 @@
    "ch": "04",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/node_runtime.py",
@@ -845,7 +861,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/obstacle_sim.py",
@@ -854,7 +871,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,script,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py",
@@ -863,7 +881,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/obstacle_tracker.py",
@@ -872,7 +891,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/params.py",
@@ -891,7 +911,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/rate_scaling.py",
@@ -968,7 +989,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,script,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/self_shadow.py",
@@ -977,7 +999,8 @@
    "ch": "05",
    "note": "",
    "reach": "entry,sim-exec,script,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/simulation_imports.py",
@@ -1013,7 +1036,8 @@
    "ch": "05",
    "note": "",
    "reach": "test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/surface_velocity.py",
@@ -1022,7 +1046,8 @@
    "ch": "05",
    "note": "",
    "reach": "test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/tf_manager.py",
@@ -1032,7 +1057,7 @@
    "note": "",
    "reach": "entry,script,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_experiments/franka_experiments/utils/timing_law.py",
@@ -1248,7 +1273,8 @@
    "ch": "04",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_experiments/scripts/compare_range_noise.py",
@@ -1951,7 +1977,8 @@
    "ch": "05",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/test/test_directional_fade.py",
@@ -2158,7 +2185,8 @@
    "ch": "05",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_experiments/test/test_node_self_references.py",
@@ -3144,21 +3172,21 @@
    "path": "franka_msgs/msg/MultiLinkDistance.msg",
    "lines": 11,
    "role": "message definition (external)",
-   "ch": "02",
+   "ch": "05",
    "note": "",
    "reach": "",
    "ext": true,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_msgs/msg/LinkDistance.msg",
    "lines": 186,
    "role": "message definition (external)",
-   "ch": "02",
+   "ch": "05",
    "note": "",
    "reach": "",
    "ext": true,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_msgs/msg/MultiDistance.msg",

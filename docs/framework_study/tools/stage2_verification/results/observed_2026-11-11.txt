@@ -1,0 +1,205 @@
+# run_all.sh output, 2026-11-11T13:02:30+01:00, HEAD bd8a4e238141, baseline ba68077052e8
+=== check_camera_extrinsics (chapter 05 §2, §5.2; F-2-7) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] REPRO camera position t_b [m]: observed [1.754113, 0.154097, 1.059057] vs reported [1.754113, 0.154097, 1.059057] (|diff| 0.00e+00 <= 1.0e-06)
+[PASS] REPRO optical axis z_C in base: observed [-0.953874, -0.052998, -0.295493] vs reported [-0.954, -0.053, -0.295] (|diff| 4.93e-04 <= 6.0e-04)
+[PASS] REPRO optical axis elevation [deg]: observed -17.1871 vs reported -17.2 (|diff| 1.29e-02 <= 6.0e-02)
+[PASS] REPRO camera distance to base origin [m]: observed 2.05481 vs reported 2.055 (|diff| 1.86e-04 <= 6.0e-04)
+[PASS] REPRO HEAD camera_extrinsics vs recomposed camera_link_extrinsics: |dt| [m]: observed 0.275846 vs reported 0.276 (|diff| 1.54e-04 <= 6.0e-04)
+[PASS] REPRO HEAD camera_extrinsics vs recomposed camera_link_extrinsics: angle [deg]: observed 5.13807 vs reported 5.14 (|diff| 1.93e-03 <= 6.0e-03)
+[INFO] franka_experiments/config/camera_link_extrinsics.yaml last changed by: d4e4028 2026-06-19 impoved controller
+  version of camera_extrinsics.yaml            |dt| [m]   angle [deg]
+  fda4af7 2026-09-16 New calibration and extri    0.2758      5.138
+  08710eb 2026-09-09 New calibration done         0.2667     11.113
+  72d2753 2026-09-01 New calibration              0.1997     10.662
+  0c7e2b9 2026-06-24 improved trajectory contr    0.1069     12.237
+  8bfd96b 2026-06-19 new calibration done         0.0327     10.104
+  e5fcdb2 2026-05-21 Done new calibration         0.0000      0.000
+  d126f9c 2026-05-14 Added preliminary CBF in     0.8591     17.399
+  99037fd 2026-04-10 fix(rt): FastDDS no-SHM +    1.0285     45.340
+  376e842 2026-03-31 Added TF of the camera in    1.2731     53.930
+  3ae9da3 2026-03-30 improved calibration         0.9017     21.444
+  cb13152 2026-03-26 small modifications          0.9069     21.054
+  75abcf7 2026-03-20 Done new calibration         0.8471     20.373
+  96ef6f2 2026-03-18 enhanced calibration         0.8407     35.833
+  b95fb72 2026-03-10 Updated README and delete    0.9267     35.780
+  5dce5af 2026-03-06 Add automated hand-eye ca    0.8228     29.434
+  8656f46 2026-03-05 Added camera nodes in the    1.4206    129.517
+[PASS] FACT  exactly one historical calibration matches the TF file: e5fcdb2 2026-05-21 Done new calibration
+[INFO] calibrations committed after the matching one: 5
+[PASS] FACT  camera_extrinsics.yaml as of d4e4028 (TF file commit) matches it: |dt| 0.0000 m, 0.000 deg
+--- check_camera_extrinsics (chapter 05 §2, §5.2; F-2-7): 8 passed, 0 failed ---
+
+=== check_hand_mesh (chapter 05 §3.2, §4.2; F-2-4, F-2-9) ===
+repository: /home/mattia/Git/franka_ros2
+[INFO] franka_description/meshes/robot_ee/franka_hand_white/collision/hand.stl: 200 triangles, 102 unique vertices
+[PASS] REPRO hand.stl bounding box min [m]: observed [-0.031636, -0.10399 , -0.025925] vs reported [-0.0316, -0.104 , -0.0259] (|diff| 3.59e-05 <= 6.0e-05)
+[PASS] REPRO hand.stl bounding box max [m]: observed [0.031616, 0.100426, 0.065962] vs reported [0.0316, 0.1004, 0.066 ] (|diff| 3.78e-05 <= 6.0e-05)
+[INFO] lateral half-extent of the hand: 0.1040 m (the fingertip sphere radius is 0.05 m)
+[PASS] REPRO F-2-9 vertex displacement max [m]: observed 0.0795903 vs reported 0.0796 (|diff| 9.71e-06 <= 6.0e-05)
+[PASS] REPRO F-2-9 vertex displacement mean [m]: observed 0.0685416 vs reported 0.0685 (|diff| 4.16e-05 <= 2.0e-03)  (Stage 2 counted the 102 trimesh vertices; this counts unique STL vertices)
+[PASS] REPRO F-2-9 displacement over 3000 surface samples, max [m]: observed 0.0793378 vs reported 0.0794 (|diff| 6.22e-05 <= 2.0e-03)  (statistical: different random draws from the same distribution)
+[PASS] REPRO F-2-9 displacement over 3000 surface samples, mean [m]: observed 0.044602 vs reported 0.0442 (|diff| 4.02e-04 <= 3.0e-03)  (statistical)
+[PASS] FACT  F-2-9 gripper long axis in fr3_link8: correct (Rz y_H): observed [0.707107, 0.707107, 0.      ] vs reported [0.7071, 0.7071, 0.    ] (|diff| 6.78e-06 <= 1.0e-04)  (the node uses (0, 1, 0))
+[PASS] NUM   displacement of a point at radius rho: 2 rho sin(22.5 deg), rho = max radial extent: observed 0.0795903 vs reported 0.0795903 (|diff| 1.39e-17 <= 1.0e-09)
+--- check_hand_mesh (chapter 05 §3.2, §4.2; F-2-4, F-2-9): 8 passed, 0 failed ---
+
+=== check_perception_numbers (chapter 05 §3, §4, §11; F-2-8) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  depth K: fx, fy, cx, cy: observed [428.84436 , 428.84436 , 426.063385, 235.167282] vs reported [428.84436 , 428.84436 , 426.063385, 235.167282] (|diff| 4.49e-09 <= 1.0e-06)
+[PASS] NUM   (5.1)+(5.2) project / back-project round trip, 1000 points [m]: 1.110e-15 <= 1.0e-12
+[PASS] REPRO obstacle in camera frame [m]: observed [-0.088848,  0.186949,  1.318221] vs reported [-0.0888,  0.1869,  1.3182] (|diff| 4.90e-05 <= 6.0e-05)
+[PASS] REPRO obstacle pixel (u, v): observed [397.159227, 295.98565 ] vs reported [397.2, 296. ] (|diff| 4.08e-02 <= 6.0e-02)
+[PASS] REPRO back-projected obstacle, base [m]: observed [ 5.57142e-01, -4.62000e-04,  4.90350e-01] vs reported [ 5.571e-01, -5.000e-04,  4.904e-01] (|diff| 5.05e-05 <= 6.0e-05)
+[PASS] REPRO quantisation error [m]: observed 0.000523412 vs reported 0.0005 (|diff| 2.34e-05 <= 6.0e-05)
+[PASS] FACT  F-2-8 margins (body, EE) [full-resolution px]: observed [12., 24.] vs reported [12., 24.] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] REPRO worked example: |o - c| [m]: observed 0.250242 vs reported 0.2502 (|diff| 4.20e-05 <= 6.0e-05)
+[PASS] REPRO worked example: margin 12 Z / fx [m]: observed 0.0368805 vs reported 0.0369 (|diff| 1.95e-05 <= 6.0e-05)
+[PASS] REPRO worked example: published d = |o - c| - r - margin [m]: observed 0.163361 vs reported 0.1634 (|diff| 3.85e-05 <= 6.0e-05)
+[PASS] REPRO F-2-8 uniform low bias at Z = 1.0 m [m]: observed 0.0279822 vs reported 0.028 (|diff| 1.78e-05 <= 6.0e-04)
+[PASS] REPRO F-2-8 uniform low bias at Z = 1.5 m [m]: observed 0.0419733 vs reported 0.042 (|diff| 2.67e-05 <= 6.0e-04)
+[PASS] REPRO F-2-8 uniform low bias at Z = 2.0 m [m]: observed 0.0559644 vs reported 0.056 (|diff| 3.56e-05 <= 6.0e-04)
+[PASS] REPRO pixel footprint at Z = 1.318 m [m/px]: observed 0.00307338 vs reported 0.0031 (|diff| 2.66e-05 <= 6.0e-05)
+[PASS] REPRO ROI stride 6 at Z = 1.318 m [m]: observed 0.0184403 vs reported 0.0184 (|diff| 4.03e-05 <= 6.0e-05)
+[PASS] REPRO alpha = exp(-dt/tau) at 90 Hz: observed 0.793357 vs reported 0.793 (|diff| 3.57e-04 <= 6.0e-04)
+[PASS] REPRO alpha = exp(-dt/tau) at 30 Hz: observed 0.499352 vs reported 0.499 (|diff| 3.52e-04 <= 6.0e-04)
+[PASS] NUM   ema_alpha_for equals exp(-dt/tau): observed 0.793357 vs reported 0.793357 (|diff| 0.00e+00 <= 1.0e-15)
+[PASS] REPRO approach limiter: largest single-frame drop at 90 Hz, v_max 2 m/s [m]: observed 0.0222222 vs reported 0.022 (|diff| 2.22e-04 <= 3.0e-04)  (v_max = 2.0 m/s as read in DistanceEngine (05 §3.5))
+[PASS] FACT  tracker M-of-N and coast at 90 Hz (frames): observed [ 3.,  5., 72.] vs reported [ 3.,  5., 72.] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  tracker M-of-N and coast at 30 Hz (frames): observed [ 2.,  3., 24.] vs reported [ 2.,  3., 24.] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  self-detection window / confirm / release at 90 Hz (frames): observed [60., 15., 45.] vs reported [60., 15., 45.] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  self-detection window / confirm / release at 30 Hz (frames): observed [20.,  5., 15.] vs reported [20.,  5., 15.] (|diff| 0.00e+00 <= 0.0e+00)
+--- check_perception_numbers (chapter 05 §3, §4, §11; F-2-8): 23 passed, 0 failed ---
+
+=== check_tracker (chapter 05 §7; Q-2-2) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] FACT  shipped tuning q_jerk, sigma_meas_m, sigma_v0: observed [2.  , 0.01, 2.  ] vs reported [2.  , 0.01, 2.  ] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] NUM   (5.8) process_noise vs exact integral of F G G^T F^T: 3.469e-18 <= 1.0e-15  (reported 3.5e-18)
+[PASS] REPRO KalmanTrack static: |v| mean, |v| p95, sqrt(P_vv,xx) [m/s]: observed [0.071774, 0.120322, 0.064252] vs reported [0.072, 0.12 , 0.064] (|diff| 3.22e-04 <= 6.0e-04)  (illustrative, one seed)
+[PASS] REPRO IMMTrack static: |v| mean, |v| p95, sqrt(P_vv,xx) [m/s]: observed [0.07209 , 0.121533, 0.064252] vs reported [0.072, 0.122, 0.064] (|diff| 4.67e-04 <= 6.0e-04)  (illustrative, one seed)
+[PASS] REPRO IMMTrack static: mode probabilities stay neutral: observed [0.5, 0.5] vs reported [0.5, 0.5] (|diff| 3.52e-09 <= 6.0e-03)
+[PASS] REPRO KalmanTrack new track at 1 m/s: v_x at 56 / 100 / 200 ms: observed [1.223022, 0.809122, 0.950364] vs reported [1.22, 0.81, 0.95] (|diff| 3.02e-03 <= 6.0e-03)  (illustrative, one seed)
+[PASS] REPRO IMMTrack new track at 1 m/s: v_x at 56 / 100 / 200 ms: observed [1.054459, 1.130687, 0.864978] vs reported [1.05, 1.13, 0.86] (|diff| 4.98e-03 <= 6.0e-03)  (illustrative, one seed)
+[PASS] REPRO IMM throw: ballistic mode probability at 56 / 167 / 333 ms: observed [0.467345, 0.878324, 0.808768] vs reported [0.47, 0.88, 0.81] (|diff| 2.66e-03 <= 6.0e-03)  (illustrative, one seed)
+[PASS] REPRO IMM throw: estimated a_z at 167 / 333 ms [m/s^2]: observed [-10.02651 ,  -9.906522] vs reported [-10. ,  -9.9] (|diff| 2.65e-02 <= 6.0e-02)
+[PASS] REPRO coasting static track: sigma_p after 0.1 / 0.4 / 0.8 s [m]: observed [0.01284 , 0.079647, 0.297592] vs reported [0.013, 0.08 , 0.298] (|diff| 4.08e-04 <= 6.0e-04)
+[PASS] REPRO coasting static track: 4-sigma gate after 0.1 / 0.4 / 0.8 s [m]: observed [0.065099, 0.321091, 1.191041] vs reported [0.065, 0.321, 1.191] (|diff| 9.86e-05 <= 6.0e-04)
+[PASS] REPRO coast time at which the 4-sigma gate exceeds gate_max_m [s]: observed 0.522222 vs reported 0.5 (|diff| 2.22e-02 <= 6.0e-02)  (05 §7.4 says "after about 0.5 s")
+[INFO] gate_max_m = 0.5 m; gate_mahalanobis = 4.0 (the check above uses 4 sigma per axis, the shipped Mahalanobis gate)
+--- check_tracker (chapter 05 §7; Q-2-2): 12 passed, 0 failed ---
+
+=== check_kinematics_dynamics (chapter 04) ===
+repository: /ros2_ws/src
+[INFO] pinocchio 4.0.0 (Stage 2 reported 4.0.0)
+[PASS] FACT  [A] no-hand model is 7-DoF: nq=7 nv=7
+[PASS] FACT  [A] frame base has identity placement on joint 0: parentJoint=0
+[PASS] FACT  [A] frame fr3_link0 has identity placement on joint 0: parentJoint=0
+[PASS] FACT  [A] hand model is 9-DoF: nq=9 nv=9
+[PASS] REPRO [A] total mass no-hand [kg]: observed 17.8914 vs reported 17.891 (|diff| 4.01e-04 <= 5.0e-04)
+[PASS] REPRO [A] total mass hand [kg]: observed 18.604 vs reported 18.604 (|diff| 1.03e-06 <= 5.0e-04)
+[PASS] REPRO [A] fr3_hand in fr3_link8: translation [m]: observed [0., 0., 0.] vs reported [0., 0., 0.] (|diff| 0.00e+00 <= 1.0e-09)
+[PASS] REPRO [A] fr3_hand in fr3_link8: rpy [rad] (basis of F-2-9): observed [ 0.      ,  0.      , -0.785398] vs reported [ 0.      ,  0.      , -0.785398] (|diff| 0.00e+00 <= 1.0e-09)
+[PASS] REPRO [A] fr3_hand_tcp in fr3_link8: translation [m]: observed [0.    , 0.    , 0.1034] vs reported [0.    , 0.    , 0.1034] (|diff| 4.16e-17 <= 1.0e-09)
+[PASS] FACT  [B] 11 control points configured: fr3_link4#0, fr3_link4#1, fr3_link5#0, fr3_link5#1, fr3_link6#0, fr3_link6#1, fr3_link7#0, fr3_link7#1, fr3_link8#0, fr3_link8#1, fr3_link8#2
+[PASS] NUM   [B] control-point FK, kinematics vs perception [m]: 1.110e-16 <= 1.0e-12  (reported 1.1e-16)
+[PASS] NUM   [B] J (4.8) vs central difference of perception positions: 1.615e-10 <= 1.0e-08  (reported 1.6e-10)
+[PASS] NUM   [B] J-dot (4.8) vs central difference of J along qd: 2.276e-10 <= 1.0e-08  (reported 2.3e-10)
+[PASS] NUM   [B] (4.6) p'' = J qdd + J-dot qd vs second difference (h=1e-4): 1.892e-07 <= 1.0e-05  (reported 1.9e-07)
+[PASS] NUM   [B] rigid-point J_P (4.4) vs central difference: 1.218e-10 <= 1.0e-08  (reported 1.2e-10)
+[PASS] NUM   [B] rigid-point J-dot_P (4.5) vs central difference: 1.772e-10 <= 1.0e-08  (reported 1.8e-10)
+[PASS] NUM   [B] Pinocchio LWA J-dot vs d/dt J_LWA: 2.861e-10 <= 1.0e-08  (reported 2.9e-10)
+[PASS] FACT  [B] last capsule end = fingertip control point [m]: 0.000e+00 <= 1.0e-12
+[PASS] FACT  [C] data.M lower triangle is filled after computeAllTerms: all 10 states
+[PASS] FACT  [C] data.C is identically 0 after computeAllTerms:
+[PASS] NUM   [C] nle - g vs computeCoriolisMatrix @ qd: 1.532e-14 <= 1.0e-10  (reported 1.5e-14)
+[PASS] NUM   [C] (4.10) code torque vs rnea - g [N m]: 1.332e-14 <= 1.0e-10  (reported 1.3e-14; torques up to 13.6 N m (reported 13.6))
+--- check_kinematics_dynamics (chapter 04): 22 passed, 0 failed ---
+
+=== check_geometry_and_so3 (chapters 04 and 05) ===
+repository: /ros2_ws/src
+[PASS] REPRO home origin fr3_link0 [m]: observed [0., 0., 0.] vs reported [0., 0., 0.] (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link1 [m]: observed [0.   , 0.   , 0.333] vs reported [0.   , 0.   , 0.333] (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link2 [m]: observed [0.   , 0.   , 0.333] vs reported [0.   , 0.   , 0.333] (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link3 [m]: observed [-0.223446,  0.      ,  0.556446] vs reported [-0.2234,  0.    ,  0.5564] (|diff| 4.57e-05 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link4 [m]: observed [-0.165109,  0.      ,  0.614782] vs reported [-0.1651,  0.    ,  0.6148] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link5 [m]: observed [0.218891, 0.      , 0.697282] vs reported [0.2189, 0.    , 0.6973] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link6 [m]: observed [0.218891, 0.      , 0.697282] vs reported [0.2189, 0.    , 0.6973] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link7 [m]: observed [0.306891, 0.      , 0.697282] vs reported [0.3069, 0.    , 0.6973] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO home origin fr3_link8 [m]: observed [0.306891, 0.      , 0.590282] vs reported [0.3069, 0.    , 0.5903] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO distance fr3_link0 -> fr3_link1 [m] (constant over q: spread 0.0e+00): observed 0.333 vs reported 0.333 (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 0.000e+00 <= 1.0e-09
+[PASS] REPRO distance fr3_link1 -> fr3_link2 [m] (constant over q: spread 0.0e+00): observed 0 vs reported 0 (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 0.000e+00 <= 1.0e-09
+[PASS] REPRO distance fr3_link2 -> fr3_link3 [m] (constant over q: spread 2.2e-16): observed 0.316 vs reported 0.316 (|diff| 1.11e-16 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 2.220e-16 <= 1.0e-09
+[PASS] REPRO distance fr3_link3 -> fr3_link4 [m] (constant over q: spread 8.3e-17): observed 0.0825 vs reported 0.0825 (|diff| 1.39e-17 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 8.327e-17 <= 1.0e-09
+[PASS] REPRO distance fr3_link4 -> fr3_link5 [m] (constant over q: spread 2.8e-16): observed 0.392762 vs reported 0.39276 (|diff| 2.33e-06 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 2.776e-16 <= 1.0e-09
+[PASS] REPRO distance fr3_link5 -> fr3_link6 [m] (constant over q: spread 0.0e+00): observed 0 vs reported 0 (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 0.000e+00 <= 1.0e-09
+[PASS] REPRO distance fr3_link6 -> fr3_link7 [m] (constant over q: spread 1.9e-16): observed 0.088 vs reported 0.088 (|diff| 2.78e-17 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 1.943e-16 <= 1.0e-09
+[PASS] REPRO distance fr3_link7 -> fr3_link8 [m] (constant over q: spread 1.9e-16): observed 0.107 vs reported 0.107 (|diff| 0.00e+00 <= 6.0e-05)
+[PASS] FACT    spread of that distance over 200 q [m]: 1.943e-16 <= 1.0e-09
+[INFO] configured segment 0: length min 0.33300 max 0.33300 m
+[INFO] configured segment 1: length min 0.00000 max 0.00000 m
+[INFO] configured segment 2: length min 0.31600 max 0.31600 m
+[INFO] configured segment 3: length min 0.08250 max 0.08250 m
+[INFO] configured segment 4: length min 0.39276 max 0.39276 m
+[INFO] configured segment 5: length min 0.00000 max 0.00000 m
+[INFO] configured segment 6: length min 0.08800 max 0.08800 m
+[INFO] configured segment 7: length min 0.10700 max 0.10700 m
+[PASS] FACT  F-2-1: |fr3_link6#0 - fr3_link6#1| over 200 q [m]: 2.229e-16 <= 1.0e-12  (reported at most 2e-16)
+[PASS] NUM   so3_log vs pin.log3, 2000 random rotations: 1.405e-10 <= 1.0e-08  (reported 1.4e-10)
+[PASS] NUM   so3_log near 0 and pi (sign at pi allowed): 2.598e-06 <= 1.0e-05  (reported <= 2.6e-6)
+[PASS] FACT  URDF: hand.stl is a collision mesh of fr3_hand:
+[PASS] FACT  URDF: fr3_link8 has no hand.stl collision: 0 collision element(s) on fr3_link8
+[PASS] FACT  URDF: fr3_hand_joint rpy [rad]: observed [ 0.      ,  0.      , -0.785398] vs reported [ 0.      ,  0.      , -0.785398] (|diff| 0.00e+00 <= 1.0e-06)
+[PASS] REPRO F-2-4 forearm: point on the 5 cm tube midway between sphere centres, gap to the nearest sphere [m]: observed 0.0323715 vs reported 0.032 (|diff| 3.71e-04 <= 6.0e-04)  (L = 0.39276 m, centres at 1/3 and 2/3)
+[INFO] NEW F-2-4: hand vertices outside every control-point sphere: 94 %; largest distance of a hand vertex from the sphere model 0.0684 m (home pose, URDF-correct hand placement)
+[PASS] FACT  NEW F-2-4: some hand surface lies outside the sphere model: max excess 0.0684 m
+--- check_geometry_and_so3 (chapters 04 and 05): 33 passed, 0 failed ---
+
+=== check_home_example (chapter 04 §6) ===
+repository: /ros2_ws/src
+[PASS] REPRO fingertip p [m]: observed [0.306891, 0.      , 0.490282] vs reported [0.3069, 0.    , 0.4903] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO flange fr3_link8 origin [m]: observed [0.306891, 0.      , 0.590282] vs reported [0.3069, 0.    , 0.5903] (|diff| 1.79e-05 <= 6.0e-05)
+[PASS] REPRO z8 at home: observed [-0.,  0., -1.] vs reported [ 0.,  0., -1.] (|diff| 6.28e-16 <= 1.0e-09)
+[PASS] REPRO fingertip J (3x7): observed [[-0.      ,  0.157282, -0.      ,  0.1245  , -0.      ,  0.207   ,
+  -0.      ],
+ [ 0.306891, -0.      ,  0.32822 , -0.      ,  0.207   ,  0.      ,
+  -0.      ],
+ [ 0.      , -0.306891, -0.      ,  0.472   ,  0.      ,  0.088   ,
+  -0.      ]] vs reported [[ 0.    ,  0.1573,  0.    ,  0.1245,  0.    ,  0.207 ,  0.    ],
+ [ 0.3069,  0.    ,  0.3282,  0.    ,  0.207 ,  0.    ,  0.    ],
+ [ 0.    , -0.3069,  0.    ,  0.472 ,  0.    ,  0.088 ,  0.    ]] (|diff| 1.96e-05 <= 6.0e-04)  (printed with 4 significant digits)
+[PASS] NUM   (4.3) column 1 = z x (p - o1): observed [-0.      ,  0.306891,  0.      ] vs reported [-0.      ,  0.306891,  0.      ] (|diff| 0.00e+00 <= 1.0e-12)
+[PASS] REPRO v = J qd [m/s]: observed [0.03735 , 0.092067, 0.1416  ] vs reported [0.0373, 0.0921, 0.1416] (|diff| 5.00e-05 <= 6.0e-05)
+[PASS] REPRO J-dot qd [m/s^2]: observed [-0.0701  ,  0.02241 ,  0.011205] vs reported [-0.0701,  0.0224,  0.0112] (|diff| 1.00e-05 <= 6.0e-05)
+[PASS] REPRO |J-dot qd| [m/s^2]: observed 0.0744432 vs reported 0.075 (|diff| 5.57e-04 <= 1.0e-03)
+--- check_home_example (chapter 04 §6): 8 passed, 0 failed ---
+
+=== check_cp_labels (chapter 05 §6.2; F-2-10) ===
+repository: /ros2_ws/src
+[PASS] FACT  fr3_link5 and fr3_link6 translations are exactly equal (Pinocchio FK):
+[PASS] FACT  [Pinocchio FK] fr3_link6#0 and #1 positions exactly equal:
+[INFO] [Pinocchio FK] labels: ['fr3_link4#0', 'fr3_link4#0.1', 'fr3_link4#1', 'fr3_link4#1.1', 'fr3_link5#0', 'fr3_link5#0.1', 'fr3_link5#1', 'fr3_link5#1.1', 'fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3', 'fr3_link7#0', 'fr3_link7#0.1', 'fr3_link7#1', 'fr3_link7#1.1', 'fr3_link8#0', 'fr3_link8#0.1', 'fr3_link8#1', 'fr3_link8#1.1', 'fr3_link8#2', 'fr3_link8#2.1']
+[PASS] FACT  [Pinocchio FK] F-2-10 reproduced: fr3_link6 labels are ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3']: ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3']
+[PASS] FACT  [fr3_link6 = fr3_link5 + R5 @ 0 (TF-style)] fr3_link6#0 and #1 positions exactly equal:
+[INFO] [fr3_link6 = fr3_link5 + R5 @ 0 (TF-style)] labels: ['fr3_link4#0', 'fr3_link4#0.1', 'fr3_link4#1', 'fr3_link4#1.1', 'fr3_link5#0', 'fr3_link5#0.1', 'fr3_link5#1', 'fr3_link5#1.1', 'fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3', 'fr3_link7#0', 'fr3_link7#0.1', 'fr3_link7#1', 'fr3_link7#1.1', 'fr3_link8#0', 'fr3_link8#0.1', 'fr3_link8#1', 'fr3_link8#1.1', 'fr3_link8#2', 'fr3_link8#2.1']
+[PASS] FACT  [fr3_link6 = fr3_link5 + R5 @ 0 (TF-style)] F-2-10 reproduced: fr3_link6 labels are ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3']: ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#0.2', 'fr3_link6#0.3']
+[PASS] FACT  control (duplicate shifted by 1 mm): intended labels: ['fr3_link6#0', 'fr3_link6#0.1', 'fr3_link6#1', 'fr3_link6#1.1']
+--- check_cp_labels (chapter 05 §6.2; F-2-10): 6 passed, 0 failed ---
+
+=== check_held_entry (chapter 05 §3.5; F-2-11) ===
+repository: /ros2_ws/src
+[PASS] FACT  one entry published: ['fr3_link8#0']
+[PASS] FACT  held entry is valid: valid=True, distance=0.16
+[PASS] FACT  closest_point_human of the held entry [m]: observed [0., 0., 0.] vs reported [0., 0., 0.] (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  published direction: observed [-1.,  0.,  0.] vs reported [-1.,  0.,  0.] (|diff| 0.00e+00 <= 1.0e-07)
+[PASS] REPRO normal the filter computes, (pr - ph)/|pr - ph|: observed [0.530574, 0.      , 0.847639] vs reported [0.531, 0.   , 0.848] (|diff| 4.26e-04 <= 6.0e-04)
+[PASS] REPRO angle between that normal and the published direction [deg]: observed 122.044 vs reported 122 (|diff| 4.42e-02 <= 6.0e-02)
+--- check_held_entry (chapter 05 §3.5; F-2-11): 6 passed, 0 failed ---
+
+# run_all.sh exit code: 0

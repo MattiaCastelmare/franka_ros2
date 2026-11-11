@@ -6,12 +6,11 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-11, checkpoint C-003 (baseline-aware consistency check; no stage work)
-- **Project status:** read-only documentation phase. Stages 0 and 1 are done.
-- **Last completed stage:** Stage 1 (Architecture and graph). The user acknowledged it as complete on
-  2026-11-11.
-- **Next pending stage:** Stage 2 (Foundations and perception): `04_math_foundations.md` and
-  `05_perception_and_distance.md`. It is **NOT approved yet**.
+- **Last updated:** 2026-11-11, checkpoint C-008 (Stage 2 complete; verification scripts preserved and rerun)
+- **Project status:** read-only documentation phase. Stages 0, 1 and 2 are done.
+- **Last completed stage:** Stage 2 (Foundations and perception): `04_math_foundations.md` and
+  `05_perception_and_distance.md`. It is waiting for the user's review.
+- **Next pending stage:** Stage 3 (Nominal motion and barrier): `06`, `07`. **Not approved.**
 - **Stage in progress:** none.
 - **Pinned branch:** `humble-mattia`
 - **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
@@ -21,25 +20,36 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - Any change to the source since this commit makes `tools/check_state.py` report REVIEW (exit code 2).
   - Stashes: 3, never touched.
 - **Completed documentation files:**
-  - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`;
+  - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`,
+    `04_math_foundations.md`, `05_perception_and_distance.md`;
   - `ledger/*`;
   - the tools `stage0_extract.py`, `ledger_status.py` and `check_state.py` (baseline-aware since C-003);
+  - `tools/stage2_verification/`: 9 read-only scripts reproducing every numerical result of ch. 04 and
+    05, `run_all.sh`, a README, and the recorded output `results/observed_2026-11-11.txt`
+    (126 of 126 checks passed);
   - `CHECKPOINTS.md` and `RESUME_PROMPT.md`;
   - the root `CLAUDE.md`.
 - **Draft or stale:** `A_file_index.md` was generated in Stage 0 and does not reflect the Stage 1 chapter
   reassignments (§2). It gets regenerated in Stage 7.
 - **Incomplete work carried forward:**
-  - 47 ledger files are `partial`: for nodes, only the constructor interfaces were read. Their algorithms
+  - 54 ledger files are `partial`: for nodes, only the constructor interfaces were read. Their algorithms
     belong to the stage that owns their chapter.
-  - Unreachability candidates (F-0-4) are not yet confirmed (Stage 7).
+  - Ch. 05 files still `pending` or `partial`, read at interface level only: the eye-in-hand node, the
+    hand-eye launch files, `rtd_debug.py`, `node_utils.py`, the remaining calibration YAMLs, and most
+    ch. 05 tests (names cross-referenced only). They are covered by the chapter at interface level;
+    a deeper read is optional (Stage 7 coverage pass).
+  - Unreachability candidates (F-0-4) are not yet confirmed (Stage 7); Stage 2 confirmed
+    `static_scene.py`, `surface_velocity.py` and `self_shadow.void_spheres_from_rays` as unused.
   - The guide-versus-code cross-check has not started (Stage 7, chapter 16).
-  - Q-1-4 and Q-1-5 need the user's answer (§5).
-- **Exact next action:** wait for the user to approve Stage 2. Once approved:
-  1. run `tools/check_state.py`;
-  2. record the stage start in `CHECKPOINTS.md`;
-  3. begin with `04_math_foundations.md`, reading `franka_experiments/franka_experiments/utils/kinematics.py`
-     and the other ch. 04 rows of the ledger (`grep '| 04 |' ledger/coverage_ledger.md`);
-  4. then move to ch. 05, which opens with Q-1-2 and Q-1-3.
+  - User questions: Q-1-4, Q-1-5, Q-2-2. Runtime tests that need approval: Q-2-3, Q-2-4. Stage 3
+    must open with Q-2-1 (F-2-11).
+- **Exact next action:** wait for the user's review of Stage 2 and explicit approval of Stage 3.
+  Then:
+  1. run `check_state.py` and, if the container is up,
+     `docs/framework_study/tools/stage2_verification/run_all.sh` (expect exit 0);
+  2. append C-009 "Stage 3 started";
+  3. first read: `cbf_state_rows.py` around L2480–2560 (the obstacle-row construction from `pr − ph`)
+     to settle Q-2-1, then `pentagon_qddot_commander.py` for ch. 06.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -49,7 +59,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 |---|---|---:|---|---|---|
 | 0 — Inventory | `00_INDEX.md`, `PROGRESS.md`, `A_file_index.md` (draft), `ledger/*`, `tools/stage0_extract.py` | 346 enumerated | **done** | `ba68077` | approved 2026-11-11 |
 | 1 — Architecture & graph | `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`; `tools/ledger_status.py` | ch. 01: 5 · 02: 4 · 03: 13, after reassignment; plus about 30 node, launch and C++ files read at interface level | **done** | `ba68077` (tree clean apart from `docs/framework_study/`) | acknowledged complete 2026-11-11 (Q-1-4, Q-1-5 still open) |
-| 2 — Foundations & perception | `04`, `05` | ch. 04: 5 · 05: 62 | not started | | |
+| 2 — Foundations & perception | `04`, `05` | ch. 04: 5 · 05: 62 | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 3 — Nominal motion & barrier | `06`, `07` | ch. 06: 25 · 07: 30 | not started | | |
 | 4 — QP & actuation | `08`, `09` | ch. 08: 28 · 09: 6 | not started | | |
 | 5 — Alternatives, ISO, tools | `10`, `11`, `13` | ch. 10: 9 · 11: 18 · 13: 43 | not started | | |
@@ -64,10 +74,10 @@ shows a better home, and the counts here are then updated.
 
 | Status | Files |
 |---|---:|
-| pending | 290 |
-| partial | 47 |
-| read | 5 |
-| documented | 4 |
+| pending | 262 |
+| partial | 54 |
+| read | 4 |
+| documented | 26 |
 
 `partial` was added in Stage 1. It means the parts the stage needed were read; for nodes, that is
 the constructor interfaces. Chapter reassignments made in Stage 1:
@@ -144,6 +154,23 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | F-1-17 | There are two joint-limit sources: `franka_description` `joint_limits.yaml` for the filter, and `fr3_control.yaml → joint_limits` for 4 other nodes. | 03 §5.4 | Verified |
 | F-1-18 | The Stage 0 extractor's markdown grouping missed `franka_experiments/franka_experiments/__init__.py`. Fixed in the tool, and the row was added by hand. | ledger | Verified |
 
+### Stage 2 findings
+
+| ID | Finding | Where | Label |
+|---|---|---|---|
+| F-2-1 | Segment 5 (`fr3_link5 → fr3_link6`) has length 0 for every q, because the two frame origins coincide. Its 2 control points `fr3_link6#0` and `#1` are therefore the same point, with identical J and J̇: 2 of the 11 control points are duplicates. The effect on the QP rows and slack is to be examined in Stage 3. | 04 §4.2 | Derived + numerically verified (200 random q) |
+| F-2-2 | The container's **installed** `franka_experiments` (`/ros2_ws/install/...`, `kinematics.py` dated 2026-11-10 14:39) is stale relative to the baseline source: it lacks `CBFKinematics.configure_control_points`. A run in the container right now would not execute the baseline code. The numerical checks therefore imported the source via `PYTHONPATH`. | 04 §7 | Verified (runtime observation, 2026-11-11) |
+| F-2-3 | `qddot_to_torque` uses `data.M` from `computeAllTerms` without symmetrising; `pentagon_qddot_commander` mirrors the upper triangle, on the assumption that "CRBA fills only the upper triangle". With Pinocchio 4.0.0 both triangles are filled, so both are correct. The code nonetheless depends on the version and no test pins it. | 04 §4.5 | Numerically verified (4.0.0); other versions Unverified |
+| F-2-5 | Five consumers cache the joint-state index map from the first full message (`JointStateManager`, `pentagon_qddot_commander`, `rl_policy_commander`, `pentagon_torque_commander`, `cbf_OSCBF_filter`). `cbf_safety_filter` and `qddot_to_torque` map per message. Two arm publishers with different orders on one topic would be mis-mapped silently. | 04 §2.2 | Verified (code); risk Inferred |
+| F-2-6 | `CBFKinematics.resolve_frame_id` falls back to the first frame whose name *contains* the string, so a typo can select another frame silently. | 04 §4.6 | Verified (code); impact Inferred |
+| F-2-4 | The end-effector sphere (r = 0.05 m at link8 + 0.10 m · z₈) does not cover the hand's lateral half-extent (about 0.10 m, `hand.stl` bounding box). More generally, the distance geometry is 11 **spheres**, not capsules: on the forearm segment the gap between spheres is up to 3.2 cm at the 5 cm tube, and links 0–3 carry no control point. **Added in the reproducibility pass (2026-11-11):** at q_home, with the URDF-correct hand placement, 94 % of the hand's vertices lie outside every sphere; the largest excess is 6.84 cm (`check_geometry_and_so3.py`; home pose only). | 05 §3.2 | Derived; magnitudes numerically computed and reproduced; risk Inferred |
+| F-2-7 | `camera_link_extrinsics.yaml` (static TF `base → camera_link`) was derived from `camera_extrinsics.yaml` as of `d4e4028` (2026-06-19; recomposition error 0.000 m). It was not regenerated after the three recalibrations of September. The TF camera pose is 0.276 m and 5.14° away from the pose `real_time_distance` uses. Distances are unaffected, because the node reads the file; RViz and anything using TF camera frames are affected. Answers Q-1-3. **Correction (2026-11-11, reproducibility pass, `tools/stage2_verification/check_camera_extrinsics.py`, full git-history scan):** the matching calibration is `e5fcdb2` (2026-05-21), which was the content of `camera_extrinsics.yaml` at `d4e4028`. There were **five** later calibrations (`8bfd96b` 06-19 15:28, `0c7e2b9`, `72d2753`, `08710eb`, `fda4af7`), not three. The text above that says "as of `d4e4028`" and "three recalibrations of September" is superseded on those two points; the 0.276 m / 5.14° conclusion stands. | 05 §5.2 | Verified + numerically checked; reproduced |
+| F-2-8 | The mask-dilation margin (12 px body / 24 px EE, converted at the obstacle pixel's depth) is subtracted from **every** obstacle pixel, not only from pixels at the mask edge. Published distances are biased low by about 2.8 / 4.2 / 5.6 cm at Z = 1.0 / 1.5 / 2.0 m. This is conservative; it was probably not intended to be uniform. Input to the Stage 3 over-reactivity analysis. | 05 §3.4 | Derived (code) |
+| F-2-9 | `MaskBuilder` poses `hand.stl` (the collision mesh of `fr3_hand`) with the TF of `fr3_link8`. The URDF joint `fr3_hand_joint` has rpy (0, 0, −π/4), so the modelled hand is rotated by 45°: up to 7.96 cm vertex displacement. The rotated samples also feed the mask, the z-buffer, `calibration_check` and the SSB model points. Effect on self-leak: Inferred; a runtime overlay check is proposed. | 05 §4.2 | Verified (URDF + code) + numerically measured |
+| F-2-10 | `labelled_links` tells obstacle ranks apart from control points by `closest_point_robot` position. The duplicate control points `fr3_link6#0` and `#1` (F-2-1) have exactly equal positions, so with `multi_obstacle_k ≥ 2` (the launch default) and a second cluster, `fr3_link6#1` is labelled `fr3_link6#0.2` (with its extra as `#0.3`). The geometry is still correct; per-control-point state keyed on labels is mis-assigned. The self-detection keys (`_self_detected`, arrival order) keep `fr3_link6#1`, which then matches no published label, so a self-detection verdict for it never suppresses its track fields. | 05 §6.2 | Numerically reproduced with the baseline `build_cp_messages` + `labelled_links`; self-detection part Derived |
+| F-2-11 | During the bounded LPF hold (≤ `iso_distance_hold_max_s` = 0.10 s), `DistanceEngine._lpf_pass` emits `closest_obstacle_point=None` with a valid direction. `build_cp_messages` then leaves `closest_point_human` at its wire default (0, 0, 0), but the entry is still `valid = True`. `cbf_safety_filter` reads it into `Obstacle.ph`; `cbf_state_rows` (around L2509) builds the normal from `pr − ph`. For the home-pose fingertip the normal is 122° away from the published direction (radially away from the base). Effect on the barrier: Inferred; Stage 3 must check whether anything rejects ph = 0 (Q-2-1). | 05 §3.5 | Verified (code path) + numerically reproduced (message); filter effect Inferred |
+| F-2-12 | `handeye_calibration_node`: the docstring says Levenberg–Marquardt, the code calls `least_squares(method='trf', loss='huber')` with the default `f_scale` = 1. For residuals of a few mm or mrad, Huber is in its quadratic zone, so the fit is plain least squares; robustness comes only from the MAD rejection. Rotation (rad) and translation (m) residuals have unit weights. Minor, documentation-level. | 05 §9.1 | Verified (code) + Derived |
+
 ## 5. Decisions and open questions
 
 **Decisions recorded at the Stage 0 review (2026-11-11):**
@@ -153,15 +180,29 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 - A pipeline's status is classified from code evidence. Where the evidence is ambiguous, it is
   marked as requiring user confirmation.
 
-**Open after Stage 1:**
+**Open questions (Stage 1 and Stage 2):**
 
 | ID | Question | Who can close it |
 |---|---|---|
 | Q-1-1 | Who compensates gravity in Gazebo? Neither `qddot_to_torque` nor `rt_torque_controller` adds `g(q)`. | Stage 4/6 (read `franka_ign_ros2_control` / the plant) |
-| Q-1-2 | `real_time_distance` projects the depth image (`camera_depth_optical_frame`) with an extrinsic whose child frame is `camera_color_optical_frame`. Is the depth-to-colour offset handled? | Stage 2 |
-| Q-1-3 | Do `camera_extrinsics.yaml` (projection) and `camera_link_extrinsics.yaml` (TF) describe the same camera pose consistently? | Stage 2 (numeric check) |
+| Q-1-2 (**answered in Stage 2, 05 §5.1**: a deliberate choice, recorded in `fr3_complete.yaml`; root cause open; runtime test proposed) | `real_time_distance` projects the depth image (`camera_depth_optical_frame`) with an extrinsic whose child frame is `camera_color_optical_frame`. Is the depth-to-colour offset handled? | Stage 2 |
+| Q-1-3 (**answered in Stage 2: NO**, F-2-7) | Do `camera_extrinsics.yaml` (projection) and `camera_link_extrinsics.yaml` (TF) describe the same camera pose consistently? | Stage 2 (numeric check) |
 | Q-1-4 | Is Pipeline B (velocity) still run on hardware? Is Pipeline C (OSCBF) abandoned or parked? Is `CBFTorqueController` (`use_torque_controller:=cbf`) still used? | **user** |
 | Q-1-5 | Is `start_move_group:=true` intended (for example, for another tool), or is it a leftover? | **user** |
+| Q-2-1 | Does anything in `cbf_safety_filter` / `cbf_state_rows` reject or repair an obstacle with `ph = (0, 0, 0)` (F-2-11), or does the held row really use the base-radial normal? | Stage 3 (ch. 07) |
+| Q-2-2 | `gate_max_m` (0.5 m) against `max_coast_s` (0.8 s): after about 0.5 s of coast the 4σ Mahalanobis gate exceeds 0.5 m, so only the Euclidean gate binds (05 §7.4; the YAML records the same caveat). Is a re-derivation planned before hardware use? | **user** / runtime |
+| Q-2-3 | Q-1-2 root cause: does the hand-eye result really approximate base → depth optical, or was the 2026-09-30 offset trial composed with the wrong direction? Runtime test in 05 §5.1, using the mask coverage and leak statistics (05 §9.3). | runtime (user approval needed) |
+| Q-2-4 | F-2-9 runtime confirmation: compare the mask overlay and the `leak=` counter with joint 7 rotated, with and without the −45° hand rotation. | runtime (user approval needed) |
+
+**Decisions recorded on 2026-11-11, after Stage 2 (reproducibility pass, at the user's request):**
+- Numerical evidence lives in the repository, under `tools/<stage>_verification/`, never only in a
+  session scratchpad.
+- Each script tags its results `NUM` (identity verified numerically), `REPRO` (a reported number
+  reproduced) or `FACT` (a code or configuration fact evaluated). Runtime validation is listed
+  separately as still open.
+- Scripts must write nothing into the repository; bytecode caching is disabled.
+- When a rerun disagrees with a chapter, the chapter and the finding are corrected, and the superseded
+  wording is kept visible.
 
 **Decisions recorded on 2026-11-11, after Stage 1:**
 - The repository files are the single source of truth, so that work can resume across sessions and

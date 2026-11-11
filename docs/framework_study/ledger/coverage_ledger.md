@@ -19,16 +19,16 @@
 | `franka_experiments/franka_experiments/nodes/ee_pentagon_velocity_commander.py` | 360 | ROS node | 06 | 3 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/ee_random_waypoints_velocity_commander.py` | 537 | ROS node | 06 | 3 | entry | pending |
 | `franka_experiments/franka_experiments/nodes/experiment_logger.py` | 1125 | ROS node | 13 | 5 | entry,launch,test | partial |
-| `franka_experiments/franka_experiments/nodes/frame_grabber.py` | 155 | ROS node | 05 | 2 | entry | pending |
-| `franka_experiments/franka_experiments/nodes/handeye_calibration_node.py` | 2561 | ROS node | 05 | 2 | entry | pending |
+| `franka_experiments/franka_experiments/nodes/frame_grabber.py` | 155 | ROS node | 05 | 2 | entry | partial |
+| `franka_experiments/franka_experiments/nodes/handeye_calibration_node.py` | 2561 | ROS node | 05 | 2 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/handeye_eye_in_hand_node.py` | 962 | ROS node | 05 | 2 | entry | pending |
-| `franka_experiments/franka_experiments/nodes/image_rectifier_node.py` | 107 | ROS node | 05 | 2 | entry | pending |
+| `franka_experiments/franka_experiments/nodes/image_rectifier_node.py` | 107 | ROS node | 05 | 2 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/iso_evidence_logger.py` | 621 | ROS node | 11 | 5 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/iso_safety_monitor.py` | 417 | ROS node | 11 | 5 | entry,test | partial |
 | `franka_experiments/franka_experiments/nodes/pentagon_qddot_commander.py` | 1688 | ROS node | 06 | 3 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/pentagon_torque_commander.py` | 496 | ROS node | 10 | 5 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/qddot_to_torque.py` | 317 | ROS node | 09 | 4 | entry,test | partial |
-| `franka_experiments/franka_experiments/nodes/real_time_distance.py` | 1255 | ROS node | 05 | 2 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/nodes/real_time_distance.py` | 1255 | ROS node | 05 | 2 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/nodes/rl_policy_commander.py` | 753 | ROS node | 06 | 3 | entry,test | partial |
 | `franka_experiments/franka_experiments/nodes/tag_overlay_node.py` | 160 | ROS node | 13 | 5 | entry | pending |
 | `franka_experiments/franka_experiments/nodes/trajectory_overlay_node.py` | 449 | ROS node | 13 | 5 | entry | partial |
@@ -42,14 +42,14 @@
 | `franka_experiments/franka_experiments/__init__.py` | 0 | package init (row added in Stage 1: the Stage 0 grouping missed it) | 03 | 1 |  | read |
 | `franka_experiments/franka_experiments/utils/avoidance.py` | 165 | util module | 06 | 3 | test | pending |
 | `franka_experiments/franka_experiments/utils/avoidance_math.py` | 1309 | util module | 06 | 3 | entry | pending |
-| `franka_experiments/franka_experiments/utils/ballistic_prediction.py` | 202 | util module | 05 | 2 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/calibration_check.py` | 235 | util module | 05 | 2 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/camera_yaml.py` | 17 | util module | 05 | 2 | entry | pending |
+| `franka_experiments/franka_experiments/utils/ballistic_prediction.py` | 202 | util module | 05 | 2 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/utils/calibration_check.py` | 235 | util module | 05 | 2 | entry,script,test | documented |
+| `franka_experiments/franka_experiments/utils/camera_yaml.py` | 17 | util module | 05 | 2 | entry | documented |
 | `franka_experiments/franka_experiments/utils/cbf_constraints.py` | 218 | util module | 07 | 3 |  | pending |
 | `franka_experiments/franka_experiments/utils/cbf_diagnostics.py` | 65 | util module | 13 | 5 | entry,script,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_evasion.py` | 306 | util module | 07 | 3 | entry,sim-exec,script,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_hard_limits.py` | 456 | util module | 08 | 4 | entry,sim-exec,script,test | pending |
-| `franka_experiments/franka_experiments/utils/cbf_kinematics.py` | 9 | util module | 04 | 2 | entry | pending |
+| `franka_experiments/franka_experiments/utils/cbf_kinematics.py` | 9 | util module | 04 | 2 | entry | documented |
 | `franka_experiments/franka_experiments/utils/cbf_qp.py` | 114 | util module | 08 | 4 |  | pending |
 | `franka_experiments/franka_experiments/utils/cbf_qp_assembly.py` | 598 | util module | 08 | 4 | entry,script,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_singularity.py` | 214 | util module | 08 | 4 | entry,sim-exec,script,launch,test | pending |
@@ -57,27 +57,27 @@
 | `franka_experiments/franka_experiments/utils/cbf_utils.py` | 46 | util module | 07 | 3 | entry,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_zones.py` | 356 | util module | 07 | 3 | entry,sim-exec,script,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/config.py` | 806 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
-| `franka_experiments/franka_experiments/utils/constants.py` | 18 | util module | 04 | 2 | entry,sim-exec,script,launch,test | read |
-| `franka_experiments/franka_experiments/utils/distance_engine.py` | 1014 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
-| `franka_experiments/franka_experiments/utils/distance_utils.py` | 307 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/constants.py` | 18 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
+| `franka_experiments/franka_experiments/utils/distance_engine.py` | 1014 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
+| `franka_experiments/franka_experiments/utils/distance_utils.py` | 307 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/evasion_direction.py` | 264 | util module | 06 | 3 | entry,sim-exec,script,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/go_around.py` | 160 | util module | 06 | 3 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/handeye_solver.py` | 422 | util module | 05 | 2 | entry,test | pending |
+| `franka_experiments/franka_experiments/utils/handeye_solver.py` | 422 | util module | 05 | 2 | entry,test | partial |
 | `franka_experiments/franka_experiments/utils/iso_ssm.py` | 210 | util module | 11 | 5 | entry,sim-exec,script,launch,test | pending |
-| `franka_experiments/franka_experiments/utils/kinematics.py` | 665 | util module | 04 | 2 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/kinematics.py` | 665 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/launch_support.py` | 589 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
 | `franka_experiments/franka_experiments/utils/livelock.py` | 163 | util module | 06 | 3 | entry,script,test | pending |
 | `franka_experiments/franka_experiments/utils/logging_utils.py` | 504 | util module | 13 | 5 | entry,script,launch,test | pending |
-| `franka_experiments/franka_experiments/utils/mask_builder.py` | 312 | util module | 05 | 2 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/math_utils.py` | 87 | util module | 04 | 2 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/mask_builder.py` | 312 | util module | 05 | 2 | entry,script,test | documented |
+| `franka_experiments/franka_experiments/utils/math_utils.py` | 87 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/node_runtime.py` | 170 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
 | `franka_experiments/franka_experiments/utils/node_utils.py` | 42 | util module | 05 | 2 |  | pending |
-| `franka_experiments/franka_experiments/utils/obstacle_clusters.py` | 376 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
-| `franka_experiments/franka_experiments/utils/obstacle_sim.py` | 153 | util module | 05 | 2 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py` | 312 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
-| `franka_experiments/franka_experiments/utils/obstacle_tracker.py` | 1048 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/obstacle_clusters.py` | 376 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
+| `franka_experiments/franka_experiments/utils/obstacle_sim.py` | 153 | util module | 05 | 2 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/utils/obstacle_track_pipeline.py` | 312 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
+| `franka_experiments/franka_experiments/utils/obstacle_tracker.py` | 1048 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/params.py` | 293 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
-| `franka_experiments/franka_experiments/utils/perception_msgs.py` | 484 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/perception_msgs.py` | 484 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/rate_scaling.py` | 199 | util module | 08 | 4 | entry,sim-exec,script,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/rl_policy.py` | 499 | util module | 06 | 3 | entry,test | pending |
 | `franka_experiments/franka_experiments/utils/ros.py` | 245 | util module | 03 | 1 | entry,launch,test | partial |
@@ -85,14 +85,14 @@
 | `franka_experiments/franka_experiments/utils/rtd_debug.py` | 370 | util module | 05 | 2 |  | pending |
 | `franka_experiments/franka_experiments/utils/run_metadata.py` | 36 | util module | 13 | 5 | test | pending |
 | `franka_experiments/franka_experiments/utils/self_collision.py` | 224 | util module | 08 | 4 | entry,sim-exec,script,launch,test | pending |
-| `franka_experiments/franka_experiments/utils/self_detection.py` | 226 | util module | 05 | 2 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/self_shadow.py` | 685 | util module | 05 | 2 | entry,sim-exec,script,launch,test | pending |
+| `franka_experiments/franka_experiments/utils/self_detection.py` | 226 | util module | 05 | 2 | entry,script,test | documented |
+| `franka_experiments/franka_experiments/utils/self_shadow.py` | 685 | util module | 05 | 2 | entry,sim-exec,script,launch,test | partial |
 | `franka_experiments/franka_experiments/utils/simulation_imports.py` | 96 | util module | 13 | 5 | entry | pending |
 | `franka_experiments/franka_experiments/utils/singularity_recovery.py` | 205 | util module | 08 | 4 | entry,test | pending |
 | `franka_experiments/franka_experiments/utils/state_governor.py` | 266 | util module | 08 | 4 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/static_scene.py` | 505 | util module | 05 | 2 | test | pending |
-| `franka_experiments/franka_experiments/utils/surface_velocity.py` | 279 | util module | 05 | 2 | test | pending |
-| `franka_experiments/franka_experiments/utils/tf_manager.py` | 223 | util module | 05 | 2 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/utils/static_scene.py` | 505 | util module | 05 | 2 | test | partial |
+| `franka_experiments/franka_experiments/utils/surface_velocity.py` | 279 | util module | 05 | 2 | test | partial |
+| `franka_experiments/franka_experiments/utils/tf_manager.py` | 223 | util module | 05 | 2 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/utils/timing_law.py` | 135 | util module | 06 | 3 | entry | pending |
 | `franka_experiments/franka_experiments/utils/trajectory.py` | 887 | util module | 06 | 3 | entry,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/trajectory_overlay.py` | 322 | util module | 13 | 5 | entry,test | pending |
@@ -116,11 +116,11 @@
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
 | `franka_experiments/config/camera_EE_extrinsic.yaml` | 51 | config (calibration) | 05 | 2 |  | pending |
-| `franka_experiments/config/camera_extrinsics.yaml` | 11 | config (calibration) | 05 | 2 |  | pending |
+| `franka_experiments/config/camera_extrinsics.yaml` | 11 | config (calibration) | 05 | 2 |  | documented |
 | `franka_experiments/config/camera_intrinsics.yaml` | 56 | config (calibration) | 05 | 2 |  | pending |
-| `franka_experiments/config/camera_link_extrinsics.yaml` | 16 | config (calibration) | 05 | 2 |  | pending |
+| `franka_experiments/config/camera_link_extrinsics.yaml` | 16 | config (calibration) | 05 | 2 |  | documented |
 | `franka_experiments/config/dataset_handeye_eye_in_hand.yaml` | 310 | config (calibration) | 05 | 2 |  | pending |
-| `franka_experiments/config/depth_intrinsics.yaml` | 56 | config (calibration) | 05 | 2 |  | pending |
+| `franka_experiments/config/depth_intrinsics.yaml` | 56 | config (calibration) | 05 | 2 |  | documented |
 | `franka_experiments/config/ee_tag_extrinsics.yaml` | 11 | config (calibration) | 05 | 2 |  | pending |
 | `franka_experiments/config/fake_hw_controller_params.yaml` | 7 | config (parameters) | 03 | 1 |  | partial |
 | `franka_experiments/config/fr3_complete.yaml` | 930 | config (parameters) | 03 | 1 |  | partial |
@@ -146,7 +146,7 @@
 | `franka_experiments/scripts/ball_throw_eval.py` | 408 | offline/aux script | 13 | 5 |  | pending |
 | `franka_experiments/scripts/cbf_phase4_check.py` | 285 | offline/aux script | 13 | 5 |  | pending |
 | `franka_experiments/scripts/cbf_scenarios.py` | 734 | offline/aux script | 13 | 5 |  | pending |
-| `franka_experiments/scripts/check_control_derivatives.py` | 73 | offline/aux script | 04 | 2 |  | pending |
+| `franka_experiments/scripts/check_control_derivatives.py` | 73 | offline/aux script | 04 | 2 |  | documented |
 | `franka_experiments/scripts/compare_range_noise.py` | 464 | offline/aux script | 13 | 5 |  | pending |
 | `franka_experiments/scripts/compare_vobs.py` | 730 | offline/aux script | 13 | 5 |  | pending |
 | `franka_experiments/scripts/experiment_summary.py` | 255 | offline/aux script | 13 | 5 |  | pending |
@@ -227,7 +227,7 @@
 | `franka_experiments/test/test_cbf_zone_ladder.py` | 468 | test | 07 | 3 |  | pending |
 | `franka_experiments/test/test_compare_range_noise.py` | 121 | test | 05 | 2 |  | pending |
 | `franka_experiments/test/test_control_point_derivatives.py` | 109 | test | 13 | 5 |  | pending |
-| `franka_experiments/test/test_cp_label_agreement.py` | 99 | test | 05 | 2 |  | pending |
+| `franka_experiments/test/test_cp_label_agreement.py` | 99 | test | 05 | 2 |  | partial |
 | `franka_experiments/test/test_directional_fade.py` | 28 | test | 06 | 3 |  | pending |
 | `franka_experiments/test/test_distance_surface_semantics.py` | 355 | test | 05 | 2 |  | pending |
 | `franka_experiments/test/test_evasion_direction.py` | 192 | test | 06 | 3 |  | pending |
@@ -250,7 +250,7 @@
 | `franka_experiments/test/test_link_distance_track_fields.py` | 125 | test | 05 | 2 |  | pending |
 | `franka_experiments/test/test_livelock.py` | 218 | test | 06 | 3 |  | pending |
 | `franka_experiments/test/test_mask_depth_gate.py` | 338 | test | 05 | 2 |  | pending |
-| `franka_experiments/test/test_multi_obstacle_rows.py` | 294 | test | 05 | 2 |  | pending |
+| `franka_experiments/test/test_multi_obstacle_rows.py` | 294 | test | 05 | 2 |  | partial |
 | `franka_experiments/test/test_node_self_references.py` | 219 | test | 14 | 7 |  | pending |
 | `franka_experiments/test/test_obstacle_clusters.py` | 263 | test | 05 | 2 |  | pending |
 | `franka_experiments/test/test_obstacle_imm.py` | 270 | test | 05 | 2 |  | pending |
@@ -418,8 +418,8 @@ Documented in full because they run inside the pipeline; the rest of these packa
 | `franka_rt_controllers/franka_rt_controllers.xml` | 10 | C++ controller (external, executed) | 09 | 4 | pending |
 | `franka_rt_controllers/rt_velocity_blender_controller.xml` | 25 | C++ controller (external, executed) | 10 | 5 | pending |
 | `franka_simulation/launch/gz_fr3_plant.launch.py` | 180 | launch file (external, executed) | 12 | 6 | read |
-| `franka_msgs/msg/MultiLinkDistance.msg` | 11 | message definition (external) | 02 | 1 | partial |
-| `franka_msgs/msg/LinkDistance.msg` | 186 | message definition (external) | 02 | 1 | partial |
+| `franka_msgs/msg/MultiLinkDistance.msg` | 11 | message definition (external) | 05 | 1 | documented |
+| `franka_msgs/msg/LinkDistance.msg` | 186 | message definition (external) | 05 | 1 | documented |
 | `franka_msgs/msg/MultiDistance.msg` | 19 | message definition (external) | 02 | 1 | partial |
 | `franka_msgs/msg/HumanRobotDistance.msg` | 30 | message definition (external) | 02 | 1 | partial |
 
@@ -436,7 +436,7 @@ Documented in full because they run inside the pipeline; the rest of these packa
 ## Totals
 
 - In-scope files: **346** (109898 lines), of which 12 are executed-path dependency files.
-- Status: pending 290 · partial 47 · read 5 · documented 4.
+- Status: pending 262 · partial 54 · read 4 · documented 26.
 - Unassigned by the rules: 0
 
 | Chapter | Files |
