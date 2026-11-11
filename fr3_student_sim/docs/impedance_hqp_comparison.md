@@ -180,3 +180,26 @@ slide 13. Slide 14's qualification about variable inertia is retained: no
 general passivity proof is claimed for this sampled HQP implementation.
 OSQP's matrix updates and warm starts follow its
 [official Python interface](https://osqp.org/docs/interfaces/python.html).
+
+## Startup-ramp follow-up
+
+The later run `runs/circle_impedance_hqp_startup_ramp_20261111_120957.npz`
+uses a 0.5 s cubic activation of secondary posture attraction and mass torque,
+with real-time factor 0.10 and no GUI. Tracking, damping, constraints and
+observer/detector thresholds remain active from startup. It completes 20 s;
+the first detection is at 1.840 s, after physical contact at 1.834 s, with
+no event at 0.003 s. Maximum absolute residual during the first 0.2 s is
+0.00010183 N m, below the unchanged 0.1 N m threshold.
+
+Entry mass is 4.919428 kg and normal speed 0.05443563 m/s. Using the matching
+physical-scenario baseline log `runs/circle_baseline_20261111_115455.npz`
+as mass reference (7.187723 kg) gives a 31.5579% reduction. That baseline's
+measured real-time factor is approximately 0.50, so execution conditions are
+different; this follow-up does not isolate collision-force effects.
+
+The ramp run records no position, velocity or sampled acceleration-cap
+violations, no primary/secondary QP failures, a minimum physical joint
+margin of 0.158191 rad and 0.06% missing samples. Its three PNGs include the
+startup-scale curve. These observations concern this run, not a guarantee
+against all startup false positives or other timing conditions. The
+earlier comparison and its JSON above retain their original measurements.

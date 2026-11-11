@@ -40,6 +40,9 @@ class ImpedanceHQPController(StudentController):
         if not np.isfinite(self.null_damping) or self.null_damping < 0:
             raise ValueError('impedance.nullspace_damping must be a nonnegative finite scalar')
         self.posture_gain = float(impedance.get('posture_gain', 25.0))
+        self.startup_ramp_duration = float(impedance.get('startup_ramp_duration', 0.5))
+        if not np.isfinite(self.startup_ramp_duration) or self.startup_ramp_duration < 0:
+            raise ValueError('impedance.startup_ramp_duration must be finite and nonnegative')
         self.q_posture = params.get('q_posture_ref')
         self.q_posture = (None if self.q_posture is None else
                           vector(self.q_posture, 7, 'q_posture_ref'))
@@ -117,6 +120,14 @@ class ImpedanceHQPController(StudentController):
         posture = np.zeros(7) if self.q_posture is None else self.posture_gain * (self.q_posture - q)
         mass_kg, gradient = self.mass_objective.evaluate(q, M=M, J=J)
         tau_mass = projected_mass_torque(M, J, gradient, self.mass_gain)
+        # Activate secondary attraction smoothly at RUN startup. Damping,
+        # Cartesian impedance and every safety constraint remain active.
+        # Scale preferences before the QPs, never their constrained output.
+        phase = (1.0 if self.startup_ramp_duration == 0.0 else
+                 float(np.clip(t / self.startup_ramp_duration, 0.0, 1.0)))
+        startup_scale = phase * phase * (3.0 - 2.0 * phase)
+        posture = startup_scale * posture
+        tau_mass = startup_scale * tau_mass
         secondary_target = (Jbar @ task_target
                             + N @ (posture - self.null_damping * dq)
                             + M_inv @ tau_mass)
@@ -131,6 +142,7 @@ class ImpedanceHQPController(StudentController):
             'p_ref': p_ref.copy(), 'v_ref': v_ref.copy(), 'a_ref': a_ref.copy(),
             'position_error': ep.copy(), 'velocity_error': ev.copy(),
             'mass_kg': mass_kg, 'mass_gradient': gradient.copy(),
+            'startup_scale': startup_scale,
             'tau_mass': tau_mass.copy(), 'impedance_force': impedance_force.copy(),
             'normal_speed': float(-self.mass_objective.normal @ (J @ dq)),
             'normal_speed_ref': float(-self.mass_objective.normal @ v_ref),

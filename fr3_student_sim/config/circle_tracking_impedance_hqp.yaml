@@ -17,6 +17,7 @@ impedance:
   damping: [120.0, 120.0, 120.0]    # [N s/m], not the baseline's 1/s gains
   nullspace_damping: 10.0           # [1/s], in the secondary acceleration target
   posture_gain: 25.0                # [1/s^2], ignored if q_posture_ref is absent
+  startup_ramp_duration: 0.5        # [s], smooth activation of posture/mass; 0 disables ramp
 
 mass_minimization:
   gain: 0.1                         # [N m rad/kg], analytical gradient

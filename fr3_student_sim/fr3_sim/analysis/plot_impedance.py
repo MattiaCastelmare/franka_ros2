@@ -30,6 +30,8 @@ def impedance_figure(run, plt):
     axes[8].plot(t, run['user_qp_primary_status'], label='primary status')
     axes[8].plot(t, run['user_qp_secondary_status'], '--', label='secondary status')
     axes[8].plot(t, run['user_observer_valid'], ':', label='observer valid')
+    if 'user_startup_scale' in run:
+        axes[8].plot(t, run['user_startup_scale'], color='tab:purple', label='startup scale')
     axes[9].plot(t, run['ctrl_ms'], label='Controller.update')
     period = 1000 / run['meta']['control_rate']
     axes[9].axhline(period, color='r', ls='--', label='period at RTF=1')

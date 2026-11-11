@@ -176,6 +176,16 @@ for optional posture feedback, mass-gradient torque and nullspace damping.
 The configured secondary gains are posture 25 s^-2, damping 10 s^-1 and
 mass gain 0.1 N m rad/kg.
 
+`impedance.startup_ramp_duration` smoothly activates posture attraction and
+mass torque at the beginning of RUN, using a cubic scale from zero to one.
+Its current value is 0.5 s; setting it to zero restores immediate activation.
+Cartesian tracking, nullspace damping and all QP constraints remain active
+throughout. The final constrained command is not multiplied by the ramp.
+`user_startup_scale` records the factor and appears in the HQP status panel;
+`user_tau_mass` records the scaled secondary preference. The observer and
+detector remain active, so this does not hide startup events. Retuning the
+duration changes the startup joint motion; recheck residuals and entry mass.
+
 `q_posture_ref` supplies the existing offline low-mass posture. Removing that
 key omits posture attraction in this controller. `initial_q` still defines
 the settling pose and circle start. The analytical mass objective uses the

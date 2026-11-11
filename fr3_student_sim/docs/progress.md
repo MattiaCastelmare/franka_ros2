@@ -1848,3 +1848,31 @@ ros2 launch fr3_student_sim student.launch.py \
 The existing `ros2 run fr3_student_sim plot_run LOG.npz --no-show` and
 `ros2 run fr3_student_sim compare_runs BASELINE.npz CANDIDATE.npz` commands
 retain their names and arguments.
+
+### Smooth startup of the impedance/HQP secondary objectives
+
+The impedance controller now uses `impedance.startup_ramp_duration`,
+configured as 0.5 s, to activate posture attraction and mass-gradient torque
+smoothly from RUN time zero. A zero duration selects immediate activation.
+The ramp is evaluated in simulation time and has zero slope at both ends:
+
+$$
+\begin{aligned}
+s &= \operatorname{clip}(t/T,0,1), &\alpha(t)&=3s^2-2s^3, \\
+u_s &= \bar Jb+N\left[\alpha(t)k_q(q^*-q)-k_v\dot q\right]
+       +M^{-1}\left[\alpha(t)\tau_{m,\mathrm{nom}}\right].
+\end{aligned}
+$$
+
+Only the secondary attraction preferences are scaled before optimization.
+Cartesian impedance, trajectory timing, velocity damping, residual handling
+and every hard QP constraint remain active. The output of the constrained
+solver is not scaled. After the ramp, the same-state control law matches
+the previous full-strength law; the startup joint trajectory can differ.
+The baseline controller is unchanged.
+
+`user_startup_scale` stores the ramp factor; `user_tau_mass` includes that
+factor while `user_mass_gradient` remains the analytical unscaled gradient.
+The existing HQP status panel displays the startup factor when available,
+without adding another figure. Older logs remain readable. Observer and
+detector operation, thresholds and detection-event logging are unchanged.
