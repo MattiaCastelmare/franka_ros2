@@ -1,7 +1,7 @@
 """Kinematic and dynamic model of the simulated FR3 (Pinocchio).
 
 The model is built from the very URDF that Gazebo simulates (see
-:mod:`fr3_student_sim.robot_description`), so M(q), C(q, dq) and g(q) here are
+:mod:`fr3_sim.simulation.robot_description`), so M(q), C(q, dq) and g(q) here are
 the plant's own, rotor inertia included.
 
 All quantities are expressed in the world frame (= robot base, ``fr3_link0``).
@@ -16,7 +16,7 @@ so  M ddq + C dq = tau_cmd + tau_ext.
 
 Example::
 
-    from fr3_student_sim.fr3_model import FR3Model
+    from fr3_sim.simulation.fr3_model import FR3Model
     robot = FR3Model()
     p = robot.position(q)          # (3,)  tool point [m]
     J = robot.jacobian_pos(q)      # (3, 7)
@@ -42,7 +42,7 @@ class FR3Model:
 
     def __init__(self, urdf_xml: str | None = None, tool_frame: str = TOOL_FRAME):
         if urdf_xml is None:
-            from fr3_student_sim.robot_description import build_urdf, process_xacro
+            from fr3_sim.simulation.robot_description import build_urdf, process_xacro
             urdf_xml = build_urdf(process_xacro())
         self.model = pin.buildModelFromXML(urdf_xml)
         self.model.gravity.linear = np.array([0.0, 0.0, -GRAVITY])

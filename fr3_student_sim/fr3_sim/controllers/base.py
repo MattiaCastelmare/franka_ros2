@@ -3,13 +3,13 @@
 A controller is a Python file that defines ``class Controller(StudentController)``
 and overrides :meth:`update`. The runner calls ``update`` at ``control_rate`` Hz
 with the current simulation time and joint state, and sends the returned torque
-to the robot. See ``students/circle_tracking/controller_baseline.py``.
+to the robot. See ``fr3_sim/controllers/baseline.py``.
 """
 from __future__ import annotations
 
 import numpy as np
 
-from fr3_student_sim.fr3_model import FR3Model
+from fr3_sim.simulation.fr3_model import FR3Model
 
 
 class StudentController:

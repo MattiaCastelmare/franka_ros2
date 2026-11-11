@@ -1520,3 +1520,331 @@ ros2 run fr3_student_sim plot_run "$latest_joint_release_log" --no-show
 
 The existing main, observer and first-cycle collision PNGs keep their names
 and metric definitions.
+
+### Cartesian impedance with constrained hierarchical redundancy
+
+`students/circle_tracking/controller_impedance_hqp.py` and
+`config/circle_tracking_impedance_hqp.yaml` add a separate position-impedance
+experiment. Existing controller entry points and configurations are retained.
+The circle wrapper supplies a reference object with `sample(t)` returning
+world-frame position, velocity and acceleration. The reusable controller
+does not depend on the circle shape or `wall_geometry`; orientation remains
+free. It keeps requesting the reference during contact, allowing Cartesian
+error and modifying the command when joint constraints require it. There is
+no collision-triggered latch, fixed retreat or automatic phase reset in this
+variant. Sliding or returning to the reference depends on feasibility and
+contact dynamics; neither behavior is prescribed by a wall-specific policy.
+
+The implementation is split into:
+
+| File | Added responsibility |
+|---|---|
+| `students/utils/cartesian_impedance.py` | Natural-inertia position impedance, disturbance snapshot consumption, secondary objective and command logging. |
+| `students/utils/joint_constraints.py` | Position, velocity and acceleration bounds, delayed-state prediction and disturbance-error tightening. |
+| `students/utils/hierarchical_qp.py` | Two OSQP problems with reusable sparsity, warm starts and independent numerical acceptance checks. |
+| `students/circle_tracking/controller_impedance_hqp.py` | Circular-reference adapter for the reusable controller. |
+| `fr3_student_sim/collision_monitor.py` | Timestamped, read-only residual snapshot API; existing observer and detector remain separate. |
+| `fr3_student_sim/impedance_plot.py` | Main figure for the new experiment. |
+| `fr3_student_sim/compare_runs.py` | JSON comparison of two saved experiments using shared first-cycle metrics and timing summaries. |
+
+Launch and batch task selection recognize the new configuration. OSQP and
+SciPy are declared runtime dependencies. The runner retains its command
+saturation, observer update, contact model and safety stops; controller
+termination can now include a specific `failure_reason` in the saved stop
+reason.
+
+For the position Jacobian $J$, define the natural Cartesian inertia and its
+dynamically consistent inverse:
+
+$$
+\begin{aligned}
+W &= JM^{-1}J^T, &\Lambda &= W^{-1}, \\
+\bar J &= M^{-1}J^T\Lambda, &N &= I-\bar J J, \\
+f_I &= K(p_d-p)+D(\dot p_d-J\dot q), \\
+b &= \ddot p_d-\dot J\dot q+Wf_I.
+\end{aligned}
+$$
+
+Here $K$ is in N/m and $D$ in N s/m. They are physical Cartesian gains,
+separate from the acceleration-feedback gains of the baseline. Without
+active constraints, the primary impedance action is
+
+$$
+\tau_I=c+J^T\left[\Lambda(\ddot p_d-\dot J\dot q)+f_I\right].
+$$
+
+The simulator adds gravity compensation, so no $g$ is added to the returned
+command. No estimated external torque is subtracted from this impedance
+law. The QP variable is the actuator-induced acceleration
+$u=M^{-1}(\tau-c)$; its Cartesian target is $Ju\approx b$. External torque
+therefore continues to affect the physical motion rather than being
+cancelled to enforce rigid tracking. A singular Cartesian inertia produces
+an explicit failure instead of silently changing the impedance with an
+inverse regularization. This sampled, constrained implementation does not
+establish a passivity guarantee.
+
+Both QP levels impose the same hard bounds without safety slack variables.
+The primary level minimizes
+
+$$
+\frac12\|Ju-b\|^2+\frac{\rho}{2}\|u\|^2,
+$$
+
+where the small configurable $\rho>0$ regularizes the primary problem.
+Writing $u_1$ for its accepted solution, the secondary level minimizes
+$\frac12\|u-u_s\|^2$ subject to $Ju=Ju_1$. Thus secondary motion preserves
+the attained primary Cartesian command within the configured numerical
+equality tolerance. The preservation refers to this regularized primary
+solution, rather than to an ideal unregularized least-squares result.
+
+The secondary target combines projected posture attraction, nullspace
+damping and the existing analytical directional-mass gradient:
+
+$$
+\begin{aligned}
+\tau_m &=-k_mN^T\nabla m_n, \\
+u_s &= \bar Jb+N\left[k_q(q^*-q)-k_v\dot q\right]+M^{-1}\tau_m.
+\end{aligned}
+$$
+
+The posture contribution is omitted entirely when `q_posture_ref` is absent;
+it does not silently use `initial_q` instead. The supplied YAML retains the
+previous offline posture as an optional preference, not as a constraint or
+an achieved mass-reduction guarantee. `mass_minimization.direction` defines
+an explicit fixed direction in world axes at the controlled point. It does
+not read the wall normal and does not identify an unknown contact point or
+surface normal. The mass objective, damping and optional posture share the
+remaining secondary freedom; position, velocity and torque constraints may
+prevent them from attaining their preferred motion.
+
+Joint-position barriers use configured protected limits
+$q_\ell=q_{\min}+m_q$, $q_u=q_{\max}-m_q$ and two equal positive poles
+$\lambda$. At the predicted state $(q_p,v_p)$, their acceleration bounds are
+
+$$
+-2\lambda v_p-\lambda^2(q_p-q_\ell)
+\;\le\;\ddot q\;\le\;
+-2\lambda v_p+\lambda^2(q_u-q_p).
+$$
+
+Velocity barriers, next-step position/velocity predictions and the
+configurable `safety.acceleration_max` cap are intersected with these bounds.
+That acceleration setting is an experiment limit, not a robot datasheet
+value. Delay prediction uses the preceding applied actuator command and
+the estimated disturbance. The prediction step accounts for an observed
+controller-update gap, and uncertainty during command transport tightens
+the predicted position and velocity as well.
+
+With the observer residual $r$ and estimated disturbance acceleration
+$d=M^{-1}r$, the physical acceleration estimate is $u+d$. For an assumed
+componentwise acceleration-error envelope $\varepsilon$, each physical
+interval $L\le\ddot q\le U$ becomes
+
+$$
+L-d+\varepsilon\le u\le U-d-\varepsilon.
+$$
+
+The actuator constraints cover both the gravity-compensated command
+$\tau=Mu+c$ and the nominal motor torque $\tau+g(q)$. Using a configured
+limit vector $T$, the QP imposes their intersection as
+
+$$
+\left|Mu+c+\frac12g(q)\right|
+\le T-\frac12|g(q)|.
+$$
+
+Gravity is evaluated for this bound and the motor-torque diagnostic only;
+it remains absent from the returned command. The bound uses the current
+nominal $g(q)$ and does not certify future motor torque during transport or
+unknown impacts. The original runner clipping remains an independent
+fallback.
+
+`CollisionMonitor.snapshot(...)` returns the latest residual with its
+simulation timestamp, age, sample interval, filter time constants, validity
+flag and reason. Snapshot arrays are read-only copies. Validity requires
+finite data, initialization, continuous measured history over a configurable
+warmup and a sufficiently fresh sample. A large measurement gap restarts
+this validity warmup without resetting the observer or changing collision
+detection. Reading a snapshot does not advance either component.
+
+The controller requires `observer:=true`. During initialization/warmup
+it uses zero estimated disturbance and a separate uncertainty setting.
+Stale, discontinuous or invalid measurements terminate the experiment with
+a recorded cause. For valid snapshots, a configurable floor and a residual-rate-based
+reserve account heuristically for filtering, sample age and command delay.
+The residual derivative only enlarges this reserve; it does not extrapolate
+or deconvolve the external torque. No true contact force enters the
+controller. The observer remains filtered, and these empirical envelopes
+cannot guarantee joint-limit invariance for arbitrary unknown impacts,
+model errors or missed deadlines. Viable initial states and feasible
+actuator bounds remain necessary.
+
+An unavailable or rejected secondary solution falls back to the accepted
+primary solution from the same update. An infeasible or rejected primary
+solution records a failure reason, requests bounded damping and terminates
+the experiment. It does not reuse a stale QP command or relax hard limits.
+This termination fallback is not itself a proof of limit avoidance.
+
+The added `user_` log fields include Cartesian impedance force, mass and its
+analytical gradient, requested mass torque, actual/reference directional
+speed, observer validity/timestamp/age, residual used in predictions,
+acceleration uncertainty, physical joint margins, acceleration bounds,
+command-induced and predicted physical acceleration, predicted motor
+torque, Cartesian command error, QP statuses, iterations, constraint
+violation and solve times. Requested mass torque is a secondary preference;
+it is not a separately identifiable applied contribution after constrained
+optimization.
+
+`plot_run` produces the same three filenames for the new experiment:
+`X.png`, `X_observer.png` and `X_collision.png`. The main figure shows
+position/reference, tracking error, commanded torque, joint velocity,
+contact force, directional mass, normal speed, joint margins, QP/observer
+status and computation time. The observer figure retains the seven residuals
+and detection events. The collision figure retains the shared first
+compression-release metrics, impulse and pre-contact energy card.
+
+`compare_runs` reads two existing NPZ files and writes a JSON report. It
+compares the first-cycle peak force, impulse, penetration and pre-contact
+energy together with entry mass/speed, tracking, saved joint margins,
+torques, QP statuses and timing. It reports missing data and incomplete
+cycles explicitly. Saved-sample constraint summaries are not a continuous
+motion guarantee, and a comparison of different controller laws does not
+isolate the causal effect of mass minimization.
+
+### Run and plot the impedance/HQP experiment
+
+After installing the declared dependencies, build and launch inside the
+container:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=circle_tracking/controller_impedance_hqp.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_impedance_hqp.yaml \
+  run_name:=circle_impedance_hqp \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true \
+  observer:=true \
+  stop_at_detachment:=false \
+  control_rate:=1000 \
+  real_time_factor:=0.20 \
+  duration:=20
+```
+
+Save the three PNGs and compare the latest matching logs:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+latest_impedance_log=$(ls -t runs/circle_impedance_hqp_*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_impedance_log" --no-show
+
+latest_baseline_log=$(ls -t runs/circle_baseline_hqp_comparison_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim compare_runs \
+  "$latest_baseline_log" "$latest_impedance_log" \
+  --output runs/impedance_hqp_comparison.json
+```
+
+The comparison command accepts any explicitly selected pair of logs; use
+matching initial states, references, wall and execution settings when
+interpreting its report. The configured duration remains a maximum:
+controller infeasibility, existing safety stops, exceptions or `Ctrl+C`
+can end the run earlier.
+
+### Configurable acceleration cap for the impedance/HQP experiment
+
+The impedance/HQP configuration now selects `safety.acceleration_max: 30.0`
+rad/s² for all seven joints, replacing the initial 8 rad/s² setting. The
+constraint helper's fallback matches that value. The protected joint margin
+remains 0.15 rad. No other controller configuration, impedance gain, observer
+gain, uncertainty reserve, wall parameter or trajectory parameter is changed.
+The acceleration setting remains an experiment cap, not a datasheet value.
+
+### Active experiments reduced to baseline and impedance/HQP
+
+The active controller inventory now contains only
+`students/circle_tracking/controller_baseline.py` and
+`students/circle_tracking/controller_impedance_hqp.py`. The optimized,
+preventive joint-release and hybrid-retreat entry points and their three
+task YAML files have been removed. The remaining five YAML files are the
+baseline and impedance/HQP tasks plus the shared wall, observer and Gazebo
+effort-controller configurations.
+
+Launch and batch task selection now list the two active experiments. The
+unused retreat reference and mass-tracking subclass have been removed;
+the baseline position-tracking/damping classes, circular reference,
+analytical mass objective and impedance/HQP utilities remain available.
+The offline posture search and `docs/optimized_posture.json` are retained
+because the HQP configuration still uses that low-mass posture.
+
+Plotting retains the baseline generic figure, the impedance/HQP ten-panel
+figure, and their shared observer and first-cycle collision figures.
+Historical logs remain readable without the removed controller files.
+Legacy baseline-law log recognition is retained for offline provenance.
+
+The README now documents the two remaining controllers, their five YAML
+files, launch/plot/comparison commands and the retained offline posture
+workflow. Its HQP and matched-baseline examples use real-time factor 0.10;
+the launch default remains 0.5. The remaining controllers' laws, gains,
+joint constraints and observer parameters are unchanged. Historical
+development sections above are preserved.
+
+### Python code grouped by responsibility
+
+The ROS package remains `fr3_student_sim`; its Python namespace is now
+`fr3_sim`. The former internal `fr3_student_sim/` code directory and
+`students/` tree are replaced by five folders, without further experiment
+subdirectories:
+
+| Folder under `fr3_sim/` | Responsibility |
+|---|---|
+| `controllers/` | Baseline and impedance/HQP entry points, common interface, shared tracking/impedance laws and controller loading. |
+| `methods/` | Reference generation, analytical mass objective, joint bounds, hierarchical QP and offline posture search. |
+| `monitoring/` | Momentum observer, collision detector and their monitor/snapshot interface. |
+| `simulation/` | Runner, batch execution, Pinocchio model, robot description, virtual wall, applied torque and process/path helpers. |
+| `analysis/` | Plot generation, impact metrics, timing summaries and log comparison. |
+
+The experiment files are `controllers/baseline.py` and
+`controllers/impedance_hqp.py`; the common interface is `controllers/base.py`.
+Plot modules are `analysis/plot_run.py`, `analysis/plot_collision.py` and
+`analysis/plot_impedance.py`. Configuration, launch files, documentation,
+run artifacts, resource marker and ROS metadata retain their root locations.
+
+Package discovery, console entry points and imports use the new Python
+namespace. ROS commands remain under `fr3_student_sim`, with executable
+names `runner`, `plot_run`, `run_batch` and `compare_runs`. Canonical launch
+selectors are `baseline.py` and `impedance_hqp.py`; the former
+`circle_tracking/controller_baseline.py` and
+`circle_tracking/controller_impedance_hqp.py` selectors are retained as
+aliases that resolve to the relocated files. Task YAML selection follows
+the selected controller. Historical log metadata remains readable.
+
+The reorganization preserves the controller laws, gains, observer,
+constraints and log-signal definitions. Offline posture search is invoked
+as `python3 -m fr3_sim.methods.optimize_posture`. Python log analysis uses
+`from fr3_sim.analysis.plot_run import load_run, metrics`. The README now
+shows the code layout and updated commands.
+
+After building and sourcing the package, launch the active experiments with:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=baseline.py \
+  run_name:=circle_baseline \
+  duration:=20
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=impedance_hqp.py \
+  run_name:=circle_impedance_hqp \
+  real_time_factor:=0.10 \
+  duration:=20
+```
+
+The existing `ros2 run fr3_student_sim plot_run LOG.npz --no-show` and
+`ros2 run fr3_student_sim compare_runs BASELINE.npz CANDIDATE.npz` commands
+retain their names and arguments.

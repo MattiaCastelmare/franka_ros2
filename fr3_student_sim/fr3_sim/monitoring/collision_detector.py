@@ -9,7 +9,7 @@ An event marks each false-to-true transition; detection does not change torque.
 
 import numpy as np
 
-from fr3_student_sim.momentum_observer import joint_vector
+from fr3_sim.monitoring.momentum_observer import joint_vector
 
 
 class CollisionDetector:

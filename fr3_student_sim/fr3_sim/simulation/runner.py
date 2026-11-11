@@ -20,15 +20,13 @@ The virtual wall torque is kept out of the observer input.
 Optional realism: Gaussian noise on the q, dq the controller sees (``noise_q``,
 ``noise_dq``); the log and the wall always use the true state. The runner also
 warns when the hand body (not only the fingertip) goes into the wall.
-The log is one ``.npz`` per run in ``log_dir``; see :mod:`fr3_student_sim.plot_run`.
+The log is one ``.npz`` per run in ``log_dir``; see :mod:`fr3_sim.analysis.plot_run`.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import signal
-import sys
 import time
 import traceback
 from datetime import datetime
@@ -36,20 +34,19 @@ from datetime import datetime
 import numpy as np
 import rclpy
 import yaml
-from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
-from fr3_student_sim.applied_torque import AppliedTorqueHistory
-from fr3_student_sim.body_check import body_depth
-from fr3_student_sim.collision_monitor import CollisionMonitor
-from fr3_student_sim.controller_base import StudentController
-from fr3_student_sim.fr3_model import DQ_MAX, Q_MAX, Q_MIN, TAU_MAX, FR3Model
-from fr3_student_sim.robot_description import ARM_JOINTS
-from fr3_student_sim.timing import timing_metrics
-from fr3_student_sim.wall import Wall
+from fr3_sim.simulation.applied_torque import AppliedTorqueHistory
+from fr3_sim.simulation.body_check import body_depth
+from fr3_sim.monitoring.collision_monitor import CollisionMonitor
+from fr3_sim.controllers.loading import load_controller_class, resolve_controller_path
+from fr3_sim.simulation.fr3_model import DQ_MAX, Q_MAX, Q_MIN, TAU_MAX, FR3Model
+from fr3_sim.simulation.robot_description import ARM_JOINTS
+from fr3_sim.analysis.timing import timing_metrics
+from fr3_sim.simulation.wall import Wall
 
 HOLD_KP = np.array([600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0])
 HOLD_KD = np.array([50.0, 50.0, 50.0, 30.0, 25.0, 25.0, 15.0])
@@ -64,23 +61,6 @@ SETTLE_TIMEOUT = 5.0                      # [s] beyond settle_time: start anyway
 #: (k+1, k+2], one sample later than one would assume: measured with the
 #: momentum observer (residual 0.11 instead of 0.49 N m without contact).
 LATENCY_SAMPLES = 1
-
-
-def load_controller_class(path: str):
-    # Allow shared students/utils imports and prefer the controller's local helpers.
-    students = os.path.join(get_package_share_directory('fr3_student_sim'), 'students')
-    folder = os.path.dirname(os.path.abspath(path))
-    for search_path in (students, folder):
-        if search_path in sys.path:
-            sys.path.remove(search_path)
-        sys.path.insert(0, search_path)
-    spec = importlib.util.spec_from_file_location('student_controller', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    cls = getattr(module, 'Controller', None)
-    if cls is None or not issubclass(cls, StudentController):
-        raise TypeError(f'{path} must define class Controller(StudentController)')
-    return cls
 
 
 def _load_yaml(path: str) -> dict:
@@ -123,7 +103,7 @@ class Runner(Node):
         self.realism = {k: g(k) for k in ('noise_q', 'noise_dq', 'seed', 'mass_error',
                                           'joint_friction')}
         self.hand_depth, self.hand_warned = 0.0, False
-        self.controller_path = g('controller')
+        self.controller_path = resolve_controller_path(g('controller'))
         name = g('run_name') or os.path.splitext(os.path.basename(self.controller_path))[0]
         os.makedirs(g('log_dir'), exist_ok=True)
         self.log_path = os.path.join(
@@ -241,6 +221,11 @@ class Runner(Node):
             self.user_rows.append((len(self.rows), dict(self.ctrl.log)))
             if self.ctrl.done and not reason:
                 reason = 'controller set done'
+                # New controllers may provide a specific failure explanation;
+                # existing controllers keep their original termination behavior.
+                failure = getattr(self.ctrl, 'failure_reason', '')
+                if failure:
+                    reason += ': ' + str(failure)
 
         p, _ = self.robot.pose(q)
         Jc = self.robot.jacobian_pos(q)

@@ -1,6 +1,6 @@
 """Run a process with its output in a file, and always stop it cleanly.
 
-    python3 -m fr3_student_sim.quiet_process <log file> <command...>
+    python3 -m fr3_sim.simulation.quiet_process <log file> <command...>
 
 Used by the launch for Gazebo: the Franka Gazebo plugin aborts in its
 destructor at every shutdown (an upstream bug, after the run is over and the

@@ -16,14 +16,10 @@ import numpy as np
 from scipy.optimize import brentq, minimize
 import yaml
 
-from fr3_student_sim.fr3_model import FR3Model, Q_MAX, Q_MIN
+from fr3_sim.simulation.fr3_model import FR3Model, Q_MAX, Q_MIN
 
-if __package__:
-    from .circle_reference import CircleReference
-    from .mass_objective import DirectionalMassObjective, projected_mass_torque
-else:
-    from circle_reference import CircleReference
-    from mass_objective import DirectionalMassObjective, projected_mass_torque
+from fr3_sim.methods.circle_reference import CircleReference
+from fr3_sim.methods.mass_objective import DirectionalMassObjective, projected_mass_torque
 
 
 def _vector(value, length, name):
@@ -82,7 +78,9 @@ def _baseline_state(robot, task, wall, path):
         meta = json.loads(str(data['meta']))
         params = meta['params']
         controller = str(meta['controller']).replace('\\', '/').rsplit('/', 1)[-1]
-        if controller not in ('controller_baseline.py', 'controller_optimized.py'):
+        # Read historical zero-gain logs for posture provenance only; the
+        # optimized controller itself is no longer part of the active package.
+        if controller not in ('baseline.py', 'controller_baseline.py', 'controller_optimized.py'):
             raise ValueError('baseline log must use baseline or optimized with zero mass gain')
         if controller == 'controller_optimized.py' and float(
                 params.get('mass_minimization', {}).get('gain', 0.01)) != 0.0:

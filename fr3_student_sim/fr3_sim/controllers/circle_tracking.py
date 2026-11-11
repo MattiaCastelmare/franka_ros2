@@ -1,4 +1,4 @@
-"""Shared circular position tracking, nullspace damping and mass minimization.
+"""Circular position tracking and nullspace damping used by the baseline.
 
 Robotics 2: 13_CartesianControl, slides 8 and 11; and
 02_KinematicRedundancy_2, slides 7 and 13.
@@ -7,10 +7,9 @@ Gravity is already compensated by the simulator.
 
 import numpy as np
 
-from fr3_student_sim.controller_base import StudentController
+from fr3_sim.controllers.base import StudentController
 
-from .circle_reference import CircleReference
-from .mass_objective import DirectionalMassObjective, projected_mass_torque
+from fr3_sim.methods.circle_reference import CircleReference
 
 
 class PositionTrackingController(StudentController):
@@ -95,35 +94,3 @@ class DampedTrackingController(PositionTrackingController):
         inverse_mass = float(J_n @ np.linalg.solve(M, J_n))
         self.log['mass_kg'] = 1.0 / inverse_mass if inverse_mass > 0.0 else np.inf
         return tau_minimal + M @ qdd_null
-
-
-class MassTrackingController(DampedTrackingController):
-    """Add only mass minimization to the damped circular tracking law."""
-
-    def __init__(self, robot, params, dt):
-        super().__init__(robot, params, dt)
-        mass = params.get('mass_minimization', {})
-        self.mass_objective = DirectionalMassObjective(robot, self.mass_direction)
-        self.mass_gain = float(mass.get('gain', 0.01))
-        if not np.isfinite(self.mass_gain) or self.mass_gain < 0.0:
-            raise ValueError('mass_minimization.gain must be finite and nonnegative')
-
-    def update(self, t, q, dq):
-        """Return tracking, damping and mass torques, without adding gravity."""
-        tau_tracking = super().update(t, q, dq)
-        J = self.robot.jacobian_pos(q)
-        M = self.robot.mass_matrix(q)
-        mass_kg, gradient = self.mass_objective.evaluate(q, M=M, J=J)
-        tau_mass = projected_mass_torque(M, J, gradient, self.mass_gain)
-
-        # Include the requested mass contribution in the total acceleration log.
-        self.log['qdd_command'] = (
-            self.log['qdd_command'] + np.linalg.solve(M, tau_mass))
-        self.log.update({
-            'mass_kg': mass_kg,
-            'mass_gradient': gradient.copy(),
-            'tau_mass': tau_mass.copy(),  # Requested before the runner clips total torque.
-            'normal_speed': float(-self.mass_objective.normal @ (J @ dq)),
-            'normal_speed_ref': float(-self.mass_objective.normal @ self.log['v_ref']),
-        })
-        return tau_tracking + tau_mass

@@ -8,7 +8,7 @@ using the latest raw controller output would give the wrong observer input.
 
 import numpy as np
 
-from fr3_student_sim.momentum_observer import joint_vector
+from fr3_sim.monitoring.momentum_observer import joint_vector
 
 
 class AppliedTorqueHistory:

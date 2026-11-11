@@ -1,0 +1,55 @@
+# Independent experiment: world-frame position impedance, constrained redundancy.
+# Controller: fr3_sim/controllers/impedance_hqp.py
+# Same initial state, reference and wall as baseline. Orientation stays free.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
+circle:
+  radius: 0.04  # [m]
+  period: 4.0   # [s]
+  ramp: 1.0     # [s]
+
+# Optional secondary posture, reused from the existing offline search.
+# Delete this key to omit posture attraction, rather than falling back to initial_q.
+# Its static -30% result is not a guarantee along the constrained trajectory.
+q_posture_ref: [0.0009337749574533208, 0.12861549736842573, 0.002690472030156691, -2.322216468315685, 0.009145189410021034, 4.2849746252027465, 0.7921241458891122]
+
+impedance:
+  stiffness: [600.0, 600.0, 600.0]  # [N/m], physical Cartesian gains
+  damping: [120.0, 120.0, 120.0]    # [N s/m], not the baseline's 1/s gains
+  nullspace_damping: 10.0           # [1/s], in the secondary acceleration target
+  posture_gain: 25.0                # [1/s^2], ignored if q_posture_ref is absent
+
+mass_minimization:
+  gain: 0.1                         # [N m rad/kg], analytical gradient
+  direction: [-1.0, 0.0, 0.0]       # fixed world direction at controlled point
+
+safety:
+  position_margin: 0.15             # [rad] from physical limits; runner stops at 0.05
+  velocity_max: [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26]  # [rad/s]
+  acceleration_max: 30.0             # [rad/s^2], experiment cap, not a datasheet value
+  torque_max: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]    # [N m], command AND nominal motor incl. g
+  position_barrier_rate: 8.0         # [1/s], two equal position-barrier poles
+  velocity_barrier_rate: 10.0        # [1/s]
+  command_delay_s: 0.003             # [s], transport/scheduling prediction allowance
+
+disturbance_estimate:
+  warmup_s: 0.2                     # [s] continuous measured history before using r
+  max_gap_s: 0.01                   # [s] larger gaps restart validity warmup
+  max_age_s: 0.01                   # [s] maximum snapshot age
+  acceleration_error: 0.5           # [rad/s^2], valid-estimate uncertainty floor
+  invalid_acceleration_error: 1.0   # [rad/s^2], zero estimate during warmup/gaps
+  lag_reserve_factor: 1.0           # extra reserve |M^-1| (1/K_O + age + delay)|dr/dt|
+  # This empirical envelope is not a certified bound on arbitrary contact forces.
+
+qp:
+  primary_regularization: 1.0e-8     # makes the task QP strictly convex
+  eps_abs: 1.0e-6
+  eps_rel: 1.0e-6
+  max_iter: 1000
+  check_termination: 10
+  feasibility_tolerance: 0.0002     # independent hard-constraint acceptance
+  equality_tolerance: 0.00002       # primary task preservation in level 2
+  polish: false
+  adaptive_rho: true
+
+# Infeasible primary QP terminates the run with bounded damping; no relaxed limits.
+failure_damping: [30.0, 30.0, 30.0, 20.0, 10.0, 10.0, 5.0]

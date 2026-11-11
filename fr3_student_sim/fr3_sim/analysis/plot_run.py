@@ -12,12 +12,12 @@ joint residuals, their detection thresholds, the residual norm and detection tim
 directional mass, normal velocity, contact force, penetration, normal impulse
 and a pre-contact normal kinetic-energy summary. The interval ends at the first
 detachment or the start of recompression, whichever occurs first.
-Hybrid-retreat logs use eight main panels; all user diagnostics remain in the
-NPZ. Other controllers keep the generic layout showing their user signals.
+Impedance-HQP logs use ten main panels; all user diagnostics remain in the
+NPZ. Baseline and historical logs use the generic layout for their user signals.
 Further analyses (detection delay, tracking error ...) can be computed from
 the log. In Python::
 
-    from fr3_student_sim.plot_run import load_run, metrics
+    from fr3_sim.analysis.plot_run import load_run, metrics
     run = load_run('runs/....npz')     # dict of arrays: run['t'], run['q'], run['F_n'], ...
     run['meta']                        # parameters of the run (task, wall, realism ...)
     print(metrics(run))
@@ -50,9 +50,9 @@ from pathlib import Path
 
 import numpy as np
 
-from fr3_student_sim.collision_plot import collision_figure
-from fr3_student_sim.impact_metrics import first_impact
-from fr3_student_sim.timing import timing_metrics
+from fr3_sim.analysis.plot_collision import collision_figure
+from fr3_sim.analysis.impact_metrics import first_impact
+from fr3_sim.analysis.timing import timing_metrics
 
 
 def load_run(path: str) -> dict:
@@ -159,20 +159,16 @@ def plot(run: dict, path_png: str, show: bool = True):
     if not show:
         matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    if Path(run['meta'].get('controller', '')).name in ('impedance_hqp.py', 'controller_impedance_hqp.py'):
+        from fr3_sim.analysis.plot_impedance import impedance_figure
+        fig = impedance_figure(run, plt)
+        _save_figures(run, fig, path_png, show, plt)
+        return
     t = run['t']
-    retreat_fields = (
-        'user_p_ref', 'user_position_error', 'user_mass_kg',
-        'user_normal_speed', 'user_normal_speed_ref',
-        'user_retreat_active', 'user_retreat_complete',
-    )
-    compact_retreat = (
-        Path(run['meta'].get('controller', '')).name == 'controller_hybrid_retreat.py'
-        and all(key in run for key in retreat_fields))
     user = [k for k in run if k.startswith('user_') and k not in ('user_p_ref',)]
-    panels = 8 if compact_retreat else 4 + len(user)
+    panels = 4 + len(user)
     fig, ax = plt.subplots(panels, 1, figsize=(10, 2.2 * panels), sharex=True)
-    position_axis, torque_axis, velocity_axis, contact_axis = (
-        ax[[0, 2, 3, 4]] if compact_retreat else ax[:4])
+    position_axis, torque_axis, velocity_axis, contact_axis = ax[:4]
     _plot_signal(position_axis, t, run['p'], 'position')
     if 'user_p_ref' in run:
         position_axis.set_prop_cycle(None)
@@ -189,29 +185,9 @@ def plot(run: dict, path_png: str, show: bool = True):
                           label='penetration')
     penetration_axis.set_ylabel('penetration [mm]', color='r')
     contact_axis.set_ylabel('wall F_n [N]')
-    if compact_retreat:
-        _plot_signal(ax[1], t, 1e3 * run['user_position_error'], 'position error')
-        ax[1].set_ylabel('position error [mm]')
-        ax[5].plot(t, run['user_mass_kg'], label='directional mass')
-        ax[5].set_ylabel('mass [kg]')
-        ax[6].plot(t, run['user_normal_speed'], label='actual')
-        ax[6].plot(t, run['user_normal_speed_ref'], '--', label='reference')
-        ax[6].axhline(0.0, color='0.6', lw=0.6)
-        ax[6].set_ylabel('normal speed [m/s]\n(+ into wall)')
-
-        # HOLD is a plot label for the final reference, not another control law
-        # or proof of measured arrival. RETREAT remains latched in the controller.
-        active = np.asarray(run['user_retreat_active']) > 0.5
-        complete = np.asarray(run['user_retreat_complete']) > 0.5
-        phase = np.where(active, np.where(complete, 2, 1), 0)
-        ax[7].step(t, phase, where='post', color='tab:purple', label='reference phase')
-        ax[7].set_yticks([0, 1, 2], labels=['TRACK', 'RETREAT', 'HOLD'])
-        ax[7].set_ylim(-0.2, 2.2)
-        ax[7].set_ylabel('phase')
-    else:
-        for a, k in zip(ax[4:], user):
-            _plot_signal(a, t, run[k], k[5:])
-            a.set_ylabel(k[5:])
+    for a, k in zip(ax[4:], user):
+        _plot_signal(a, t, run[k], k[5:])
+        a.set_ylabel(k[5:])
     events = detection_times(run)
     _mark_detections((position_axis, contact_axis), events)
     ax[-1].set_xlabel('t [s]')
@@ -220,6 +196,11 @@ def plot(run: dict, path_png: str, show: bool = True):
         _signal_legend(a, secondary=penetration_axis if a is contact_axis else None)
     fig.suptitle(run['meta']['controller'].rsplit('/', 1)[-1])
     fig.tight_layout(rect=(0, 0, 1, 0.975))
+    _save_figures(run, fig, path_png, show, plt)
+
+
+def _save_figures(run, fig, path_png, show, plt):
+    """Shared output paths for all controllers: main, observer, collision."""
     fig.savefig(path_png, dpi=110)
     print(f'  plot: {path_png}')
     observer_fig = None

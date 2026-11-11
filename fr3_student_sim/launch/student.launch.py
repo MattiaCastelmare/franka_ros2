@@ -1,11 +1,11 @@
 """Gazebo FR3 + effort controller + virtual wall + the student's controller.
 
     ros2 launch fr3_student_sim student.launch.py                       # posture baseline
-    ros2 launch fr3_student_sim student.launch.py controller:=circle_tracking/controller_hybrid_retreat.py
+    ros2 launch fr3_student_sim student.launch.py controller:=impedance_hqp.py real_time_factor:=0.10
     ros2 launch fr3_student_sim student.launch.py wall:=false duration:=10 gui:=false
 
-``controller`` is a path to a Python file; relative paths are looked up in the
-package's ``students/`` folder. When the run ends (duration, ``done``, safety
+``controller`` selects baseline.py or impedance_hqp.py, or an absolute custom
+Python file. Legacy controller selectors remain aliases. When a run ends (duration, ``done``, safety
 stop) the log is saved in ``log_dir`` and everything shuts down.
 """
 import math
@@ -22,20 +22,20 @@ from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from fr3_sim.controllers.loading import default_task_config, resolve_controller_path
 
 PKG = 'fr3_student_sim'
 QUIET = {'stdout': 'log', 'stderr': 'log'}     # helper processes: ~/.ros/log only
 
 ARGS = {
-    'controller': ('circle_tracking/controller_baseline.py', 'Controller file (relative to students/ or absolute); '
+    'controller': ('baseline.py', 'baseline.py, impedance_hqp.py, a legacy selector or an absolute Python file; '
                                        '"none" = only the robot, commanded from the terminal'),
     'task_config': ('', 'Task YAML passed to the controller as self.params '
-                        '(empty = matching baseline, optimized, optimized-joint-release '
-                        'or hybrid-retreat YAML)'),
+                        '(empty = matching baseline or impedance-HQP YAML)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
     'observer': ('true', 'Enable momentum observer and collision detection '
-                          '(required by controllers with a collision-reaction policy)'),
+                          '(required by the impedance-HQP controller)'),
     'observer_config': ('', 'Observer gain and residual thresholds YAML '
                             '(empty = config/observer.yaml)'),
     'stop_at_detachment': ('false', 'End the run when the tool first leaves the wall'),
@@ -103,7 +103,7 @@ WALL = """    <model name="virtual_wall">
 def _quiet_process(cmd, log_path, name):
     """``cmd`` with its output in ``log_path``, stopped cleanly: the Franka Gazebo
     plugin aborts at every shutdown (upstream bug), see quiet_process.py."""
-    return ExecuteProcess(cmd=['python3', '-m', 'fr3_student_sim.quiet_process', log_path] + cmd,
+    return ExecuteProcess(cmd=['python3', '-m', 'fr3_sim.simulation.quiet_process', log_path] + cmd,
                           name=name, output='log')
 
 
@@ -129,20 +129,14 @@ def _launch(context):
     a = {k: LaunchConfiguration(k).perform(context) for k in ARGS}
     on = lambda k: a[k].lower() in ('1', 'true', 'yes')  # noqa: E731
     share = get_package_share_directory(PKG)
-    from fr3_student_sim.paths import runs_dir
-    from fr3_student_sim.robot_description import build_urdf, process_xacro
+    from fr3_sim.simulation.paths import runs_dir
+    from fr3_sim.simulation.robot_description import build_urdf, process_xacro
 
     controller = a['controller']
     sim_only = controller.lower() == 'none'
-    if not sim_only and not os.path.isabs(controller):
-        controller = os.path.join(share, 'students', controller)
-    default_tasks = {
-        'controller_baseline.py': 'circle_tracking_baseline.yaml',
-        'controller_optimized.py': 'circle_tracking_optimized.yaml',
-        'controller_optimized_joint_release.py': 'circle_tracking_optimized_joint_release.yaml',
-        'controller_hybrid_retreat.py': 'circle_tracking_hybrid_retreat.yaml',
-    }
-    default_task = default_tasks.get(os.path.basename(controller), 'circle_tracking_baseline.yaml')
+    if not sim_only:
+        controller = resolve_controller_path(controller)
+    default_task = default_task_config(controller)
     task_cfg = a['task_config'] or os.path.join(share, 'config', default_task)
     wall_cfg = a['wall_config'] or os.path.join(share, 'config', 'wall.yaml')
     observer_cfg = a['observer_config'] or os.path.join(share, 'config', 'observer.yaml')

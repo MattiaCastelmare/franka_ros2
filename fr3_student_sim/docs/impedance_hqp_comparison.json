@@ -1,0 +1,582 @@
+{
+  "definition": "first compression-release cycle; precontact mass/speed from preceding sample",
+  "constraint_scope": "saved samples only, not a continuous-time safety certificate",
+  "baseline": {
+    "controller": "/ros2_ws/install/fr3_student_sim/share/fr3_student_sim/students/circle_tracking/controller_baseline.py",
+    "samples": 19996,
+    "duration_s": 20.0,
+    "sampled_span_s": 19.999,
+    "configured_duration_s": 20.0,
+    "stop_reason": "duration reached",
+    "full_duration_reached": true,
+    "safety_stop": false,
+    "first_impact": {
+      "t_contact_s": 1.834,
+      "first_impact_end_s": 1.9238223738051439,
+      "first_impact_duration_s": 0.0898223738051438,
+      "first_impact_complete": true,
+      "first_impact_end_reason": "recompression",
+      "precontact_sample_s": 1.8329999999999997,
+      "entry_mass_kg": 7.18771973323177,
+      "entry_speed_mps": 0.05443797141009171,
+      "entry_normal_kinetic_energy_J": 0.010650377591832759,
+      "peak_force_N": 22.090891189799972,
+      "normal_impulse_Ns": 1.118939008717515,
+      "peak_penetration_mm": 1.1030419948513392,
+      "contact": true
+    },
+    "tracking": {
+      "rms_definition": "time-weighted norm using trapezoids at actual timestamps",
+      "full_run": {
+        "samples": 19996,
+        "rms_m": 0.009010337213871926,
+        "max_m": 0.02168652575748905
+      },
+      "precontact": {
+        "samples": 1833,
+        "rms_m": 8.061874977790066e-06,
+        "max_m": 1.0133133174795936e-05
+      },
+      "normal_speed_min_mps": -0.0615141461362073,
+      "normal_speed_max_mps": 0.06281616977783414
+    },
+    "limits": {
+      "scope": "saved samples only; no guarantee between samples",
+      "finite_q": true,
+      "finite_dq": true,
+      "physical_q_min_rad": [
+        -2.7437,
+        -1.7837,
+        -2.9007,
+        -3.0421,
+        -2.8065,
+        0.5445,
+        -3.0159
+      ],
+      "physical_q_max_rad": [
+        2.7437,
+        1.7837,
+        2.9007,
+        -0.1518,
+        2.8065,
+        4.5169,
+        3.0159
+      ],
+      "physical_dq_max_rad_s": [
+        2.62,
+        2.62,
+        2.62,
+        2.62,
+        5.26,
+        4.18,
+        5.26
+      ],
+      "min_physical_margin_rad": 0.35802877483278195,
+      "min_physical_margin_per_joint_rad": [
+        2.741630925164898,
+        1.6275176716419812,
+        2.9003666286206418,
+        0.4261573864799857,
+        2.7986310449064256,
+        0.35802877483278195,
+        2.2308689377793756
+      ],
+      "position_violation_samples": 0,
+      "position_violation_joints": [],
+      "velocity_violation_samples": 0,
+      "velocity_violation_joints": [],
+      "max_abs_dq_per_joint_rad_s": [
+        0.003429258360852867,
+        0.20010055974595095,
+        0.0014933728531847403,
+        0.2103487775894308,
+        0.014782235787335146,
+        0.4145116747568635,
+        0.011584511062809446
+      ],
+      "configured_protected_margin_rad": null,
+      "min_protected_margin_rad": null,
+      "protected_margin_violation_samples": null,
+      "configured_velocity_max_rad_s": null,
+      "configured_velocity_violation_samples": null,
+      "configured_acceleration_max_rad_s2": null,
+      "acceleration_estimate_violation_samples": null,
+      "max_abs_acceleration_estimate_per_joint_rad_s2": [
+        0.03185628661546941,
+        2.3341018124023236,
+        0.04297094574295168,
+        5.565668178903383,
+        0.3390453594228271,
+        12.096930790365718,
+        0.2729647060566047
+      ],
+      "acceleration_estimate_method": "nonuniform finite differences of logged dq; not exact plant acceleration"
+    },
+    "torque": {
+      "limits_Nm": [
+        87.0,
+        87.0,
+        87.0,
+        87.0,
+        12.0,
+        12.0,
+        12.0
+      ],
+      "configured_limits_Nm": null,
+      "max_abs_command_per_joint_Nm": [
+        0.025156216454370335,
+        4.57252427414012,
+        0.017110903891055497,
+        1.5651147327402224,
+        0.018812344388571448,
+        1.5084683963941807,
+        0.003084318068395386
+      ],
+      "max_command_limit_ratio": 0.12570569969951506,
+      "max_command_limit_ratio_per_joint": [
+        0.00028915191326862454,
+        0.05255775027747264,
+        0.0001966770562190287,
+        0.01798982451425543,
+        0.0015676953657142872,
+        0.12570569969951506,
+        0.0002570265056996155
+      ],
+      "max_configured_limit_ratio": null,
+      "saturated_samples": 0,
+      "saturated_samples_pct": 0.0,
+      "saturated_samples_per_joint": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "scope": "gravity-compensated actuator command before/after runner clipping; wall torque excluded",
+      "nominal_motor_including_gravity_logged": false,
+      "max_nominal_motor_limit_ratio": null
+    },
+    "qp": {
+      "count_scope": "controller updates",
+      "primary": {
+        "available": false,
+        "failed_updates": null,
+        "status_counts": null
+      },
+      "secondary": {
+        "available": false,
+        "failed_updates": null,
+        "status_counts": null
+      },
+      "max_logged_hard_constraint_violation": null,
+      "observer_valid_updates_pct": null,
+      "min_logged_joint_limit_margin_rad": null,
+      "max_abs_qdd_predicted_per_joint_rad_s2": null,
+      "max_abs_acceleration_uncertainty_per_joint_rad_s2": null
+    },
+    "timing": {
+      "expected_samples": 20000,
+      "missed_samples": 4,
+      "missed_samples_pct": 0.02,
+      "sample_intervals_over_1ms": 2,
+      "sample_intervals_over_1ms_pct": 0.010002500625156289,
+      "sample_interval_ms_max": 3.0000000000001137,
+      "controller_period_ms": 1.0,
+      "controller_timing_scope": "Controller.update wall time; comparison assumes RTF=1",
+      "controller_timing_source": "logged update flags",
+      "controller_updates": 19996,
+      "controller_ms_mean": 0.32626329870928267,
+      "controller_ms_p95": 0.4293767500485046,
+      "controller_ms_max": 2.5615140000354586,
+      "controller_update_over_period_count": 95,
+      "controller_update_over_period_pct": 0.47509501900380074,
+      "real_time_factor_measured": 0.20000684807286426
+    },
+    "log_path": "runs/circle_baseline_hqp_comparison_20261111_083032.npz"
+  },
+  "candidate": {
+    "controller": "/ros2_ws/install/fr3_student_sim/share/fr3_student_sim/students/circle_tracking/controller_impedance_hqp.py",
+    "samples": 19964,
+    "duration_s": 20.0,
+    "sampled_span_s": 19.999,
+    "configured_duration_s": 20.0,
+    "stop_reason": "duration reached",
+    "full_duration_reached": true,
+    "safety_stop": false,
+    "first_impact": {
+      "t_contact_s": 1.8340000000000005,
+      "first_impact_end_s": 1.9116987621568744,
+      "first_impact_duration_s": 0.07769876215687388,
+      "first_impact_complete": true,
+      "first_impact_end_reason": "recompression",
+      "precontact_sample_s": 1.8330000000000002,
+      "entry_mass_kg": 4.9194667279094535,
+      "entry_speed_mps": 0.0544356514977836,
+      "entry_normal_kinetic_energy_J": 0.007288780672174995,
+      "peak_force_N": 18.785756606070272,
+      "normal_impulse_Ns": 0.8503310515412281,
+      "peak_penetration_mm": 0.9376806266457871,
+      "contact": true
+    },
+    "tracking": {
+      "rms_definition": "time-weighted norm using trapezoids at actual timestamps",
+      "full_run": {
+        "samples": 19964,
+        "rms_m": 0.00811267201841594,
+        "max_m": 0.019448013687591074
+      },
+      "precontact": {
+        "samples": 1833,
+        "rms_m": 9.997211200827583e-06,
+        "max_m": 1.4252030895185251e-05
+      },
+      "normal_speed_min_mps": -0.061781640510632826,
+      "normal_speed_max_mps": 0.06281488210823047
+    },
+    "limits": {
+      "scope": "saved samples only; no guarantee between samples",
+      "finite_q": true,
+      "finite_dq": true,
+      "physical_q_min_rad": [
+        -2.7437,
+        -1.7837,
+        -2.9007,
+        -3.0421,
+        -2.8065,
+        0.5445,
+        -3.0159
+      ],
+      "physical_q_max_rad": [
+        2.7437,
+        1.7837,
+        2.9007,
+        -0.1518,
+        2.8065,
+        4.5169,
+        3.0159
+      ],
+      "physical_dq_max_rad_s": [
+        2.62,
+        2.62,
+        2.62,
+        2.62,
+        5.26,
+        4.18,
+        5.26
+      ],
+      "min_physical_margin_rad": 0.15819125224994046,
+      "min_physical_margin_per_joint_rad": [
+        2.74261629299286,
+        1.632000333611963,
+        2.891564954113857,
+        0.4316003202145309,
+        2.782444256172513,
+        0.15819125224994046,
+        2.220861517963029
+      ],
+      "position_violation_samples": 0,
+      "position_violation_joints": [],
+      "velocity_violation_samples": 0,
+      "velocity_violation_joints": [],
+      "max_abs_dq_per_joint_rad_s": [
+        0.0011060596748117526,
+        0.4322907659932244,
+        0.015555374104882079,
+        0.24411164995450396,
+        0.037087968244522734,
+        0.8832193253648796,
+        0.012577882341190044
+      ],
+      "configured_protected_margin_rad": [
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15,
+        0.15
+      ],
+      "min_protected_margin_rad": 0.008191252249940467,
+      "protected_margin_violation_samples": 0,
+      "configured_velocity_max_rad_s": [
+        2.62,
+        2.62,
+        2.62,
+        2.62,
+        5.26,
+        4.18,
+        5.26
+      ],
+      "configured_velocity_violation_samples": 0,
+      "configured_acceleration_max_rad_s2": [
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0,
+        30.0
+      ],
+      "acceleration_estimate_violation_samples": 0,
+      "max_abs_acceleration_estimate_per_joint_rad_s2": [
+        0.03731410206758441,
+        7.484035783458151,
+        0.220294903597017,
+        8.62374340005653,
+        0.5522621123484234,
+        12.593945304404405,
+        0.13955330470328822
+      ],
+      "acceleration_estimate_method": "nonuniform finite differences of logged dq; not exact plant acceleration"
+    },
+    "torque": {
+      "limits_Nm": [
+        87.0,
+        87.0,
+        87.0,
+        87.0,
+        12.0,
+        12.0,
+        12.0
+      ],
+      "configured_limits_Nm": [
+        87.0,
+        87.0,
+        87.0,
+        87.0,
+        12.0,
+        12.0,
+        12.0
+      ],
+      "max_abs_command_per_joint_Nm": [
+        0.2134702791005117,
+        8.418644863057333,
+        0.2233681533535114,
+        2.3230914294806464,
+        0.10220360757179114,
+        2.1978785433772305,
+        0.0301757421494486
+      ],
+      "max_command_limit_ratio": 0.18315654528143588,
+      "max_command_limit_ratio_per_joint": [
+        0.0024536813689713987,
+        0.09676603290870497,
+        0.002567450038546108,
+        0.026702200338858003,
+        0.008516967297649261,
+        0.18315654528143588,
+        0.0025146451791207168
+      ],
+      "max_configured_limit_ratio": 0.18315654528143588,
+      "saturated_samples": 0,
+      "saturated_samples_pct": 0.0,
+      "saturated_samples_per_joint": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "scope": "gravity-compensated actuator command before/after runner clipping; wall torque excluded",
+      "nominal_motor_including_gravity_logged": true,
+      "max_nominal_motor_limit_ratio": 0.41687725052709124
+    },
+    "qp": {
+      "count_scope": "controller updates",
+      "primary": {
+        "available": true,
+        "failed_updates": 0,
+        "status_counts": {
+          "1": 19964
+        },
+        "nonfinite_updates": 0
+      },
+      "secondary": {
+        "available": true,
+        "failed_updates": 0,
+        "status_counts": {
+          "1": 19964
+        },
+        "nonfinite_updates": 0
+      },
+      "max_logged_hard_constraint_violation": 1.1330417214239219e-05,
+      "observer_valid_updates_pct": 98.99819675415749,
+      "min_logged_joint_limit_margin_rad": 0.15819125224994046,
+      "max_abs_qdd_predicted_per_joint_rad_s2": [
+        0.004699836176694604,
+        5.788137949452122,
+        0.22030170494429688,
+        4.260554008056272,
+        0.5522833650516382,
+        12.59492089922553,
+        0.1396036661465064
+      ],
+      "max_abs_acceleration_uncertainty_per_joint_rad_s2": [
+        1.0,
+        4.3355213066011276,
+        1.0,
+        5.054055769768186,
+        1.0,
+        16.421895754107894,
+        1.0
+      ]
+    },
+    "timing": {
+      "expected_samples": 20000,
+      "missed_samples": 36,
+      "missed_samples_pct": 0.18,
+      "sample_intervals_over_1ms": 14,
+      "sample_intervals_over_1ms_pct": 0.07012974001903521,
+      "sample_interval_ms_max": 6.000000000000227,
+      "controller_period_ms": 1.0,
+      "controller_timing_scope": "Controller.update wall time; comparison assumes RTF=1",
+      "controller_timing_source": "logged update flags",
+      "controller_updates": 19964,
+      "controller_ms_mean": 0.7876687127834301,
+      "controller_ms_p95": 1.2777786000242486,
+      "controller_ms_max": 20.935293000093225,
+      "controller_update_over_period_count": 4182,
+      "controller_update_over_period_pct": 20.94770587056702,
+      "real_time_factor_measured": 0.19993701542730966
+    },
+    "log_path": "runs/circle_impedance_hqp_20261111_084724.npz"
+  },
+  "comparison": {
+    "baseline_identity_reason": "controller_baseline.py",
+    "scenario": {
+      "initial_q": {
+        "match": true,
+        "baseline": [
+          0.0,
+          -0.1517,
+          0.0,
+          -2.6105,
+          0.0,
+          4.0295,
+          0.785
+        ],
+        "candidate": [
+          0.0,
+          -0.1517,
+          0.0,
+          -2.6105,
+          0.0,
+          4.0295,
+          0.785
+        ]
+      },
+      "circle": {
+        "match": true,
+        "baseline": {
+          "radius": 0.04,
+          "period": 4.0,
+          "ramp": 1.0
+        },
+        "candidate": {
+          "radius": 0.04,
+          "period": 4.0,
+          "ramp": 1.0
+        }
+      },
+      "wall": {
+        "match": true,
+        "baseline": {
+          "point": [
+            0.62,
+            0.0,
+            0.5
+          ],
+          "normal": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "stiffness": 20000.0,
+          "damping": 15.0,
+          "enabled": true
+        },
+        "candidate": {
+          "point": [
+            0.62,
+            0.0,
+            0.5
+          ],
+          "normal": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "stiffness": 20000.0,
+          "damping": 15.0,
+          "enabled": true
+        }
+      },
+      "realism": {
+        "match": true,
+        "baseline": {
+          "noise_q": 0.0,
+          "noise_dq": 0.0,
+          "seed": 0,
+          "mass_error": 0.0,
+          "joint_friction": false
+        },
+        "candidate": {
+          "noise_q": 0.0,
+          "noise_dq": 0.0,
+          "seed": 0,
+          "mass_error": 0.0,
+          "joint_friction": false
+        }
+      },
+      "control_rate": {
+        "match": true,
+        "baseline": 1000.0,
+        "candidate": 1000.0
+      },
+      "duration": {
+        "match": true,
+        "baseline": 20.0,
+        "candidate": 20.0
+      }
+    },
+    "measured_mass_reduction_fraction": 0.31557337925062023,
+    "mass_reduction_target_fraction": 0.3,
+    "entry_speed_relative_difference": 4.261570091646658e-05,
+    "entry_speed_tolerance_fraction": 0.05,
+    "target_metrics_met": true,
+    "full_criterion_met": true,
+    "checks": {
+      "recognized_baseline": true,
+      "same_scenario": true,
+      "mass_directions_match_contact_normal": true,
+      "both_first_impacts_complete": true,
+      "both_precontact_tracking_errors_available": true,
+      "positive_comparable_entry_speeds": true,
+      "measured_mass_reduction_at_least_target": true,
+      "baseline_full_duration": true,
+      "baseline_no_safety_stop": true,
+      "baseline_sampled_physical_limits_respected": true,
+      "candidate_full_duration": true,
+      "candidate_no_safety_stop": true,
+      "candidate_sampled_physical_limits_respected": true,
+      "candidate_protected_position_margin_respected": true,
+      "candidate_configured_velocity_limit_respected": true,
+      "candidate_sampled_acceleration_limit_respected": true,
+      "candidate_command_torque_limit_respected": true,
+      "candidate_nominal_motor_torque_limit_respected": true,
+      "candidate_primary_qp_updates_solved": true,
+      "candidate_logged_qp_hard_constraints_accepted": true
+    },
+    "unmet_checks": [],
+    "sampled_acceleration_check": {
+      "configured_bound_respected": true,
+      "included_in_full_criterion": true,
+      "reason": "sampled finite-difference check; observed excess rejects success, absence of excess is not a continuous-time certificate"
+    },
+    "interpretation": "overall controller comparison; different control laws do not isolate the causal effect of mass minimization"
+  }
+}

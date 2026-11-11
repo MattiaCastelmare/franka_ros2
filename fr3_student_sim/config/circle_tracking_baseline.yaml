@@ -1,4 +1,4 @@
-# Controller: students/circle_tracking/controller_baseline.py
+# Controller: fr3_sim/controllers/baseline.py
 # Circular position tracking with nullspace posture feedback and damping.
 # initial_q also defines the fixed preferred posture q0; orientation remains free.
 # Directional mass is logged along the wall normal, without mass minimization.

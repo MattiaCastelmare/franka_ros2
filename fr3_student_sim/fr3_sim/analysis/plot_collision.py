@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from fr3_student_sim.impact_metrics import first_impact
+from fr3_sim.analysis.impact_metrics import first_impact
 
 
 def collision_signals(run: dict) -> dict:

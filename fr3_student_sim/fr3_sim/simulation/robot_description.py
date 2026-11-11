@@ -2,7 +2,7 @@
 
 One URDF string serves three readers: Gazebo (``ros_gz_sim create``), the
 gz_ros2_control plugin (which builds its KDL gravity model from the
-``robot_state_publisher`` copy) and :class:`fr3_student_sim.fr3_model.FR3Model`.
+``robot_state_publisher`` copy) and :class:`fr3_sim.simulation.fr3_model.FR3Model`.
 Using the same string everywhere is what makes the students' model match the
 simulated plant.
 

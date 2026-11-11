@@ -7,7 +7,7 @@ N = I - J_pinv @ J. Gravity is compensated by the simulator.
 
 import numpy as np
 
-from utils.circle_tracking import DampedTrackingController as DampedCircleController
+from fr3_sim.controllers.circle_tracking import DampedTrackingController as DampedCircleController
 
 
 class Controller(DampedCircleController):

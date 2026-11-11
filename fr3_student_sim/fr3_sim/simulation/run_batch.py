@@ -6,7 +6,7 @@
 The batch file::
 
     defaults:                       # launch options for every run
-      controller: circle_tracking/controller_baseline.py
+      controller: baseline.py
       duration: 16
       stop_at_detachment: true
     runs:
@@ -32,8 +32,9 @@ import sys
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-from fr3_student_sim.paths import runs_dir
-from fr3_student_sim.plot_run import load_run, metrics
+from fr3_sim.simulation.paths import runs_dir
+from fr3_sim.analysis.plot_run import load_run, metrics
+from fr3_sim.controllers.loading import default_task_config as controller_task_config
 
 
 def merge(base: dict, over: dict) -> dict:
@@ -68,14 +69,8 @@ def main():
     for i, run in enumerate(batch['runs']):
         name = run['name']
         opts = merge(defaults, run.get('launch'))
-        controller = opts.get('controller', 'circle_tracking/controller_baseline.py')
-        default_tasks = {
-            'controller_baseline.py': 'circle_tracking_baseline.yaml',
-            'controller_optimized.py': 'circle_tracking_optimized.yaml',
-            'controller_optimized_joint_release.py': 'circle_tracking_optimized_joint_release.yaml',
-            'controller_hybrid_retreat.py': 'circle_tracking_hybrid_retreat.yaml',
-        }
-        default_task = default_tasks.get(os.path.basename(controller), 'circle_tracking_baseline.yaml')
+        controller = opts.get('controller', 'baseline.py')
+        default_task = controller_task_config(controller)
         task_config = (opts.pop('task_config', default_task_config)
                        or os.path.join(share, 'config', default_task))
         task0 = _yaml(task_config)
