@@ -6,12 +6,12 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-11, checkpoint C-035 (Stage 5 complete; parallel-session reconciliation recorded; awaiting review)
-- **Project status:** read-only documentation phase. Stages 0–4 are done, committed and pushed (HEAD `a66a134`).
-  Stage 5 is done in the working tree, **not committed** (the user did not ask for a commit).
-- **Last completed stage:** Stage 5 (awaiting review).
-- **Next pending stage:** Stage 6 (Simulation): `12`. **Not approved.**
-- **Stage in progress:** none. Stage 5 (approved 2026-11-11, ONLY Stage 5) finished at C-035.
+- **Last updated:** 2026-11-11, checkpoint C-039 (Stage 6 complete; stopped for review)
+- **Project status:** read-only documentation phase. Stages 0–5 are done, committed and pushed (HEAD `bb71534`).
+  Stage 6 is done and **not committed** (the user commits on request).
+- **Last completed stage:** Stage 6 (Simulation), 2026-11-11.
+- **Next pending stage:** Stage 7 (Synthesis). **Not approved.**
+- **Stage in progress:** none.
 - **Pinned branch:** `humble-mattia`
 - **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
   ROS 2 source the chapters describe; the history is in §8.
@@ -23,7 +23,8 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - `00_INDEX.md`, `01_architecture.md`, `02_ros_graph_and_dataflow.md`, `03_configuration.md`,
     `04_math_foundations.md`, `05_perception_and_distance.md`, `06_nominal_motion.md`,
     `07_cbf_obstacle_barrier.md`, `08_constraints_and_qp.md`, `09_torque_realization.md`,
-    `10_alternative_controllers.md`, `11_iso_safety_layer.md`, `13_observability_and_tools.md`;
+    `10_alternative_controllers.md`, `11_iso_safety_layer.md`, `12_simulation.md`,
+    `13_observability_and_tools.md`, `SIMULATION_VALIDATION_PROTOCOL.md`;
   - `ledger/*`;
   - the tools `stage0_extract.py`, `ledger_status.py` and `check_state.py` (baseline-aware since C-003);
   - `tools/stage2_verification/`: 9 read-only scripts reproducing every numerical result of ch. 04 and
@@ -36,6 +37,10 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   - `tools/stage5_verification/`: 5 scripts + `_common5.py` (4 container scripts calling production
     methods unbound on stubs, with the deployed qpsolvers 4.3.3 / osqp 0.6.7; 1 host), `run_all.sh`,
     a README, and `results/observed_2026-11-11.txt` (92 of 92 passed);
+  - `tools/stage6_verification/`: 6 scripts + `_common6.py` (3 host, 3 container; production laws,
+    catalog, conditions, scorers, reflex checker, emulation, depth conversion, robot/world builders;
+    the recorded-run audit; the installed-vs-source state check), `run_all.sh`, a README, and
+    `results/observed_2026-11-11.txt` (69 of 69 passed);
   - `tools/stage3_verification/`: 6 scripts + 2 helpers (4 host, 2 container driving the real
     `ConstraintBuilder`), `run_all.sh`, a README, `results/observed_2026-11-11.txt` (85 of 85 passed);
   - `CHECKPOINTS.md` and `RESUME_PROMPT.md`;
@@ -43,7 +48,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 - **Draft or stale:** `A_file_index.md` was generated in Stage 0 and does not reflect the Stage 1 chapter
   reassignments (§2). It gets regenerated in Stage 7.
 - **Incomplete work carried forward:**
-  - 107 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
+  - 134 ledger files are `partial`. For nodes, that mostly means the constructor interfaces only;
     the algorithms belong to the stage that owns the chapter. Stage 3 partials are listed in §2.
   - Ch. 05 files still `pending` or `partial`, read at interface level only: the eye-in-hand node, the
     hand-eye launch files, `rtd_debug.py`, `node_utils.py`, the remaining calibration YAMLs, and most
@@ -62,11 +67,21 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
     `iso_pfl_speed.py`, `watchman_profile.md` and the ten `test_iso_*` in the parts ch. 11 cites;
     `pentagon_torque_commander.py` (the orientation law and the interface).
   - Stage 5 questions: Q-5-1 to Q-5-4 (§5).
+  - Stage 6 partials (§2): `estimator_metrics`, `report`, `attribution`, `offline`, `graph_contract`,
+    `control_regression`, `gz_trajectory_markers`, `pin_process`, `plot_control_regression`,
+    `check_self_occlusion`, `gz_plant`/`gz_circle_demo` launch, `mppi_it08.yaml`, `scenarios.yaml` and
+    `conditions.yaml` (resolved through the production code, not line-read), and the 24 sim tests
+    (docstrings). `control_regression_scenarios.yaml` is still `pending`.
+  - Stage 6 questions: Q-6-1 to Q-6-5 (§5). Q-6-3 (the protocol's thresholds) must be answered
+    before the first refactoring change.
+  - **State warning (F-6-3):** on 2026-11-11 the container's installed workspace did not match the
+    baseline source. Rebuild (with approval) before any simulation run.
   - A parallel session wrote into Stage 5 files on 2026-11-11; it was reconciled at C-035 (its
     findings are F-5-24…F-5-27, its ch. 11 draft is in `drafts/`). Before resuming, make sure only
     one session writes to `docs/framework_study/`.
-- **Exact next action:** wait for the user's review of Stage 5 and, separately, an explicit approval
-  of Stage 6 (`12_simulation.md`). Do not start Stage 6 without it.
+- **Exact next action:** wait for the user's review of Stage 6. Stage 7 (Synthesis: chapters 14,
+  15, 16, appendices A–C, the guide-versus-code cross-check, the coverage pass) needs a separate,
+  explicit approval. Do not start it without one.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -80,7 +95,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 | 3 — Nominal motion & barrier | `06`, `07`; `tools/stage3_verification/` | ch. 06: 25 · 07: 30 (see §2 for what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 (re-approved in a new session after an interruption) |
 | 4 — QP & actuation | `08`, `09`; `tools/stage4_verification/` | ch. 08: 28 · 09: 6 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
 | 5 — Alternatives, ISO, tools | `10`, `11`, `13`; `tools/stage5_verification/` | ch. 10: 9 · 11: 18 · 13: 43 (§2 lists what was read) | **done** (awaiting review) | `ba68077` | approved 2026-11-11 |
-| 6 — Simulation | `12` | ch. 12: 63 | not started | | |
+| 6 — Simulation | `12`, `SIMULATION_VALIDATION_PROTOCOL.md`; `tools/stage6_verification/` | ch. 12: 63 | **done** (2026-11-11; not committed) | `ba68077` | approved 2026-11-11 |
 | 7 — Synthesis | `14`, `15`, `16`, `B`, `C`, final `00`/`A` | ch. 14: 22 · 16: 13 | not started | | |
 
 The per-chapter file counts come from the provisional assignment in
@@ -91,10 +106,10 @@ shows a better home, and the counts here are then updated.
 
 | Status | Files |
 |---|---:|
-| pending | 178 |
-| partial | 107 |
-| read | 4 |
-| documented | 57 |
+| pending | 130 |
+| partial | 134 |
+| read | 2 |
+| documented | 80 |
 
 `partial` was added in Stage 1. It means the parts the stage needed were read; for nodes, that is
 the constructor interfaces. Chapter reassignments made in Stage 1:
@@ -158,6 +173,32 @@ Stage 5 (2026-11-11):
   `bag_replay.launch.py` header, `frame_grabber`'s status test, `cbf_safety_filter._iso_configure`,
   `_publish_status` and the ISO-stop branch of `_qp_tick` (ch. 11), the velocity stack launch and
   `franka_rt_controllers/launch/rt_velocity_blender.launch.py`.
+
+Stage 6 (2026-11-11):
+- `documented`, chapter 12:
+  - `gz_cbf_stack.launch.py`, `franka_simulation/launch/gz_fr3_plant.launch.py`;
+  - the nodes `episode_supervisor`, `ground_truth_node`, `reflex_monitor`, `scenario_commander`,
+    `emulated_perception`, `run_gz_scenarios`;
+  - `simexp/{__init__, analysis, batch, closed_loop, conditions, emulation, obstacle_laws, procs,
+    provenance, reflex_checks, runner, scenario_catalog, scenario_laws, sim_config,
+    truth_geometry}.py`.
+- `partial`, chapter 12:
+  - `conditions.yaml` and `scenarios.yaml`: every condition and every scenario resolved through
+    the production code, and the header blocks read;
+  - `estimator_metrics.py` (`read_run`, `make_residual`, `score_run`, the docstring) and
+    `report.py` (`load_rows`, `select`, `t_quality`, the docstring);
+  - interface level: `attribution`, `offline`, `graph_contract`, `control_regression`,
+    `gz_trajectory_markers`, `pin_process`, `plot_control_regression`, `check_self_occlusion`;
+  - the 24 tests (docstrings and test counts).
+- Also read, outside the ledger (`franka_simulation`, interface-only package):
+  - `scripts/utils/gz_robot_description.py` and `gz_world.py` (in full);
+  - `scripts/depth_sim_adapter.py` (structure), `scripts/utils/depth_conversion.py` (in full);
+  - `src/scenario_obstacles_system.cpp` (laws, PreUpdate/PostUpdate, the start, the target);
+  - `config/sim/perception_sim.yaml`, `config/sim/depth_adapter.yaml`;
+  - from `franka_experiments`: `utils/params.py::declare_from_spec/declare_float`, the camera TF
+    block of `torque_control_stack`;
+  - from launch_ros / rclpy (installed, for F-6-2): `evaluate_parameter_dict`,
+    `_create_params_file_from_dict`, `Node._apply_descriptor`.
 
 ## 3. How later stages are tracked (procedure)
 
@@ -319,6 +360,25 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 | F-5-26 | *(Recorded as F-5-18 by a parallel session on 2026-11-11 and renumbered at the reconciliation, C-035; the ID F-5-18 stays with the earlier row of that number.)* Stale tool defaults: `watch_obstacle_tracks` listens to `/cbf/per_link_distances_tracked` (published by nothing); `throw_clearance` loads `<pkg>/rosbag/<BAG>_truth.npz` (no such directory); `pipeline_rate_monitor` expects `/NS_1/qddot_safe` and `/NS_1/cbf_status` at 100 Hz (`qp_rate_hz` 300) and distances at 30 Hz (camera 90); `iso_constants_measure uncertainty` defaults to `/cams/d455/...` (the shipped topics are `/camera/camera/...`). | 13 §7 | Verified (`check_observability.py` 10) |
 | F-5-27 | *(Recorded as F-5-19 by a parallel session on 2026-11-11 and renumbered at the reconciliation, C-035; the ID F-5-19 stays with the earlier row of that number.)* `utils/run_metadata.write_runtime_metadata` has no caller outside its test on this branch, and nothing sets `FRANKA_RUN_METADATA_DIR`. 297 archived node copies under `sim_runs/*/provenance` (data, out of scope) do call it; they probably come from other code versions (not on this branch's history, `git log -S`). | 13 §2.1 | Verified (`check_observability.py` 4, 8); origin of the archived copies Inferred |
 
+### Stage 6 findings
+
+| ID | Finding | Where | Evidence |
+|---|---|---|---|
+| F-6-1 | **No recorded simulation run is at the documented baseline.** The 1226 `run_manifest_sim.json` files under `franka_simulation_experiments/sim_runs/` carry 13 distinct SHAs, all ancestors of `ba68077` (e.g. `2d87ab6` 443 runs, `03ef58c` 329, `9884c4e` 45). 1167 of them were run from a **dirty** tree. Every recorded sim number therefore describes older, partly uncommitted code: it can be used as Runtime (recorded) evidence of that revision only, never as evidence for the baseline. | 12 §9 | Verified (`check_sim_runs.py` 1) |
+| F-6-2 | **A float condition parameter reaches the node as a string and works by accident.** `simexp.conditions.params_arg` writes `obstacle_row_osqp_eps_rel=1e-05` (`str(1.0e-5)`). `torque_control_stack._cbf_param_overrides` parses it with `yaml.safe_load`, which returns the STRING `'1e-05'` (PyYAML follows YAML 1.1: no dot, no float); launch_ros's `yaml.safe_load` keeps it a string. launch_ros then dumps it unquoted (`p: 1e-05`) into the parameter file, and rcl's C parser reads that as a double, so `declare_float` accepts it (a recorded `minimal_l1_ssb` run has the filter running). Any change in that chain (a `ParameterValue`, quoting, a dynamic-typing descriptor, or a Python consumer of the resolved dict such as `C3.effective_params`) turns it into a string or a startup failure ("Wrong parameter type"). 16 conditions carry the key. | 12 §6.3 | Verified (`check_conditions.py` 3) + Inferred (rcl parser behaviour) + Runtime (recorded, at `9884c4e`) |
+| F-6-3 | **The installed workspace in the container is not the documented source.** `gz_cbf_stack` reads every configuration through `sim_config.default_paths`, which points into the installed `share/` directories; colcon copies `config/`. On 2026-11-11, the installed `fr3_control.yaml`, `fr3_complete.yaml`, `conditions.yaml` (58 lines against the 23-condition source) and `scenarios.yaml` differ from the baseline. The installed `fr3_control.yaml` has `d_safe: 0.15`, while the source and all 300 audited recorded runs use 0.10. `cbf_safety_filter`, `real_time_distance` and `qddot_to_torque` also differ. The sim programs and `simexp` match. A simulation started now would not run the documented code. This is a state of the container, not of the code, and the same class as F-2-2. | 12 §2.4; protocol Phase 1 | Verified (`check_installed.py`, 2026-11-11) |
+| F-6-4 | **The Phase 5 grid conditions are not comparable with `full`/`minimal`, and their QP-rate gate is always UNKNOWN.** `batch.CONDITIONS` = residual, kf, imm and imm+pred. They carry no `qp_rate_hz`, so they run the stack default: 300 Hz with go-around ON. `full` and `minimal` run at 100 Hz with go-around off. `closed_loop.summarize_run` takes its rate target only from `condition.cbf_params.qp_rate_hz`, so `rate_verdict` returns `(None, None)` and `cell_ok` never rejects these cells for a rate miss. Recorded: 264 of 301 batch cells have an UNKNOWN rate verdict (160 of them counted ok). Also, `full` ≠ a bare hardware launch (100 vs 300 Hz, go-around off). | 12 §6.2, §8.3 | Verified (`check_conditions.py` 1, 4) + Runtime (recorded) |
+| F-6-5 | **The truth series has holes of up to 0.84 s, and every clearance metric is computed on it.** `ground_truth_node` keeps the whole 1 kHz history in lists. Every 5 s, its only executor thread rewrites all of it with `np.savez_compressed`; the joint-state queue holds 100 messages (0.1 s). In 39 recent runs, the median of each run's largest hole inside the episode was 518 ms (max 837 ms), and 95 % of the holes > 50 ms fall within 0.5 s of a 5 s multiple (holes placed at random would give 20 %), so the save is the probable cause (Inferred). `min_h`, `min_gap`, `contact` and `neg_duration_s` are taken on this grid, and `neg_duration_s` uses the median spacing. On a synthetic pass, a 200 ms hole turns a 3 cm penetration into a reported `+1.2 cm` and `contact = False`. Supersedes nothing; refines the lead "truth.npz 448–688 Hz" (§7). | 12 §8.2, §9 | Verified (code, `check_scoring.py` 3, 8) + Runtime (recorded, `check_sim_runs.py` 3) + Inferred (cause) |
+| F-6-6 | **`ok` means "valid data point", not "safe" or "would have run".** `batch.cell_ok` checks: no timeout, no leftovers, a `min_h` exists, and the rate verdict is not a *known* miss. It does not look at `contact`, the reflex verdict (FAIL or NO_DATA), `controller_active_at_start`, the QP fault ticks, or perception staleness. Recorded: 75 ok cells had contact and 13 ok cells had a reflex FAIL. | 12 §8.3 | Verified (`check_scoring.py` 4) + Runtime (recorded) |
+| F-6-7 | **Sim "contact" is a sphere–sphere quantity, and nothing in Gazebo can collide.** The obstacle models are visual-only (no `<collision>`, gravity off) and are moved kinematically by `SetWorldPoseCmd`, so the physics never sees a contact. The robot can pass through an obstacle. `contact` = any truth sample with gap < 0, where gap = ‖cp − c‖ − r − r_cp is between the 11 control-point spheres (r = 0.05) and the obstacle sphere; it is not between the robot meshes and the obstacle. `neg_duration_s` is the time inside d_safe (h < 0), not the time in penetration; no metric gives the penetration duration. | 12 §7, §8.2 | Verified (`gz_world.sphere_model`, `truth_geometry`, `closed_loop`; `check_scoring.py` 3) |
+| F-6-8 | **Emulated perception does not exercise perception, tracking or identity.** It reports `max(gap, 0)`, so the filter never sees a penetration. It uses `track_id = 1` for every obstacle and the truth velocity + N(0, 0.02²) per axis, with fixed covariances and no tracker, delivered 13 ms after capture at `fps`. Only `perception:=true` runs the depth renderer, the adapter and the unchanged `real_time_distance` with its tracker. | 12 §4 | Verified (`check_scoring.py` 6) |
+| F-6-9 | **A seed is not a scenario variation.** For 98 of the 100 scenarios, seed k > 0 changes only the start phase `start_offset_s` ∈ [0, 1/90 s). Only `pentagon_wander` and `pentagon_wander_close` (`jitter_m` 0.04) also move p0. The seed also seeds the depth adapter and the emulated noise, which matter only when range noise or dropout is on (off in the shipped adapter config). Repeating seeds therefore measures sensitivity to timing (and any Gazebo non-determinism), not to geometry. | 12 §5.4 | Verified (`check_obstacle_laws.py` 5) |
+| F-6-10 | **A rescore mixes code revisions.** `batch.rescore` → `estimator_metrics.score_run` builds the residual estimator from the CURRENT `conditions.resolve(condition)` and `shipped_params()`, not from the run's manifest. It also writes `compare_vobs_sim.npz` into the run directory. With F-6-1, a rescored recorded run is scored by different code than the code it ran. | 12 §8.4 | Verified (`check_scoring.py` 8) |
+| F-6-11 | **The dirty-tree patch of a run is never saved.** `simexp.provenance.snapshot` (which copies the sources and `git diff HEAD`) has no caller outside `test_run_provenance.py`, yet `control_regression` reads `provenance/snapshot.json`. `run_manifest_sim.json` stores only the SHA and a dirty flag, so the code of the 1195 dirty recorded runs cannot be reconstructed. | 12 §8.5 | Verified (grep) + Runtime (recorded) |
+| F-6-12 | **The pentagon motion ignores the episode clock.** `/sim/episode` has no subscriber in `franka_experiments`, so `pentagon_qddot_commander` runs from its own start, while the obstacle laws start at the episode start. The pentagon's phase at the episode start depends on boot timing, and so differs between runs. Only `scenario_commander` (motion `scenario`) holds Q0 until the start. | 12 §5.2 | Verified (grep, code) + Inferred (run-to-run effect) |
+| F-6-13 | **F-5-21 scope in simulation.** It affects every sim `experiment_log.csv` (q/q̇/τ columns), `experiment_summary.py` (run only by `runner.digest_cell`, called only by a slow test), and any analysis built on those CSVs. It does **not** affect the batch scores (`cells.csv`, `report.py`). Those come from `truth.npz`, the bag (`/NS_1/franka/joint_states`, mapped by name), `reflex_*` and `launch.log`. | 12 §8.6 | Verified (`check_scoring.py` 5) |
+| F-6-14 | **The simulated camera cannot reproduce a calibration error.** The Gazebo depth camera is placed from the same `camera_extrinsics` file that `real_time_distance` projects with (`gz_world.configure_world`, the stack's `camera_extrinsics_yaml` = the scene's). Depth is exact: the adapter's noise, dropout and delay are off by default. A sim run with `perception:=true` therefore tests the perception code, but not its sensitivity to hand-eye error, depth noise or latency. | 12 §4.3 | Verified (code) |
+
 ## 5. Decisions and open questions
 
 **Open questions added in Stage 5:**
@@ -385,6 +445,16 @@ All are Static unless labelled otherwise. Chapter references point to the full d
   - no `Co-Authored-By` trailer on commits the user requests;
   - the technical leads in §7.
 
+**Open questions added in Stage 6:**
+
+| ID | Question | Who can close it |
+|---|---|---|
+| Q-6-1 | F-6-3: why does the container's installed workspace differ from the baseline (installed `d_safe` 0.15 against the source's 0.10, a 58-line `conditions.yaml`, different stack nodes)? Was it rebuilt from another checkout after the recorded runs, all of which used 0.10? Rebuilding needs approval. | **user** |
+| Q-6-2 | Do all `report.py` tables exclude non-ok cells, or only `t_quality` counts them? (`report.py` was read only in the parts that define its row selection.) | Stage 7 reading |
+| Q-6-3 | The validation protocol's REQUIRES USER APPROVAL items: the reference cell set, the seed count, every threshold (clearance tolerance, penetration, slack/fallback/fault counts, staleness, motion/tracking bands, RTF bar) and the statistical decision rule. | **user**, before the first modification |
+| Q-6-4 | Should the harness defects F-6-5 (truth holes), F-6-4 (`qp_rate_hz` for the Phase 5 conditions), F-6-11 (provenance snapshot) and F-6-2 (dotted literal) be fixed first, each as one protocol modification, so that later evidence is trustworthy? | **user** |
+| Q-6-5 | Runtime confirmations that need an approved run: the type the node holds for `obstacle_row_osqp_eps_rel` (F-6-2); the cause of the truth holes (F-6-5); the pentagon phase at the episode start (F-6-12); Gazebo run-to-run determinism for a fixed seed (F-6-9). | **user** (approval of a run) |
+
 ## 6. Checkpoint protocol
 
 **When:**
@@ -433,6 +503,17 @@ chapter states it.
 | The three evidence-trust novelties are default-off and none has been shown to work. The baseline σ is 2.27 cm, which rules out claims from a single seed. | ch. 07, 15 |
 | The `diag` furnished scene is the simulation default. The `static` scene fails because phantom `v_obs` appears on the furniture. | ch. 12 |
 | Gazebo markers: `scale` multiplies the points rather than setting a line width, and a misspelt field drops every field after it. | ch. 12, 13 |
+
+**Leads checked in Stage 6** (ch. 12):
+- **`truth.npz` density.** Refined. In 39 recent runs the episode rate was 909–997 samples per sim
+  second, with holes up to 837 ms aligned with the node's 5 s save (F-6-5).
+- **Orphan nodes.** The mechanism is Verified: `procs.Launch.stop` kills by process group and then
+  by `IGN_PARTITION`. The time-out effect itself was not re-observed.
+- **colcon copies `config/`.** Verified as the mechanism of F-6-3: `sim_config.default_paths` reads
+  `share/`.
+- **The `diag` scene is the default.** Not confirmed. The catalog uses `bare` for 68 of 100
+  scenarios and `diag` for 14; the pentagon scenarios choose their own scene.
+- **Gazebo markers.** Not re-checked (`gz_trajectory_markers` read at interface level).
 
 ## 8. Documented source baseline and its history
 

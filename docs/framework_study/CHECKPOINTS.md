@@ -909,3 +909,90 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 5. **Findings Stage 5:** F-5-1…F-5-27 (F-5-24…27 renumbered as above).
 6. **Exact next action:** wait for the user's review of Stage 5. Stage 6 (`12_simulation.md`) is
    identified, **not started and not approved**.
+
+## C-036 — 2026-11-11 — Stage 6 — started
+
+- Baseline / HEAD / check: `ba68077052e8` / `bb71534` (Stage 5 committed and pushed by the user) /
+  `check_state.py` consistent (exit 0)
+1. **Approval:** the user approved ONLY Stage 6. Deliverables:
+   - `12_simulation.md` and `SIMULATION_VALIDATION_PROTOCOL.md`;
+   - `tools/stage6_verification/` (README, run instructions, expected and observed results,
+     limitations).
+   No Gazebo, no ROS launch, no source or configuration change, no commit. The protocol is
+   documented, not executed.
+2. **Single writer:** `ps` shows one Claude session (this one). The parallel session of C-035 is no
+   longer running.
+3. **Exact next action:** read the ch. 12 sources: launch files and plant, `sim_config`,
+   `conditions`, `scenarios`, the sim nodes, then `simexp`, the batch path and the tests.
+
+## C-037 — 2026-11-11 — Stage 6 — plant, world, obstacles and conditions read
+
+- Baseline / HEAD / check: `ba68077052e8` / `bb71534` / consistent
+1. **Read (Verified):**
+   - the whole of `gz_cbf_stack.launch.py` and `franka_simulation/launch/gz_fr3_plant.launch.py`;
+   - in `franka_simulation`: `utils/gz_robot_description.py` (all), `utils/gz_world.py` (all), and
+     `src/scenario_obstacles_system.cpp` (laws, PreUpdate/PostUpdate, start, target);
+   - in `simexp`: `obstacle_laws.py`, `scenario_laws.py`, `truth_geometry.py`, `sim_config.py`,
+     `conditions.py` (all);
+   - `conditions.yaml`: the `cbf:` block and the `full`/`minimal` blocks; every condition resolved
+     with the production `resolve` and with `C3.effective_params('sim:<c>')`.
+2. **Facts to carry:**
+   - truth clearance is between the control-point spheres and the obstacle spheres;
+   - the obstacles have no collision element;
+   - `full` = `hw_default` minus go-around, at 100 Hz instead of 300 Hz;
+   - `minimal` changes 19 effective parameters; its "no braking margin" and "no range uncertainty"
+     flags are no-ops (`full` already has them off);
+   - sim manifests carry a git SHA, unlike the logger manifests.
+3. **Findings:** F-6-1 (no recorded run at the baseline), F-6-2 (`'1e-05'` string chain).
+4. **Exact next action:** read `scenarios.yaml` + `scenario_catalog`, the sim nodes (supervisor,
+   ground truth, reflex, scenario commander, emulated perception, markers), `depth_sim_adapter`
+   and `config/sim/*`.
+
+## C-038 — 2026-11-11 — Stage 6 — nodes, batch, scoring read; checks written
+
+- Baseline / HEAD / check: `ba68077052e8` / `bb71534` / consistent
+1. **Read (Verified):**
+   - `scenario_catalog.py`, `scenarios.yaml` (all 100 names resolved);
+   - the nodes `episode_supervisor`, `reflex_monitor` + `reflex_checks`, `ground_truth_node`,
+     `scenario_commander`, `emulated_perception` + `emulation`;
+   - batch and scoring: `run_gz_scenarios`, `runner`, `procs`, `batch`, `closed_loop`, `analysis`;
+   - `estimator_metrics` (structure and `score_run`), the docstrings and function lists of
+     `attribution`, `offline`, `provenance`, `graph_contract`, `control_regression` and `report`;
+   - in `franka_simulation`: `depth_sim_adapter` + `utils/depth_conversion`, and
+     `config/sim/{perception_sim,depth_adapter}.yaml`.
+2. **Checks written:** `tools/stage6_verification/`:
+   - `check_conditions.py` 11/11 (host);
+   - `check_obstacle_laws.py` 17/17 (host);
+   - `check_sim_runs.py` 2/2 (host);
+   - `check_scoring.py` 23/23 (container);
+   - `check_sim_geometry.py` 15/15 (container);
+   - `check_installed.py` 1/1 (container).
+
+   Test errors fixed: an over-broad text pattern, an invented armature bound (replaced by the exact
+   disk bounds), and an over-strong "every run" claim.
+3. **Findings:** F-6-3 … F-6-14 logged in PROGRESS §4.
+4. **Exact next action:** write `run_all.sh`, the README and the observed results; then
+   `12_simulation.md` and `SIMULATION_VALIDATION_PROTOCOL.md`; then ledger, index and progress
+   updates.
+
+## C-039 — 2026-11-11 — Stage 6 — complete; stopped for review
+
+- Baseline / HEAD / check: `ba68077052e8` / `bb71534` (Stage 6 not committed) / consistent
+1. **Deliverables:**
+   - `12_simulation.md`: §1–§14, equations (12.1)–(12.22), all displayed; part A §2–§3, B §10,
+     C §4, D §5–§7, E §8–§9; consequences §13; findings §14;
+   - `SIMULATION_VALIDATION_PROTOCOL.md`: the ten-step rule; Phases 1–6; acceptance criteria with
+     their sources, every other threshold marked REQUIRES USER APPROVAL; evidence preservation;
+     revert. Documented, not executed;
+   - `tools/stage6_verification/`: 6 scripts + `_common6.py`, `run_all.sh`, README,
+     `results/observed_2026-11-11.txt`, **69/69 PASS** (rerun after the final edits).
+2. **Updated:** PROGRESS §0, §1, §2, §4 (F-6-1…F-6-14), §5 (Q-6-1…Q-6-5), §7 (leads checked);
+   00_INDEX (banner, ch. 12, protocol, stage 6 tools); ledger (ch. 12: 23 documented, 39 partial,
+   1 pending; totals pending 130 · partial 134 · read 2 · documented 80).
+3. **Verification:**
+   - `check_state.py`: consistent (121 relative links in 32 files);
+   - `git diff ba68077 -- franka_experiments franka_simulation_experiments franka_rt_controllers
+     franka_msgs franka_simulation` is empty;
+   - nothing launched: no Gazebo, no ROS graph, no pytest, no colcon.
+4. **State warning:** the container's installed workspace ≠ the baseline source (F-6-3).
+5. **Exact next action:** wait for the user's review. Stage 7 needs a separate, explicit approval.

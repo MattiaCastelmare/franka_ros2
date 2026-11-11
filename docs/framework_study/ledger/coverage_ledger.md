@@ -310,7 +310,7 @@
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
-| `franka_simulation_experiments/launch/gz_cbf_stack.launch.py` | 273 | launch file | 12 | 6 |  | read |
+| `franka_simulation_experiments/launch/gz_cbf_stack.launch.py` | 273 | launch file | 12 | 6 |  | documented |
 | `franka_simulation_experiments/launch/gz_circle_demo.launch.py` | 145 | launch file | 12 | 6 |  | partial |
 | `franka_simulation_experiments/launch/gz_plant.launch.py` | 66 | launch file | 12 | 6 |  | partial |
 
@@ -321,77 +321,77 @@
 | `franka_simulation_experiments/config/conditions.d/mppi_it08.yaml` | 57 | config (sim experiment axes) | 12 | 6 |  | partial |
 | `franka_simulation_experiments/config/conditions.yaml` | 1516 | config (sim experiment axes) | 12 | 6 |  | partial |
 | `franka_simulation_experiments/config/control_regression_scenarios.yaml` | 29 | config (sim experiment axes) | 12 | 6 |  | pending |
-| `franka_simulation_experiments/config/scenarios.yaml` | 629 | config (sim experiment axes) | 12 | 6 |  | pending |
+| `franka_simulation_experiments/config/scenarios.yaml` | 629 | config (sim experiment axes) | 12 | 6 |  | partial |
 
 ## franka_simulation_experiments — sim nodes & tools (10 files, 1363 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
-| `franka_simulation_experiments/scripts/check_self_occlusion.py` | 107 | sim node / tool | 12 | 6 | sim-exec | pending |
-| `franka_simulation_experiments/scripts/emulated_perception.py` | 149 | sim node / tool | 12 | 6 | sim-exec | partial |
-| `franka_simulation_experiments/scripts/episode_supervisor.py` | 224 | sim node / tool | 12 | 6 | sim-exec | partial |
-| `franka_simulation_experiments/scripts/ground_truth_node.py` | 141 | sim node / tool | 12 | 6 | sim-exec | partial |
+| `franka_simulation_experiments/scripts/check_self_occlusion.py` | 107 | sim node / tool | 12 | 6 | sim-exec | partial |
+| `franka_simulation_experiments/scripts/emulated_perception.py` | 149 | sim node / tool | 12 | 6 | sim-exec | documented |
+| `franka_simulation_experiments/scripts/episode_supervisor.py` | 224 | sim node / tool | 12 | 6 | sim-exec | documented |
+| `franka_simulation_experiments/scripts/ground_truth_node.py` | 141 | sim node / tool | 12 | 6 | sim-exec | documented |
 | `franka_simulation_experiments/scripts/gz_trajectory_markers.py` | 256 | sim node / tool | 12 | 6 | sim-exec,test | partial |
-| `franka_simulation_experiments/scripts/pin_process.py` | 72 | sim node / tool | 12 | 6 | sim-exec | pending |
-| `franka_simulation_experiments/scripts/plot_control_regression.py` | 70 | sim node / tool | 12 | 6 | sim-exec | pending |
-| `franka_simulation_experiments/scripts/reflex_monitor.py` | 155 | sim node / tool | 12 | 6 | sim-exec | partial |
-| `franka_simulation_experiments/scripts/run_gz_scenarios.py` | 94 | sim node / tool | 12 | 6 | sim-exec | pending |
-| `franka_simulation_experiments/scripts/scenario_commander.py` | 95 | sim node / tool | 12 | 6 | sim-exec | partial |
+| `franka_simulation_experiments/scripts/pin_process.py` | 72 | sim node / tool | 12 | 6 | sim-exec | partial |
+| `franka_simulation_experiments/scripts/plot_control_regression.py` | 70 | sim node / tool | 12 | 6 | sim-exec | partial |
+| `franka_simulation_experiments/scripts/reflex_monitor.py` | 155 | sim node / tool | 12 | 6 | sim-exec | documented |
+| `franka_simulation_experiments/scripts/run_gz_scenarios.py` | 94 | sim node / tool | 12 | 6 | sim-exec | documented |
+| `franka_simulation_experiments/scripts/scenario_commander.py` | 95 | sim node / tool | 12 | 6 | sim-exec | documented |
 
 ## franka_simulation_experiments — simexp library (21 files, 3402 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
-| `franka_simulation_experiments/scripts/simexp/__init__.py` | 1 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | pending |
-| `franka_simulation_experiments/scripts/simexp/analysis.py` | 217 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/attribution.py` | 132 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/batch.py` | 305 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/closed_loop.py` | 292 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/conditions.py` | 135 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | partial |
-| `franka_simulation_experiments/scripts/simexp/control_regression.py` | 131 | sim library (simexp) | 12 | 6 | test | pending |
-| `franka_simulation_experiments/scripts/simexp/emulation.py` | 121 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/estimator_metrics.py` | 308 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/graph_contract.py` | 165 | sim library (simexp) | 12 | 6 | test | pending |
-| `franka_simulation_experiments/scripts/simexp/obstacle_laws.py` | 114 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | pending |
-| `franka_simulation_experiments/scripts/simexp/offline.py` | 66 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/procs.py` | 105 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/provenance.py` | 49 | sim library (simexp) | 12 | 6 | test | pending |
-| `franka_simulation_experiments/scripts/simexp/reflex_checks.py` | 149 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/report.py` | 365 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/runner.py` | 131 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/scenario_catalog.py` | 225 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | pending |
-| `franka_simulation_experiments/scripts/simexp/scenario_laws.py` | 87 | sim library (simexp) | 12 | 6 | sim-exec,test | pending |
-| `franka_simulation_experiments/scripts/simexp/sim_config.py` | 217 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | partial |
-| `franka_simulation_experiments/scripts/simexp/truth_geometry.py` | 87 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | pending |
+| `franka_simulation_experiments/scripts/simexp/__init__.py` | 1 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
+| `franka_simulation_experiments/scripts/simexp/analysis.py` | 217 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/attribution.py` | 132 | sim library (simexp) | 12 | 6 | sim-exec,test | partial |
+| `franka_simulation_experiments/scripts/simexp/batch.py` | 305 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/closed_loop.py` | 292 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/conditions.py` | 135 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
+| `franka_simulation_experiments/scripts/simexp/control_regression.py` | 131 | sim library (simexp) | 12 | 6 | test | partial |
+| `franka_simulation_experiments/scripts/simexp/emulation.py` | 121 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/estimator_metrics.py` | 308 | sim library (simexp) | 12 | 6 | sim-exec,test | partial |
+| `franka_simulation_experiments/scripts/simexp/graph_contract.py` | 165 | sim library (simexp) | 12 | 6 | test | partial |
+| `franka_simulation_experiments/scripts/simexp/obstacle_laws.py` | 114 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
+| `franka_simulation_experiments/scripts/simexp/offline.py` | 66 | sim library (simexp) | 12 | 6 | sim-exec,test | partial |
+| `franka_simulation_experiments/scripts/simexp/procs.py` | 105 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/provenance.py` | 49 | sim library (simexp) | 12 | 6 | test | documented |
+| `franka_simulation_experiments/scripts/simexp/reflex_checks.py` | 149 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/report.py` | 365 | sim library (simexp) | 12 | 6 | sim-exec,test | partial |
+| `franka_simulation_experiments/scripts/simexp/runner.py` | 131 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/scenario_catalog.py` | 225 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
+| `franka_simulation_experiments/scripts/simexp/scenario_laws.py` | 87 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/sim_config.py` | 217 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
+| `franka_simulation_experiments/scripts/simexp/truth_geometry.py` | 87 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
 
 ## franka_simulation_experiments — tests (24 files, 2769 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
-| `franka_simulation_experiments/test/conftest.py` | 11 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/launch/launch_test_graph_contract.py` | 142 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/slow/_rosprobe.py` | 97 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/slow/test_phase1_plant.py` | 215 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/slow/test_phase2_closed_loop.py` | 81 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/slow/test_phase3_perception.py` | 176 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/slow/test_phase4_obstacles.py` | 128 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/slow/test_phase5_batch.py` | 90 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_analysis.py` | 31 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_batch.py` | 76 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_closed_loop.py` | 144 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_conditions.py` | 173 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_control_regression.py` | 43 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_emulation.py` | 102 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_estimator_metrics.py` | 108 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_gz_trajectory_markers.py` | 143 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_obstacle_law_wander.py` | 143 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_offline_and_attribution.py` | 102 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_reflex_checks.py` | 76 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_run_provenance.py` | 28 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_scenario_catalog.py` | 193 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_scenario_laws.py` | 92 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_sim_config.py` | 158 | test | 12 | 6 |  | pending |
-| `franka_simulation_experiments/test/test_ssb_scenarios.py` | 217 | test | 12 | 6 |  | pending |
+| `franka_simulation_experiments/test/conftest.py` | 11 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/launch/launch_test_graph_contract.py` | 142 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/slow/_rosprobe.py` | 97 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/slow/test_phase1_plant.py` | 215 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/slow/test_phase2_closed_loop.py` | 81 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/slow/test_phase3_perception.py` | 176 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/slow/test_phase4_obstacles.py` | 128 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/slow/test_phase5_batch.py` | 90 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_analysis.py` | 31 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_batch.py` | 76 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_closed_loop.py` | 144 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_conditions.py` | 173 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_control_regression.py` | 43 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_emulation.py` | 102 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_estimator_metrics.py` | 108 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_gz_trajectory_markers.py` | 143 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_obstacle_law_wander.py` | 143 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_offline_and_attribution.py` | 102 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_reflex_checks.py` | 76 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_run_provenance.py` | 28 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_scenario_catalog.py` | 193 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_scenario_laws.py` | 92 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_sim_config.py` | 158 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_ssb_scenarios.py` | 217 | test | 12 | 6 |  | partial |
 
 ## franka_simulation_experiments — docs & package metadata (6 files, 820 lines)
 
@@ -417,7 +417,7 @@ Documented in full because they run inside the pipeline; the rest of these packa
 | `franka_rt_controllers/config/rt_velocity_blender.yaml` | 89 | C++ controller (external, executed) | 10 | 5 | documented |
 | `franka_rt_controllers/franka_rt_controllers.xml` | 10 | C++ controller (external, executed) | 09 | 4 | documented |
 | `franka_rt_controllers/rt_velocity_blender_controller.xml` | 25 | C++ controller (external, executed) | 10 | 5 | documented |
-| `franka_simulation/launch/gz_fr3_plant.launch.py` | 180 | launch file (external, executed) | 12 | 6 | read |
+| `franka_simulation/launch/gz_fr3_plant.launch.py` | 180 | launch file (external, executed) | 12 | 6 | documented |
 | `franka_msgs/msg/MultiLinkDistance.msg` | 11 | message definition (external) | 05 | 1 | documented |
 | `franka_msgs/msg/LinkDistance.msg` | 186 | message definition (external) | 05 | 1 | documented |
 | `franka_msgs/msg/MultiDistance.msg` | 19 | message definition (external) | 02 | 1 | partial |
@@ -436,7 +436,7 @@ Documented in full because they run inside the pipeline; the rest of these packa
 ## Totals
 
 - In-scope files: **346** (109898 lines), of which 12 are executed-path dependency files.
-- Status: pending 178 · partial 107 · read 4 · documented 57.
+- Status: pending 130 · partial 134 · read 2 · documented 80.
 - Unassigned by the rules: 0
 
 | Chapter | Files |

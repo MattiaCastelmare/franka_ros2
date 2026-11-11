@@ -2634,7 +2634,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/launch/gz_cbf_stack.launch.py",
@@ -2644,7 +2645,7 @@
    "note": "",
    "reach": "",
    "ext": false,
-   "status": "read"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/launch/gz_circle_demo.launch.py",
@@ -2700,7 +2701,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/emulated_perception.py",
@@ -2710,7 +2712,7 @@
    "note": "",
    "reach": "sim-exec",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/episode_supervisor.py",
@@ -2720,7 +2722,7 @@
    "note": "",
    "reach": "sim-exec",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/ground_truth_node.py",
@@ -2730,7 +2732,7 @@
    "note": "",
    "reach": "sim-exec",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/gz_trajectory_markers.py",
@@ -2749,7 +2751,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/plot_control_regression.py",
@@ -2758,7 +2761,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/reflex_monitor.py",
@@ -2768,7 +2772,7 @@
    "note": "",
    "reach": "sim-exec",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/run_gz_scenarios.py",
@@ -2777,7 +2781,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/scenario_commander.py",
@@ -2787,7 +2792,7 @@
    "note": "",
    "reach": "sim-exec",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/__init__.py",
@@ -2796,7 +2801,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/analysis.py",
@@ -2805,7 +2811,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/attribution.py",
@@ -2814,7 +2821,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/batch.py",
@@ -2823,7 +2831,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/closed_loop.py",
@@ -2832,7 +2841,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/conditions.py",
@@ -2842,7 +2852,7 @@
    "note": "",
    "reach": "sim-exec,launch,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/control_regression.py",
@@ -2851,7 +2861,8 @@
    "ch": "12",
    "note": "",
    "reach": "test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/emulation.py",
@@ -2860,7 +2871,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/estimator_metrics.py",
@@ -2869,7 +2881,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/graph_contract.py",
@@ -2878,7 +2891,8 @@
    "ch": "12",
    "note": "",
    "reach": "test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/obstacle_laws.py",
@@ -2887,7 +2901,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/offline.py",
@@ -2896,7 +2911,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/procs.py",
@@ -2905,7 +2921,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/provenance.py",
@@ -2914,7 +2931,8 @@
    "ch": "12",
    "note": "",
    "reach": "test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/reflex_checks.py",
@@ -2923,7 +2941,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/report.py",
@@ -2932,7 +2951,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/runner.py",
@@ -2941,7 +2961,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/scenario_catalog.py",
@@ -2950,7 +2971,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/scenario_laws.py",
@@ -2959,7 +2981,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/sim_config.py",
@@ -2969,7 +2992,7 @@
    "note": "",
    "reach": "sim-exec,launch,test",
    "ext": false,
-   "status": "partial"
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/truth_geometry.py",
@@ -2978,7 +3001,8 @@
    "ch": "12",
    "note": "",
    "reach": "sim-exec,launch,test",
-   "ext": false
+   "ext": false,
+   "status": "documented"
   },
   {
    "path": "franka_simulation_experiments/test/conftest.py",
@@ -2987,7 +3011,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/launch/launch_test_graph_contract.py",
@@ -2996,7 +3021,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/slow/_rosprobe.py",
@@ -3005,7 +3031,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/slow/test_phase1_plant.py",
@@ -3014,7 +3041,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/slow/test_phase2_closed_loop.py",
@@ -3023,7 +3051,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/slow/test_phase3_perception.py",
@@ -3032,7 +3061,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/slow/test_phase4_obstacles.py",
@@ -3041,7 +3071,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/slow/test_phase5_batch.py",
@@ -3050,7 +3081,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_analysis.py",
@@ -3059,7 +3091,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_batch.py",
@@ -3068,7 +3101,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_closed_loop.py",
@@ -3077,7 +3111,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_conditions.py",
@@ -3086,7 +3121,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_control_regression.py",
@@ -3095,7 +3131,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_emulation.py",
@@ -3104,7 +3141,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_estimator_metrics.py",
@@ -3113,7 +3151,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_gz_trajectory_markers.py",
@@ -3122,7 +3161,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_obstacle_law_wander.py",
@@ -3131,7 +3171,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_offline_and_attribution.py",
@@ -3140,7 +3181,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_reflex_checks.py",
@@ -3149,7 +3191,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_run_provenance.py",
@@ -3158,7 +3201,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_scenario_catalog.py",
@@ -3167,7 +3211,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_scenario_laws.py",
@@ -3176,7 +3221,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_sim_config.py",
@@ -3185,7 +3231,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/test/test_ssb_scenarios.py",
@@ -3194,7 +3241,8 @@
    "ch": "12",
    "note": "",
    "reach": "",
-   "ext": false
+   "ext": false,
+   "status": "partial"
   },
   {
    "path": "franka_rt_controllers/src/rt_torque_controller.cpp",
@@ -3278,7 +3326,7 @@
    "note": "",
    "reach": "",
    "ext": true,
-   "status": "read"
+   "status": "documented"
   },
   {
    "path": "franka_msgs/msg/MultiLinkDistance.msg",

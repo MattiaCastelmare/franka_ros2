@@ -1,0 +1,107 @@
+=== check_conditions (chapter 12 §6) ===
+repository: /home/mattia/Git/franka_ros2
+[INFO] 23 conditions: ['residual', 'kf', 'kf100', 'imm', 'imm+pred', 'full', 'minimal', 'minimal_l1', 'minimal_l1_ssb_obs', 'minimal_l1_ssb', 'minimal_l1_ssb_tol08', 'minimal_l1_ssb_guard12', 'minimal_l1_ssb_tol20', 'minimal_l1_ssb_dil8', 'minimal_l1_ssb_sup6', 'minimal_l1_legacy_fallback', 'minimal_l1_curv', 'minimal_l1_evid', 'imm_pred_l1', 'imm_pred_l1_evid', 'minimal_l1_mem', 'minimal_l1_curv_rho', 'minimal_l1_trust']
+[PASS] FACT  1. hw_default -> sim:full changes {'qp_rate_hz': (300.0, 100.0), 'enable_go_around': (True, False)}:
+[PASS] NUM   2. full -> minimal: number of effective parameters that change: observed 19 vs reported 19 (|diff| 0.00e+00 <= 0.0e+00)
+[INFO] 2. changed: cbf_h_recovery_alpha 0.8->0.0, cbf_hdot_filter_alpha 0.6->0.0, cbf_tangential_gain 0.5->0.0, enable_latency_compensation True->False, enable_lateral_evasion True->False, enable_livelock_escape True->False, enable_uncertainty_margin True->False, enable_velocity_standoff True->False, enable_zone_ladder True->False, link_speed_rows_enabled True->False, margin_gate_on_approach True->False, obstacle_velocity_fast_trust True->False, obstacle_velocity_identity_jump 0.1->0.0, obstacle_velocity_median 5->1, obstacle_velocity_median_s 0.3->0.0, obstacle_velocity_normal_rot_max 0.15->0.0, obstacle_velocity_residual_floor True->False, retreat_cap_enabled True->False, state_governor_enabled True->False
+[PASS] FACT  2. minimal sets 9 parameters to the value full already has (no-ops): ['brake_slew_limited', 'enable_go_around', 'enable_sensor_range_uncertainty', 'enable_velocity_feedforward', 'obstacle_slack_max', 'qp_failure_policy', 'qp_rate_hz', 'rho_slack', 'slew_yields_to_state_box']:
+[PASS] FACT  3. F-6-2: params_arg writes '1e-05'; yaml.safe_load gives str '1e-05'; yaml.dump writes 'p: 1e-05\n'; C3 effective type str; 16 conditions:
+[PASS] FACT  3. the spec declares it a float and the node calls float() on it (utils/config.py, cbf_safety_filter.py):
+[PASS] FACT  3. a dotted literal would be a float: yaml.safe_load('1.0e-05') is float:
+[PASS] FACT  4. F-6-4: batch.CONDITIONS ('residual', 'kf', 'imm', 'imm+pred'): qp_rate_hz in cbf_params {'residual': None, 'kf': None, 'imm': None, 'imm+pred': None}; effective (rate, go_around) {'residual': (300.0, True), 'kf': (300.0, True), 'imm': (300.0, True), 'imm+pred': (300.0, True)}:
+[PASS] FACT  4. closed_loop.rate_verdict(achieved, None) is (None, None): the gate cannot fail such a cell:
+[PASS] FACT  4. summarize_run takes the target from the manifest's condition.cbf_params.qp_rate_hz only:
+[PASS] FACT  5. --set overrides a global cbf flag (lateral_evasion) and a cbf_params key the condition already has (qp_rate_hz=77 reaches cbf_params):
+[PASS] FACT  5. --set of a fr3_control.yaml key that the condition does not list (k0_cbf on full) raises: --set cannot add a YAML-only parameter:
+--- check_conditions (chapter 12 §6): 11 passed, 0 failed ---
+
+=== check_obstacle_laws (chapter 12 §5, §7) ===
+repository: /home/mattia/Git/franka_ros2
+[PASS] NUM   1. linear: max |dp/dt - velocity()| over t in [0, 12] s [m/s]: 2.468e-11 <= 1.0e-06
+[PASS] NUM   1. ballistic: max |dp/dt - velocity()| over t in [0, 12] s [m/s]: 8.240e-09 <= 1.0e-06
+[PASS] NUM   1. oscillate: max |dp/dt - velocity()| over t in [0, 12] s [m/s]: 4.984e-11 <= 1.0e-06
+[PASS] NUM   1. wander: max |dp/dt - velocity()| over t in [0, 12] s [m/s]: 1.799e-11 <= 1.0e-06
+[PASS] FACT  1. static: position = p0 and velocity = 0:
+[PASS] FACT  1. wander stays inside p0 +/- box (bounded by construction):
+[PASS] FACT  2. C++ laws: p0 + v0 t; p0 + v0 t + 0.5 g t^2; p0 + axis A sin(w t + phase) with w = 2 pi / period; wander per axis with w0 * ratios[i]:
+[PASS] FACT  2. C++ time: t_end = simTime (already advanced), running when t_end >= t_start - 1 ns, t = max(0, t_end - t_start); before the start the obstacle is parked and v = 0:
+[PASS] FACT  2. C++ truth: positions = worldPose (the simulated pose), velocities = ob.v (the LAW velocity, written into a Pose position field), every truth_period (default 0.001 s); the start time is latched once from /sim/episode_start:
+[PASS] FACT  2. WANDER_RATIOS agree in obstacle_laws, gz_world and the C++ default; PARK_AT z = -20 m:
+[PASS] NUM   3. pursuit, fixed target, 0.3 s at 0.5 m/s: distance travelled [m]: observed 0.15 vs reported 0.15 (|diff| 1.10e-14 <= 1.0e-12)
+[PASS] FACT  3. C++ pursuit: v = speed * unit(target - p) at the start of the step, p += v * min(dt, t) (explicit Euler; no clamp at the target):
+[PASS] NUM   4. 5 ballistic throws: max |p(Tf) - flange_q0| [m]: 1.110e-16 <= 1.0e-12
+[PASS] FACT  5. seed 0: start_offset_s = 0 for every scenario:
+[PASS] FACT  5. seed 1: 0 <= start_offset_s < 1/90 s:
+[PASS] FACT  5. seed 1 moves p0 only where jitter_m > 0: moved ['pentagon_wander', 'pentagon_wander_close'], jitter scenarios ['pentagon_wander', 'pentagon_wander_close']:
+[INFO] 6. 100 scenarios by (source, kind): {('ballistic_throws', 'moving'): 5, ('cbf_scenarios', 'moving'): 6, ('cbf_scenarios', 'static'): 5, ('pentagon', 'combined'): 1, ('pentagon', 'moving'): 8, ('pentagon', 'none'): 1, ('pentagon', 'static'): 16, ('tests', 'combined'): 1, ('tests', 'moving'): 7, ('tests', 'none'): 1, ('tests', 'static'): 1, ('throw_sweep', 'moving'): 48}
+[INFO] 6. scenes: {'bare': 68, 'rig': 10, 'diag_bare': 8, 'diag': 14}
+[PASS] FACT  6. 100 names; the only combined (static + moving) scenarios are pentagon_multi_mixed and p4_laws:
+--- check_obstacle_laws (chapter 12 §5, §7): 17 passed, 0 failed ---
+
+=== check_sim_runs (chapter 12 §9) ===
+repository: /home/mattia/Git/franka_ros2
+[INFO] 1. 1227 run manifests; 1 without a SHA; 1226 with one, 1195 of them from a dirty tree; SHAs {'2d87ab6': 443, '03ef58c': 329, 'ce80f36': 210, '976b997': 89, 'fc56227': 51, '9884c4e': 45, '8bf658f': 28, '1af2984': 18, 'bc279b3': 10, '69636ff': 2, 'a4b1f2e': 1}
+[PASS] FACT  1. F-6-1: no recorded run is at the baseline ba68077, and every SHA is an ancestor of it: non-ancestors: []
+[INFO] 2. 301 batch cells: {'ok': 197, 'timed_out': 12, 'min_h None': 104, 'rate UNKNOWN': 264, 'ok + contact': 75, 'ok + reflex FAIL': 13, 'ok + rate UNKNOWN': 160}
+[INFO] 3. 39 recent runs: truth samples per sim second in the episode min/median/max 909/940/997; largest hole per run median 518 ms, max 837 ms
+[INFO] 3. 171 holes > 50 ms; share within 0.5 s of a multiple of 5 s after the first sample: 0.95
+[INFO] 3. runs with a hole > 50 ms inside the episode window: 36/39
+[PASS] FACT  3. F-6-5: the holes fall at the truth node's 5 s save period (0.95 of them within 0.5 s of a multiple of 5 s; 0.20 expected if they were placed at random):
+--- check_sim_runs (chapter 12 §9): 2 passed, 0 failed ---
+
+=== check_scoring (chapter 12 §8-§9) ===
+repository: /ros2_ws/src
+[PASS] FACT  1. events: velocity [('velocity', 0, 2.622, 2.62)], position [('position', 3, -0.1159, -0.1169)], torque [('torque', 6, 12.1, 12.0)], rate [('torque_rate_clipped', 2, 2000.0, 999.999)], after a 6 ms gap []:
+[PASS] NUM   1. n_trips counts velocity + position + torque, not the clip: observed 3 vs reported 3 (|diff| 0.00e+00 <= 0.0e+00)
+[PASS] FACT  1. velocity limit = fr3_velocity_envelope(q, margin=1.0) + 1e-3 rad/s; rate limit 1000 - 1e-3 N·m/s:
+[PASS] FACT  2. verdict: FAIL if any trip, else PASS only if span > 0.5 s and n_samples >= 0.9 * 1000 * span, else NO_DATA (a starved monitor is not a PASS):
+[PASS] NUM   2. RtfMeter on sim = 0.5 wall: rtf_run: observed 0.5 vs reported 0.5 (|diff| 0.00e+00 <= 1.0e-09)
+[PASS] FACT  2. RtfMeter flags a run below 0.9:
+[PASS] NUM   3. uniform 1 kHz grid: min_h = min gap - d_safe [m]: observed -0.18 vs reported -0.18 (|diff| 0.00e+00 <= 1.0e-06)
+[PASS] FACT  3. uniform grid: contact = (gap < 0) anywhere in the window:
+[PASS] NUM   3. uniform grid: neg_duration_s counts h < 0 (gap < d_safe), not contact [s]: observed 8.001 vs reported 8 (|diff| 1.00e-03 <= 2.0e-03)
+[PASS] FACT  3. F-6-5 with a 200 ms hole: min gap reported +0.0120 m vs true -0.0300; contact False; h<0 duration 7.802 s vs 8.001 s:
+[INFO] 3. true penetration time (gap < 0) of the synthetic pass: 0.082 s; the scorer has no field for it (neg_duration_s is the time inside d_safe)
+[PASS] FACT  4. cell_ok is True for a cell with contact, a reflex FAIL and an UNKNOWN QP rate:
+[PASS] FACT  4. cell_ok is False only for a timeout, leftovers, no min_h, or a KNOWN rate miss:
+[PASS] FACT  5. simexp modules that name experiment_log.csv: ['analysis.py']; digest_cell( appears in ['franka_simulation_experiments/scripts/simexp/runner.py', 'franka_simulation_experiments/test/slow/test_phase2_closed_loop.py']:
+[PASS] FACT  5. batch.score_cell = closed_loop + estimator_metrics + attribution (truth.npz, the bag, launch.log):
+[PASS] NUM   6. emulation gap = min over obstacles of surface_gaps (12.11) [m]: 0.000e+00 <= 1.0e-12
+[PASS] FACT  6. a penetrating CP (true gap -0.100 m) is reported at distance 0.0:
+[PASS] FACT  6. every emulated row carries track_id = 1, whatever the obstacle:
+[PASS] FACT  7. metres_to_mm [0.5004, 0.5006, nan, inf, -inf, -0.1, 70] -> [500, 501, 0, 0, 0, 0, 0]:
+[PASS] NUM   7. range_sigma(2 m, f=390 px, b=0.095 m, 0.2 px) = z^2 sigma_d / (f b) [m]: observed 0.0215924 vs reported 0.0215924 (|diff| 0.00e+00 <= 1.0e-15)
+[PASS] FACT  7. delay 30 ms: released at capture + 30 ms with the capture stamp kept:
+[PASS] NUM   7. dropout 0.1: share of frames kept: observed 0.8983 vs reported 0.9 (|diff| 1.70e-03 <= 1.0e-02)
+[PASS] FACT  8. the residual estimator of a rescore is built from conditions.resolve(condition) and the CURRENT shipped_params, not from the run manifest; score_run writes compare_vobs_sim.npz into the run dir:
+[PASS] FACT  8. ground_truth: 1 kHz joint-state callback (queue 100) and a 5 s timer that np.savez_compresses the WHOLE history, in one single-threaded rclpy.spin:
+--- check_scoring (chapter 12 §8-§9): 23 passed, 0 failed ---
+
+=== check_sim_geometry (chapter 12 §3, §7) ===
+repository: /ros2_ws/src
+[PASS] NUM   1. max |rpy_to_matrix(matrix_to_rpy(R)) - R| over 200 random rotations: 1.388e-15 <= 1.0e-12
+[PASS] NUM   2. camera link: max |R_link R_LINK_FROM_OPTICAL - R_opt|: 5.274e-16 <= 1.0e-12
+[PASS] NUM   2. hfov_from_fx(848, 424) = 2 atan(1) = pi/2: observed 1.5708 vs reported 1.5708 (|diff| 0.00e+00 <= 1.0e-15)
+[PASS] FACT  2. R_LINK_FROM_OPTICAL maps optical z (view axis) to link x (Gazebo camera axis):
+[PASS] NUM   3. lump_inertials vs the inertia of the merged point cloud (max abs): 1.776e-15 <= 1.0e-12
+[PASS] NUM   4. total mass: xacro vs simulated [kg]: observed 18.604 vs reported 18.604 (|diff| 0.00e+00 <= 1.0e-09)
+[PASS] NUM   4. max |g_sim(q) - g_xacro(q)| over 5 random q (fingers at 0.04 m) [N·m]: 1.776e-15 <= 1.0e-09
+[PASS] FACT  4. diag(M_sim - M_xacro) - ARMATURE per joint, min/max over 5 q: [0.4441, 0.3539, 0.2354, 0.1439, 0.0761, 0.037, 0.0] / [0.5607, 0.4389, 0.2731, 0.148, 0.1076, 0.037, 0.0]; within the disk bounds [sum_(k>j) I_a,k / 2, sum_(k>j) I_a,k]; max off-diagonal change 0.4556 kg·m²:
+[PASS] FACT  4. kdl_tip_link(gazebo urdf) = 'fr3_hand_tcp':
+[PASS] FACT  5. gazebo urdf: world->base xyz [0.0, 0.0, 0.0] rpy [0.0, 0.0, 0.0]; base->fr3_link0 xyz [0.0, 0.0, 0.0] rpy [0.0, 0.0, 0.0]:
+[PASS] FACT  5. torque_control_stack publishes world -> base as the identity (world_to_robot_base_tf):
+[PASS] FACT  5. the RSP copy has no world link (build_descriptions strips it):
+[PASS] FACT  6. 11 truth control points at Q0 (gz_cbf_stack sets truth_n_cp = 11): fr3_link4#0 r=0.050, fr3_link4#1 r=0.050, fr3_link5#0 r=0.050, fr3_link5#1 r=0.050, fr3_link6#0 r=0.050, fr3_link6#1 r=0.050, fr3_link7#0 r=0.050, fr3_link7#1 r=0.050, fr3_link8#0 r=0.050, fr3_link8#1 r=0.050, fr3_link8#2 r=0.050:
+[PASS] NUM   6. flange (fr3_link8) z at Q0 vs scenarios.yaml flange_q0 [m]: observed 2.42092e-07 vs reported 0 (|diff| 2.42e-07 <= 1.0e-03)
+[PASS] FACT  6. after enforce_start_clearance every scenario starts with min gap - d_safe >= 0 (worst +0.0252 m, d_safe 0.1 from the SOURCE fr3_control.yaml):
+[INFO] 6. scenarios shifted at the start (name, CP, gap before, shift): []
+--- check_sim_geometry (chapter 12 §3, §7): 15 passed, 0 failed ---
+
+=== check_installed (chapter 12 §2.4) ===
+repository: /ros2_ws/src
+[INFO] 1. fr3_control.yaml: DIFFERS; fr3_complete.yaml: DIFFERS; conditions.yaml: DIFFERS; scenarios.yaml: DIFFERS; perception_sim.yaml: same; depth_adapter.yaml: same
+[INFO] 2. sim programs and simexp: 27/27 same; differing: []
+[INFO] 3. stack nodes: {'cbf_safety_filter': 'DIFFERS', 'real_time_distance': 'DIFFERS', 'qddot_to_torque': 'DIFFERS'}
+[INFO] INSTALLED != SOURCE: a simulation started now would NOT run the documented baseline (rebuild first; protocol Phase 1)
+[PASS] FACT  the check ran and compared every listed file:
+--- check_installed (chapter 12 §2.4): 1 passed, 0 failed ---
