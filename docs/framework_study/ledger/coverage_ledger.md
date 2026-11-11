@@ -47,7 +47,7 @@
 | `franka_experiments/franka_experiments/utils/camera_yaml.py` | 17 | util module | 05 | 2 | entry | documented |
 | `franka_experiments/franka_experiments/utils/cbf_constraints.py` | 218 | util module | 07 | 3 |  | documented |
 | `franka_experiments/franka_experiments/utils/cbf_diagnostics.py` | 65 | util module | 13 | 5 | entry,script,test | pending |
-| `franka_experiments/franka_experiments/utils/cbf_evasion.py` | 306 | util module | 07 | 3 | entry,sim-exec,script,launch,test | partial |
+| `franka_experiments/franka_experiments/utils/cbf_evasion.py` | 306 | util module | 07 | 3 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/cbf_hard_limits.py` | 456 | util module | 08 | 4 | entry,sim-exec,script,test | pending |
 | `franka_experiments/franka_experiments/utils/cbf_kinematics.py` | 9 | util module | 04 | 2 | entry | documented |
 | `franka_experiments/franka_experiments/utils/cbf_qp.py` | 114 | util module | 08 | 4 |  | pending |
@@ -60,13 +60,13 @@
 | `franka_experiments/franka_experiments/utils/constants.py` | 18 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/distance_engine.py` | 1014 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/distance_utils.py` | 307 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
-| `franka_experiments/franka_experiments/utils/evasion_direction.py` | 264 | util module | 06 | 3 | entry,sim-exec,script,launch,test | partial |
-| `franka_experiments/franka_experiments/utils/go_around.py` | 160 | util module | 06 | 3 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/utils/evasion_direction.py` | 264 | util module | 06 | 3 | entry,sim-exec,script,launch,test | documented |
+| `franka_experiments/franka_experiments/utils/go_around.py` | 160 | util module | 06 | 3 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/utils/handeye_solver.py` | 422 | util module | 05 | 2 | entry,test | partial |
 | `franka_experiments/franka_experiments/utils/iso_ssm.py` | 210 | util module | 11 | 5 | entry,sim-exec,script,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/kinematics.py` | 665 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/launch_support.py` | 589 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
-| `franka_experiments/franka_experiments/utils/livelock.py` | 163 | util module | 06 | 3 | entry,script,test | partial |
+| `franka_experiments/franka_experiments/utils/livelock.py` | 163 | util module | 06 | 3 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/utils/logging_utils.py` | 504 | util module | 13 | 5 | entry,script,launch,test | pending |
 | `franka_experiments/franka_experiments/utils/mask_builder.py` | 312 | util module | 05 | 2 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/utils/math_utils.py` | 87 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
@@ -436,7 +436,7 @@ Documented in full because they run inside the pipeline; the rest of these packa
 ## Totals
 
 - In-scope files: **346** (109898 lines), of which 12 are executed-path dependency files.
-- Status: pending 244 · partial 70 · read 4 · documented 28.
+- Status: pending 244 · partial 66 · read 4 · documented 32.
 - Unassigned by the rules: 0
 
 | Chapter | Files |

@@ -452,3 +452,64 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    - Every equation number a script cites exists in a chapter.
 6. **Exact next action:** STOP. Wait for the user's review of Stage 3 and an explicit approval of
    Stage 4.
+
+## C-017 — 2026-11-11 — Stage 3 audit — started
+
+- Baseline / HEAD / check: `ba68077052e8` / `61260f64b0e2` (Stage 3 committed and pushed by the
+  user) / check_state exit 0
+- The user asked for a targeted audit of Stage 3. This is NOT a new stage: no Stage 4 work.
+  - Ch. 06 §6.4–§6.7, §7, §8: every claim is re-read in the source by this session; no subagent
+    reading counts as verification.
+  - Ch. 07: a consistency review of the core equations and of F-3-2, F-3-3, F-3-12, F-3-13.
+- **Exact next action:** read `utils/cbf_evasion.py` in full, then `go_around.py`,
+  `evasion_direction.py`, `livelock.py`, the `_qp_tick` bias block and `__init__` (EMA factors).
+
+## C-018 — 2026-11-11 — Stage 3 audit — source re-read complete; corrections pending
+
+- Baseline / HEAD / check: `ba68077052e8` / `61260f64b0e2` / check_state exit 0
+1. **Re-read by this session** (no subagent output used):
+   - `cbf_evasion.py` (all); `go_around.py` (all); `evasion_direction.py` (all);
+     `livelock.py` (all);
+   - `cbf_state_rows.retreat_speed_available`, `_escape_row`, `_livelock_direction`,
+     `_outrun_bias`;
+   - `cbf_safety_filter` `__init__` L325–336 (EMA factors), `_smooth_qdot`, `_qp_tick` L1326–1433;
+   - `state_governor.directional_fade`; `cbf_qp_assembly.build_osqp_bounds` and
+     `build_qp_objective`;
+   - `rl_policy.py` (ObsSpec, obs_spec_from_config, build_observation, control_point_geometry,
+     obstacle_velocity, action_to_qddot, qddot_max_from_limits, find_sim_root,
+     find_latest_model, resolve_model_path); `rl_policy_commander` (`__init__` parameters and
+     model resolution, `_obs_cb`, `_target_cb`, `_tick`);
+   - `ee_pentagon_velocity_commander._timer_cb` and its parameters; `kinematics.dls_solve`;
+     `math_utils.lpf`; `PentagonTrajectory.evaluate`; `avoidance.tangential_redirect`;
+   - `perception_msgs.build_cp_messages` L196–232 (wire link names); `franka_rl/config.yaml` (obs,
+     control_points); launch Node blocks of both commanders.
+2. **Errors found:**
+   - ch. 06 §6: the composition order is wrong (the zone fade comes BEFORE the governor); the EMA
+     line refs should be L332–336, not L339–341.
+   - ch. 06 §7 / F-3-10: the finite difference uses the 100 Hz policy tick, not the 90 Hz message
+     rate. The spike is 71 m/s (not 64) for ‖p_h‖ = 0.71 m, and the observation is a sawtooth even
+     without the defect.
+   - ch. 07 §2.3: an unsupported sign claim about m(o).
+   - ch. 07 §8.1 / F-3-13: the 15.5 cm relaxation is paired with 4.4 cm of gap from a different
+     interval; over the same frames the gap shrinks 5.0 cm.
+3. **Reruns:** `check_timing_governor` 16/16, `check_held_row` 21/21, `check_cp_label_rows` 8/8.
+4. **Exact next action:** apply the corrections to 06, 07 and PROGRESS (keeping the old wording in
+   an audit record), then the final report.
+
+## C-019 — 2026-11-11 — Stage 3 audit — complete; stopped for review
+
+- Baseline / HEAD / check: `ba68077052e8` / `61260f64b0e2` / check_state exit 0
+1. **Corrections applied** (old wording kept in place or in the audit tables):
+   - ch. 06: composition order and EMA refs (§6); §6.4–§6.7 rewritten from the source; §7 (F-3-10
+     at 100 Hz, 71 m/s; sawtooth; gates; model resolution; F-3-19 verified end to end); §8
+     (verified; two un-launched commanders explicitly marked as not re-read); new §13 audit record.
+   - ch. 07: §2.3 m(o) sign claim withdrawn; §2.5 QP direction and objective now cite their
+     source; §8.1 / F-3-13 intervals (5.0 cm); new §14 audit record with a reproducible vs
+     closed-loop table.
+2. **PROGRESS §4:**
+   - amended F-3-2 (go-around reach), F-3-10, F-3-13, F-3-19 (label → Verified);
+   - new F-3-20.
+   - No other evidence label was changed.
+3. **Ledger:** `cbf_evasion`, `go_around`, `evasion_direction`, `livelock` → documented. Totals:
+   pending 244, partial 66, read 4, documented 32.
+4. **Exact next action:** STOP. Wait for the user's review and an explicit approval of Stage 4.

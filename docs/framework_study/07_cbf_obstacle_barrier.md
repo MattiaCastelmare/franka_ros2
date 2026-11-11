@@ -115,9 +115,15 @@ means separating. Obstacle motion along +n̂ (toward the robot) gives v_n > 0, c
 
 **Assumption, Derived:** m(o) depends on the depth Z of the obstacle pixel (it is a fixed pixel
 count converted at Z, 05 §3.4). So ḋ = ḋ_ctr − (∂m/∂Z)Ż. The term is ignored everywhere. It is
-nonzero when the obstacle moves in depth: m grows ∝ Z, so an approaching obstacle (Ż < 0 when the
-camera faces the robot) makes the published d shrink slightly **more slowly** than d_ctr. Its size
-is a few mm/s at the speeds involved. This is **Inferred**; no measurement exists.
+nonzero only when the obstacle point moves in depth relative to the camera. Its sign depends on
+whether the point moves toward or away from the camera, which is independent of whether it
+approaches the robot. With the 05 §3.4 numbers, m ≈ 0.028·Z for body points (2.8 cm at 1 m), so
+the error is about 3 % of the depth speed |Ż|: about 3 mm/s at |Ż| = 0.1 m/s. **Derived**
+(magnitude) / **Unverified** (no measurement).
+
+> *Audit (C-018):* an earlier version stated that "an approaching obstacle (Ż < 0 when the camera
+> faces the robot) makes the published d shrink slightly more slowly". That sign does not follow,
+> because approaching the robot does not fix the sign of Ż. Superseded.
 
 ### 2.4 Second derivative and the curvature term
 
@@ -161,7 +167,10 @@ Substituting (7.4) and (7.5), with h replaced by the tightened h̄ of §3.6, giv
 This is linear in q̈: one row of A, one entry of the bound vector. The QP stores it as
 `G = [−A | −m]` and `G x ≤ h_qp`, i.e. −aᵀq̈ − m·s ≤ h_qp ⇔ aᵀq̈ + m·s ≥ −h_qp, with
 `h_qp = k₁ḣ + k₀h̄ + c (+ κ + b_ff)`. Here s ≥ 0 is the family slack (chapter 08) and m its
-multiplier (§5.3). **Verified** (`build` L3600–3726, `build_row_rhs` L221).
+multiplier (§5.3). **Verified** (`build` L3600–3726, `build_row_rhs` L221). The direction of the
+inequality is set by `cbf_qp_assembly.build_osqp_bounds` L146–147 (lower −∞, upper h_qp on the CBF
+rows). The objective is `build_qp_objective`: P = I on q̈ and `qvec = −q̈_nom` (`_qp_tick` L1440),
+i.e. ½‖q̈ − q̈_nom‖² up to a constant, plus ½ρ s² per family slack (read in the audit, C-018).
 
 **The shipped gains.** k₀ = 25 s⁻², k₁ = 10.5 s⁻¹: k₁² − 4k₀ = 10.25 > 0, so
 α = 6.851 and 3.649 s⁻¹, and ζ = k₁/(2√k₀) = 1.05. The zone-ladder rungs (§5) are notice
@@ -515,8 +524,13 @@ small standoff. Net effect: for ≤ 0.1 s the row does not resist the approach i
 | true gap | 0.156 | 0.150 → 0.106 |
 
 On entering the hold, the latency margin vanishes at once (its n_seen gate), the uncertainty margin
-too, and the standoff decays by its EMA. **The row's h̄ relaxes by 15.5 cm while the obstacle closes
-4.4 cm**, and the k₁·v_obs term (10.5 × 0.5 = 5.25 m/s² of demanded separation along n̂) disappears.
+too, and the standoff decays by its EMA. **From the last normal frame (44) to the last held frame
+(53), the row's h̄ relaxes by 15.5 cm while the true gap shrinks by 5.0 cm**, and the k₁·v_obs term
+(10.5 × 0.5 = 5.25 m/s² of demanded separation along n̂) disappears.
+
+> *Audit (C-018):* this sentence used to read "relaxes by 15.5 cm while the obstacle closes 4.4 cm".
+> 4.4 cm is the gap change between the first and last *held* frames (45 → 53), a different
+> interval from the 15.5 cm (44 → 53). The script prints both: `check_held_row.py` item 6.
 This is the opposite of the code's own "only tighten without evidence" convention. The cause is
 upstream: the held entry is valid but carries no evidence. **Numerically reproduced with the real
 builder; the closed-loop effect needs runtime (Unverified).**
@@ -600,5 +614,34 @@ Do not read it as documentation of the live barrier.
 | F-3-5 | priority/hold rung gains have complex roots | §2.5, §5.2 | `check_hocbf_gains.py` | — |
 | F-3-6 | margins gated on 8 frames, velocity on 24 | §3.5, §4 | `effective_params.py` (values) | author's intent |
 | F-3-12 | label flips: duplicate rows; new key loosens, old key resumes stale state | §8.2 | `check_cp_label_rows.py` | — |
-| F-3-13 | held row loosens by 15 cm while a tracked obstacle closes 4.4 cm | §8.1 | `check_held_row.py` | runtime |
+| F-3-13 | held row loosens by 15.5 cm while a tracked obstacle closes 5.0 cm (same 9 frames) | §8.1 | `check_held_row.py` | runtime |
 | (assumption) | m(o) treated as constant in ḣ | §2.3 | — | measurement |
+
+## 14. Audit record (Stage 3 audit, 2026-11-11, C-017 to C-019)
+
+A targeted consistency review of the core equations and of F-3-2, F-3-3, F-3-12 and F-3-13.
+
+**Re-verified in the source:**
+- (7.3) h = d − d_safe, `build` L2586.
+- (7.4) a = n̂ᵀJ_p, L2526; the n̂ sign is obstacle → robot, L2509–2513; ḣ = aᵀq̇_cbf − v_obs,
+  `build_row_rhs` L221.
+- (7.7) and (7.10): h_qp = k₁(Aq̇_cbf − v_obs) + k₀ max(h̄, h_pen) + c (+ b_ff + κ), with
+  G = [−A | −m] (L3600–3726) and −∞ ≤ Gx ≤ h_qp (`build_osqp_bounds` L146–147). Together these
+  are aᵀq̈ + m s ≥ −h_qp, the sign of (7.7).
+- The QP objective ½‖q̈ − q̈_nom‖² + ½ρs² (`build_qp_objective`; `qvec[:NV] = −q̈_nom`).
+
+**Reproduced again at HEAD `61260f6`:** `check_held_row.py` 21/21 (F-3-2, F-3-13),
+`check_cp_label_rows.py` 8/8 (F-3-12), `check_timing_governor.py` 16/16 (F-3-3, ch. 06 §5).
+
+**What is reproducible vs what still needs closed-loop validation:**
+
+| Finding | Reproducible numerically (open loop, real code) | Needs closed-loop / runtime validation |
+|---|---|---|
+| F-3-2 | the held entry passes every gate; the row normal is base-radial, 122° from the true one; the approach reads as +0.053 m/s along it (scenario A) | how often holds happen on hardware; whether the arm actually closes the gap during a 0.1 s hold |
+| F-3-13 | v_obs 0.5 → 0, h̄ −0.116 → +0.039 m while the imposed gap shrinks 5.0 cm (scenario B) | the resulting minimum distance with the QP, the dynamics and the 300 Hz loop in the loop |
+| F-3-12 | duplicate rows (5.6e-17); 11.9 mm one-frame loosening on the new key; stale-state resume on the old key | how often a second cluster appears near the wrist; any effect on clearance |
+| F-3-3 | v_d ×1/σ and centripetal ×1/σ² (exact); a lead of 0.059 m at σ = 0.5 on an *idealised* double integrator | the lead on the real arm, where the filter and the dynamics intervene |
+
+**Corrections:** §2.3 (the unsupported sign of the m(o) term) and §8.1 / F-3-13 (mismatched
+intervals). Both are recorded in place with the old wording. **No evidence label was raised or
+lowered** except where the audit re-read the source, as listed above.
