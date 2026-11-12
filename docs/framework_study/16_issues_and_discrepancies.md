@@ -71,7 +71,7 @@ every recorded run evidence about another revision).
 
 | ID | Issue | Evidence | Sev | Pri | Conf | Num | CL | Direction | Links |
 |---|---|---|---|---|---|---|---|---|---|
-| F-4-1 | **The shipped obstacle barrier is a penalty, not a constraint**: with family slack ½ρs², every binding row is violated by (b − aᵀq̈ₙ)/(1 + ρ‖a‖²) | `check_slack_and_priority.py` | S1 | **P0** | high | yes | no | quantify the violation in closed loop; consider `row_l1` (exact penalty) as the default | F-4-2, F-4-3, F-3-5 |
+| F-4-1 | **The shipped obstacle barrier is a penalty, not a constraint**: with family slack ½ρs², every binding row is violated by (b − aᵀq̈ₙ)/(1 + ρ‖a‖²) | `check_slack_and_priority.py`; S6B closed loop: obstacle slack on 46 % of ticks, true gap still ≥ 12.27 cm | S1 | **P0** | high | yes | no | quantify the violation in closed loop (first cell: S6B); consider `row_l1` (exact penalty) as the default | F-4-2, F-4-3, F-3-5 |
 | F-4-2 | One slack per family couples the rows: an infeasible row relaxes all obstacle rows | `check_slack_and_priority.py` | S1 | **P0** | high | yes | no | per-row slack (`row_l1`) | F-4-1 |
 | F-4-3 | The hard box (incl. the slew window 0.5 rad/s² per tick) has priority over every CBF row | `check_slack_and_priority.py`, `check_qp_assembly.py` | S2 | P1 | high | yes | no | document as a design priority, or widen the slew when a row binds | F-4-1 |
 | F-4-4 | `accept_iterate` raises TypeError on OSQP's None array; the fallback is reached via the generic except | `check_slack_and_priority.py` | S3 | P2 | high | yes | no | check `res.info.status` first | F-4-10 |
@@ -112,6 +112,7 @@ every recorded run evidence about another revision).
 | F-2-6 | `resolve_frame_id` falls back to a substring match | static | S3 | P3 | high | static | no | exact match, or raise | — |
 | F-2-12 | Hand-eye: docstring says LM, code uses TRF + Huber (f_scale 1, quadratic zone) | static | S4 | P3 | high | static | no | correct the docstring or set f_scale | — |
 | F-6-14 | The Gazebo camera is rendered from the calibration file, so sim cannot reproduce a calibration error | static | S3 | P2 | high | static | no | an optional extrinsic perturbation in sim | F-2-7 |
+| F-8-9 | The barrier's h̄ uses capture-time geometry (`pr − ph` from the message); the measured sim capture age (p50 112 / p95 154 ms) exceeds `latency_t_blind` 85 ms; ≤ 16/22 mm optimism at S6A's closing rate | S6A.1 (Runtime + code) | S3 | P2 | high | S6A.1 | sim | measure the age on hardware; derive `t_blind` from it; consider FK-refreshing `pr` at the QP rate | F-8-7, F-3-6 |
 
 ### B.6 Simulation fidelity
 
@@ -129,7 +130,7 @@ every recorded run evidence about another revision).
 
 | ID | Issue | Evidence | Sev | Pri | Conf | Num | CL | Direction | Links |
 |---|---|---|---|---|---|---|---|---|---|
-| F-6-5 | Ground-truth holes up to 0.84 s, aligned with the 5 s save; a 200 ms hole hid a 3 cm penetration in a synthetic test | `check_scoring.py`, `check_sim_runs.py` | S2 | **P1** (before any sim evidence) | high | yes | recorded | save off the executor thread, or once at exit | — |
+| F-6-5 | Ground-truth holes up to 0.84 s, aligned with the 5 s save; a 200 ms hole hid a 3 cm penetration in a synthetic test; S6B: holes grow 91 → 562 ms over 30 s in the bare scene, one at a pass minimum; S6B.1: filled from the bag's measured joints (exact match), pass 3 min 0.12313 m inside the hole | `check_scoring.py`, `check_sim_runs.py` | S2 | **P1** (before any sim evidence) | high | yes | recorded | save off the executor thread, or once at exit | — |
 | F-6-1 | No recorded run is at the baseline (1226 manifests, 11 SHAs, 1195 dirty) | `check_sim_runs.py` | S2 | P1 | high | yes | recorded | the baseline runs of REFACTORING_READINESS §9 | F-6-11, F-7-4 |
 | F-6-6 | Batch `ok` means "valid data point", not "safe" (75 ok cells with contact) | `check_scoring.py` | S2 | P1 | high | yes | recorded | separate validity from outcome in reports | Q-6-2 |
 | F-6-10 | Rescore uses current code and writes into old run directories | static | S2 | P2 | high | static | no | write rescores elsewhere, with the code revision | F-6-11 |
@@ -145,6 +146,10 @@ every recorded run evidence about another revision).
 | F-5-27 | `run_metadata.write_runtime_metadata` has no caller | static | S3 | P3 | high | static | no | call it, or remove it | F-6-11 |
 | F-3-7 | Commander CSV `qddot_nom` is the open-loop model (C-014: the published one is `qddot_des_*`) | static | S3 | P3 | high | static | no | rename the columns | — |
 | F-7-5 | A test run from the repository root imports the installed copy | probe | S2 | **P0** (for any validation) | high | probe | no | run from the package dir; a guard in every run log | F-7-4 |
+| F-8-8 | `_qp_tick gap` warning: wall-clock gap vs a threshold from the sim period (3 × 10 ms); at RTF 0.63 it fires at ~1.9 periods (54 warnings vs 26 sim gaps > 30 ms) | S6A.1 (code + Runtime) | S4 | P3 | high | S6A.1 | sim | measure the gap on the node clock, or scale the threshold by the measured RTF | F-8-5 |
+| F-8-10 | Sim-time timing metrics (QP rate, ages, `rows_latency`, gap counts) depend on RTF and host; perception is wall-bound, so low RTF makes it look faster; `rtf_run`/`rtf_min_window` include the startup window | S6A.1 (Runtime, Derived) | S3 | P2 | high | S6A.1 | sim | report RTF per phase; compare timing only at similar RTF; decide the RTF bar (Q-6-3) | F-8-5, F-8-7, Q-6-3 |
+| F-8-12 | q̈_safe − q̈_nom in the bag is not evidence of QP intervention: the QP targets an unpublished shaped nominal (zone / governor / tangential bias …); far from the obstacle ‖Δ‖ > 0.2 on 727 / 1246 ticks with `dnorm` p95 0; no per-tick active set | S6B (code + Derived) | S3 | P2 | high | S6B | sim | log the shaped nominal and the binding rows per tick (needs approval); attribute only via slack / violation / CBFDIAG until then | F-8-11, F-4-1 |
+| F-8-13 | `truth.npz` pairs each joint sample with the last received obstacle pose (queues 50 vs 100): after each save stall 49–50 ms ahead for 235–431 ms (7 % of S6B samples); no effect for a static obstacle, up to \|v\|·50 ms for a moving one | S6B.1 (code + Runtime) | S3 | P2 | high | S6B.1 | sim | pair by stamp (needs approval); until then check `t − t_pose` per sample | F-6-5 |
 
 ### B.8 ROS 2 integration
 
@@ -200,6 +205,13 @@ every recorded run evidence about another revision).
 | F-3-3 | Phase governor breaks the chain rule (v_d, a_d not the derivatives of p_d under σ) | `check_timing_governor.py` | S2 | P1 | high | yes | no | scale ṡ by σ and include σ̇ | F-3-11 |
 | F-3-9 | `CompositePath` is only C⁰ in velocity at the junction | `check_timing_governor.py` | S2 | P2 | high | yes | no | a C¹/C² blend | — |
 | F-0-1 | An untracked test file vanished before Stage 0 (not in any commit) | git | S4 | P3 | high | — | — | none (recorded only) | — |
+| F-8-1 | The torque-stack launch golden (`97db307`) is stale: 8 failures, 2 leaves (`robot_config_path` of `real_time_distance` and `cbf_safety_filter`); the launch has no green regression guard | S5 run (Runtime) | S3 | P2 | high | S5 | no | the user decides: regenerate the golden after reviewing the two leaves | F-8-2 |
+| F-8-2 | No green automated gate: pytest red by construction (35 known), `colcon test` exits 0 and skips the `franka_simulation_experiments` suite | S5 run (Runtime) | S3 | P1 | high | S5 | no | judge runs by the failing set; register the simexp suite; fix or mark the known failures | F-0-3, F-7-7, F-7-9, F-8-1 |
+| F-8-3 | `smoke_cbf_construct.py`: stale `FakeKin` stub (no `configure_control_points`) and exit 0 on failure | S5 run (Runtime) | S4 | P3 | high | S5 | no | update the stub; exit non-zero on failure | F-8-2 |
+| F-8-4 | `franka_simulation` fails its own `ament_lint_auto` (1155 checks); cppcheck self-skips in both C++ packages | S5 colcon test | S4 | P3 | high | S5 | no | clean up or narrow the linters | — |
+| F-8-5 | `full` misses its QP rate in Gazebo at the baseline: 73.6 vs 100 Hz unpinned (sim-time timer and gate, so not a clock artefact; ≈ 46 per wall s; S6A.1: tied to constraint rebuilds, in-process contention Inferred; S6B: 88.4 per sim s, filter process ≈ 1.06 cores over 4 threads, GIL Inferred); every `full` cell is `ok = False` on this host | S6A run (Runtime) | S2 | P1 | high | S6A | sim | decide: nominal rate, build cost, a validated `--filter-cpu`, governor | F-6-4, F-8-2 |
+| F-8-6 | Unclean Gazebo teardown after DONE: `gz_server` SIGABRT in the ign_ros2_control destructor; Python nodes raise on SIGINT (double `rclpy.shutdown`) | S6A `launch.log` | S4 | P3 | high | S6A | sim | clean shutdown handling; exclude teardown from the "no process died" check | — |
+| F-8-7 | Sim perception delivers 30.7 Hz of a 90 Hz camera (about 57–65 ms wall per frame; frames dropped by design, wall-bound, S6A.1); distances reach the filter 112 ms old (median) | S6A run (Runtime) | S3 | P2 | high | S6A | sim | profile `real_time_distance`; decide the bound before moving-obstacle cells | F-6-8, F-6-14 |
 
 ### B.11 Documentation inconsistencies
 
@@ -212,8 +224,9 @@ every recorded run evidence about another revision).
 | F-7-3 | `select_gamma` docstring: γ ≈ 6.0 at δ = 0.1 m (code: 3.65) | `check_unread_functions.py` 5 | S4 | P3 | high | yes | no | correct the docstring | — |
 | F-1-18 | Stage 0 extractor missed a file (fixed in the tool) | ledger | S4 | P3 | high | — | — | none (fixed) | — |
 | F-7-8 | The old technical guide is stale (E.3: QP size, fallback, slew rule, FIFO, logger truth) and misses the 10 mechanisms of E.4; its config values still match but 51 keys are missing | `check_guide_vs_code.py` (21 checks) | S3 | P3 | high | yes | — | Part E; do not use the guide as reference | F-0-9 |
+| F-8-11 | S6A record overstated "no obstacle row bound / only the box" (`n_act` = count h̄ < 0; slew bound and the gap-dependent link-speed cap also acted) and F-8-5's budget argument; corrected by dated notes | S6A.1 (code + Derived) | S4 | P3 | high | S6A.1 | — | none beyond the notes; read binding from per-row data in future runs | F-5-23, F-8-5 |
 
-Total: 125 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
+Total: 138 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
 asserts that every ID of PROGRESS §4 has exactly one row here.
 
 ---

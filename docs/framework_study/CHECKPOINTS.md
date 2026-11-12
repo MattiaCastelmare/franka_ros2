@@ -1258,3 +1258,475 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    rows of 16 E.6; the coverage gaps of PROGRESS §2 (Stage 7 block).
 4. **Exact next action:** wait for the user's review of Stage 7 and a decision on committing it. The
    refactor needs separate, per-change approval (REFACTORING_READINESS §10).
+
+## C-052 — 2026-11-12 — Baseline preparation (no stage started) — workspace investigation and plan
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0 (8 documentation-only
+  commits; 3 stashes untouched; tree clean before this entry)
+1. **Analysed (read-only, at the user's request; no stage, build, test or launch was run):** context
+   recovery (CLAUDE.md, PROGRESS, CHECKPOINTS, 00_INDEX, REFACTORING_READINESS, the protocol, ch. 12,
+   14, 15, 16); the container workspace. New tool `tools/baseline_prep/probe_workspace_state.py`
+   (read-only; `docker cp … -` works on a stopped container), output in
+   `tools/baseline_prep/results/observed_2026-11-12.txt`. Observations (to be logged as findings
+   refining F-7-4 when the user approves the baseline-preparation phase and its ID prefix; not added
+   to §4 now because `check_docs.py` pairs every finding with ch. 16):
+   - O-1 the container `franka_ros2` is **stopped** (exit 137, finished 2026-11-11 17:14 UTC); image
+     `3ab2ed057f0e` (2026-10-23). The only Dockerfile change since is comments/print text (`1139cdd`).
+     No build since `build_2026-11-10_14-42-01`.
+   - O-2 `franka_simulation_experiments` is itself mixed: `simexp/*.py` and the launch files are
+     symlinks into the source (2026-10-29 symlink build), the 10 programs and 4 config YAMLs are
+     copies. The 2026-11-10 copy build left the symlinks in place. Refines ch. 14 §4.3 ("the two
+     target packages are copies"). Programs and `simexp` equal the baseline; `conditions.yaml`,
+     `scenarios.yaml` equal `42df80e`; `run_control_regression` has no source in either revision.
+   - O-3 `franka_experiments` (copy mode): 24 copied files equal `42df80e` and differ from the
+     baseline (incl. `cbf_safety_filter`, `cbf_state_rows`, `real_time_distance`, `fr3_control.yaml`,
+     `torque_control_stack.launch.py`), 1 differs from both (`self_shadow.py`), 6 leftovers equal
+     the baseline, 2 stale `.orig`/`.bak_baseline`: F-7-4 unchanged.
+   - O-4 `franka_msgs` (symlink build 2026-11-10 11:26 UTC, before `ba68077` added the six `shadow_*`
+     fields): the generated IDL of all 10 messages equals the baseline `.msg` field names and order
+     (built from the then-uncommitted tree). Types not compared.
+   - O-5 `franka_simulation`: the 34 mapped copied files equal the baseline (incl.
+     `config/sim/perception_sim.yaml`, copied 2026-11-06 09:37 UTC before its commit `4db4af2`);
+     launch files and `scripts/utils` are symlinks into the source. `libfranka_scenario_obstacles.so`
+     (2026-11-05 15:20 UTC, HEAD `03ef58c`, whose `.cpp` lacks the wander law the binary contains):
+     equivalence with the baseline `.cpp` Unverified (F-7-4).
+   - O-6 `libfranka_rt_controllers.so`, `libcbf_torque_controller.so`,
+     `libfranka_ign_ros2_control-system.so`: built 2026-10-29 13:50 UTC with HEAD `976b997`, whose
+     package sources equal the baseline (Derived; an uncommitted tree cannot be excluded).
+   - O-7 the host power profile is `performance` (intel_pstate EPP `performance`); no `isolcpus`; no
+     orphan Gazebo/ROS processes.
+   - O-8 PROGRESS §0 still said Stage 7 was uncommitted at `476109b`; it is committed (`f708991`).
+     Corrected in §0 by this checkpoint.
+2. **Remaining:** everything in the baseline plan (reported to the user, awaiting approval): start
+   the container, preserve the pre-rebuild state, clean rebuild, provenance check, tests, baseline
+   Gazebo runs; the user decisions Q-6-3, Q-6-4, Q-7-3 and the evidence location (protocol §10).
+3. **Files read (ledger status set):** none changed.
+4. **Documentation files updated:** this entry; PROGRESS §0; new `tools/baseline_prep/`.
+5. **Findings / uncertainties:** O-1…O-8 above (pending IDs). No F- or Q- ID added or closed.
+6. **Exact next action:** wait for the user's decision on the baseline plan (step 1: `docker start
+   franka_ros2` and the pre-rebuild preservation). Run nothing before that approval.
+
+## C-053 — 2026-11-12 — Baseline preparation, step S1 (preservation) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0
+1. **Done (S1 only, approved by the user on 2026-11-12):** the pre-rebuild state was preserved,
+   read-only, from the **stopped** container (`docker cp … -`), into
+   `~/franka_baseline_evidence/baseline_f708991/00_pre_rebuild/` (1.2 GB, 22 files, `SHA256SUMS`
+   verified, write-protected): `/ros2_ws/install`, all of `/ros2_ws/build`, `/ros2_ws/log`; container
+   and image inspection; apt and pip versions; the probe re-run (unchanged since C-052); Git, stash,
+   reflog and host/CPU provenance; the documentation patch and copies of the untracked files.
+   Lightweight manifest: `validation/00_baseline/PRESERVATION_MANIFEST.md`.
+   User decisions recorded there: evidence outside Git under `~/franka_baseline_evidence/baseline_f708991/`;
+   summaries under `docs/framework_study/validation/00_baseline/`; O-1…O-8 stay observations; F-6-5
+   and F-6-11 are not fixed in the harness for now; six-package rebuild tentatively preferred, to be
+   verified before S3.
+2. **Remaining:** S2 (`docker start` + read-only dependency checks), S3, S4, S5, runs; `--filter-cpu`;
+   Q-6-3, Q-6-4.
+3. **Files read (ledger status set):** none changed.
+4. **Documentation files updated:** this entry; PROGRESS §0; new `validation/00_baseline/`.
+5. **Findings / uncertainties:** none added. Nothing was deleted, moved or overwritten (the one file
+   removed was a wrong, seconds-old output of this step, rewritten correctly before checksumming).
+6. **Exact next action:** wait for the user's approval of S2. Run nothing before it.
+
+## C-054 — 2026-11-12 — Baseline preparation, step S2 (container start + dependency verification) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0
+1. **Done (S2 only, approved by the user on 2026-11-12):** S1 evidence re-verified (22/22, read-only);
+   `docker start franka_ros2` → running (entrypoint `vcs import --skip-existing` skipped both
+   checkouts, wrote nothing); read-only dependency, workspace, plugin and import checks; the existing
+   F-7-4 checks re-run (unchanged: `INSTALLED != SOURCE`); colcon dependency graph. Results:
+   `validation/00_baseline/S2_DEPENDENCY_CHECK.md`. S3 proposal: `validation/00_baseline/S3_BUILD_PLAN.md`
+   (six packages, copy mode, Release, per-package clean, underlay-only environment; S4 checks; risks).
+   Its preconditions and the `console_cohesion` handler were checked; the build itself is untested.
+2. **Remaining:** S3 (approval), S4, S5, runs; `--filter-cpu`; Q-6-3, Q-6-4.
+3. **Files read (ledger status set):** none changed.
+4. **Documentation files updated:** this entry; PROGRESS §0; `validation/00_baseline/S2_DEPENDENCY_CHECK.md`,
+   `S3_BUILD_PLAN.md`.
+5. **Findings / uncertainties:** observations O-9…O-13 (observations, not findings): PYTHONPATH trailing
+   `:`; two Pinocchio installs (4.0.0 used, 4.1.0 unused); four non-rebuilt packages link `franka_msgs`
+   (not loaded in sim); untracked files in the `franka_description` checkout; `tf_transformations`
+   absent and unused. No missing dependency or version conflict for the in-scope code. A start-up
+   "new untracked files" alarm was a misread of the `franka_description` checkout's status.
+   The container is left **running** (idle `/bin/bash`).
+6. **Exact next action:** wait for the user's approval of S3 (`S3_BUILD_PLAN.md` §3). Run nothing
+   before it.
+
+## C-055 — 2026-11-12 — Baseline preparation, step S3 (clean six-package build) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0
+1. **Done (S3 only, approved by the user on 2026-11-12):** preconditions passed; S1 re-verified;
+   the 12 package directories (`build/` + `install/` of `franka_msgs`, `franka_ign_ros2_control`,
+   `franka_rt_controllers`, `franka_simulation`, `franka_experiments`, `franka_simulation_experiments`)
+   were **moved** into `/ros2_ws/quarantine_s3_20261112/` (with `COLCON_IGNORE`; nothing deleted);
+   `colcon build --base-paths src --packages-select <six> --cmake-args -DCMAKE_BUILD_TYPE=Release`
+   from the ROS underlay only (contamination guard passed) → **6/6 finished, 34.9 s, exit 0**; no
+   compiler/linker warning (only byte-compile-disabled notices and the eigenpy FindBoost message).
+   Sanity: copies only (0 symlinks), plugins and executables present, leftovers gone, installed
+   `d_safe` 0.10; Git status, stashes and the source tree unchanged; container changed only under
+   build/install/log/quarantine. Record: `validation/00_baseline/S3_BUILD_RESULT.md`; evidence
+   `~/franka_baseline_evidence/baseline_f708991/01_build/` (write-protected, `SHA256SUMS`).
+   Deviations from `S3_BUILD_PLAN.md`: quarantine instead of `rm -rf` (user preference) and
+   `--base-paths src` (discovery safety).
+2. **Remaining:** S4 (approval): source/install equivalence, message ABI vs the S1 archive, plugin
+   `ldd`/CMake cache/symbols, import guard; then F-6-3/F-7-4 re-assessment (documentation). Then S5,
+   runs; `--filter-cpu`; Q-6-3, Q-6-4; the fate of the quarantine.
+3. **Files read (ledger status set):** none changed.
+4. **Documentation files updated:** this entry; PROGRESS §0; `validation/00_baseline/S3_BUILD_RESULT.md`.
+5. **Findings / uncertainties:** none added. The install is **not yet validated** (S4). F-6-3/F-7-4 are
+   not marked superseded until S4 confirms `INSTALLED == SOURCE`.
+6. **Exact next action:** wait for the user's approval of S4 (`S3_BUILD_PLAN.md` §4). Run nothing before it.
+
+## C-056 — 2026-11-12 — Baseline preparation, step S4 (installation and source consistency) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0
+1. **Done (S4 only, approved by the user on 2026-11-12; quarantine kept by the user's decision):**
+   read-only verification of the S3 install. `check_installed.py` → `INSTALLED == SOURCE`;
+   `check_install_provenance.py` → 178/178 = `ba68077`, checks 2–3 fail **by design** (obsolete
+   historical assertions, script unchanged); probe → copies only, all `=base`, plugins built by S3.
+   New read-only `tools/baseline_prep/check_s4_install.py`: 24 PASS, 0 FAIL — all 1158 installed files
+   classified by content (303 tracked-equal, 797 S3-generated, 32 ament templates, 26 copied caches);
+   `d_safe` 0.10; `franka_msgs` generated sources (495) and library symbols identical to S1, the four
+   non-rebuilt linkers resolve; plugins link correctly (Pinocchio 4.0.0, `franka_msgs` from the new
+   install), registered in pluginlib, one Gazebo search-path match each; imports from ten contexts load
+   only baseline files. Install unchanged since S3; quarantine identical to S3; no repository or
+   container change. Record: `validation/00_baseline/S4_INSTALL_VERIFICATION.md`; evidence
+   `~/franka_baseline_evidence/baseline_f708991/02_install_verification/` (write-protected).
+2. **Remaining:** S5 (tests, approval), runs; `--filter-cpu`; Q-6-3, Q-6-4; the user's decision on
+   O-14 (finding ID or not); the fate of the quarantine.
+3. **Files read (ledger status set):** none changed.
+4. **Documentation files updated:** this entry; PROGRESS §0; PROGRESS §4 F-6-3, F-7-4, F-7-5 and §5
+   Q-7-3 (dated re-assessments appended, original text kept); `validation/00_baseline/S4_INSTALL_VERIFICATION.md`;
+   `tools/baseline_prep/check_s4_install.py`.
+5. **Findings / uncertainties:** observations, not findings: **O-14** `franka_simulation/CMakeLists.txt`
+   L144 copies the gitignored `scripts/utils/__pycache__` into the install (26 files; 3 cpython-310
+   caches would be loaded but equal a fresh compile, so no stale bytecode runs today; the install is
+   not a pure function of the commit). **O-15** `fr3_student_sim`'s symlink install puts
+   `/ros2_ws/build/fr3_student_sim` early on `sys.path` (namespace names `config`, `launch`, …);
+   no in-scope import is shadowed. **O-9 refined** (the empty entry sits after the install entries,
+   before the standard library). Unverified until a runtime step: pluginlib/Gazebo loading and DDS
+   message compatibility.
+6. **Exact next action:** wait for the user's approval of S5 (tests). Run nothing before it.
+
+## C-057 — 2026-11-12 — Baseline, step S5 (automated test execution) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0
+1. **Done (S5 only, approved by the user on 2026-11-12):** every test needing neither Gazebo nor
+   hardware, run in `franka_ros2` against the S3/S4 install (`source install/setup.bash`,
+   `PYTHONDONTWRITEBYTECODE=1 ROS_DOMAIN_ID=77 ROS_LOCALHOST_ONLY=1`, import guard per run).
+   - Suite 1, `franka_experiments` pytest from the package directory: 1427 collected, 1383 passed,
+     **35 failed**, 9 skipped (26.7 s).
+   - Suite 2, `franka_simulation_experiments` (not slow): 121 passed, 22 deselected (Gazebo).
+   - Suite 3, `franka_simulation/test/sim`: 39 passed.
+   - Smoke scripts:
+     - `smoke_cbf_safety_filter` PASSED (one process, 300 Hz, the row binds, both braking fallbacks);
+     - `smoke_cbf_construct` FAILED, while exiting 0 (stale stub);
+     - `smoke_rl_policy_commander` NOT RUN (no ONNX model).
+   - `colcon test` of the six packages:
+     - lint passes in `franka_msgs` and `franka_ign_ros2_control`;
+     - `franka_simulation` fails 1155 style checks;
+     - `franka_rt_controllers` and `franka_simulation_experiments` have no registered tests;
+     - the `franka_experiments` re-run gives the identical set of 35 failures.
+
+   The 35 failures fall into four causes, all pre-existing:
+   - A: 25 tests written ahead of the unwired features, as announced in `2402e58`;
+   - B: 1 (F-7-9, the private rclpy API);
+   - C: 1 (F-7-7, `max_coast_s` 0.8 against 0.167);
+   - D: 8 (stale launch golden, F-8-1).
+
+   The 9 skips are all NOT RUN, the RL parity tests (F-0-10).
+
+   No Gazebo, launch or ros2_control process was started. Git status and stashes are unchanged;
+   install and quarantine are unchanged. Record: `validation/00_baseline/S5_TEST_RESULTS.md`;
+   evidence `~/franka_baseline_evidence/baseline_f708991/03_tests/` (31 files, write-protected).
+2. **Remaining:** the Gazebo smoke test (S6, needs approval).
+   - The 22 slow Gazebo tests and the launch graph contract are unexecuted.
+   - User decisions: F-8-1 (regenerate the golden), test fixes, an RL model for the smoke test,
+     `--filter-cpu`, Q-6-3, Q-6-4, O-14, the quarantine.
+3. **Files read (ledger status set):** none changed (test files and the stub were read for the
+   diagnosis only).
+4. **Documentation files updated:**
+   - this entry;
+   - `validation/00_baseline/S5_TEST_RESULTS.md` (new);
+   - PROGRESS §0;
+   - PROGRESS §4: new subsection with F-8-1…F-8-4; dated outcomes appended to F-0-3, F-0-10, F-7-7
+     and F-7-9 (original text kept);
+   - PROGRESS §5 Q-7-3 (status appended);
+   - ch. 16 B.10: rows F-8-1…F-8-4, total 125 → 129.
+5. **Findings / uncertainties:**
+   - **F-8-1** stale launch golden;
+   - **F-8-2** no green automated gate (pytest red by construction; `colcon test` exits 0 and skips
+     the simexp suite);
+   - **F-8-3** `smoke_cbf_construct.py` is stale and cannot fail;
+   - **F-8-4** `franka_simulation` lint.
+
+   Observations, not findings:
+   - **O-16**: `resolve_log_dir`'s write probe touches the gitignored `franka_experiments/franka_logs/`
+     (the directory mtime only; the earlier file count was not recorded);
+   - **O-17**: production code leaves temporary URDF and YAML files in the container's `/tmp`;
+   - **O-18**: pytest's basetemp rotation removed three pre-S5 `/tmp/pytest-of-user` directories.
+
+   Procedural note: `smoke_cbf_construct` was first run from the package directory. The stubs assume
+   the repository root, so it was then run from there. Both logs are kept; both fail.
+6. **Exact next action:** wait for the user's approval of S6 (the Gazebo smoke test). Run nothing
+   before it.
+
+## C-058 — 2026-11-12 — Baseline, step S6A (one Gazebo smoke test) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state exit 0
+1. **Done (S6A only, approved by the user on 2026-11-12):**
+   - **Preflight passed:**
+     - install == S3 checksums; `check_installed.py` `INSTALLED == SOURCE`; packages resolve to
+       `/ros2_ws/install`;
+     - no ROS or Gazebo process; resources free;
+     - simulation only (`external_plant:=true` skips the franka bringup; the hardware is
+       `franka_ign_ros2_control/IgnitionSystem`; `eno1` down; DDS domain 77);
+     - `--filter-cpu` not used: no supported choice (no isolated core; the only recorded pinned run
+       of this cell timed out). Reported before launching.
+   - **One cell, once:** `run_gz_scenarios --scenarios static --conditions full --seeds 0
+     --perception true --batch-dir /home/user/s6a_20261112/batch`. 24 s wall; RTF 0.69; episode
+     7.170 → 11.180 s sim.
+   - **Pipeline verified end to end:**
+     - the controllers were active;
+     - nominal 300 Hz, rows 30.7 Hz, QP / safe / torque 73.6 Hz;
+     - joint 1 moved 0 → 0.7993 rad (goal 0.8; `task_done`, error 9.1e-4 rad);
+     - effort = g(q) + `torque_cmd` (Q-1-1 confirmed at runtime).
+   - **Safety:**
+     - `min_h` +0.068 m, no contact; the truth grid is valid near the minimum (hole ≤ 3 ms;
+       38 ms max in the episode);
+     - reflex PASS; 0 faults and 0 fallbacks; slack ≤ 3.5e-4.
+   - **Limits of what it shows:**
+     - no obstacle row ever bound (`n_act = 0`); the only intervention was the 6 rad/s² acceleration
+       box;
+     - the pentagon commander was not exercised.
+   - **Harness verdict:** `ok = False` because of the QP-rate miss (F-8-5).
+   - **Cleanup:** only the processes of this run, plus the probe's `ros2` daemon, which I stopped.
+   - Git, stashes, install, quarantine and earlier evidence are unchanged; no repository file was
+     written.
+   - Record: `validation/00_baseline/S6A_GAZEBO_SMOKE.md`; evidence
+     `~/franka_baseline_evidence/baseline_f708991/04_gazebo_smoke/` (90 files, write-protected).
+2. **Remaining (each needs approval):**
+   - F-8-5 handling (rate, build cost, pinning, governor);
+   - a static cell where the barrier binds;
+   - thresholds (Q-6-3) and seeds;
+   - Tier 1 / Tier 2;
+   - F-8-1, F-8-6, F-8-7;
+   - O-14 and the quarantine.
+3. **Files read (ledger status set):** none changed.
+4. **Documentation files updated:**
+   - this entry;
+   - `validation/00_baseline/S6A_GAZEBO_SMOKE.md` (new);
+   - PROGRESS §0;
+   - PROGRESS §4: F-8-5…F-8-7 added; dated notes on F-6-5 and F-6-11;
+   - PROGRESS §5 Q-1-1 (runtime confirmation);
+   - ch. 16 B.10: rows F-8-5…F-8-7, total 129 → 132.
+5. **Findings / uncertainties:**
+   - **F-8-5** the QP rate is missed in `full` (73.6 vs 100 Hz; compute-bound, Derived; pinning
+     effect untested);
+   - **F-8-6** unclean teardown (`gz_server` SIGABRT; Python SIGINT errors);
+   - **F-8-7** perception runs at 30.7 of 90 Hz, distances 112 ms old.
+
+   Inferred:
+   - `ROS_LOCALHOST_ONLY` may be ineffective with the container's FastDDS XML profile; isolation rests
+     on domain 77.
+   - The −13.5 mm perception offset mixes geometric models.
+6. **Exact next action:** wait for the user's decision. Run no further simulation, Tier 1, Tier 2 or
+   refactor without explicit approval.
+
+## C-059 — 2026-11-12 — Baseline, step S6A.1 (offline performance and timing analysis) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state run at the end of this step
+1. **Done (S6A.1 only, approved by the user on 2026-11-12; no simulation, launch or build):**
+   - Inputs: the S6A recording (`04_gazebo_smoke/`, hash-verified; the container copy hash-checked
+     equal for the five main files), the code, chapters 07/08/09/12/13, the protocol.
+   - **QP rate.**
+     - The CBF timer (rclpy `create_timer` with `use_sim_time`), the bag (`--use-sim-time`), the
+       episode window and the 100 Hz nominal are all sim time: 73.6 is per sim s, ≈ 46 per wall s.
+       The user's 106.7 reading is refuted.
+     - 106 of 401 periods missed; worst gap 91 ms (`accel_timeout` 100 ms).
+     - Before START the same timer held 99.6 per sim s. In the episode, late ticks follow a fresh
+       rebuild 51 % of the time against 2 % otherwise; rebuilds achieved 36.2 of 50 per sim s.
+     - Gazebo slowdown is excluded as a direct cause. In-process contention (GIL / executor) is
+       the leading hypothesis (Inferred); compute versus OS contention is Unverified.
+   - **Perception.**
+     - Captures lie on the 90 Hz sim grid; 123 of about 361 frames were processed, the rest
+       dropped by design (`Queue(1)`).
+     - The node is compute-saturated (57–65 ms wall, `wait` 0) and wall-bound (≈ 19 per wall s
+       both before START and in the episode).
+     - The capture age (p50 112 / p95 154 ms) exceeds `latency_t_blind` 85 ms; h̄ uses
+       capture-time `pr`.
+   - **RTF.** Whole run 0.69 (startup included); before START ≈ 0.82; episode 0.62–0.64. The
+     contributors were not measured (Inferred list).
+   - **S6A correction.** "No obstacle row bound / only the box" is withdrawn:
+     - `n_act` = count(h̄ < 0);
+     - the slew bound also acted;
+     - the gap-dependent link-speed cap was emitted in 7.43–7.70 s;
+     - a box + slew residual up to 1.17 rad/s² remains.
+
+     C-058 item 1 "Limits" is superseded on this point (this entry; C-058 itself is unchanged).
+   - **Next experiment proposed (not run):** `pentagon_static_baseline_bare / full / s0 /
+     perception true`, resolved offline. The nominal gap is 5.0 cm against `d_safe` 10 cm (Derived;
+     the lead from `2d87ab6` / `minimal` measured 5.00 cm). The acceptance criteria V/B/C/S need
+     user approval.
+   - Evidence `~/franka_baseline_evidence/baseline_f708991/05_offline_timing/` (12 files, SHA256SUMS
+     hash `39821592…0127`, write-protected). Container leftovers kept:
+     `/home/user/s6a1_20261112_analysis/`, `/home/user/s6a1_*.py`.
+2. **Remaining (each needs approval):**
+   - the proposed cell and its criteria;
+   - the F-8-5 policy;
+   - the S6A1 §1.7 measurements;
+   - thresholds (Q-6-3) and seeds;
+   - Tier 1 / Tier 2;
+   - F-8-1, F-8-6, F-8-7;
+   - O-14 and the quarantine.
+3. **Files read (ledger status set):** none changed (all files consulted are already `documented`).
+4. **Documentation files updated:**
+   - this entry;
+   - `validation/00_baseline/S6A1_PERFORMANCE_ANALYSIS.md` (new);
+   - `validation/00_baseline/S6A_GAZEBO_SMOKE.md` (four dated correction notes, original text kept);
+   - PROGRESS §0;
+   - PROGRESS §4: F-8-8…F-8-11 added; dated notes on F-8-5, F-8-7 and F-1-16; the IDs note;
+   - ch. 16: F-8-9 (B.5), F-8-8 and F-8-10 (B.7), F-8-11 (B.11); the F-8-5 and F-8-7 rows refined;
+     total 132 → 136.
+5. **Findings / uncertainties:**
+   - **F-8-8** tick-gap warning mixes clocks;
+   - **F-8-9** capture age > `latency_t_blind`, and capture-time robot geometry in h̄;
+   - **F-8-10** timing metrics depend on RTF and host;
+   - **F-8-11** S6A documentation error.
+
+   Unverified:
+   - the camera publication rate;
+   - whether rendering stalls physics;
+   - the compute versus contention split;
+   - which constraint shaped the command after 7.70 s.
+
+   Observation: the per-node `ros_log` file of `real_time_distance` lost 2 lines at teardown;
+   `launch.log` is complete.
+6. **Exact next action:** wait for the user's decision. Run no simulation, Tier 1, Tier 2 or
+   refactoring, and in particular not the proposed cell, without explicit approval.
+
+## C-060 — 2026-11-12 — Baseline, step S6B (one static-obstacle experiment) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state and check_docs run at the end of this step
+1. **Done (S6B only, approved by the user on 2026-11-12; ONE run):**
+   - Cell: `pentagon_static_baseline_bare / full / seed 0 / perception true`, unpinned, run exactly once.
+     Runner: `ok=False min_h=+0.023 rtf=0.65 qp=88Hz!=100 RATE_FAIL wall=74s`, exit 0. `ok=False`
+     comes only from the QP-rate gate.
+   - Preflight: install == source (1158 files); working-tree patch saved; git status, stash and HEAD
+     identical after; 0 repository files newer than the launch marker; docker-diff delta 97 entries,
+     all run scratch, launch temp files and logs; no processes left.
+   - Side monitors (no production change): a host `/proc` sampler (4 Hz, ≈ 6 % of one core) and a
+     second, wall-clock bag of `/NS_1/cbf_status` and `/cbf/per_link_distances`. The sampler missed
+     the wall recorder's own pid (README).
+   - **Results:**
+     - pentagon 4.00 laps, final error 3.8 mm;
+     - true min gap **12.27 cm** (`fr3_link8#2`); 0 s below d_safe on the samples;
+     - pass 3 minimum inside a 395 ms truth hole (Unverified);
+     - obstacle slack on 1214 / 2654 ticks; obstacle rows with h_qp < 0 on 41 CBFDIAG lines, each
+       with `cart_rad` > 0;
+     - `dnorm` p50 3.95 near vs p95 0 far; EE −x deviation median 5.2 cm near vs +0.2 cm far;
+     - link-speed cap emitted but not at its bound; qlim, sc and sing not binding;
+     - pre-QP shaping (tangential bias, zone / state fade) and the commander governor (σ p50 0.71
+       near) also acted.
+   - **Performance:**
+     - QP 88.4 per sim s, 54.7 per wall s, RTF 0.618; max sim gap 64 ms;
+     - late ticks after a rebuild 33.4 % vs 0.68 %;
+     - filter process 106 % of one core over 4 threads (GIL Inferred);
+     - perception 36.5 per sim s, capture age at the filter p50 108 / p95 132 ms;
+     - perceived − true gap median −2.26 cm, max +0.78 cm.
+   - Fallbacks, faults, trips: none; 82 torque-rate clips.
+   - Evidence `~/franka_baseline_evidence/baseline_f708991/06_static_obstacle/` (120 files, 95 MB,
+     SHA256SUMS hash `28bbc883…c053`, write-protected). `04_gazebo_smoke` and `05_offline_timing`
+     re-verified OK. Container scratch kept: `/home/user/s6b_20261112/`,
+     `/home/user/s6b_20261112_analysis/`, `/home/user/s6b_analyze.py`, `/tmp/s6b_marker`,
+     `/tmp/launch_params_*`.
+2. **Remaining (each needs approval):**
+   - accept or reject S6B;
+   - the S6A1 §6.4 thresholds (Q-6-3);
+   - the `pentagon_clear` reference and more seeds;
+   - the S6B §10 items;
+   - the F-8-5 policy;
+   - Tier 1 / Tier 2;
+   - F-8-1, F-8-6, F-8-7;
+   - O-14 and the quarantine.
+3. **Files read (ledger status set):** none changed (all files consulted are already `documented`).
+4. **Documentation files updated:**
+   - this entry;
+   - `validation/00_baseline/S6B_STATIC_OBSTACLE.md` (new);
+   - PROGRESS §0;
+   - PROGRESS §4: F-8-12 added; dated notes on F-4-1, F-6-5, F-8-5, F-8-9 and F-8-11; the IDs note;
+   - ch. 16: the F-8-12 row (B.7); the F-4-1, F-6-5 and F-8-5 rows refined; total 136 → 137.
+5. **Findings / uncertainties:**
+   - **F-8-12**: the bag's q̈_safe − q̈_nom is not evidence of QP intervention (the shaped nominal is
+     unpublished, there is no per-tick active set).
+
+   Unverified:
+   - the pass-3 hole window;
+   - mesh-level contact;
+   - the per-centimetre split between the barrier, the shaping and the governor;
+   - whether the box or slew bound the QP solution per tick;
+   - the GIL mechanism;
+   - the effect of perception latency on the path.
+6. **Exact next action:** wait for the user's decision. No second seed, no reference run, no other
+   scenario, no Tier 1 / Tier 2 or refactoring without explicit approval.
+
+## C-061 — 2026-11-12 — Baseline, step S6B.1 (offline clearance reconstruction) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `f7089911decf` / check_state and check_docs run at the end of this step
+1. **Done (S6B.1 only, approved by the user on 2026-11-12; no simulation, launch or build):**
+   - Inputs: the S6B cell (`06_static_obstacle/`, SHA256SUMS OK before and after; the container
+     copy checked against the same hashes). The installed geometry code and configuration
+     (`truth_geometry.py`, `distance_utils.py`, `fr3_complete.yaml`) have sha256 equal to the source.
+   - **Gaps:** 7 truth holes > 2 ms in the episode (91, 174, 336, **395**, 484, 3 and 562 ms, at 15,
+     20, 25, **30**, 35 and 40 s), plus isolated single-sample drops after them. 2047 samples are
+     missing from the truth. Before the episode: a 172 ms hole, an 18 ms hole and 3 ms holes, with
+     the obstacle parked.
+   - **Measured joints:** `/NS_1/franka/joint_states` (the plant's `joint_state_broadcaster`, the
+     truth node's own input). 29 996 samples in the episode, max spacing 2 ms (15 intervals), 1 ms
+     inside every hole. Name order `j1, j3, j2, j4…j7`, mapped by name.
+   - **Obstacle:** `/sim/truth/obstacle_poses` at 1 kHz, constant p0 (0.55, −0.25, 0.449),
+     r 0.05 m.
+   - **Reconstruction** (FK + `define_control_points` + `surface_gaps`, the truth node's own code):
+     - 27 949 / 27 949 truth samples matched by stamp; Δq = 0 and Δgap = 0;
+     - one exception at t = 10.550 (the truth used the parked pose);
+     - method check (FK of the truth's own q): error 0.
+   - **Result** (sphere model):
+     - episode minimum 0.12272 m at 36.927 s (`fr3_link8#2`); continuous-time bound ≥ 0.12236 m;
+     - per pass 0.12281 / 0.12284 / **0.12313 (pass 3, inside the hole at 30.041 s)** / 0.12272;
+     - 0 samples below 0.10 m and below 0; no unverified interval.
+   - Not claimed: mesh-level contact (links 1–3 have no CP; the hand extends beyond its spheres;
+     the Gazebo obstacle has no collision element), other seeds, moving obstacles.
+   - Scripts: `tools/baseline_validation/` (`s6b1_reconstruct_clearance.py`, `s6b1_supplementary.py`,
+     README).
+   - Evidence: `~/franka_baseline_evidence/baseline_f708991/07_clearance_audit/` (11 files, 11 MB,
+     SHA256SUMS hash `102256fc…7b27`, write-protected). `04`, `05` and `06` re-verified OK.
+   - Container scratch kept: `/home/user/s6b1_20261112/`, `/home/user/s6b1_reconstruct_clearance.py`,
+     `/home/user/s6b1_container_sums.txt`.
+2. **Remaining (each needs approval):**
+   - accept the S6B clearance result;
+   - adopt the bag reconstruction as a clearance check, or fix the truth logger (F-6-5, F-8-13);
+   - the `pentagon_clear` reference and more seeds;
+   - the S6B §10 items;
+   - the F-8-5 policy;
+   - Tier 1 / Tier 2;
+   - F-8-1, F-8-6, F-8-7;
+   - O-14 and the quarantine.
+3. **Files read (ledger status set):** none changed. `ground_truth_node.py` and `truth_geometry.py`
+   were consulted; both are already covered by chapter 12.
+4. **Documentation files updated:**
+   - this entry;
+   - `validation/00_baseline/S6B1_CLEARANCE_AUDIT.md` (new);
+   - `tools/baseline_validation/` (new: two scripts and a README);
+   - `S6B_STATIC_OBSTACLE.md` (two dated notes, original text kept);
+   - PROGRESS §0;
+   - PROGRESS §4: F-8-13 added; a dated note on F-6-5; the IDs note;
+   - ch. 16: the F-8-13 row (B.7); the F-6-5 row refined; total 137 → 138.
+5. **Findings / uncertainties:**
+   - **F-8-13**: the truth pairs joint samples with the last received pose; 49–50 ms ahead after each
+     hole; it matters only for moving obstacles.
+
+   Unverified:
+   - mesh-level clearance;
+   - the frame offset beyond the perception cross-check;
+   - inter-sample speed above the finite-difference maximum.
+6. **Exact next action:** wait for the user's decision. No simulation, second seed, reference run,
+   Tier 1 / Tier 2 or refactoring without explicit approval.

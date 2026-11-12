@@ -1,0 +1,48 @@
+
+== 1. container
+FACT name=franka_ros2 status=exited exit=137 started=2026-11-04T14:58:48 finished=2026-11-11T17:14:22 image=3ab2ed057f0e
+FACT mount /dev -> /dev rw=True
+FACT mount /home/mattia/Git/franka_ros2/limits.conf -> /etc/security/limits.conf rw=True
+FACT mount /home/mattia/Git/franka_ros2 -> /ros2_ws/src rw=True
+FACT mount /tmp/.X11-unix -> /tmp/.X11-unix rw=True
+
+== 2. colcon history (last build that selected each package)
+FACT 97 builds, last build_2026-11-10_14-42-01
+FACT franka_msgs                      build_2026-11-10_11-26-36: ['/usr/bin/colcon', 'build', '--packages-select', 'franka_msgs', '--symlink-install']
+FACT franka_rt_controllers            build_2026-11-03_11-32-54: ['/usr/bin/colcon', 'build', '--symlink-install', '--executor', 'parallel', '--parallel-workers', '24', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release']
+FACT franka_simulation                build_2026-11-06_09-37-38: ['/usr/bin/colcon', 'build', '--packages-select', 'franka_simulation', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release']
+FACT franka_experiments               build_2026-11-10_14-42-01: ['/usr/bin/colcon', 'build', '--packages-select', 'franka_experiments', 'franka_simulation_experiments']
+FACT franka_simulation_experiments    build_2026-11-10_14-42-01: ['/usr/bin/colcon', 'build', '--packages-select', 'franka_experiments', 'franka_simulation_experiments']
+FACT franka_ign_ros2_control          build_2026-11-03_11-32-54: ['/usr/bin/colcon', 'build', '--symlink-install', '--executor', 'parallel', '--parallel-workers', '24', '--cmake-args', '-DCMAKE_BUILD_TYPE=Release']
+
+== 3. install mode per package
+FACT franka_msgs                      {'sym->build': 402, 'copy': 62, 'sym->src': 22, 'sym->other': 3}
+FACT franka_rt_controllers            {'sym->src': 10, 'sym->build': 18, 'copy': 12, 'sym->other': 3}
+FACT franka_simulation                {'sym->build': 114, 'copy': 90, 'sym->src': 63, 'sym->other': 3}
+FACT franka_experiments               {'copy': 270}
+FACT franka_simulation_experiments    {'copy': 27, 'sym->src': 61, 'sym->build': 11, 'sym->other': 2}
+FACT franka_ign_ros2_control          {'sym->src': 6, 'sym->build': 17, 'copy': 12, 'sym->other': 3}
+
+== 4. copied install files vs ba68077 (baseline) and 42df80e (fr3-student-sim)
+FACT franka_experiments             !=base =42df             24 cbf_OSCBF_filter.py, cbf_safety_filter.py, handeye_eye_in_hand_node.py, iso_evidence_logger.py, iso_safety_monitor.py, pentagon_torque_commander.py, qddot_to_torque.py, real_time_distance.py, rl_policy_commander.py, cbf_hard_limits.py, cbf_qp_assembly.py, cbf_state_rows.py, config.py, distance_engine.py, kinematics.py, logging_utils.py, mask_builder.py, perception_msgs.py, rl_policy.py, fr3_complete.yaml, fr3_control.yaml, launch_defaults.yaml, torque_control_stack.launch.py, test_rl_fake.launch.py
+FACT franka_experiments             !=base absent@42df        1 self_shadow.py
+FACT franka_experiments             =base =42df             109
+FACT franka_experiments             =base absent@42df         6 cbf_diagnostics.py, go_around.py, run_metadata.py, static_scene.py, surface_velocity.py, check_control_derivatives.py
+FACT franka_experiments             no source in either revision (entry-point wrapper or leftover)   24 capsule_overlay_node, cbf_oscbf_filter, cbf_safety_filter, cbf_velocity_filter, ee_circle_velocity_commander, ee_pentagon_velocity_commander, ee_random_waypoints_velocity_commander, experiment_logger, frame_grabber, handeye_calibration_node, handeye_eye_in_hand_node, image_rectifier_node, iso_evidence_logger, iso_safety_monitor, pentagon_qddot_commander, pentagon_torque_commander, qddot_to_torque, real_time_distance, rl_policy_commander, tag_overlay_node, trajectory_overlay_node, trajectory_visualization_node, fr3_control.yaml.bak_baseline, fr3_control.yaml.orig
+FACT franka_simulation              =base !=42df              1 perception_sim.yaml
+FACT franka_simulation              =base =42df              33
+FACT franka_simulation              no source in either revision (entry-point wrapper or leftover)   11 acceleration_smooth_trajectory, cartesian_acceleration_mapper, cartesian_torque_mapper, cartesian_velocity_mapper, test_acceleration_publisher, test_torque_publisher, test_velocity_publisher, torque_sine_trajectory, trajectory_plotter, velocity_circle_trajectory, velocity_figure8_trajectory
+FACT franka_simulation_experiments  !=base =42df              2 conditions.yaml, scenarios.yaml
+FACT franka_simulation_experiments  =base !=42df              1 run_gz_scenarios.py
+FACT franka_simulation_experiments  =base =42df               6
+FACT franka_simulation_experiments  =base absent@42df         4 gz_trajectory_markers.py, plot_control_regression.py, mppi_it08.yaml, control_regression_scenarios.yaml
+FACT franka_simulation_experiments  no source in either revision (entry-point wrapper or leftover)    1 run_control_regression
+
+== 5. franka_msgs: generated IDL (build/) vs baseline .msg, field names and order
+FACT 10 generated messages compared, 0 differ from the baseline
+
+== 6. compiled plugins in build/ (cannot be byte-compared with source)
+FACT libfranka_rt_controllers.so              built 2026-10-29 13:50:33 UTC; HEAD then 976b997; franka_rt_controllers at that HEAD == baseline: True (an uncommitted tree cannot be excluded)
+FACT libcbf_torque_controller.so              built 2026-10-29 13:50:43 UTC; HEAD then 976b997; franka_rt_controllers at that HEAD == baseline: True (an uncommitted tree cannot be excluded)
+FACT libfranka_scenario_obstacles.so          built 2026-11-05 15:20:20 UTC; HEAD then 03ef58c; franka_simulation at that HEAD == baseline: False (an uncommitted tree cannot be excluded)
+FACT libfranka_ign_ros2_control-system.so     built 2026-10-29 13:50:21 UTC; HEAD then 976b997; franka_gazebo/franka_ign_ros2_control at that HEAD == baseline: True (an uncommitted tree cannot be excluded)

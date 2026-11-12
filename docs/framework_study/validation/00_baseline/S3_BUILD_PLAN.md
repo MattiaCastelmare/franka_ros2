@@ -1,0 +1,110 @@
+# 00_baseline — S3 clean-build plan (proposal; NOT executed; needs the user's approval)
+
+Prepared in S2 (2026-11-12) from the checks in `S2_DEPENDENCY_CHECK.md`.
+
+## 1. Scope: six packages (recommended)
+
+| Package | Why rebuild | Evidence today |
+|---|---|---|
+| `franka_experiments` | the stack; 24 copied files are `fr3-student-sim`, plus leftovers (F-7-4) | `INSTALLED != SOURCE` |
+| `franka_simulation_experiments` | `conditions.yaml`, `scenarios.yaml` from `42df80e`; mixed copy/symlink install; leftover `run_control_regression` | O-2 |
+| `franka_simulation` | `libfranka_scenario_obstacles.so` was built from an uncommitted tree (equivalence Unverified); configs are copies, launch/scripts symlinks | F-7-4, O-5 |
+| `franka_rt_controllers` | `RtTorqueController` runs in the loop; built 2026-10-29 at a commit with baseline-equal source, but a dirty tree cannot be excluded; it links `franka_msgs` | O-6 |
+| `franka_msgs` | built from an uncommitted tree (definitions equal by field name/order; types not compared) | O-4 |
+| `franka_ign_ros2_control` | **the plant's hardware plugin**: it applies the efforts and adds g(q) (`IgnitionSystem::write`, Q-1-1). Same situation as `franka_rt_controllers` | O-6 |
+
+**Is the sixth package necessary?** Not for correctness as far as can be derived: its source at
+the build commit equals the baseline. It is necessary for a **verified** statement that the whole
+loop corresponds to the documented source, which is the purpose of the baseline. Cost and risk are
+small (one 5 MB library; its build dependencies `franka_hardware` and `libfranka` are installed and
+were used for the last build). The user's preference (six) is therefore also the recommendation.
+
+**Not rebuilt (recorded as-is, out of scope):** `franka_description` (symlinks into the gitignored
+1.3.0 checkout), `libfranka` 0.15.0, `franka_hardware`, `franka_semantic_components`,
+`franka_fr3_moveit_config`, `franka_bringup`, `franka_gripper`, `franka_robot_state_broadcaster`,
+`franka_example_controllers`, `fr3_student_sim`, … None of them is loaded in simulation except
+`franka_description` (xacro/meshes) and, at build time, `franka_hardware`/`libfranka` headers.
+
+## 2. Build order (colcon, verified with `colcon list --topological-order`)
+
+`franka_msgs` → `franka_ign_ros2_control` → `franka_rt_controllers` → `franka_simulation` →
+`franka_experiments` → `franka_simulation_experiments`. Colcon enforces it within
+`--packages-select`; the non-selected dependencies are taken from `install/`.
+
+## 3. Procedure
+
+```bash
+# --- host: preconditions (read-only) ------------------------------------------------------
+cd ~/Git/franka_ros2
+git rev-parse HEAD                                   # expect f7089911decf…
+git status --porcelain -- . ':!docs/framework_study' ':!CLAUDE.md'   # must print NOTHING
+python3 -I docs/framework_study/tools/check_state.py # expect RESULT: consistent
+ps -eo args | grep -E 'ign gazebo|ros2 launch|ros2_control_node' | grep -v grep   # expect nothing
+EV=~/franka_baseline_evidence/baseline_f708991/01_build
+mkdir -p "$EV"                                       # new directory; S1 evidence stays untouched
+git rev-parse HEAD > "$EV/HEAD.txt"; git status --porcelain=v1 > "$EV/git_status_before.txt"
+
+# --- container: clean the six packages and build them (copy mode, Release) -------------------
+docker exec -w /ros2_ws -e PYTHONDONTWRITEBYTECODE=1 franka_ros2 bash -c '
+  set -eo pipefail
+  source /opt/ros/humble/setup.bash        # ONLY the underlay: never install/setup.bash here
+  PK="franka_msgs franka_ign_ros2_control franka_rt_controllers franka_simulation franka_experiments franka_simulation_experiments"
+  for p in $PK; do rm -rf "build/$p" "install/$p"; done
+  colcon build --packages-select $PK \
+               --cmake-args -DCMAKE_BUILD_TYPE=Release \
+               --event-handlers console_cohesion+
+' 2>&1 | tee "$EV/colcon_build_console.log"
+echo "exit: ${PIPESTATUS[0]}" | tee -a "$EV/colcon_build_console.log"
+
+# --- host: keep the build log, record the post-build state -----------------------------------
+docker cp franka_ros2:/ros2_ws/log/latest_build - > "$EV/latest_build_log.tar"
+git status --porcelain=v1 > "$EV/git_status_after.txt"   # must equal git_status_before.txt
+```
+
+Notes on each choice:
+- **Copy mode** (no `--symlink-install`): what was built is what runs; a later source edit cannot leak
+  into a run without a rebuild. Symlink mode would make "which revision ran" depend on the working
+  tree at run time.
+- **`rm -rf build/<p> install/<p>` first**: a copy install adds and overwrites but never deletes, and
+  it leaves earlier symlinks in place (O-2). Removing the per-package trees is the only way to drop
+  the leftovers (`self_shadow.py`, `fr3_control.yaml.orig`, `run_control_regression`, …) and the
+  symlinks. `log/` and every other package are left untouched. The prefix scripts
+  (`install/setup.bash`, `local_setup.*`) are regenerated by colcon.
+- **Environment**: only `/opt/ros/humble/setup.bash`. Colcon adds the installed workspace dependencies
+  itself. Sourcing `install/setup.bash` would put the stale packages on the paths during the build.
+  `PYTHONDONTWRITEBYTECODE=1` avoids `__pycache__` in the source tree. `CMAKE_BUILD_TYPE=Release`
+  equals the cached value of the previous C++ builds. The Dockerfile `ENV` (Pinocchio paths) is
+  inherited; `CMAKE_PREFIX_PATH` is empty in the shell, so CMake should find Pinocchio 4.0.0 through
+  `/opt/ros/humble` again (checked in S4).
+- **No other Git operation** (no checkout, no pull) between S3 and the end of the baseline runs: a
+  checkout during a copy build is how F-7-4 happened.
+
+## 4. Verification after the build (S4, read-only; needs its own approval)
+
+| # | Check | Command | Pass condition |
+|---|---|---|---|
+| 4.1 | Build result | `colcon_build_console.log` | exit 0; "6 packages finished"; no "failed"/"aborted" |
+| 4.2 | Whole-tree provenance | `python3 -I -B docs/framework_study/tools/baseline_prep/probe_workspace_state.py` | §3: the six packages contain **no** `sym->src`/`sym->build` entries; §4: every mapped file `=base`, no file absent from the baseline, no `.orig`/`.bak`; §5: 0 differences; §6: plugin mtimes = the S3 build, HEAD `f708991`, equal to the baseline: True |
+| 4.3 | Existing checks | `check_install_provenance.py` and `stage6_verification/check_installed.py` | `INSTALLED == SOURCE`. `check_install_provenance.py` checks 2 and 3 **fail by design** (they reproduce F-6-3/F-7-4): the findings are then re-assessed and marked superseded, never deleted |
+| 4.4 | Message ABI for the non-rebuilt linkers (O-11) | byte-compare `build/franka_msgs/rosidl_adapter/franka_msgs/msg/*.idl` and `rosidl_generator_c/franka_msgs/msg/detail/*__struct.h` with the copies in the S1 archive `ros2_ws_build.tar` | identical. If not: `franka_hardware`, `franka_gripper`, `franka_robot_state_broadcaster`, `franka_example_controllers` would need a rebuild before any hardware use (not used in simulation) |
+| 4.5 | Compiled plugins | `ldd` of the four plugins; `CMakeCache.txt` (`CMAKE_HOME_DIRECTORY`, `CMAKE_BUILD_TYPE`, `pinocchio_DIR`); `nm -DC --defined-only` and `strings` diff against the S1 copies (INFO) | no `not found`; `franka_msgs` from `install/franka_msgs`; Pinocchio 4.0.0 from `/opt/ros/humble`; source dir = `/ros2_ws/src/<pkg>`; Release |
+| 4.6 | Plugin registration | `ros2 pkg prefix` of the six; the pluginlib ament-index entries; files exist in `install/<pkg>/lib` | all present |
+| 4.7 | Import guard | from `/tmp` and from each package dir: `python3 -c "import franka_experiments as m; print(m.__file__)"` | install from `/tmp`, source from `src/franka_experiments`; with install == source both are the baseline |
+| 4.8 | Documentation state | `check_state.py` | consistent (exit 0) |
+
+The compiled plugins cannot be compared byte-for-byte with source. What ties them to the baseline:
+a clean build directory, a clean tree at a recorded HEAD whose source equals `ba68077`, the build
+log, and 4.5.
+
+## 5. Risks
+
+| Risk | Likelihood | Mitigation / recovery |
+|---|---|---|
+| A package fails to build (e.g. `franka_simulation`'s committed `.cpp` differs from the uncommitted tree its current binary came from) | low–medium (unknown) | STOP and report; the workspace is then incomplete. Recovery: fix nothing without approval; restore from the S1 tars (both `install` and `build` entries of the affected packages are archived) |
+| Window between `rm -rf` and a successful build: no usable install for those six | certain, short | nothing runs during S3 |
+| `franka_msgs` regenerated with a different layout → the four non-rebuilt linkers break | low (definitions equal by name/order, O-4) | check 4.4; not used in simulation |
+| CMake picks robotpkg Pinocchio 4.1.0 instead of 4.0.0 (O-10) | low (`CMAKE_PREFIX_PATH` empty, same environment as before) | check 4.5 (`pinocchio_DIR`, `ldd`) |
+| The build writes into the source tree (`__pycache__`, egg-info) | low | `PYTHONDONTWRITEBYTECODE=1`; colcon uses `build/` for egg-info; `git_status_after.txt` must equal `git_status_before.txt` (both are also gitignored) |
+| A concurrent checkout or edit of the source during the build | — | no other session/IDE writes; HEAD and status recorded before and after |
+| Copy mode changes behaviour for later edits (launch files, `simexp` were symlinks) | certain, intended | every later change needs a rebuild (protocol Phase 1) |
+| `simexp` imports `franka_experiments/scripts` via `/ros2_ws/src` (F-0-5) | — | always the source; equal to the baseline while the tree is clean |
