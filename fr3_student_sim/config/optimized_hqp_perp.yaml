@@ -1,5 +1,5 @@
 # Controller: fr3_sim/controllers/optimized_hqp_perp.py
-# Existing impedance/HQP law with baseline_perp's initial pose and reference.
+# Same Cartesian acceleration feedback, initial pose and reference as baseline_perp.
 # Orientation is free. The observer affects constraint predictions, not tracking compensation.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
@@ -16,9 +16,9 @@ approach:
 # establish the mass achieved during motion. Delete this key to omit attraction.
 q_posture_ref: [0.0016912193606702206, 0.15746110356315518, 0.003155880790772255, -2.3590551359002445, 0.012246671391168376, 4.292372674902727, 0.7921759182639984]
 
-impedance:
-  stiffness: [600.0, 600.0, 600.0]  # [N/m]
-  damping: [120.0, 120.0, 120.0]    # [N s/m]
+tracking:
+  kp_position: 100.0                # [1/s^2] same Cartesian position-error gain as baseline_perp
+  kd_position: 20.0                 # [1/s] same Cartesian velocity-error gain as baseline_perp
   nullspace_damping: 10.0           # [1/s], secondary acceleration target
   posture_gain: 25.0                # [1/s^2], ignored without q_posture_ref
   startup_ramp_duration: 0.5        # [s] secondary attraction ramp; complete before nominal contact (~0.55 s)
@@ -36,7 +36,7 @@ safety:
   velocity_barrier_rate: 10.0        # [1/s]
   command_delay_s: 0.003             # [s] transport/scheduling prediction allowance
   soft_constraints:
-    enabled: true                   # three-level HQP, also used by the full-online variant
+    enabled: true                   # three-level HQP for this perpendicular experiment
     hard_position_margin: 0.06       # [rad] mandatory; 0.01 rad before the runner's stop band
     acceleration_scale: 30.0         # [rad/s^2] normalize acceleration preference slack
     position_scale: 30.0             # [rad/s^2] normalize preventive position-barrier slack

@@ -1,4 +1,4 @@
-"""Compact diagnostics for the impedance/HQP experiment; other plots unchanged."""
+"""Compact HQP diagnostics, including historical Cartesian-impedance logs."""
 
 import numpy as np
 
@@ -57,6 +57,8 @@ def impedance_figure(run, plt):
         axis.grid(alpha=0.3)
         axis.legend(loc='upper right', fontsize=7, ncol=4)
     axes[-1].set_xlabel('simulation time [s]')
-    fig.suptitle('Cartesian impedance and hierarchical QP')
+    title = ('Cartesian tracking and hierarchical QP' if 'user_tracking_acceleration' in run
+             else 'Cartesian impedance and hierarchical QP')
+    fig.suptitle(title)
     fig.tight_layout(rect=(0, 0, 1, 0.985))
     return fig

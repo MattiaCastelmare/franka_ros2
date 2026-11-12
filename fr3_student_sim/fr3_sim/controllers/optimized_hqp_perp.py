@@ -1,11 +1,11 @@
-"""The existing impedance/HQP law with a single perpendicular approach."""
+"""The shared tracking/HQP law with a single perpendicular approach."""
 from __future__ import annotations
 
-from fr3_sim.controllers.optimized_hqp import ImpedanceHQPController
+from fr3_sim.controllers.optimized_hqp import HQPTrackingController
 from fr3_sim.methods.perpendicular_reference import PerpendicularApproachReference
 
 
-class Controller(ImpedanceHQPController):
+class Controller(HQPTrackingController):
     """Replace only the reference; keep HQP constraints and observer handling.
 
     The movement and final hold use the same schedule as baseline_perp. A QP

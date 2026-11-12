@@ -20,6 +20,7 @@ from fr3_sim.analysis.impact_metrics import first_impact
 from fr3_sim.analysis.timing import timing_metrics
 
 
+# Include removed controller names only to keep historical logs readable.
 _PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
                      'optimized_hqp_perp.py', 'optimized_perp_full_online.py')
 

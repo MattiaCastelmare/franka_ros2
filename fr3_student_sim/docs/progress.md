@@ -2197,6 +2197,10 @@ Existing launch, plot and comparison commands remain unchanged.
 
 ### Perpendicular HQP without an offline posture preference
 
+Historical development entry: this variant was subsequently removed, as
+recorded below. Its launch commands are retained as history and no longer
+select an installed controller.
+
 Added `fr3_sim/controllers/optimized_perp_full_online.py` and
 `config/optimized_perp_full_online.yaml`. The new adapter reuses the
 perpendicular impedance/HQP controller while removing `q_posture_ref` from
@@ -2238,3 +2242,76 @@ cd /ros2_ws/src/fr3_student_sim
 latest_online_perp_log=$(ls -t runs/optimized_perp_full_online_[0-9]*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_online_perp_log" --no-show
 ```
+
+### Removal of the full-online perpendicular variant
+
+Removed `fr3_sim/controllers/optimized_perp_full_online.py`, its
+`config/optimized_perp_full_online.yaml` task and the corresponding active
+controller selectors and launch references. The active inventory now has
+four controller variants for two experiments: circular `baseline.py` and
+`optimized_hqp.py`, and perpendicular `baseline_perp.py` and
+`optimized_hqp_perp.py`. Their control laws and settings are retained.
+
+The README now lists the four active controllers and seven YAML files,
+with current launch, plotting and comparison commands. Soft constraints
+remain enabled in `optimized_hqp_perp.yaml`. Existing NPZ logs and PNGs of
+the removed variant are retained; plotting and comparison keep historical
+log recognition without loading the removed controller. Offline posture
+reports remain separate and unchanged. Earlier development entries above
+are preserved as history.
+
+### Shared Cartesian acceleration tracking in baseline and optimized controllers
+
+Changed the primary tracking request in `controllers/optimized_hqp.py`
+and its perpendicular adapter to the same Cartesian acceleration-feedback
+law used by the respective baseline:
+
+$$
+\begin{aligned}
+a_{\mathrm{track}} &= \ddot p_d+K_p(p_d-p)+K_d(\dot p_d-J\dot q),\\
+b &= a_{\mathrm{track}}-\dot J\dot q,\\
+\tau &= M(q)u_{\mathrm{HQP}}+c(q,\dot q).
+\end{aligned}
+$$
+
+Both optimized YAML files now configure `tracking.kp_position: 100.0`
+and `tracking.kd_position: 20.0`, with units s^-2 and s^-1. The previous
+Cartesian stiffness/damping feedback is removed. Secondary damping,
+posture gain and startup duration move into the same `tracking` block
+without changing their values. The reusable class is named
+`HQPTrackingController`; the controller filenames and launch selectors
+remain `optimized_hqp.py` and `optimized_hqp_perp.py`.
+
+The HQP hierarchy, hard/soft constraints, dynamically consistent
+nullspace projection, fixed `q_posture_ref`, analytical online mass
+gradient, mass gain, observer usage, torque convention and termination
+policies are retained. The circle keeps strict two-level HQP, while the
+perpendicular experiment keeps its three-level soft-constraint mode.
+Baseline controllers and reference trajectories are unchanged.
+
+Logging records `user_tracking_acceleration` instead of the former virtual
+impedance force. The existing plot component supports both current and
+historical logs. The README now describes the shared tracking request and
+new YAML keys. Historical impedance-era results and reports are retained
+as provenance; new simulations are needed to establish mass and collision
+metrics for this tracking law. The offline posture files are not regenerated
+by this change.
+
+After building and sourcing the package, the existing commands still apply:
+
+```bash
+source /ros2_ws/install/setup.bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_hqp.py \
+  run_name:=circle_optimized_hqp \
+  real_time_factor:=0.10 duration:=20
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_hqp_perp.py \
+  run_name:=optimized_hqp_perp \
+  real_time_factor:=0.10 duration:=2
+```
+
+The existing `ros2 run fr3_student_sim plot_run LOG.npz --no-show` and
+`ros2 run fr3_student_sim compare_runs BASELINE.npz CANDIDATE.npz` commands
+retain their names and arguments.

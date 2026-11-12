@@ -159,6 +159,7 @@ def plot(run: dict, path_png: str, show: bool = True):
     if not show:
         matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    # Removed controller names remain log-format identifiers, never imports.
     if Path(run['meta'].get('controller', '')).name in (
             'optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_perp_full_online.py',
             'impedance_hqp.py', 'controller_impedance_hqp.py'):
@@ -230,6 +231,11 @@ def main():
     ap.add_argument('logs', nargs='+')
     ap.add_argument('--no-show', action='store_true', help='only write the PNGs')
     a = ap.parse_args()
+    for path in a.logs:
+        if not path:
+            ap.error('empty log path; check that the shell pattern matched an existing .npz file')
+        if not Path(path).is_file():
+            ap.error(f'log file not found: {path}')
     for path in a.logs:
         run = load_run(path)
         print(f'\n== {path}')

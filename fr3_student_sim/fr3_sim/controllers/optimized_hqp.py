@@ -1,9 +1,10 @@
-"""Cartesian impedance/HQP control and its circular-tracking experiment.
+"""Baseline-style Cartesian acceleration tracking with constrained redundancy.
 
-Robotics 2, 15_ImpedanceControl, slide 13, extended to a redundant position
-task. This is not a proof of passivity for the variable-inertia, sampled HQP
-closed loop (see also slide 14). The observer affects safety predictions only;
-it is never subtracted from the impedance command.
+The primary acceleration reference matches the baseline's Cartesian PD law.
+HQP priorities, dynamically consistent secondary motion and the analytical
+mass objective are shared by the circular and perpendicular experiments.
+The observer affects constraint predictions only; it is never subtracted
+directly from the torque command. Gravity is compensated by the simulator.
 """
 
 import numpy as np
@@ -18,7 +19,7 @@ from fr3_sim.methods.joint_constraints import JointConstraints, vector
 from fr3_sim.methods.mass_objective import DirectionalMassObjective, projected_mass_torque
 
 
-class ImpedanceHQPController(StudentController):
+class HQPTrackingController(StudentController):
     """Controller independent of trajectory shape and environment geometry.
 
     ``reference.sample(t)`` supplies world position, velocity and acceleration.
@@ -32,20 +33,20 @@ class ImpedanceHQPController(StudentController):
             raise ValueError('control period must be positive and finite')
         self.reference = reference
         self.monitor = None
-        impedance = params.get('impedance', {})
-        self.stiffness = vector(impedance.get('stiffness', 600.0), 3,
-                                'impedance.stiffness', positive=True)
-        self.damping = vector(impedance.get('damping', 120.0), 3,
-                              'impedance.damping', positive=True)
+        tracking = params.get('tracking', {})
+        self.kp_position = vector(tracking.get('kp_position', 100.0), 3,
+                                  'tracking.kp_position', positive=True)
+        self.kd_position = vector(tracking.get('kd_position', 20.0), 3,
+                                  'tracking.kd_position', positive=True)
         # A scalar keeps M N k symmetric positive semidefinite. Arbitrary
         # diagonal acceleration gains would not generally remain dissipative.
-        self.null_damping = float(impedance.get('nullspace_damping', 10.0))
+        self.null_damping = float(tracking.get('nullspace_damping', 10.0))
         if not np.isfinite(self.null_damping) or self.null_damping < 0:
-            raise ValueError('impedance.nullspace_damping must be a nonnegative finite scalar')
-        self.posture_gain = float(impedance.get('posture_gain', 25.0))
-        self.startup_ramp_duration = float(impedance.get('startup_ramp_duration', 0.5))
+            raise ValueError('tracking.nullspace_damping must be a nonnegative finite scalar')
+        self.posture_gain = float(tracking.get('posture_gain', 25.0))
+        self.startup_ramp_duration = float(tracking.get('startup_ramp_duration', 0.5))
         if not np.isfinite(self.startup_ramp_duration) or self.startup_ramp_duration < 0:
-            raise ValueError('impedance.startup_ramp_duration must be finite and nonnegative')
+            raise ValueError('tracking.startup_ramp_duration must be finite and nonnegative')
         self.q_posture = params.get('q_posture_ref')
         self.q_posture = (None if self.q_posture is None else
                           vector(self.q_posture, 7, 'q_posture_ref'))
@@ -56,7 +57,7 @@ class ImpedanceHQPController(StudentController):
         if not np.isfinite(self.mass_gain) or self.mass_gain < 0:
             raise ValueError('mass_minimization.gain must be finite and nonnegative')
         if not np.isfinite(self.posture_gain) or self.posture_gain < 0:
-            raise ValueError('impedance.posture_gain must be finite and nonnegative')
+            raise ValueError('tracking.posture_gain must be finite and nonnegative')
         self.constraints = JointConstraints(params.get('safety', {}))
         if self.q_posture is not None and (np.any(self.q_posture < self.constraints.hard_q_lower)
                                            or np.any(self.q_posture > self.constraints.hard_q_upper)):
@@ -83,7 +84,7 @@ class ImpedanceHQPController(StudentController):
 
     def bind_collision_monitor(self, monitor):
         if not monitor.enabled:
-            raise ValueError('impedance HQP requires observer:=true')
+            raise ValueError('optimized HQP requires observer:=true')
         self.monitor = monitor
 
     def _estimate(self, t, M_inv):
@@ -113,20 +114,22 @@ class ImpedanceHQPController(StudentController):
         gravity = self.robot.gravity(q)
         M_inv = np.linalg.solve(M, np.eye(7))
         W = J @ M_inv @ J.T
-        # Do not silently regularize a singular task into another impedance.
+        # Keep the existing rank check for dynamically consistent redundancy.
         if np.linalg.eigvalsh(W)[0] <= 1e-8:
             raise ValueError('Cartesian inertia is singular at this configuration')
         Lambda = np.linalg.solve(W, np.eye(3))
         Jbar = M_inv @ J.T @ Lambda
         N = np.eye(7) - Jbar @ J
         ep, ev = p_ref - p, v_ref - J @ dq
-        impedance_force = self.stiffness * ep + self.damping * ev
-        task_target = a_ref - self.robot.jdot_dq(q, dq) + W @ impedance_force
+        # Same position/velocity-error acceleration feedback as the baseline.
+        # W remains above for the secondary projector, not for tracking gains.
+        tracking_acceleration = a_ref + self.kp_position * ep + self.kd_position * ev
+        task_target = tracking_acceleration - self.robot.jdot_dq(q, dq)
         posture = np.zeros(7) if self.q_posture is None else self.posture_gain * (self.q_posture - q)
         mass_kg, gradient = self.mass_objective.evaluate(q, M=M, J=J)
         tau_mass = projected_mass_torque(M, J, gradient, self.mass_gain)
         # Activate secondary attraction smoothly at RUN startup. Damping,
-        # Cartesian impedance and every safety constraint remain active.
+        # Cartesian tracking and every safety constraint remain active.
         # Scale preferences before the QPs, never their constrained output.
         phase = (1.0 if self.startup_ramp_duration == 0.0 else
                  float(np.clip(t / self.startup_ramp_duration, 0.0, 1.0)))
@@ -148,7 +151,7 @@ class ImpedanceHQPController(StudentController):
             'position_error': ep.copy(), 'velocity_error': ev.copy(),
             'mass_kg': mass_kg, 'mass_gradient': gradient.copy(),
             'startup_scale': startup_scale,
-            'tau_mass': tau_mass.copy(), 'impedance_force': impedance_force.copy(),
+            'tau_mass': tau_mass.copy(), 'tracking_acceleration': tracking_acceleration.copy(),
             'normal_speed': float(-self.mass_objective.normal @ (J @ dq)),
             'normal_speed_ref': float(-self.mass_objective.normal @ v_ref),
             'observer_valid': float(snapshot.valid),
@@ -231,8 +234,8 @@ class ImpedanceHQPController(StudentController):
         return tau
 
 
-class Controller(ImpedanceHQPController):
-    """Use the shared impedance/HQP law with the configured circular reference."""
+class Controller(HQPTrackingController):
+    """Use the shared tracking/HQP law with the configured circular reference."""
 
     def __init__(self, robot, params, dt):
         circle = params.get('circle', {})

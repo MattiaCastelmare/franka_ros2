@@ -26,9 +26,6 @@ _ALIASES = {
     'optimized_hqp_perp': 'optimized_hqp_perp.py',
     'optimized_hqp_perp.py': 'optimized_hqp_perp.py',
     'controllers/optimized_hqp_perp.py': 'optimized_hqp_perp.py',
-    'optimized_perp_full_online': 'optimized_perp_full_online.py',
-    'optimized_perp_full_online.py': 'optimized_perp_full_online.py',
-    'controllers/optimized_perp_full_online.py': 'optimized_perp_full_online.py',
     'impedance_hqp': 'optimized_hqp.py',
     'impedance_hqp.py': 'optimized_hqp.py',
     'controllers/impedance_hqp.py': 'optimized_hqp.py',
@@ -40,7 +37,6 @@ _TASKS = {
     'baseline_perp.py': 'baseline_perp.yaml',
     'optimized_hqp.py': 'circle_tracking_optimized_hqp.yaml',
     'optimized_hqp_perp.py': 'optimized_hqp_perp.yaml',
-    'optimized_perp_full_online.py': 'optimized_perp_full_online.yaml',
 }
 
 
@@ -53,8 +49,7 @@ def resolve_controller_path(selector: str) -> str:
         if filename is None:
             raise FileNotFoundError(
                 f'Unknown controller {selector!r}; use baseline.py, '
-                'baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py, '
-                'optimized_perp_full_online.py '
+                'baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py '
                 'or an absolute Python file path')
         path = Path(__file__).resolve().parent / filename
     if not path.is_file():
