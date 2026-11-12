@@ -159,7 +159,9 @@ def plot(run: dict, path_png: str, show: bool = True):
     if not show:
         matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    if Path(run['meta'].get('controller', '')).name in ('impedance_hqp.py', 'controller_impedance_hqp.py'):
+    if Path(run['meta'].get('controller', '')).name in (
+            'optimized_hqp.py', 'optimized_hqp_perp.py',
+            'impedance_hqp.py', 'controller_impedance_hqp.py'):
         from fr3_sim.analysis.plot_impedance import impedance_figure
         fig = impedance_figure(run, plt)
         _save_figures(run, fig, path_png, show, plt)

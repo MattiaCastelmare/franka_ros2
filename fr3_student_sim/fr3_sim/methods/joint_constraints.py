@@ -35,6 +35,9 @@ class AccelerationBounds:
     margin: np.ndarray
     predicted_q: np.ndarray
     predicted_dq: np.ndarray
+    soft_lower: np.ndarray | None = None
+    soft_upper: np.ndarray | None = None
+    soft_scale: np.ndarray | None = None
 
 
 class JointConstraints:
@@ -49,6 +52,11 @@ class JointConstraints:
     requires a viable initial state, feasible torques and bounded errors.
     Delay prediction uses the previously applied actuator command, not a
     contact model or true external force.
+
+    With ``soft_constraints.enabled``, only next-state position/velocity
+    predictions form the hard interval. Acceleration, inner position barriers
+    and velocity-rate barriers are returned as three separate soft groups.
+    The default strict path retains the original merged bounds.
     """
 
     def __init__(self, params):
@@ -74,9 +82,30 @@ class JointConstraints:
                 raise ValueError(f'safety.{name} must be positive and finite')
         if not np.isfinite(self.delay) or self.delay < 0:
             raise ValueError('safety.command_delay_s must be finite and nonnegative')
+        soft = params.get('soft_constraints', {})
+        self.soft_enabled = soft.get('enabled', False)
+        if not isinstance(self.soft_enabled, bool):
+            raise ValueError('safety.soft_constraints.enabled must be boolean')
+        self.hard_margin = self.margin.copy()
+        self.soft_scale = None
+        if self.soft_enabled:
+            self.hard_margin = vector(soft.get('hard_position_margin', 0.06), 7,
+                                      'safety.soft_constraints.hard_position_margin', positive=True)
+            if np.any(self.hard_margin <= 0.05) or np.any(self.hard_margin > self.margin):
+                raise ValueError('hard_position_margin must exceed runner margin 0.05 rad '
+                                 'and not exceed the preferred position_margin')
+            # All three preference groups constrain acceleration, so their
+            # normalization scales have units rad/s^2. Group order is fixed.
+            self.soft_scale = np.vstack([
+                vector(soft.get(name, self.acceleration), 7,
+                       'safety.soft_constraints.' + name, positive=True)
+                for name in ('acceleration_scale', 'position_scale', 'velocity_scale')
+            ])
+        self.hard_q_lower = Q_MIN + self.hard_margin
+        self.hard_q_upper = Q_MAX - self.hard_margin
 
     def bounds(self, q, dq, M_inv, c, tau_applied, residual, uncertainty, dt):
-        """Return bounds on u and the states used in the delayed prediction."""
+        """Return hard bounds, optional soft rows and the delayed predicted state."""
         if not np.isfinite(dt) or dt <= 0:
             raise ValueError('prediction interval must be positive and finite')
         disturbance = M_inv @ residual
@@ -88,6 +117,41 @@ class JointConstraints:
         q_error = 0.5 * delay**2 * uncertainty
         v_error = delay * uncertainty
         rate, vrate = self.position_rate, self.velocity_rate
+        if self.soft_enabled:
+            # Mandatory prediction of the next state, after transport delay.
+            # These rows have NO slack. This is a local, constant-acceleration
+            # prediction conditional on the disturbance/error envelope; it is
+            # not a proof of future braking feasibility under arbitrary impacts.
+            hard_lower = np.maximum(
+                (-self.velocity - vp + v_error) / dt,
+                2 * (self.hard_q_lower - qp + q_error - dt * (vp - v_error)) / dt**2,
+            )
+            hard_upper = np.minimum(
+                (self.velocity - vp - v_error) / dt,
+                2 * (self.hard_q_upper - qp - q_error - dt * (vp + v_error)) / dt**2,
+            )
+            # Keep each comfort preference separate, including contradictory
+            # lower/upper values: the elastic QP decides its minimum relaxation.
+            soft_lower = np.vstack([
+                -self.acceleration,
+                -2 * rate * (vp - v_error) - rate**2 * (qp - q_error - self.q_lower),
+                -vrate * (vp - v_error + self.velocity),
+            ])
+            soft_upper = np.vstack([
+                self.acceleration,
+                -2 * rate * (vp + v_error) + rate**2 * (self.q_upper - qp - q_error),
+                vrate * (self.velocity - vp - v_error),
+            ])
+            return AccelerationBounds(
+                lower=hard_lower - disturbance + uncertainty,
+                upper=hard_upper - disturbance - uncertainty,
+                disturbance=disturbance.copy(), uncertainty=uncertainty.copy(),
+                margin=np.minimum(q - Q_MIN, Q_MAX - q),
+                predicted_q=qp, predicted_dq=vp,
+                soft_lower=soft_lower - disturbance + uncertainty,
+                soft_upper=soft_upper - disturbance - uncertainty,
+                soft_scale=self.soft_scale.copy(),
+            )
         lower = np.maximum.reduce([
             -self.acceleration,
             -2 * rate * (vp - v_error) - rate**2 * (qp - q_error - self.q_lower),

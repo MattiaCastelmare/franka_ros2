@@ -1,0 +1,21 @@
+# Controller: fr3_sim/controllers/baseline_perp.py
+# Same feedback, preferred posture and gains as the circular baseline.
+# One straight approach along -wall.normal; orientation remains free.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1..7
+
+approach:
+  speed: 0.20                 # [m/s] reference normal speed at the plane crossing
+  acceleration_duration: 0.50 # [s] smooth startup; 50 mm travelled before cruise
+  penetration: 0.010          # [m] final REFERENCE overlap (10 mm), not actual penetration
+  braking_distance: 0.004     # [m] final braking segment; cruise for 6 mm beyond the plane
+  hold_duration: 0.15         # [s] short endpoint hold, then controller.done ends the trial
+
+tracking:
+  kp_position: 100.0  # [1/s^2] Cartesian position-error gain
+  kd_position: 20.0   # [1/s] Cartesian velocity-error gain
+  kp_nullspace: 25.0  # [1/s^2] projected attraction towards q0 = initial_q
+  kd_nullspace: 10.0  # [1/s] nullspace damping, applied once
+
+# Directional mass is logged, without minimizing it; observer is monitoring only.
+# No collision-triggered release or retreat. Launch duration remains an upper bound.
+# Keep this reference and check ACTUAL pre-contact speed when comparing controllers.

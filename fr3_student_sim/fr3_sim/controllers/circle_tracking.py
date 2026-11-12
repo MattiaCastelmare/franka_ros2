@@ -1,4 +1,4 @@
-"""Circular position tracking and nullspace damping used by the baseline.
+"""Position tracking and nullspace damping shared by the baseline experiments.
 
 Robotics 2: 13_CartesianControl, slides 8 and 11; and
 02_KinematicRedundancy_2, slides 7 and 13.
@@ -18,16 +18,20 @@ class PositionTrackingController(StudentController):
     def __init__(self, robot, params, dt):
         super().__init__(robot, params, dt)
         self.p_initial = robot.position(params['initial_q'])
+        self.reference = self._make_reference(self.p_initial, params)
+        tracking = params.get('tracking', {})
+        self.kp_position = float(tracking.get('kp_position', 100.0))
+        self.kd_position = float(tracking.get('kd_position', 20.0))
+
+    def _make_reference(self, start_position, params):
+        """Allow experiment adapters to reuse the tracking law with another path."""
         circle = params.get('circle', {})
-        self.reference = CircleReference(
-            self.p_initial,
+        return CircleReference(
+            start_position,
             radius=circle.get('radius', 0.04),
             period=circle.get('period', 8.0),
             ramp=circle.get('ramp', 1.0),
         )
-        tracking = params.get('tracking', {})
-        self.kp_position = float(tracking.get('kp_position', 100.0))
-        self.kd_position = float(tracking.get('kd_position', 20.0))
 
     def update(self, t, q, dq):
         """Return joint torques without gravity compensation."""
@@ -51,12 +55,15 @@ class PositionTrackingController(StudentController):
             'p_ref': p_ref.copy(),
             'v_ref': v_ref.copy(),
             'a_ref': a_ref.copy(),
-            'circle_center': self.reference.center.copy(),
+        }
+        if isinstance(self.reference, CircleReference):
+            self.log['circle_center'] = self.reference.center.copy()
+        self.log.update({
             'p_initial': self.p_initial.copy(),
             'position_error': position_error.copy(),
             'velocity_error': velocity_error.copy(),
             'qdd_command': qdd_command.copy(),
-        }
+        })
         return torque
 
 

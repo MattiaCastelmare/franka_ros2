@@ -1,4 +1,4 @@
-"""Find a fixed low-mass posture offline at the first circle/wall intersection.
+"""Find a fixed low-mass posture offline at the first reference/wall crossing.
 
 Run with an explicit selection criterion and joint margin. The result is a
 task YAML containing ``q_posture_ref`` and a separate JSON report. Nothing
@@ -20,6 +20,7 @@ from fr3_sim.simulation.fr3_model import FR3Model, Q_MAX, Q_MIN
 
 from fr3_sim.methods.circle_reference import CircleReference
 from fr3_sim.methods.mass_objective import DirectionalMassObjective, projected_mass_torque
+from fr3_sim.methods.perpendicular_reference import PerpendicularApproachReference
 
 
 def _vector(value, length, name):
@@ -37,14 +38,32 @@ def _normal(wall):
     return normal / length
 
 
+def _reference_section(task):
+    """Choose the reference family without accepting an ambiguous task YAML."""
+    if 'circle' in task and 'approach' in task:
+        raise ValueError('task must select either circle or approach, not both')
+    return 'approach' if 'approach' in task else 'circle'
+
+
 def first_contact_reference(robot, task, wall):
     """Return position, time and inward speed at the first reference crossing.
 
-    The outward signed gap is D + A*cos(theta) + B*sin(theta). Select its
-    first descending root, then invert the circle's integrated startup ramp.
+    A perpendicular approach supplies its plane-crossing time directly. For
+    a circle, the outward signed gap is D + A*cos(theta) + B*sin(theta): select
+    its first descending root, then invert the integrated startup ramp.
     This is reference geometry, not measured contact or observer detection.
     """
     initial = _vector(task['initial_q'], 7, 'initial_q')
+    section = _reference_section(task)
+    if section == 'approach':
+        normal, point = _normal(wall), _vector(wall['point'], 3, 'wall point')
+        reference = PerpendicularApproachReference(
+            robot.position(initial), point, normal, **task['approach'])
+        time = float(reference.contact_time)
+        position, velocity, _ = reference.sample(time)
+        if abs(float(normal @ (position - point))) > 1e-9 or -normal @ velocity <= 0.0:
+            raise ValueError('could not identify an entering reference crossing')
+        return position, time, float(-normal @ velocity)
     reference = CircleReference(robot.position(initial), **task.get('circle', {}))
     normal = _normal(wall)
     point = _vector(wall['point'], 3, 'wall point')
@@ -80,8 +99,14 @@ def _baseline_state(robot, task, wall, path):
         controller = str(meta['controller']).replace('\\', '/').rsplit('/', 1)[-1]
         # Read historical zero-gain logs for posture provenance only; the
         # optimized controller itself is no longer part of the active package.
-        if controller not in ('baseline.py', 'controller_baseline.py', 'controller_optimized.py'):
-            raise ValueError('baseline log must use baseline or optimized with zero mass gain')
+        perpendicular_controllers = ('baseline_perp.py', 'controller_baseline_perp.py')
+        if controller not in ('baseline.py', 'controller_baseline.py', 'controller_optimized.py',
+                              *perpendicular_controllers):
+            raise ValueError('baseline log must use baseline, baseline_perp or '
+                             'historical optimized with zero mass gain')
+        section = 'approach' if controller in perpendicular_controllers else 'circle'
+        if _reference_section(task) != section or _reference_section(params) != section:
+            raise ValueError('baseline controller and task must use the same reference family')
         if controller == 'controller_optimized.py' and float(
                 params.get('mass_minimization', {}).get('gain', 0.01)) != 0.0:
             raise ValueError('the selected optimized log has a nonzero mass gain')
@@ -92,7 +117,10 @@ def _baseline_state(robot, task, wall, path):
                            rtol=0.0, atol=1e-12):
             raise ValueError('baseline log must use initial_q as its posture reference')
         defaults = {
-            'circle': {'radius': 0.04, 'period': 8.0, 'ramp': 1.0},
+            section: ({'speed': 0.20, 'acceleration_duration': 0.50,
+                       'penetration': 0.010, 'braking_distance': 0.004, 'hold_duration': 0.15}
+                      if section == 'approach' else
+                      {'radius': 0.04, 'period': 8.0, 'ramp': 1.0}),
             'tracking': {'kp_position': 100.0, 'kd_position': 20.0,
                          'kp_nullspace': 25.0, 'kd_nullspace': 10.0},
         }
@@ -188,6 +216,7 @@ def optimize_posture(robot, task, wall, baseline_log, *, selection, joint_margin
     margins = np.minimum(candidate - Q_MIN, Q_MAX - candidate)
     report = {
         'nominal_candidate_only': True, 'achieved_in_simulation': False,
+        'reference_type': 'perpendicular' if _reference_section(task) == 'approach' else 'circle',
         'selection': selection, 'joint_margin_rad': joint_margin,
         'requested_reduction': reduction, 'baseline_log': str(Path(baseline_log).resolve()),
         'baseline_precontact_time_s': seed_time, 'baseline_first_contact_time_s': logged_contact_time,

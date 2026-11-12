@@ -1,4 +1,4 @@
-"""Natural-inertia Cartesian impedance with prioritized constrained redundancy.
+"""Cartesian impedance/HQP control and its circular-tracking experiment.
 
 Robotics 2, 15_ImpedanceControl, slide 13, extended to a redundant position
 task. This is not a proof of passivity for the variable-inertia, sampled HQP
@@ -10,7 +10,10 @@ import numpy as np
 
 from fr3_sim.controllers.base import StudentController
 
-from fr3_sim.methods.hierarchical_qp import HierarchicalAccelerationQP, QPInfeasibleError
+from fr3_sim.methods.circle_reference import CircleReference
+from fr3_sim.methods.hierarchical_qp import (
+    ElasticHierarchicalAccelerationQP, HierarchicalAccelerationQP, QPInfeasibleError,
+)
 from fr3_sim.methods.joint_constraints import JointConstraints, vector
 from fr3_sim.methods.mass_objective import DirectionalMassObjective, projected_mass_torque
 
@@ -55,10 +58,12 @@ class ImpedanceHQPController(StudentController):
         if not np.isfinite(self.posture_gain) or self.posture_gain < 0:
             raise ValueError('impedance.posture_gain must be finite and nonnegative')
         self.constraints = JointConstraints(params.get('safety', {}))
-        if self.q_posture is not None and (np.any(self.q_posture < self.constraints.q_lower)
-                                           or np.any(self.q_posture > self.constraints.q_upper)):
+        if self.q_posture is not None and (np.any(self.q_posture < self.constraints.hard_q_lower)
+                                           or np.any(self.q_posture > self.constraints.hard_q_upper)):
             raise ValueError('q_posture_ref must respect configured position margins')
-        self.qp = HierarchicalAccelerationQP(7, params.get('qp', {}))
+        qp_class = (ElasticHierarchicalAccelerationQP if self.constraints.soft_enabled
+                    else HierarchicalAccelerationQP)
+        self.qp = qp_class(7, params.get('qp', {}))
         estimate = params.get('disturbance_estimate', {})
         self.snapshot_options = {name: float(estimate.get(name, default)) for name, default in
                                  (('warmup_s', 0.2), ('max_gap_s', 0.01), ('max_age_s', 0.01))}
@@ -156,6 +161,15 @@ class ImpedanceHQPController(StudentController):
             'joint_limit_margin': bounds.margin.copy(),
             'qdd_lower': bounds.lower.copy(), 'qdd_upper': bounds.upper.copy(),
         }
+        if self.constraints.soft_enabled:
+            log.update({
+                'soft_lower': bounds.soft_lower.copy(), 'soft_upper': bounds.soft_upper.copy(),
+                'soft_scale': bounds.soft_scale.copy(),
+                'soft_slack_lower': np.full((3, 7), np.nan),
+                'soft_slack_upper': np.full((3, 7), np.nan),
+                'soft_slack_max': np.nan, 'soft_slack_normalized_max': np.nan,
+                'qp_safety_status': -1.0, 'qp_safety_iterations': 0.0, 'qp_safety_ms': 0.0,
+            })
         try:
             if snapshot.reason not in ('ok', 'initializing', 'warming_up'):
                 raise QPInfeasibleError('invalid disturbance snapshot: ' + snapshot.reason)
@@ -167,8 +181,11 @@ class ImpedanceHQPController(StudentController):
             torque_halfwidth = self.constraints.torque - 0.5 * np.abs(gravity)
             if np.any(torque_halfwidth <= 0):
                 raise QPInfeasibleError('no nonzero-width command/motor torque intersection')
+            preferences = ({'soft_lower': bounds.soft_lower, 'soft_upper': bounds.soft_upper,
+                            'soft_scale': bounds.soft_scale}
+                           if self.constraints.soft_enabled else {})
             result = self.qp.solve(J, task_target, secondary_target, M, c + 0.5 * gravity,
-                                   bounds.lower, bounds.upper, torque_halfwidth)
+                                   bounds.lower, bounds.upper, torque_halfwidth, **preferences)
         except QPInfeasibleError as exc:
             # No stale command or silent relaxation of safety constraints.
             # This bounded damping is a termination fallback, not a safety proof.
@@ -195,9 +212,32 @@ class ImpedanceHQPController(StudentController):
                         'qp_primary_iterations': result.primary_iterations,
                         'qp_secondary_iterations': result.secondary_iterations,
                         'qp_primary_ms': result.primary_ms, 'qp_secondary_ms': result.secondary_ms})
+            if self.constraints.soft_enabled:
+                used = np.maximum(result.soft_slack_lower, result.soft_slack_upper)
+                log.update({
+                    'soft_slack_lower': result.soft_slack_lower.copy(),
+                    'soft_slack_upper': result.soft_slack_upper.copy(),
+                    'soft_slack_max': float(np.max(used)),
+                    'soft_slack_normalized_max': float(np.max(used / bounds.soft_scale)),
+                    'qp_safety_status': result.safety_status,
+                    'qp_safety_iterations': result.safety_iterations,
+                    'qp_safety_ms': result.safety_ms,
+                })
         log.update({'qdd_command': u.copy(),
                     'qdd_predicted': u + bounds.disturbance,
                     'tau_motor_predicted': tau + gravity,
                     'task_acceleration_error': J @ u - task_target})
         self.log = log
         return tau
+
+
+class Controller(ImpedanceHQPController):
+    """Use the shared impedance/HQP law with the configured circular reference."""
+
+    def __init__(self, robot, params, dt):
+        circle = params.get('circle', {})
+        reference = CircleReference(robot.position(params['initial_q']),
+                                    radius=circle.get('radius', 0.04),
+                                    period=circle.get('period', 4.0),
+                                    ramp=circle.get('ramp', 1.0))
+        super().__init__(robot, params, dt, reference)

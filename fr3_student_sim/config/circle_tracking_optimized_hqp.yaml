@@ -1,5 +1,5 @@
 # Independent experiment: world-frame position impedance, constrained redundancy.
-# Controller: fr3_sim/controllers/impedance_hqp.py
+# Controller: fr3_sim/controllers/optimized_hqp.py
 # Same initial state, reference and wall as baseline. Orientation stays free.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 circle:

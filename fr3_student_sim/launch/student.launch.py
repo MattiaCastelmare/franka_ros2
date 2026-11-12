@@ -1,11 +1,12 @@
 """Gazebo FR3 + effort controller + virtual wall + the student's controller.
 
     ros2 launch fr3_student_sim student.launch.py                       # posture baseline
-    ros2 launch fr3_student_sim student.launch.py controller:=impedance_hqp.py real_time_factor:=0.10
+    ros2 launch fr3_student_sim student.launch.py controller:=optimized_hqp.py real_time_factor:=0.10
     ros2 launch fr3_student_sim student.launch.py wall:=false duration:=10 gui:=false
 
-``controller`` selects baseline.py or impedance_hqp.py, or an absolute custom
-Python file. Legacy controller selectors remain aliases. When a run ends (duration, ``done``, safety
+``controller`` selects baseline.py, baseline_perp.py, optimized_hqp.py,
+optimized_hqp_perp.py or an absolute custom Python file. Legacy controller
+selectors remain aliases. When a run ends (duration, ``done``, safety
 stop) the log is saved in ``log_dir`` and everything shuts down.
 """
 import math
@@ -28,10 +29,10 @@ PKG = 'fr3_student_sim'
 QUIET = {'stdout': 'log', 'stderr': 'log'}     # helper processes: ~/.ros/log only
 
 ARGS = {
-    'controller': ('baseline.py', 'baseline.py, impedance_hqp.py, a legacy selector or an absolute Python file; '
+    'controller': ('baseline.py', 'baseline.py, baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py, a legacy selector or an absolute Python file; '
                                        '"none" = only the robot, commanded from the terminal'),
     'task_config': ('', 'Task YAML passed to the controller as self.params '
-                        '(empty = matching baseline or impedance-HQP YAML)'),
+                        '(empty = matching controller YAML)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
     'observer': ('true', 'Enable momentum observer and collision detection '

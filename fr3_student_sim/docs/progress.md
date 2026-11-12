@@ -1876,3 +1876,321 @@ factor while `user_mass_gradient` remains the analytical unscaled gradient.
 The existing HQP status panel displays the startup factor when available,
 without adding another figure. Older logs remain readable. Observer and
 detector operation, thresholds and detection-event logging are unchanged.
+
+### Perpendicular baseline approach
+
+Added `fr3_sim/controllers/baseline_perp.py` and
+`config/baseline_perp.yaml`. The new controller reuses the baseline Cartesian
+acceleration feedback, projected posture attraction towards `initial_q` and
+joint damping. The existing circle baseline and impedance/HQP experiments
+retain their behavior. Directional mass is recorded without minimization,
+and collision monitoring does not switch the controller.
+
+The reusable `fr3_sim/methods/perpendicular_reference.py` generates position,
+velocity and acceleration along the negative wall normal from the initial
+fingertip position. The default approach reaches 0.20 m/s with a smooth
+0.20 s speed ramp. It crosses the reference wall plane at constant speed,
+continues for 6 mm and brakes over 4 mm, ending with 10 mm of reference
+overlap. It holds that final reference for 0.15 s, then sets the controller
+done. Speed, ramp duration, overlap, braking distance and hold duration are
+configurable in the new YAML.
+
+For the current initial pose and wall, the nominal reference reaches the
+plane around 0.40 s, brakes around 0.43-0.47 s and finishes around 0.62 s
+after RUN starts. Actual contact time, entry speed and penetration depend
+on tracking and contact dynamics. Reference overlap is not measured wall
+penetration. The termination time does not depend on observer detection or
+true contact force; the launch duration and existing safety stops can still
+end a run earlier.
+
+Controller loading, default task selection and batch selection include the
+new experiment. The new signals `user_normal_speed`,
+`user_normal_speed_ref`, `user_approach_distance_ref`, `user_reference_depth`
+and `user_approach_complete` accompany the existing baseline and mass logs.
+The existing main, observer and first-impact collision figures accept the
+new logs. The collision summary's `entry_speed_mps` reports measured speed
+immediately before contact; use it when matching future experiments.
+
+After building and sourcing the updated package, launch inside the container:
+
+```bash
+cd /ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select fr3_student_sim
+source /ros2_ws/install/setup.bash
+
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=baseline_perp.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/baseline_perp.yaml \
+  run_name:=baseline_perp \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.10 duration:=2
+```
+
+Add `gui:=false` for a headless run. The two-second launch duration is only
+an upper bound; the default reference and hold finish earlier. Generate the
+three PNGs from the latest matching log with:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+latest_perp_log=$(ls -t runs/baseline_perp_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_perp_log" --no-show
+```
+
+The README now includes the three active experiments and six active YAML
+files. The offline preferred-posture search still uses the circular
+reference; no perpendicular posture-search workflow has been added.
+
+### Impedance/HQP controller in one module
+
+Merged the reusable `ImpedanceHQPController` class and circular experiment's
+`Controller` subclass into `fr3_sim/controllers/impedance_hqp.py`. The
+separate `controllers/cartesian_impedance.py` module has been removed.
+Reference generation, mass objective, joint constraints and QP numerical
+helpers remain in `fr3_sim/methods/`.
+
+The control law, gains, configuration, observer handling and logging remain
+unchanged. The circular adapter still supplies its reference to the generic
+class. Existing `controller:=impedance_hqp.py` launch commands and the plot
+commands retain their names and arguments. The README describes the merged
+module; historical development sections are preserved.
+
+### Optimized HQP controller name
+
+Renamed the controller module to `fr3_sim/controllers/optimized_hqp.py` and
+its task configuration to `config/circle_tracking_optimized_hqp.yaml`.
+`ImpedanceHQPController`, the control law, gains, observer handling and
+numerical helpers are unchanged. The former selectors `impedance_hqp.py`,
+`controller_impedance_hqp.py` and
+`circle_tracking/controller_impedance_hqp.py` remain aliases for the renamed
+controller. Historical logs and comparison reports retain their filenames.
+
+Use the new canonical selector and log prefix after rebuilding and sourcing
+the package:
+
+```bash
+source /ros2_ws/install/setup.bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_hqp.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_optimized_hqp.yaml \
+  run_name:=circle_optimized_hqp \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.10 duration:=20
+```
+
+Add `gui:=false` for a headless run. Generate the figures for the latest new
+log with:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+latest_hqp_log=$(ls -t runs/circle_optimized_hqp_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_hqp_log" --no-show
+```
+
+The README uses the new module, configuration and log prefix for current
+commands. Earlier development sections and historical report links remain
+unchanged.
+
+### Perpendicular approach with optimized HQP
+
+Added `fr3_sim/controllers/optimized_hqp_perp.py` and
+`config/optimized_hqp_perp.yaml`. The new entry point passes the shared
+`PerpendicularApproachReference` to `ImpedanceHQPController` from
+`controllers/optimized_hqp.py`. The Cartesian impedance law, two QP levels,
+joint constraints, observer handling, damping, mass objective and existing
+gains are reused without changing the circular controller or the baseline.
+
+The reference matches `baseline_perp`: 0.20 m/s approach speed, a 0.20 s
+speed ramp, 10 mm final reference overlap, 4 mm braking distance and a
+0.15 s final hold. The scheduled end is around 0.62 s after RUN starts for
+the current geometry. The final hold ends independently of detection and
+true contact force. Launch duration, QP infeasibility and existing safety
+stops can still terminate the experiment earlier.
+
+The perpendicular configuration has a separate `q_posture_ref`. Its offline
+workflow uses the matching perpendicular baseline, rather than the
+circle-derived posture. Online mass minimization uses the available
+secondary freedom. The 0.5 s secondary-objective startup ramp is retained.
+A static 30% posture target does not establish the same reduction at actual
+impact during the short approach.
+
+Controller loading, default task selection and batch selection include the
+new experiment. Logging combines existing HQP diagnostics with the shared
+perpendicular-reference signals. The main HQP, observer and first-impact
+collision PNGs use the existing plotting components. Log comparison
+recognizes perpendicular approach parameters and distinguishes scheduled
+completion after the hold from premature controller termination.
+
+After rebuilding and sourcing the package, launch inside the container:
+
+```bash
+source /ros2_ws/install/setup.bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_hqp_perp.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/optimized_hqp_perp.yaml \
+  run_name:=optimized_hqp_perp \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.10 duration:=2
+```
+
+Add `gui:=false` for a headless run. The launch duration is an upper bound;
+the reference and final hold normally finish earlier. Generate the three
+figures with:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+latest_hqp_perp_log=$(ls -t runs/optimized_hqp_perp_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_hqp_perp_log" --no-show
+```
+
+For comparison, run the perpendicular baseline with the same execution
+settings, then use:
+
+```bash
+baseline_perp_log=$(ls -t runs/baseline_perp_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim compare_runs \
+  "$baseline_perp_log" "$latest_hqp_perp_log" \
+  --output runs/optimized_hqp_perp_comparison.json
+```
+
+The README now lists four experiments and seven active YAML files, with the
+new launch, plot and comparison commands. Historical sections and reports
+are preserved.
+
+### Offline posture workflow for the perpendicular approach
+
+Extended `fr3_sim/methods/optimize_posture.py` to recognize the shared
+perpendicular reference as well as the circle. The optimizer uses the
+selected reference's first entering wall-plane intersection and a matching
+baseline log for its contact configuration and directional mass. The
+`closest-target` selection, explicit 0.15 rad joint margin and configurable
+mass-reduction constraint are retained. The circular HQP posture,
+configuration and historical report remain separate.
+
+Generate a perpendicular posture candidate and its static report with:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+baseline_perp_log=$(ls -t runs/baseline_perp_[0-9]*.npz | head -n 1)
+
+python3 -m fr3_sim.methods.optimize_posture \
+  --task-config config/baseline_perp.yaml \
+  --wall-config config/wall.yaml \
+  --baseline-log "$baseline_perp_log" \
+  --selection closest-target \
+  --joint-margin 0.15 \
+  --reduction 0.30 \
+  --output /tmp/low_mass_perp_posture.yaml \
+  --report docs/optimized_hqp_perp_posture.json
+```
+
+The output copies the perpendicular baseline task and adds `q_posture_ref`;
+it does not automatically replace the HQP configuration. After a feasible
+candidate is found, copy only that vector into
+`config/optimized_hqp_perp.yaml`, retaining the impedance, QP and approach
+settings. The report stores static constraints and baseline provenance.
+Actual entry mass, speed and joint margins remain simulation measurements;
+the offline target alone is not a guarantee of a 30% impact-mass reduction.
+
+Recalculated the perpendicular preferred posture from
+`baseline_perp_20261111_155628.npz` with `closest-target`, a 0.15 rad margin
+and the 30% static reduction constraint. Applied the resulting
+`q_posture_ref` to `config/optimized_hqp_perp.yaml` and saved its provenance
+and static constraints in
+[docs/optimized_hqp_perp_posture.json](optimized_hqp_perp_posture.json).
+The circle configuration and `docs/optimized_posture.json` are unchanged.
+This updates the posture preference without asserting the same mass
+reduction during the simulated approach.
+
+Completion checking uses `user_trial_complete` for finite approaches.
+Earlier perpendicular logs without that signal retain readable first-impact
+metrics but do not establish scheduled completion; use a new baseline run
+for full completion validation.
+
+### Longer acceleration ramp for the perpendicular experiments
+
+Changed `approach.acceleration_duration` from 0.20 s to 0.50 s in both
+`config/baseline_perp.yaml` and `config/optimized_hqp_perp.yaml`. The initial
+pose, wall, 0.20 m/s reference speed, 10 mm final reference overlap, 4 mm
+braking distance and 0.15 s hold are retained. Controller laws, gains,
+observer settings and joint constraints are unchanged.
+
+With the current geometry, the nominal reference reaches the wall at about
+0.55 s, brakes from about 0.58 to 0.62 s and finishes around 0.77 s. The
+existing 0.5 s HQP secondary-objective startup ramp now completes before
+the nominal reference contact time. Actual contact time and entry speed
+remain measured quantities.
+
+The perpendicular offline posture workflow uses a fresh `baseline_perp`
+log matching this longer ramp. Its report remains
+`docs/optimized_hqp_perp_posture.json`; the resulting preference belongs in
+`config/optimized_hqp_perp.yaml`. The circular configuration and posture
+report remain separate. A static mass target still requires checking
+against the measured mass and speed at actual impact.
+
+Existing launch selectors, configurations and plotting commands retain
+their names. `duration:=2` remains a maximum RUN duration; the finite
+approach and hold finish earlier under the new timing. Earlier development
+sections preserve the previous 0.20 s ramp and its original provenance.
+
+Refreshed the perpendicular offline posture from
+`baseline_perp_20261111_175507.npz`, matching the 0.50 s acceleration ramp.
+Applied the new `q_posture_ref` to `config/optimized_hqp_perp.yaml` and
+updated `docs/optimized_hqp_perp_posture.json` with the baseline provenance
+and static search constraints. The search retains `closest-target`, the
+0.15 rad joint margin and the 30% static mass-reduction target. The circular
+HQP configuration and its posture report are unchanged.
+
+### Hard physical constraints and soft preventive preferences
+
+Added an optional three-level HQP mode, enabled in
+`config/optimized_hqp_perp.yaml` through `safety.soft_constraints`. Predicted
+position and velocity and the existing command/nominal motor torque bounds
+remain hard. The hard position margin is 0.06 rad, preserving a 0.01 rad
+buffer before the runner's 0.05 rad stop band. The 0.15 rad preventive
+margin, 30 rad/s^2 acceleration preference and preventive rate barriers are
+represented separately as relaxable rows. The observer residual, sample
+age, command delay and uncertainty reserve continue to affect predictions;
+true external force is not used in the controller.
+
+The first QP minimizes normalized nonnegative lower/upper slack variables
+while satisfying the hard constraints. The second preserves the optimal
+slack and tracks Cartesian impedance. The third preserves the attained
+Cartesian action while using remaining freedom for posture, analytical
+mass minimization and nullspace damping:
+
+$$
+\ell_s-s^-\le A_su\le h_s+s^+,\qquad s^-,s^+\ge0.
+$$
+
+The row scales are configurable through `acceleration_scale`,
+`position_scale` and `velocity_scale`. A failure of the hard safety level
+still terminates the trial. If the tracking level fails after a verified
+safety solution, the command comes from that same update's safety solution.
+The runner and observer validity/exception guards are retained. The circle
+configuration continues to use the existing strict two-level solver when
+the optional mode is absent or disabled.
+
+Logging now includes the lower/upper slack for all three seven-joint groups,
+scalar maximum and normalized maximum slack, and safety-QP status,
+iterations and timing. The existing ten-panel HQP plot distinguishes the
+preferred margin, hard margin and runner stop band, and displays normalized
+slack and safety status without adding a figure.
+
+Comparison reports retain measured acceleration/preventive-margin
+exceedances as diagnostics in soft mode, while checking hard margin, runner
+stop band, velocity, command/motor torque and finite hard-QP diagnostics.
+Hard and soft outcomes are reported separately; the circle's existing
+acceptance criteria remain unchanged. Safety-QP timing is also summarized.
+
+The fixed `q_posture_ref` is still computed offline by SciPy SLSQP. The
+online HQP does not recompute that posture: it considers its attraction term
+together with the analytical mass gradient at the current configuration.
+Existing launch, plot and comparison commands remain unchanged.

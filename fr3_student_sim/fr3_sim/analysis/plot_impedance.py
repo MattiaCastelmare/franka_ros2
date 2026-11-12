@@ -24,20 +24,34 @@ def impedance_figure(run, plt):
     axes[5].plot(t, run['user_mass_kg'], label='directional mass')
     axes[6].plot(t, run['v_n'], label='actual normal velocity')
     axes[6].plot(t, run['user_normal_speed_ref'], '--', label='reference')
-    configured_margin = run['meta']['params']['safety']['position_margin']
-    axes[7].axhline(float(np.min(configured_margin)), color='k', ls='--', label='QP margin')
+    safety = run['meta']['params']['safety']
+    configured_margin = safety['position_margin']
+    soft = safety.get('soft_constraints', {})
+    elastic = bool(soft.get('enabled', False))
+    axes[7].axhline(float(np.min(configured_margin)), color='k', ls='--',
+                    label='preferred margin (soft)' if elastic else 'QP margin')
+    if elastic and 'hard_position_margin' in soft:
+        axes[7].axhline(float(np.min(soft['hard_position_margin'])), color='tab:orange',
+                        ls='-.', label='hard QP margin')
     axes[7].axhline(0.05, color='r', ls=':', label='runner stop')
-    axes[8].plot(t, run['user_qp_primary_status'], label='primary status')
-    axes[8].plot(t, run['user_qp_secondary_status'], '--', label='secondary status')
+    axes[8].plot(t, run['user_qp_primary_status'], label='tracking status' if elastic else 'primary status')
+    axes[8].plot(t, run['user_qp_secondary_status'], '--', label='redundancy status' if elastic else 'secondary status')
     axes[8].plot(t, run['user_observer_valid'], ':', label='observer valid')
+    if 'user_qp_safety_status' in run:
+        axes[8].plot(t, run['user_qp_safety_status'], '-.', label='safety status')
+    if 'user_soft_slack_normalized_max' in run:
+        axes[8].plot(t, run['user_soft_slack_normalized_max'], color='tab:orange',
+                     label='max normalized slack')
     if 'user_startup_scale' in run:
         axes[8].plot(t, run['user_startup_scale'], color='tab:purple', label='startup scale')
     axes[9].plot(t, run['ctrl_ms'], label='Controller.update')
+    if 'user_qp_safety_ms' in run:
+        axes[9].plot(t, run['user_qp_safety_ms'], lw=0.8, alpha=0.7, label='safety QP')
     period = 1000 / run['meta']['control_rate']
     axes[9].axhline(period, color='r', ls='--', label='period at RTF=1')
     labels = ('tool p [m]', 'position error [mm]', 'torque [N m]', 'dq [rad/s]',
               'contact force [N]', 'mass [kg]', 'normal speed [m/s]',
-              'physical joint margin [rad]', 'status / valid', 'compute [ms]')
+              'physical joint margin [rad]', 'status / valid / slack' if elastic else 'status / valid', 'compute [ms]')
     for axis, label in zip(axes, labels):
         axis.set_ylabel(label)
         axis.grid(alpha=0.3)

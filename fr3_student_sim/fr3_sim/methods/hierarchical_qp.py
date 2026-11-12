@@ -1,10 +1,11 @@
-"""Two-level acceleration QP with hard joint and actuator constraints.
+"""Acceleration HQPs with hard limits and optional prioritized comfort slack.
 
 The decision variable is the *actuator-induced* acceleration
 ``u = solve(M, tau - c)``. External disturbances belong in the bounds supplied
-by the caller, not in an extra torque compensation term here. The primary
+by the caller, not in an extra torque compensation term here. By default the
 Cartesian action is solved first; the secondary solve preserves its attained
 ``J @ u`` exactly, up to a checked numerical equality tolerance.
+The elastic variant first minimizes relaxation of separate comfort bounds.
 
 OSQP instances retain their matrix sparsity and warm starts between updates.
 No result is used without an independent check in the original physical units.
@@ -36,6 +37,11 @@ class HierarchicalQPResult:
     max_violation: float
     primary_ms: float
     secondary_ms: float
+    soft_slack_lower: np.ndarray | None = None
+    soft_slack_upper: np.ndarray | None = None
+    safety_status: int | None = None
+    safety_iterations: int = 0
+    safety_ms: float = 0.0
 
 
 def _positive(value, name):
@@ -261,3 +267,171 @@ class HierarchicalAccelerationQP:
             secondary_iterations=secondary_iterations,
             max_violation=float(violation), primary_ms=primary_ms,
             secondary_ms=secondary_ms)
+
+
+class ElasticHierarchicalAccelerationQP(HierarchicalAccelerationQP):
+    """Minimize comfort-limit relaxation before tracking and redundant motion.
+
+    The first level retains all supplied hard joint/torque constraints while
+    minimizing squared, dimensionless lower/upper slacks. Its Hessian has no
+    acceleration regularizer: actuator acceleration is free wherever the same
+    optimal slack vector can be attained. Groups of soft bounds each constrain
+    the joint acceleration directly; their scale converts physical units to
+    dimensionless violations.
+
+    The verified slack vector is then frozen, up to ``equality_tolerance`` in
+    physical units, before the existing tracking/redundancy hierarchy runs.
+    Failure of that tracking solve returns the freshly verified first-level
+    command. Failure to obtain a verified hard-feasible first level raises
+    ``QPInfeasibleError``. No command from an earlier update is reused.
+    """
+
+    def __init__(self, n=7, settings=None):
+        super().__init__(n, settings)
+        self._safety = None
+        self._soft_groups = 3
+
+    def _run_safety(self, M, c, lower, upper, torque_limits,
+                    soft_lower, soft_upper, soft_scale):
+        """Solve the sparse slack-only QP, preserving its pattern between calls."""
+        started = perf_counter()
+        n, count = self.n, soft_lower.size
+        size = n + 2 * count
+        # Optimize v = u / acceleration_scale, and normalize torque rows by
+        # their limits. Thus soft slacks and actuator variables have comparable
+        # numerical scales without changing the physical feasible set.
+        acceleration_scale = soft_scale[0]
+        normalized_M = M * acceleration_scale[None, :] / torque_limits[:, None]
+        joint = np.arange(count) % n
+        index = np.arange(count)
+        # Rows: hard acceleration, torque, lower/upper soft bounds, z >= 0.
+        rows = np.r_[np.arange(n),
+                     n + np.tile(np.arange(n), n),
+                     2 * n + index, 2 * n + index,
+                     2 * n + count + index, 2 * n + count + index,
+                     2 * n + 2 * count + np.arange(2 * count)]
+        columns = np.r_[np.arange(n), np.repeat(np.arange(n), n),
+                        joint, n + index, joint, n + count + index,
+                        n + np.arange(2 * count)]
+        soft_coefficients = (acceleration_scale / soft_scale).ravel()
+        values = np.r_[np.ones(n), normalized_M.ravel(order='F'),
+                       soft_coefficients, np.ones(count),
+                       soft_coefficients, -np.ones(count),
+                       np.ones(2 * count)]
+        A = sparse.csc_matrix((values, (rows, columns)),
+                              shape=(2 * n + 4 * count, size))
+        lo = np.r_[lower / acceleration_scale, -1.0 - c / torque_limits,
+                   (soft_lower / soft_scale).ravel(), np.full(count, -np.inf),
+                   np.zeros(2 * count)]
+        hi = np.r_[upper / acceleration_scale, 1.0 - c / torque_limits, np.full(count, np.inf),
+                   (soft_upper / soft_scale).ravel(), np.full(2 * count, np.inf)]
+        if self._safety is None:
+            # Explicit zero acceleration weights make this a lexicographic
+            # slack minimum, rather than a weighted trade-off with motion.
+            P = sparse.diags(np.r_[np.zeros(n), np.ones(2 * count)], format='csc')
+            self._safety = osqp.OSQP()
+            self._safety.setup(P=P, q=np.zeros(size), A=A, l=lo, u=hi,
+                               **self.settings)
+        else:
+            self._safety.update(Ax=A.data, l=lo, u=hi)
+        result = self._safety.solve()
+        return result, 1e3 * (perf_counter() - started)
+
+    def solve(self, J, task_target, secondary_target, M, c,
+              lower, upper, torque_limits, *, soft_lower, soft_upper, soft_scale):
+        """Keep physical bounds hard and minimize relaxation of three soft groups.
+
+        Soft arrays have shape ``(3, n)`` and are already shifted for the
+        disturbance estimate and tightened for its uncertainty. Their order is
+        supplied by the caller (acceleration, position and velocity preferences
+        in the controller). Contradictory soft lower/upper bounds are allowed:
+        resolving that contradiction is the purpose of the slack variables.
+        """
+        n, shape = self.n, (self._soft_groups, self.n)
+        # Validate task inputs before computing a fallback: invalid task data
+        # must not be mistaken for a numerical tracking-solver failure.
+        J = np.asarray(J, dtype=float)
+        if (J.ndim != 2 or J.shape[1] != n or not 0 < J.shape[0] <= n
+                or not np.all(np.isfinite(J))):
+            raise ValueError(f'J must be a finite task Jacobian with {n} columns')
+        if self._task_rows is not None and J.shape[0] != self._task_rows:
+            raise ValueError('task Jacobian row count cannot change after the first solve')
+        self._task_rows = J.shape[0]
+        task_target = _array(task_target, (J.shape[0],), 'task_target')
+        secondary_target = _array(secondary_target, (n,), 'secondary_target')
+        M, c = _array(M, (n, n), 'M'), _array(c, (n,), 'c')
+        lower, upper = _array(lower, (n,), 'lower'), _array(upper, (n,), 'upper')
+        torque_limits = _array(torque_limits, (n,), 'torque_limits')
+        soft_lower = _array(soft_lower, shape, 'soft_lower')
+        soft_upper = _array(soft_upper, shape, 'soft_upper')
+        soft_scale = _array(soft_scale, shape, 'soft_scale')
+        if np.any(soft_scale <= 0.0) or np.any(torque_limits <= 0.0):
+            raise ValueError('soft scales and torque limits must be positive')
+        if np.any(lower > upper):
+            joint = int(np.argmax(lower - upper))
+            raise QPInfeasibleError(
+                f'contradictory hard acceleration bounds for joint {joint + 1}: '
+                f'lower={lower[joint]:.6g} > upper={upper[joint]:.6g}')
+        try:
+            safety, safety_ms = self._run_safety(
+                M, c, lower, upper, torque_limits, soft_lower, soft_upper, soft_scale)
+        except Exception as exc:
+            raise QPInfeasibleError(f'hard-constraint/slack QP solver failed: {exc}') from exc
+        count = soft_lower.size
+        if safety.x is None or np.asarray(safety.x).shape != (n + 2 * count,):
+            raise QPInfeasibleError('hard-constraint/slack QP returned no complete command')
+        values = np.asarray(safety.x, dtype=float)
+        first = values[:n] * soft_scale[0]
+        slack_lower = values[n:n + count].reshape(shape) * soft_scale
+        slack_upper = values[n + count:].reshape(shape) * soft_scale
+        hard_error = self._violation(first, M, c, lower, upper, torque_limits)
+        soft_error = float(max(0.0,
+            np.max(soft_lower - first - slack_lower),
+            np.max(first - soft_upper - slack_upper),
+            np.max(-slack_lower), np.max(-slack_upper)))
+        if (safety.info.status_val not in (1, 2) or not np.all(np.isfinite(values))
+                or max(hard_error, soft_error) > self.feasibility_tolerance):
+            raise QPInfeasibleError(
+                f'hard-constraint/slack QP has no verified solution: {safety.info.status} '
+                f'(status={safety.info.status_val}, iterations={safety.info.iter}, '
+                f'hard violation={hard_error:.6g}, slack violation={soft_error:.6g})')
+
+        # Include verified numerical residuals so that the fresh first-level
+        # command remains a witness for the frozen slack box. This adjustment
+        # is bounded by the independent physical-unit check above.
+        slack_lower = np.maximum.reduce((np.zeros(shape), slack_lower,
+                                          soft_lower - first))
+        slack_upper = np.maximum.reduce((np.zeros(shape), slack_upper,
+                                          first - soft_upper))
+        tolerance = self.equality_tolerance
+        frozen_lower = np.maximum(lower, np.max(soft_lower - slack_lower - tolerance, axis=0))
+        frozen_upper = np.minimum(upper, np.min(soft_upper + slack_upper + tolerance, axis=0))
+        tracking_started = perf_counter()
+        try:
+            task = super().solve(J, task_target, secondary_target, M, c,
+                                 frozen_lower, frozen_upper, torque_limits)
+        except QPInfeasibleError:
+            # Safety/slack optimization succeeded for THIS measurement. A
+            # numerical task failure cannot turn it into an older command.
+            selected, primary = first, first
+            primary_status, secondary_status = -1, 0
+            primary_iterations, secondary_iterations = 0, 0
+            primary_ms = 1e3 * (perf_counter() - tracking_started)
+            secondary_ms = 0.0
+            violation = hard_error
+        else:
+            selected, primary = task.acceleration, task.primary_acceleration
+            primary_status, secondary_status = task.primary_status, task.secondary_status
+            primary_iterations, secondary_iterations = task.primary_iterations, task.secondary_iterations
+            primary_ms, secondary_ms = task.primary_ms, task.secondary_ms
+            violation = max(task.max_violation,
+                            self._violation(selected, M, c, lower, upper, torque_limits))
+        return HierarchicalQPResult(
+            acceleration=selected.copy(), primary_acceleration=primary.copy(),
+            primary_status=primary_status, secondary_status=secondary_status,
+            primary_iterations=primary_iterations, secondary_iterations=secondary_iterations,
+            max_violation=float(violation), primary_ms=primary_ms, secondary_ms=secondary_ms,
+            soft_slack_lower=np.maximum(soft_lower - selected, 0.0),
+            soft_slack_upper=np.maximum(selected - soft_upper, 0.0),
+            safety_status=int(safety.info.status_val),
+            safety_iterations=int(safety.info.iter), safety_ms=safety_ms)

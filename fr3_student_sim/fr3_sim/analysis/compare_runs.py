@@ -20,6 +20,13 @@ from fr3_sim.analysis.impact_metrics import first_impact
 from fr3_sim.analysis.timing import timing_metrics
 
 
+_PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py', 'optimized_hqp_perp.py')
+
+
+def _controller_name(metadata):
+    return str(metadata.get('controller', '')).replace('\\', '/').rsplit('/', 1)[-1]
+
+
 def load_run(path):
     """Load numeric NPZ arrays and JSON metadata without enabling pickle."""
     with np.load(path, allow_pickle=False) as archive:
@@ -32,7 +39,8 @@ def _array(run, key, width=None):
     if key not in run:
         return None
     values = np.asarray(run[key], dtype=float)
-    expected = (len(run['t']),) if width is None else (len(run['t']), width)
+    tail = () if width is None else (width if isinstance(width, tuple) else (width,))
+    expected = (len(run['t']),) + tail
     if values.shape != expected:
         raise ValueError(f'{key} must have shape {expected}, got {values.shape}')
     return values
@@ -102,11 +110,16 @@ def summarize_run(run):
                     if dq_finite and len(t) > 1 else None)
 
     safety = params.get('safety', {})
+    soft_settings = safety.get('soft_constraints', {})
+    soft_enabled = bool(soft_settings.get('enabled', False))
     margin_value = safety.get('joint_margin', safety.get('position_margin'))
     if margin_value is None:
         margin_value = params.get('joint_release', {}).get('margin')
     protected_margin = _vector_setting(margin_value)
     protected = margins - protected_margin if margins is not None and protected_margin is not None else None
+    hard_margin = (_vector_setting(soft_settings.get('hard_position_margin'))
+                   if soft_enabled else None)
+    hard_protected = margins - hard_margin if margins is not None and hard_margin is not None else None
     configured_velocity = _vector_setting(safety.get('velocity_max'))
     configured_acceleration = _vector_setting(safety.get('acceleration_max'))
     configured_torque = _vector_setting(safety.get('torque_max'))
@@ -115,6 +128,12 @@ def summarize_run(run):
         'finite_q': q_finite, 'finite_dq': dq_finite,
         'physical_q_min_rad': Q_MIN.tolist(), 'physical_q_max_rad': Q_MAX.tolist(),
         'physical_dq_max_rad_s': DQ_MAX.tolist(),
+        'runner_stop_margin_rad': 0.05,
+        'runner_position_stop_samples': int(np.count_nonzero(np.any(margins < 0.05 - 1e-9, axis=1)))
+        if margins is not None else None,
+        'soft_constraints_enabled': soft_enabled,
+        'protected_margin_is_soft': soft_enabled,
+        'acceleration_limit_is_soft': soft_enabled,
         'min_physical_margin_rad': float(np.min(margins)) if margins is not None else None,
         'min_physical_margin_per_joint_rad': np.min(margins, axis=0) if margins is not None else None,
         'position_violation_samples': int(np.count_nonzero(position_bad)) if position_bad is not None else None,
@@ -128,6 +147,9 @@ def summarize_run(run):
         'min_protected_margin_rad': float(np.min(protected)) if protected is not None else None,
         'protected_margin_violation_samples': int(np.count_nonzero(np.any(protected < -1e-9, axis=1)))
         if protected is not None else None,
+        'configured_hard_position_margin_rad': hard_margin,
+        'hard_position_margin_violation_samples': int(np.count_nonzero(np.any(hard_protected < -1e-9, axis=1)))
+        if hard_protected is not None else None,
         'configured_velocity_max_rad_s': configured_velocity,
         'configured_velocity_violation_samples': int(np.count_nonzero(
             np.any(np.abs(dq) > configured_velocity + 1e-9, axis=1)))
@@ -178,9 +200,55 @@ def summarize_run(run):
     updates = updated.astype(bool) if updated is not None else np.ones(len(t), dtype=bool)
     qp = {'count_scope': 'controller updates' if updated is not None else 'saved rows; legacy update flags unavailable',
           'primary': _qp_status(run, 'user_qp_primary_status', updates),
-          'secondary': _qp_status(run, 'user_qp_secondary_status', updates)}
+          'secondary': _qp_status(run, 'user_qp_secondary_status', updates),
+          'safety': _qp_status(run, 'user_qp_safety_status', updates)}
     violation = _array(run, 'user_qp_constraint_violation')
     qp['max_logged_hard_constraint_violation'] = _finite_max(violation[updates]) if violation is not None else None
+    hard_lower, hard_upper = _array(run, 'user_qdd_lower', 7), _array(run, 'user_qdd_upper', 7)
+    commanded_acceleration = _array(run, 'user_qdd_command', 7)
+    bounds_available = all(value is not None for value in (hard_lower, hard_upper, commanded_acceleration))
+    bounds_finite = bounds_available and all(np.all(np.isfinite(value[updates]))
+                                          for value in (hard_lower, hard_upper, commanded_acceleration))
+    qp['hard_bound_diagnostics_available'] = bounds_available
+    qp['hard_bound_diagnostics_finite'] = bool(bounds_finite)
+    qp['max_logged_hard_acceleration_bound_violation'] = (float(max(
+        0.0, np.max(hard_lower[updates] - commanded_acceleration[updates]),
+        np.max(commanded_acceleration[updates] - hard_upper[updates])))
+        if bounds_finite and np.any(updates) else None)
+    slack = _array(run, 'user_soft_slack_max')
+    normalized_slack = _array(run, 'user_soft_slack_normalized_max')
+    slack_lower = _array(run, 'user_soft_slack_lower', (3, 7))
+    slack_upper = _array(run, 'user_soft_slack_upper', (3, 7))
+    slack_finite = (slack is not None and normalized_slack is not None and np.any(updates)
+                    and slack_lower is not None and slack_upper is not None
+                    and np.all(np.isfinite(slack[updates]))
+                    and np.all(np.isfinite(normalized_slack[updates]))
+                    and np.all(np.isfinite(slack_lower[updates]))
+                    and np.all(np.isfinite(slack_upper[updates])))
+    qp['soft_constraints'] = {
+        'enabled': soft_enabled, 'finite_diagnostics_available': bool(slack_finite),
+        'max_slack_rad_s2': _finite_max(slack[updates]) if slack is not None else None,
+        'max_normalized_slack': _finite_max(normalized_slack[updates]) if normalized_slack is not None else None,
+        'updates_with_slack': int(np.count_nonzero(normalized_slack[updates] > 1e-6))
+        if slack_finite else None,
+        'updates_with_slack_pct': float(100 * np.mean(normalized_slack[updates] > 1e-6))
+        if slack_finite else None,
+    }
+    if slack_finite:
+        physical_slack = np.maximum(slack_lower[updates], slack_upper[updates])
+        qp['soft_constraints']['groups'] = {
+            name: {'max_slack_rad_s2': float(np.max(physical_slack[:, group])),
+                   'updates_with_slack': int(np.count_nonzero(np.any(
+                       physical_slack[:, group] > 1e-6, axis=1)))}
+            for group, name in enumerate(('acceleration', 'position_barrier', 'velocity_barrier'))}
+    safety_ms = _array(run, 'user_qp_safety_ms')
+    if safety_ms is not None:
+        selected_ms = safety_ms[updates]
+        qp['safety_timing_ms'] = {
+            'mean': float(np.mean(selected_ms)) if np.all(np.isfinite(selected_ms)) and len(selected_ms) else None,
+            'p95': float(np.percentile(selected_ms, 95)) if np.all(np.isfinite(selected_ms)) and len(selected_ms) else None,
+            'max': _finite_max(selected_ms),
+        }
     observer_valid = _array(run, 'user_observer_valid')
     qp['observer_valid_updates_pct'] = (100.0 * float(np.mean(observer_valid[updates] > 0.5))
                                          if observer_valid is not None and np.any(updates) else None)
@@ -197,6 +265,15 @@ def summarize_run(run):
     stop_reason = str(meta.get('stop_reason', ''))
     full_duration = (requested is not None and np.isfinite(requested)
                      and stop_reason == 'duration reached' and t[-1] >= requested - 1e-6)
+    trial_complete = _array(run, 'user_trial_complete')
+    # Finite approaches deliberately finish before the launch-duration cap.
+    # An explicit endpoint/hold flag distinguishes normal completion from an
+    # early QP failure; older logs without this flag remain unconfirmed.
+    scheduled_complete = (_controller_name(meta) in _PERP_CONTROLLERS
+                          and stop_reason == 'controller set done'
+                          and trial_complete is not None
+                          and np.isfinite(trial_complete[-1])
+                          and trial_complete[-1] >= 0.5)
     timing = timing_metrics(run) if 'ctrl_ms' in run else {'unavailable': 'ctrl_ms not logged'}
     wc = _array(run, 'wall_clock')
     timing['real_time_factor_measured'] = ((t[-1] - t[0]) / (wc[-1] - wc[0])
@@ -205,6 +282,8 @@ def summarize_run(run):
             'duration_s': float(t[-1]), 'sampled_span_s': float(t[-1] - t[0]),
             'configured_duration_s': requested, 'stop_reason': stop_reason,
             'full_duration_reached': bool(full_duration),
+            'scheduled_trial_complete': bool(scheduled_complete),
+            'run_completed': bool(full_duration or scheduled_complete),
             'safety_stop': 'SAFETY STOP' in stop_reason.upper(),
             'first_impact': impact, 'tracking': tracking, 'limits': limits,
             'torque': torque, 'qp': qp, 'timing': timing}
@@ -222,8 +301,9 @@ def _same(a, b):
 
 def _baseline_identity(run):
     meta = run.get('meta', {})
-    name = str(meta.get('controller', '')).replace('\\', '/').rsplit('/', 1)[-1]
-    if name in ('baseline.py', 'controller_baseline.py'):
+    name = _controller_name(meta)
+    if name in ('baseline.py', 'baseline_perp.py', 'controller_baseline.py',
+                'controller_baseline_perp.py'):
         return True, name
     # Historical zero-gain logs remain usable; no removed controller is imported.
     params = meta.get('params', {})
@@ -261,9 +341,10 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
     summaries = {'baseline': summarize_run(baseline), 'candidate': summarize_run(candidate)}
     a, b = baseline.get('meta', {}), candidate.get('meta', {})
     pa, pb = a.get('params', {}), b.get('params', {})
+    reference_key = 'approach' if 'approach' in pa or 'approach' in pb else 'circle'
     scenario_fields = {
         'initial_q': (pa.get('initial_q'), pb.get('initial_q')),
-        'circle': (pa.get('circle'), pb.get('circle')),
+        reference_key: (pa.get(reference_key), pb.get(reference_key)),
         'wall': (a.get('wall'), b.get('wall')),
         'realism': (a.get('realism'), b.get('realism')),
         'control_rate': (a.get('control_rate'), b.get('control_rate')),
@@ -297,14 +378,25 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
     metrics_met = all(checks.values())
     for label, summary in summaries.items():
         limits = summary['limits']
-        checks[label + '_full_duration'] = summary['full_duration_reached']
+        if _controller_name(summary) in _PERP_CONTROLLERS:
+            checks[label + '_run_completed'] = summary['run_completed']
+        else:
+            checks[label + '_full_duration'] = summary['full_duration_reached']
         checks[label + '_no_safety_stop'] = not summary['safety_stop']
         checks[label + '_sampled_physical_limits_respected'] = bool(
             limits['finite_q'] and limits['finite_dq'] and limits['position_violation_samples'] == 0
             and limits['velocity_violation_samples'] == 0)
     candidate_summary = summaries['candidate']
     candidate_limits = candidate_summary['limits']
-    if candidate_limits['configured_protected_margin_rad'] is not None:
+    elastic = candidate_limits['soft_constraints_enabled']
+    if elastic:
+        checks['candidate_hard_position_margin_respected'] = (
+            candidate_limits['configured_hard_position_margin_rad'] is not None
+            and candidate_limits['hard_position_margin_violation_samples'] == 0)
+        for label, summary in summaries.items():
+            checks[label + '_runner_position_stop_band_avoided'] = (
+                summary['limits']['runner_position_stop_samples'] == 0)
+    elif candidate_limits['configured_protected_margin_rad'] is not None:
         checks['candidate_protected_position_margin_respected'] = (
             candidate_limits['protected_margin_violation_samples'] == 0)
     if candidate_limits['configured_velocity_max_rad_s'] is not None:
@@ -312,7 +404,7 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
             candidate_limits['configured_velocity_violation_samples'] == 0)
     # Differentiation is not an exact acceleration sensor. Nevertheless an
     # observed excess must prevent a positive full-criterion claim.
-    if candidate_limits['acceleration_estimate_violation_samples'] is not None:
+    if not elastic and candidate_limits['acceleration_estimate_violation_samples'] is not None:
         checks['candidate_sampled_acceleration_limit_respected'] = (
             candidate_limits['acceleration_estimate_violation_samples'] == 0)
     command_ratio = candidate_summary['torque']['max_configured_limit_ratio']
@@ -322,13 +414,30 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
     if motor_ratio is not None:
         checks['candidate_nominal_motor_torque_limit_respected'] = motor_ratio <= 1.0 + 1e-5
     qp = candidate_summary['qp']
+    if elastic:
+        checks['candidate_safety_qp_updates_solved'] = (
+            qp['safety']['available'] and qp['safety']['failed_updates'] == 0)
+        feasibility = float(pb.get('qp', {}).get('feasibility_tolerance', 2e-4))
+        bound_violation = qp['max_logged_hard_acceleration_bound_violation']
+        checks['candidate_logged_hard_bounds_accepted'] = (
+            qp['hard_bound_diagnostics_available'] and qp['hard_bound_diagnostics_finite']
+            and bound_violation is not None and bound_violation <= feasibility + 1e-9)
+        checks['candidate_soft_constraint_diagnostics_available'] = (
+            qp['soft_constraints']['finite_diagnostics_available'])
+        # Missing command/motor telemetry cannot establish hard torque compliance.
+        checks['candidate_command_torque_limit_respected'] = (
+            command_ratio is not None and command_ratio <= 1.0 + 1e-5)
+        checks['candidate_nominal_motor_torque_limit_respected'] = (
+            motor_ratio is not None and motor_ratio <= 1.0 + 1e-5)
     if qp['primary']['available']:
         checks['candidate_primary_qp_updates_solved'] = qp['primary']['failed_updates'] == 0
         feasibility = float(pb.get('qp', {}).get('feasibility_tolerance', 2e-4))
         violation = qp['max_logged_hard_constraint_violation']
         checks['candidate_logged_qp_hard_constraints_accepted'] = (
             violation is not None and violation <= feasibility + 1e-9)
-    elif str(b.get('controller', '')).endswith(('impedance_hqp.py', 'controller_impedance_hqp.py')):
+    elif str(b.get('controller', '')).endswith(
+            ('optimized_hqp.py', 'optimized_hqp_perp.py',
+             'impedance_hqp.py', 'controller_impedance_hqp.py')):
         checks['candidate_primary_qp_updates_solved'] = False
     comparison = {'baseline_identity_reason': identity_reason, 'scenario': scenario,
                   'measured_mass_reduction_fraction': reduction,
@@ -342,8 +451,9 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
                       'configured_bound_respected': (
                           candidate_limits['acceleration_estimate_violation_samples'] == 0
                           if candidate_limits['acceleration_estimate_violation_samples'] is not None else None),
-                      'included_in_full_criterion': True,
-                      'reason': 'sampled finite-difference check; observed excess rejects success, absence of excess is not a continuous-time certificate',
+                      'included_in_full_criterion': not elastic,
+                      'reason': ('soft acceleration preference; exceedances are reported separately from hard safety compliance'
+                                 if elastic else 'sampled finite-difference check; observed excess rejects success, absence of excess is not a continuous-time certificate'),
                   },
                   'interpretation': 'overall controller comparison; different control laws do not isolate the causal effect of mass minimization'}
     return _json_safe({'definition': 'first compression-release cycle; precontact mass/speed from preceding sample',
