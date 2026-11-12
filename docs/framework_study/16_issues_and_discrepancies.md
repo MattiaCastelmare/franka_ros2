@@ -78,6 +78,7 @@ every recorded run evidence about another revision).
 | F-4-10 | OSQP tolerance 1e-3, polish off; residuals 7.8e-4, warm/cold differences 6.4e-3 rad/s² | `check_qp_assembly.py` | S3 | P2 | high | yes | no | tighter eps or polish for the relaxed rows | F-4-4 |
 | F-4-11 | No workspace or torque rows in the running QP; the acceleration box is the only actuator constraint | static + numerical | S3 | P2 | high | yes | no | a torque-feasibility check | F-4-6 |
 | F-5-15 | OSCBF cost Hessian condition number ~4.5·10⁶ | `check_oscbf.py` 5 | S3 | P3 | high | yes | no | rescale | F-4-10 |
+| F-8-16 | `_solve` rebuilds the full sparse `A` (COO→CSC, `identity`, `vstack`) on every tick only to pass `.data` to `update(Ax=…)`: about 27 % of the tick's CPU vs about 3.5 % for OSQP's solve | code + profiler | S4 | P3 | high | `qpperf_replay_profile.py` | no | fill `Ax` directly for a fixed row count (bit-identical) | F-8-14 |
 
 ### B.4 Robot dynamics and torque realization
 
@@ -168,6 +169,8 @@ every recorded run evidence about another revision).
 | F-7-9 | `handeye_eye_in_hand_node` builds its parameter dict from the private `rclpy.node.Node._parameters` (L200); the old guide reports that `test_node_self_references` fails on it | static (E9); test not run | S4 | P3 | medium | static | no | use `get_parameters`/the declared list | — |
 | F-7-10 | `params.py` helpers drop their `description` (no `ParameterDescriptor`); bounds are not registered with ROS; validation only at declaration | static (03 §9) | S4 | P3 | high | static | no | pass a descriptor with description and ranges | — |
 | F-7-11 | The Stage 0 data-directory exclusion hides one tracked tool (`franka_logs/plot_franka_log.py`) from the ledger | `check_docs.py` 4 | S4 | P3 | high | static | no | none (recorded; ch. 15 §6.3 classifies it) | F-1-18 |
+| F-8-14 | `cbf_safety_filter.main`'s `MultiThreadedExecutor(3)` does not keep the QP tick independent of the rebuild ("must never wait on perception"): the GIL serialises the threads; replay: late ticks only with a rebuild overlap (P 7–27 % vs ≤ 0.5 %), 0–1 late under a single-threaded executor | QP-performance analysis (isolated benchmark; GIL by elimination) | S3 | P1 | high | `qpperf_executor_replay.py` | no | opt-in single-threaded executor (proposed, not approved); then a Gazebo A/B | F-8-5, F-8-15 |
+| F-8-15 | Most of the filter's CPU is executor overhead, not callback bodies (MT3 at RTF 0.62: 63–71 % of a core vs bodies 23–28 %; Python wait loop driven by 1 kHz `/clock` + 1 kHz joint states) | QP-performance analysis (isolated benchmark) | S3 | P2 | high | `qpperf_executor_replay.py` | no | fewer executor threads and events; measure on hardware without `/clock` | F-8-14, F-8-10 |
 
 ### B.9 Configuration inconsistencies
 
@@ -209,7 +212,7 @@ every recorded run evidence about another revision).
 | F-8-2 | No green automated gate: pytest red by construction (35 known), `colcon test` exits 0 and skips the `franka_simulation_experiments` suite | S5 run (Runtime) | S3 | P1 | high | S5 | no | judge runs by the failing set; register the simexp suite; fix or mark the known failures | F-0-3, F-7-7, F-7-9, F-8-1 |
 | F-8-3 | `smoke_cbf_construct.py`: stale `FakeKin` stub (no `configure_control_points`) and exit 0 on failure | S5 run (Runtime) | S4 | P3 | high | S5 | no | update the stub; exit non-zero on failure | F-8-2 |
 | F-8-4 | `franka_simulation` fails its own `ament_lint_auto` (1155 checks); cppcheck self-skips in both C++ packages | S5 colcon test | S4 | P3 | high | S5 | no | clean up or narrow the linters | — |
-| F-8-5 | `full` misses its QP rate in Gazebo at the baseline: 73.6 vs 100 Hz unpinned (sim-time timer and gate, so not a clock artefact; ≈ 46 per wall s; S6A.1: tied to constraint rebuilds, in-process contention Inferred; S6B: 88.4 per sim s, filter process ≈ 1.06 cores over 4 threads, GIL Inferred); every `full` cell is `ok = False` on this host | S6A run (Runtime) | S2 | P1 | high | S6A | sim | decide: nominal rate, build cost, a validated `--filter-cpu`, governor | F-6-4, F-8-2 |
+| F-8-5 | `full` misses its QP rate in Gazebo at the baseline: 73.6 vs 100 Hz unpinned (sim-time timer and gate, so not a clock artefact; ≈ 46 per wall s; S6A.1: tied to constraint rebuilds, in-process contention Inferred; S6B: 88.4 per sim s, filter process ≈ 1.06 cores over 4 threads, GIL Inferred; QP-performance replay: not compute-bound, late ticks only during rebuilds under MT3, 0–1 under a single-threaded executor, magnitude not reproduced, F-8-14); every `full` cell is `ok = False` on this host | S6A run (Runtime) | S2 | P1 | high | S6A | sim | decide: nominal rate, build cost, a validated `--filter-cpu`, governor | F-6-4, F-8-2 |
 | F-8-6 | Unclean Gazebo teardown after DONE: `gz_server` SIGABRT in the ign_ros2_control destructor; Python nodes raise on SIGINT (double `rclpy.shutdown`) | S6A `launch.log` | S4 | P3 | high | S6A | sim | clean shutdown handling; exclude teardown from the "no process died" check | — |
 | F-8-7 | Sim perception delivers 30.7 Hz of a 90 Hz camera (about 57–65 ms wall per frame; frames dropped by design, wall-bound, S6A.1); distances reach the filter 112 ms old (median) | S6A run (Runtime) | S3 | P2 | high | S6A | sim | profile `real_time_distance`; decide the bound before moving-obstacle cells | F-6-8, F-6-14 |
 
@@ -226,7 +229,7 @@ every recorded run evidence about another revision).
 | F-7-8 | The old technical guide is stale (E.3: QP size, fallback, slew rule, FIFO, logger truth) and misses the 10 mechanisms of E.4; its config values still match but 51 keys are missing | `check_guide_vs_code.py` (21 checks) | S3 | P3 | high | yes | — | Part E; do not use the guide as reference | F-0-9 |
 | F-8-11 | S6A record overstated "no obstacle row bound / only the box" (`n_act` = count h̄ < 0; slew bound and the gap-dependent link-speed cap also acted) and F-8-5's budget argument; corrected by dated notes | S6A.1 (code + Derived) | S4 | P3 | high | S6A.1 | — | none beyond the notes; read binding from per-row data in future runs | F-5-23, F-8-5 |
 
-Total: 138 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
+Total: 141 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
 asserts that every ID of PROGRESS §4 has exactly one row here.
 
 ---

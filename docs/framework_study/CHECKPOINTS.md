@@ -1730,3 +1730,56 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    - inter-sample speed above the finite-difference maximum.
 6. **Exact next action:** wait for the user's decision. No simulation, second seed, reference run,
    Tier 1 / Tier 2 or refactoring without explicit approval.
+
+## C-062 — 2026-11-12 — Baseline, QP-performance root-cause analysis (analysis only) — done; stopped
+
+- Baseline / HEAD / check: `ba68077052e8` / `2636e31` / check_state and check_docs run at the end of this step
+1. **Done (analysis only, requested by the user on 2026-11-12; no production change, no Gazebo, no launch file, no build):**
+   - Isolated benchmarks in the `franka_ros2` container, DDS domain 231, `ROS_LOCALHOST_ONLY=1`, against
+     the installed `franka_experiments` (sha256 equal to the source). The input was the S6B cell copy
+     (bag and manifest hashes equal to `06_static_obstacle/SHA256SUMS`; launch param files identical).
+   - **Phase 1** (sequential replay, no executor): rebuild CPU p50 2.03 ms, tick 0.72 ms, `_solve`
+     0.28 ms, total 0.20 CPU-s per sim s. cProfile: OSQP's solve is about 3.5 % of a tick;
+     `build_osqp_A` about 27 %; `tangential_bias` about 21 %; diagnostics about 19 %. The rebuild's
+     cost is spread over small NumPy calls.
+   - **Phase 2** (real node in `MultiThreadedExecutor(3)`, fed by `ros2 bag play`; 12 runs):
+     - late ticks only when a rebuild overlaps (P 7–27 % vs ≤ 0.5 %); with the rebuild compute removed,
+       263 → 18;
+     - `SingleThreadedExecutor` (harness-only change): 0 / 1 late ticks, process CPU −27–37 %;
+     - E-core pinning: 2.2–4.8× the late ticks;
+     - switch interval 0.5 ms: inconsistent;
+     - the `jslow` variant is invalid (the filter never built or solved);
+     - magnitude vs S6B not reproduced (S6B's per-call costs are 1.3–2.9× the replay's).
+   - **Phase 3** (GIL probe): OSQP `solve()` releases the GIL; Pinocchio and small NumPy hold it.
+   - Report: `validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md`.
+   - Evidence: `~/franka_baseline_evidence/baseline_f708991/08_qp_performance/` (49 files, 7.4 MB,
+     `SHA256SUMS` hash `cf0738b2…25b2`, write-protected). `06` and `07` re-verified OK.
+   - Container scratch kept: `/home/user/qpperf_20261112/` and `/home/user/qpperf_*.py`.
+2. **Remaining (each needs approval):**
+   - the proposed first modification: an opt-in `executor_mode` in `cbf_safety_filter.main()`
+     (report §7), not implemented;
+   - E1 (GIL attribution; installing `py-spy` is a container change) and E2 (frequency) offline;
+     E3, a Gazebo A/B, after the modification;
+   - everything still open from C-061.
+3. **Files read (ledger status set):** none changed. `cbf_safety_filter.py` (wiring, `main`,
+   `_solve`), `cbf_qp_assembly.py` (`build_osqp_A`) and the rclpy Humble executors and TimeSource
+   were consulted; all are already covered (ch. 08, 13).
+4. **Documentation files updated:**
+   - this entry;
+   - `validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md` (new);
+   - `tools/baseline_validation/`: four `qpperf_*` scripts and the README;
+   - PROGRESS §0; PROGRESS §4: F-8-14…F-8-16, a note on F-8-5, the IDs note;
+   - ch. 16: F-8-14 and F-8-15 (B.8), F-8-16 (B.3), the F-8-5 row refined; total 138 → 141.
+5. **Findings / uncertainties:**
+   - F-8-14: the executor premise does not hold (GIL serialisation; GIL by elimination);
+   - F-8-15: executor overhead exceeds the callback bodies;
+   - F-8-16: per-tick sparse rebuild.
+
+   Unverified:
+   - GIL wait itself (not instrumented);
+   - why S6B is 1.3–2.9× costlier (clocks, E-cores, co-location);
+   - whether the 1 kHz joint-state stream is a large share of the load;
+   - the 67.8 ms one-off solve.
+6. **Exact next action:** wait for the user's decision on the proposed first modification (report
+   §7) and on E1–E3. No code change, rebuild, test run, Gazebo run or refactoring without explicit
+   approval.
