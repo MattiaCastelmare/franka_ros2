@@ -727,6 +727,10 @@ CBF_PARAM_SPEC = {
     'osqp_max_iter': ('int', dict(positive=True)),
     'qp_row_block': ('int', dict(minimum=1, maximum=256)),
     'qp_thread_fifo_prio': ('int', dict(minimum=0, maximum=99)),
+    # R1: which rclpy executor cbf_safety_filter.main() spins the node with.
+    # 'multi' = MultiThreadedExecutor(num_threads=3), the historical behaviour;
+    # 'single' = SingleThreadedExecutor. Scheduling only; no control effect.
+    'executor_mode': ('str', dict(choices=('multi', 'single'))),
     'diag_period_s': ('float', dict(minimum=0.0)),
     'diag_disable_gc': ('bool', dict()),
     'diag_qddot_alpha': ('float', dict(minimum=0.0, maximum=1.0)),

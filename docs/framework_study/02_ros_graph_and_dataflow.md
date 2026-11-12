@@ -119,6 +119,12 @@ It is verified in `cbf_safety_filter.py::__init__` (L421–528) and `main` (L207
 
 The executor is a `MultiThreadedExecutor(num_threads=3)`.
 
+> **Note 2026-11-12 (R1, branch `refactor/cbf-executor-scheduling`, uncommitted; the documented
+> baseline is unchanged).** The executor is now chosen by the parameter `executor_mode`
+> (`fr3_control.yaml`, `CBF_PARAM_SPEC`). `multi` is the default and is the executor above;
+> `single` is a `SingleThreadedExecutor` (`cbf_safety_filter.py::make_executor`, `main`).
+> The callback groups are unchanged. [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md).
+
 These run in one Python interpreter, so they share the GIL. The QP thread's optional SCHED_FIFO
 elevation (`qp_thread_fifo_prio`) has defaulted to **off since 2026-11-07**, with a comment
 explaining that it caused a priority inversion through the GIL (`_elevate_thread_priority`).
@@ -433,6 +439,12 @@ timeouts are part of the safety architecture and not a detail.
   `fr3_control.yaml → topics`, `launch_support.py` (`accel_topic`), node defaults, the simulation
   scripts, and `gz_fr3_plant.launch.py`.
 - **Adding a second consumer to `/NS_1/joint_states`.** Remember the finger-only messages (§3.8).
+- **Changing the filter's executor (`executor_mode`, R1, 2026-11-12).** The callbacks are
+  unchanged, but the order and timing in which they see their inputs are not. With `single`, a
+  tick that falls due during a rebuild runs after it, before the joint-state and `/clock` messages
+  that arrived meanwhile: rclpy yields ready timers before subscriptions (`executors.py`
+  L712–728). Measure input ages and the tick tail, not only the mean rate
+  ([refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md)).
 - **Changing `qp_rate_hz`:**
   - it changes the rate of `torque_cmd` and `cbf_status`;
   - it changes the effective torque-rate limit in `qddot_to_torque`, through the rescale

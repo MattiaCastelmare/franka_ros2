@@ -50,6 +50,11 @@ truth: do not rely on conversation history or on account-specific memory.
   `FRAMEWORK_COMPLETE_TECHNICAL_GUIDE.md`, and others). Write only under `docs/framework_study/` and in
   this file. Leave other untracked files alone. Ask before running `colcon build`, `pytest` or any ROS
   launch.
+  - **Exception: approved refactoring steps.** The user approves production changes one step at a
+    time (R1, R2, …), each on its own branch, never on `humble-mattia`. Only the files that the
+    approved step needs may change; the record is `docs/framework_study/refactoring/R<n>_*.md`.
+    R1 (configurable CBF executor, branch `refactor/cbf-executor-scheduling`) was approved on
+    2026-11-12. An approval covers one step only; Gazebo runs and the next step need their own.
 - **Git.**
   - Do not commit unless asked.
   - Never switch branches, reset, check out files, or apply, drop or modify stashes.

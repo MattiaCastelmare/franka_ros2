@@ -48,7 +48,7 @@ import rclpy
 import scipy.sparse as sparse
 from franka_msgs.msg import MultiLinkDistance
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
@@ -2067,12 +2067,64 @@ class CBFSafetyFilter(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
 
+EXECUTOR_MODES = ('multi', 'single')   # == CBF_PARAM_SPEC['executor_mode'] choices
+MULTI_EXECUTOR_THREADS = 3
+
+
+def make_executor(mode: str, qp_thread_fifo_prio: int = 0):
+    """The rclpy executor that spins the filter, from ``P.executor_mode`` (R1).
+
+    ``'multi'`` is the historical executor: ``MultiThreadedExecutor`` with three
+    pooled workers, sized for the three callback groups (I/O, constraint
+    builder, QP loop). It was meant to keep the QP tick from waiting on
+    perception, but every callback holds
+    the GIL, so the workers take turns and a tick that falls due while a
+    rebuild runs waits for it anyway (QP_PERFORMANCE_ROOT_CAUSE.md, F-8-14).
+    ``'single'`` runs the same callbacks on one thread, one at a time, in the
+    order the executor finds them ready: a tick then waits for at most the
+    remainder of one callback, with no GIL hand-offs. The callbacks, the QP and
+    every parameter are identical in both modes; only their scheduling differs.
+
+    Args:
+        mode: ``'multi'`` or ``'single'``.
+        qp_thread_fifo_prio: ``P.qp_thread_fifo_prio``. A positive value puts
+            the thread running ``_qp_tick`` on SCHED_FIFO; in ``'single'`` that
+            thread runs EVERY callback, so the whole node would become FIFO.
+            That combination is untested and is refused.
+
+    Raises:
+        ValueError: an unknown mode, or ``'single'`` with a positive FIFO
+            priority. ``declare_from_spec`` already rejects an unknown mode at
+            construction; this check keeps the function safe on its own.
+    """
+    if mode == 'multi':
+        return MultiThreadedExecutor(num_threads=MULTI_EXECUTOR_THREADS)
+    if mode == 'single':
+        if qp_thread_fifo_prio > 0:
+            raise ValueError(
+                f'executor_mode "single" with qp_thread_fifo_prio='
+                f'{qp_thread_fifo_prio}: refused. The single executor thread '
+                f'runs every callback, so this would put the whole node on '
+                f'SCHED_FIFO (untested). Set qp_thread_fifo_prio: 0 or use '
+                f'executor_mode "multi".')
+        return SingleThreadedExecutor()
+    raise ValueError(f'executor_mode {mode!r}: expected one of '
+                     f'{list(EXECUTOR_MODES)}')
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = CBFSafetyFilter()
-    # One thread per callback group: I/O, constraint builder, QP loop. The QP
-    # thread must never wait on perception.
-    executor = MultiThreadedExecutor(num_threads=3)
+    try:
+        executor = make_executor(node.P.executor_mode,
+                                 node.P.qp_thread_fifo_prio)
+    except ValueError as exc:
+        node.get_logger().error(str(exc))
+        node.destroy_node()
+        rclpy.shutdown()
+        raise
+    node.get_logger().info(
+        f'executor_mode={node.P.executor_mode} ({type(executor).__name__})')
     executor.add_node(node)
     try:
         executor.spin()

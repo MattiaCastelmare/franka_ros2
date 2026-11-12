@@ -302,6 +302,19 @@ params:
   # in the launch wrapper) so no thread of it outranks the threads feeding it.
   # A positive value restores the old per-thread behaviour for an A/B.
   qp_thread_fifo_prio: 0
+  # Which rclpy executor spins the filter (cbf_safety_filter.main):
+  #   multi  = MultiThreadedExecutor(num_threads=3), the historical default;
+  #   single = SingleThreadedExecutor: every callback runs on one thread, in turn.
+  # Scheduling only: the callbacks, the QP and every number above are the same in
+  # both. Offline (QP_PERFORMANCE_ROOT_CAUSE.md, R1_EXECUTOR_CONFIGURATION.md),
+  # the three threads serialise on the GIL and a QP tick waits whenever a
+  # rebuild runs; 'single' removed those late ticks in the bag replay. NOT yet
+  # validated in Gazebo or on hardware, hence the default stays 'multi'. 'single'
+  # refuses to start with qp_thread_fifo_prio > 0 (it would raise the WHOLE node
+  # to SCHED_FIFO, an untested configuration). Select per run without editing
+  # this file: torque_control_stack cbf_param_overrides:=executor_mode=single,
+  # or `ros2 run ... --ros-args -p executor_mode:=single`.
+  executor_mode: multi
   cbf_update_rate_hz: 50.0    # constraint geometry rebuild (A, h̄) from 30 Hz input
   nom_timeout: 0.5            # [s] stale qddot_nom → braking -k_brake*qdot
   joint_state_timeout: 0.1    # [s] stale joint state → braking on last known qdot

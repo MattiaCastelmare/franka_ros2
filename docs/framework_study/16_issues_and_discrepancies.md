@@ -169,8 +169,9 @@ every recorded run evidence about another revision).
 | F-7-9 | `handeye_eye_in_hand_node` builds its parameter dict from the private `rclpy.node.Node._parameters` (L200); the old guide reports that `test_node_self_references` fails on it | static (E9); test not run | S4 | P3 | medium | static | no | use `get_parameters`/the declared list | — |
 | F-7-10 | `params.py` helpers drop their `description` (no `ParameterDescriptor`); bounds are not registered with ROS; validation only at declaration | static (03 §9) | S4 | P3 | high | static | no | pass a descriptor with description and ranges | — |
 | F-7-11 | The Stage 0 data-directory exclusion hides one tracked tool (`franka_logs/plot_franka_log.py`) from the ledger | `check_docs.py` 4 | S4 | P3 | high | static | no | none (recorded; ch. 15 §6.3 classifies it) | F-1-18 |
-| F-8-14 | `cbf_safety_filter.main`'s `MultiThreadedExecutor(3)` does not keep the QP tick independent of the rebuild ("must never wait on perception"): the GIL serialises the threads; replay: late ticks only with a rebuild overlap (P 7–27 % vs ≤ 0.5 %), 0–1 late under a single-threaded executor | QP-performance analysis (isolated benchmark; GIL by elimination) | S3 | P1 | high | `qpperf_executor_replay.py` | no | opt-in single-threaded executor (proposed, not approved); then a Gazebo A/B | F-8-5, F-8-15 |
+| F-8-14 | `cbf_safety_filter.main`'s `MultiThreadedExecutor(3)` does not keep the QP tick independent of the rebuild ("must never wait on perception"): the GIL serialises the threads; replay: late ticks only with a rebuild overlap (P 7–27 % vs ≤ 0.5 %), 0–1 late under a single-threaded executor | QP-performance analysis (isolated benchmark; GIL by elimination) | S3 | P1 | high | `qpperf_executor_replay.py` | no | opt-in single-threaded executor: implemented as R1 (`executor_mode`, default `multi`, uncommitted, 2026-11-12); a Gazebo A/B is pending approval | F-8-5, F-8-15, F-8-17 |
 | F-8-15 | Most of the filter's CPU is executor overhead, not callback bodies (MT3 at RTF 0.62: 63–71 % of a core vs bodies 23–28 %; Python wait loop driven by 1 kHz `/clock` + 1 kHz joint states) | QP-performance analysis (isolated benchmark) | S3 | P2 | high | `qpperf_executor_replay.py` | no | fewer executor threads and events; measure on hardware without `/clock` | F-8-14, F-8-10 |
+| F-8-17 | Under the default MT3, about 50 % of QP ticks use the previous period's constraint snapshot (rebuild and tick due together on different threads; no ordering between the groups): snapshot age p50 8.7 ms, max 22–28 ms vs 0.17 / 11 ms single-threaded; these ticks carry most of the output deviation from a schedule-ideal replay (p95 0.41 vs 0.055 rad/s²) | R1 executor A/B (isolated benchmark, 5 runs × 2 conditions) | S3 | P2 | high | `r1_snapshot_attribution.py`, `r1_compare.py` | no | `executor_mode: single` (R1) or an explicit ordering; validate in Gazebo | F-8-14 |
 
 ### B.9 Configuration inconsistencies
 
@@ -195,6 +196,7 @@ every recorded run evidence about another revision).
 | ID | Issue | Evidence | Sev | Pri | Conf | Num | CL | Direction | Links |
 |---|---|---|---|---|---|---|---|---|---|
 | F-7-2 | 4 of the 22 `TODO[LEGACY]` markers are false or misleading | `inventory.py`; ch. 15 §5 | S3 | P2 | high | static | no | rewrite the markers from the inventory | F-0-4 |
+| F-8-18 | The xacro URDFs from `kinematics.build_urdf_with_sc` / `build_urdf_no_hand` (`NamedTemporaryFile(delete=False)`) are never deleted: one or two `/tmp/fr3_*.urdf` per node start (38 743 in the container before R1) | code + `docker diff` | S4 | P3 | high | static | no | unlink after `buildModelFromUrdf`, as `load_pinocchio_model` does | — |
 | F-0-2 | 6 of 22 console scripts are started by no production launch | static | S4 | P3 | high | static | no | ch. 15 classification | F-1-6 |
 | F-0-3 | `static_scene.py`, `surface_velocity.py` imported only by each other and tests ("not yet wired") | static | S4 | P3 | high | static | no | user decision (Q-7-2) | F-0-4 |
 | F-0-4 | Modules reached by no executable (candidates; Stage 7 confirmed against dynamic use, ch. 15 §4.4) | static, confirmed | S4 | P3 | high | static | no | ch. 15 §9 removal rules | F-3-1, F-3-18, F-7-2 |
@@ -229,7 +231,7 @@ every recorded run evidence about another revision).
 | F-7-8 | The old technical guide is stale (E.3: QP size, fallback, slew rule, FIFO, logger truth) and misses the 10 mechanisms of E.4; its config values still match but 51 keys are missing | `check_guide_vs_code.py` (21 checks) | S3 | P3 | high | yes | — | Part E; do not use the guide as reference | F-0-9 |
 | F-8-11 | S6A record overstated "no obstacle row bound / only the box" (`n_act` = count h̄ < 0; slew bound and the gap-dependent link-speed cap also acted) and F-8-5's budget argument; corrected by dated notes | S6A.1 (code + Derived) | S4 | P3 | high | S6A.1 | — | none beyond the notes; read binding from per-row data in future runs | F-5-23, F-8-5 |
 
-Total: 141 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
+Total: 143 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
 asserts that every ID of PROGRESS §4 has exactly one row here.
 
 ---

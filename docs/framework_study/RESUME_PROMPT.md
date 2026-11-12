@@ -1,5 +1,33 @@
 # Resume prompt
 
+Two prompts. Use **"Refactoring phase"** while a refactoring step (R1, R2, …) is the current
+work, which is the case since 2026-11-12. The documentation-phase prompt is kept for reference.
+
+## Refactoring phase
+
+```text
+Resume the FR3 framework refactoring phase in this repository. Do not run anything new yet.
+
+1. Read CLAUDE.md at the repository root and follow its rules, including the refactoring-step
+   exception.
+2. Read docs/framework_study/PROGRESS.md §0 (resume card) and §8, the newest entry of
+   docs/framework_study/CHECKPOINTS.md, and the newest docs/framework_study/refactoring/R<n>_*.md.
+3. Check the Git state: `git branch --show-current` (expected: the refactoring branch named in
+   PROGRESS §0), `git rev-parse HEAD humble-mattia origin/humble-mattia`, `git status --porcelain`,
+   `git stash list`, `git log --oneline -3`, and whether the branch is in sync with its origin.
+   Then run `python3 -I docs/framework_study/tools/check_state.py`. Exit code 2 (REVIEW) is
+   expected for the source files changed by the refactoring steps; list them. Exit code 1 is a
+   problem: report it.
+4. Check that nothing is running (Gazebo, ros2, colcon, pytest) on the host or in the
+   `franka_ros2` container, and whether the container is up.
+5. Report: the completed steps, what is committed and pushed, anything uncommitted, the open
+   decisions for me, and the exact next action from PROGRESS §0.
+6. STOP and wait for my explicit approval. Do not run Gazebo, build, test, change files, commit,
+   start a new refactoring step or merge without it. Do not switch branches or touch stashes.
+```
+
+## Documentation phase (historical)
+
 Paste the block below into a new Claude Code session that was started at the repository root
 (`franka_ros2/`). The session can use any account; nothing depends on its conversation history or its
 memory.

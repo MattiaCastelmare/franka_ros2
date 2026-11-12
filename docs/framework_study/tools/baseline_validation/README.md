@@ -12,9 +12,17 @@ modify a recording, a production file or the installed workspace. Large outputs 
 | `qpperf_executor_replay.py` | QP performance, phase 2 | container (isolated domain) | Spins the real node in its production `MultiThreadedExecutor(3)` (or, as a harness-only variant, `SingleThreadedExecutor` or another switch interval) while `ros2 bag play` replays `/clock`, the joint states, `qddot_nom` and the distances at a set rate; per-call wall/CPU/TID, per-thread CPU, executor loop counts |
 | `qpperf_late_tick_overlap.py` | QP performance, phase 2 | host or container (numpy) | From the phase-2 raw rows: P(late tick \| rebuild overlap) and tick wait with and without a concurrent rebuild |
 | `qpperf_gil_probe.py` | QP performance, phase 3 | container | Microbenchmark: does OSQP `solve()`, Pinocchio FK/Jacobian or small-array NumPy release the GIL? (pure-Python probe thread) |
+| `r1_sequential_outputs.py` | R1 | container (isolated domain) | Executor-free, deterministic replay of the S6B bag through the installed node (as phase 1, integer-ns event grid; rebuild before tick at each 20 ms point). Saves every published command, every `_solve` result and the row count per tick, plus the full parameter namespace. Used to prove that R1 leaves the equations bit-identical and as the schedule-ideal reference |
+| `r1_executor_replay.py` | R1 | container (isolated domain) | As `qpperf_executor_replay.py`, but the executor is built by the **production** `make_executor` from the node's own `executor_mode` (`-p executor_mode:=<mode>`), and each tick records the inputs it used (joint-state header, nominal, distances, constraint-snapshot build time) and each command |
+| `r1_compare.py` | R1 | host or container (numpy) | Per-run timing, CPU, input ages in reconstructed true playback time, deviation from the sequential reference per 10 ms slot, and cross-run deviations (within-mode noise floors and multi vs single) |
+| `r1_snapshot_attribution.py` | R1 | host or container (numpy) | Splits each run's ticks by whether the constraint snapshot they used was built in their own 20 ms period, and the output deviation of each group (F-8-17) |
 
 Reports: [S6B1_CLEARANCE_AUDIT.md](../../validation/00_baseline/S6B1_CLEARANCE_AUDIT.md),
-[QP_PERFORMANCE_ROOT_CAUSE.md](../../validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md).
+[QP_PERFORMANCE_ROOT_CAUSE.md](../../validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md),
+[R1_EXECUTOR_CONFIGURATION.md](../../refactoring/R1_EXECUTOR_CONFIGURATION.md).
+
+The `r1_*` outputs and sealed copies of the scripts are in `~/franka_baseline_evidence/refactor_r1_executor/`
+(`03_replay/`, `04_scripts/`), not in the baseline evidence tree.
 
 The `qpperf_*` scripts never modify the node: they wrap its methods at class level before
 construction, and every executor or switch-interval variant applies only inside the benchmark

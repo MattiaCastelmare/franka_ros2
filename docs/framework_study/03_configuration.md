@@ -107,6 +107,9 @@ on the module it is imported from:
 
 - `utils/config.py::CBF_PARAM_SPEC` (L385–766) maps **260 keys** to `(kind, bounds)`. The values
   live in `fr3_control.yaml → params:`, which has **280** keys.
+  > **Note 2026-11-12 (R1, uncommitted; baseline unchanged).** R1 adds one key to both,
+  > `executor_mode` (`str`, choices `multi`/`single`, YAML value `multi`): 261 spec keys, 281 YAML
+  > keys. [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md).
 - Three keys are read raw, without being declared as ROS parameters: `CBF_RAW_KEYS =
   (self_collision_safety_distance, self_collision_exclude_pairs, qddot_accel_limits)`.
 - Bounds sit in the spec and not in the YAML on purpose: "a launch file must be able to retune a
@@ -229,7 +232,7 @@ one in later stages. `scripts/cbf_scenarios.py` and `simexp` do read `launch_def
 
 ### 5.2 Keys in `fr3_control.yaml → params` that no code reads
 
-- 20 of the 280 keys are not in `CBF_PARAM_SPEC`.
+- 20 of the 280 keys are not in `CBF_PARAM_SPEC` (R1: still 20, of 281).
 - 14 of those have another reader:
   - path and governor keys → commander;
   - `cbf_activation_margin`, `cbf_hysteresis` → velocity filter;

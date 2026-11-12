@@ -1783,3 +1783,96 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 6. **Exact next action:** wait for the user's decision on the proposed first modification (report
    §7) and on E1–E3. No code change, rebuild, test run, Gazebo run or refactoring without explicit
    approval.
+
+## C-063 — 2026-11-12 — Refactoring step R1 (configurable CBF executor) — implemented and tested; stopped
+
+- Baseline / HEAD / branch: `ba68077052e8` (unchanged) / `625c179` / `refactor/cbf-executor-scheduling`
+  (created at `humble-mattia` = `origin/humble-mattia`; `humble-mattia` not touched). R1 is uncommitted.
+1. **Done (approved by the user on 2026-11-12, R1 only):**
+   - Preconditions all OK: branch = `humble-mattia` = origin; clean tree; source unchanged since
+     `ba68077`; 3 stashes untouched (before = after); evidence 00–08 SHA OK; `check_state` consistent.
+   - **Production change** (3 files, +73 / −4):
+     - `cbf_safety_filter.py`: `make_executor`, `EXECUTOR_MODES`, `MULTI_EXECUTOR_THREADS`; `main()`
+       uses them;
+     - `config.py`: `CBF_PARAM_SPEC['executor_mode']`, choices `multi`/`single`;
+     - `fr3_control.yaml`: `executor_mode: multi`.
+     - The default is unchanged. `single` + `qp_thread_fifo_prio > 0` is refused.
+   - **New test:** `test/test_cbf_executor_mode.py`, 22/22 passed.
+   - **Build:** clean-workspace procedure (quarantine `/ros2_ws/quarantine_r1_20261112/`), rc 0;
+     install == source for 101/102 files (`watchman_profile.md` never installed, as at baseline).
+   - **Suites against S5:**
+     - suite 1: 35 failed / 9 skipped / 1405 passed; the same failed and skipped sets, all 65 `E `
+       lines byte-identical, the 22 new passes all R1;
+     - suite 2: 121/121; suite 3: 39/39;
+     - smoke construct fails as in S5 (F-8-3); smoke safety filter 5/5.
+   - **Real entry point:** default and `multi` → MT3; `single` → `SingleThreadedExecutor`; `fast` and
+     `single` + FIFO → refused, exit 1.
+   - **Equation identity:** the deterministic replay through the baseline install (twice) and the R1
+     install (multi, single) is bit-identical: 4068 pub, solve and tick rows. The parameter
+     namespace has 264 → 265 keys, 0 changed.
+   - **Replay A/B:** S6B bag, 5 runs per mode × 2 conditions (`s6b` RTF 0.62 unpinned; `ecore` RTF 1.0
+     on E-cores), alternating order.
+     - `single`: 0 / 4 late ticks vs 140 / 635; 0 / 0.6 missed slots vs 19 / 558; max gap 13 / 17 ms
+       vs 23 / 64 ms; CPU 44 / 87 % vs 67 / 104 %.
+     - Joint state used 0.6–2.0 ms older at p50 (timers before subscriptions in rclpy); constraint
+       snapshot p50 0.17 vs 8.7 ms; command latency p95 lower.
+     - Output vs the schedule-ideal reference p95 0.055 vs 0.414 rad/s²; cross-mode 0.42 against
+       noise floors of 0.005–0.014. Attributed to snapshot ordering (F-8-17).
+   - **Record:** `refactoring/R1_EXECUTOR_CONFIGURATION.md`.
+   - **Evidence:** `~/franka_baseline_evidence/refactor_r1_executor/` (01_build, 02_tests, 03_replay,
+     04_scripts; `SHA256SUMS`, write-protected).
+   - **Container scratch kept:** `/home/user/r1_20261112/`, `/home/user/r1_*.py`.
+2. **Remaining (each needs approval):**
+   - committing R1;
+   - the Gazebo A/B E3 (it needs a `conditions.yaml` entry or a manual override);
+   - E1, E2;
+   - R2 and later steps;
+   - F-8-17 and F-8-18;
+   - everything still open from C-062.
+3. **Files read (ledger status set):** none changed. The changed source files remain `partial` or
+   `documented` as before; the baseline was not moved (R1 uncommitted, §8 step 4 deferred to the
+   merge).
+4. **Documentation files updated:**
+   - this entry;
+   - `refactoring/R1_EXECUTOR_CONFIGURATION.md` (new);
+   - PROGRESS §0 and §4 (F-8-17, F-8-18, a note on F-8-14, the IDs note);
+   - ch. 02 (§2 note, §9 bullet), ch. 03 (§3.3 note, §5.2), ch. 16 (F-8-14 direction, F-8-17,
+     F-8-18; total 141 → 143);
+   - `tools/baseline_validation/` (`r1_*.py` and the README);
+   - `CLAUDE.md` (the refactoring-step exception).
+5. **Findings / uncertainties:**
+   - F-8-17: under MT3, about 50 % of ticks use the previous constraint snapshot;
+   - F-8-18: temporary URDFs are never deleted.
+
+   Unverified:
+   - closed-loop and hardware effect;
+   - whether 1–2 ms of joint-state age matters for the margins;
+   - behaviour under S6B's co-located load.
+
+   No end-to-end improvement is claimed.
+6. **Exact next action:** wait for the user's decision on R1 (review or commit) and on E3. No Gazebo,
+   no R2, no commit without explicit approval.
+
+## C-064 — 2026-11-12 — Shutdown after R1 (commit and push requested by the user) — stopped
+
+- Branch: `refactor/cbf-executor-scheduling`, parent `625c179`. `humble-mattia` = `origin/humble-mattia`
+  = `625c179`, untouched. Stashes: 3, untouched. The baseline is still `ba68077` (R1 not merged).
+1. **Done:**
+   - Running jobs checked on the host and in the container: no Gazebo, ros2, replay, colcon or
+     pytest process. The R1 batch had finished (C-063). Nothing was stopped, because nothing was
+     running.
+   - The R1 implementation, its test, its documentation and the `r1_*` tools were committed, in one
+     commit on `refactor/cbf-executor-scheduling` with the user's authorship only, and pushed to
+     `origin` at the user's request.
+   - `RESUME_PROMPT.md` gained a "Refactoring phase" prompt; PROGRESS §0 gives the resume point.
+2. **Preserved outside Git:**
+   - R1 evidence: `~/franka_baseline_evidence/refactor_r1_executor/` (119 files, 50 MB;
+     `SHA256SUMS` hash `4fc85164…aec9`; write-protected). It includes the run and batch shell
+     scripts, which lived in the session scratchpad that the shutdown erases.
+   - Container: the R1 scratch `/home/user/r1_20261112/`, `/home/user/r1_*.py`, and the quarantine
+     `/ros2_ws/quarantine_r1_20261112/`. All of it lives in the container's writable layer: it
+     survives a stop or reboot, not a `docker rm`.
+3. **Unfinished tasks (none in progress), each needing approval:** E3 (the Gazebo A/B of R1), E1,
+   E2, F-8-17, F-8-18, R2, merging R1.
+4. **Exact next action:** start a new session at the repository root and paste the "Refactoring
+   phase" prompt of `RESUME_PROMPT.md`; then wait for the user's decision.
