@@ -2194,3 +2194,47 @@ The fixed `q_posture_ref` is still computed offline by SciPy SLSQP. The
 online HQP does not recompute that posture: it considers its attraction term
 together with the analytical mass gradient at the current configuration.
 Existing launch, plot and comparison commands remain unchanged.
+
+### Perpendicular HQP without an offline posture preference
+
+Added `fr3_sim/controllers/optimized_perp_full_online.py` and
+`config/optimized_perp_full_online.yaml`. The new adapter reuses the
+perpendicular impedance/HQP controller while removing `q_posture_ref` from
+its parameters. Its YAML omits the offline posture vector and the unused
+posture gain. `initial_q` remains the settling configuration and reference
+start, without becoming a secondary posture target.
+
+The perpendicular reference, 0.50 s acceleration ramp, 0.20 m/s entry-speed
+reference, 10 mm endpoint overlap, braking and final hold are retained.
+Hard/soft constraints, observer handling, impedance gains, online analytical
+mass gradient, mass gain, nullspace damping and 0.5 s mass-torque startup
+ramp are inherited from `optimized_hqp_perp`. The final HQP level uses
+online mass minimization and damping without attraction to an offline
+posture. No offline posture search is required for this experiment.
+
+Controller selection and task loading include the new entry point. The
+existing HQP plotting layout and comparison recognize its logs, including
+scheduled finite-trial completion and hard/soft diagnostics. Existing
+controller behavior and offline posture reports are retained.
+
+After rebuilding and sourcing the package, launch inside the container:
+
+```bash
+source /ros2_ws/install/setup.bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_perp_full_online.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/optimized_perp_full_online.yaml \
+  run_name:=optimized_perp_full_online \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.10 duration:=2
+```
+
+Add `gui:=false` for a headless run. Generate the three figures with:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+latest_online_perp_log=$(ls -t runs/optimized_perp_full_online_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_online_perp_log" --no-show
+```

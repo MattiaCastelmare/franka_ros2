@@ -36,7 +36,7 @@ safety:
   velocity_barrier_rate: 10.0        # [1/s]
   command_delay_s: 0.003             # [s] transport/scheduling prediction allowance
   soft_constraints:
-    enabled: true                   # only this experiment opts into the three-level HQP
+    enabled: true                   # three-level HQP, also used by the full-online variant
     hard_position_margin: 0.06       # [rad] mandatory; 0.01 rad before the runner's stop band
     acceleration_scale: 30.0         # [rad/s^2] normalize acceleration preference slack
     position_scale: 30.0             # [rad/s^2] normalize preventive position-barrier slack

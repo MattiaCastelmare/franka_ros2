@@ -20,7 +20,8 @@ from fr3_sim.analysis.impact_metrics import first_impact
 from fr3_sim.analysis.timing import timing_metrics
 
 
-_PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py', 'optimized_hqp_perp.py')
+_PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
+                     'optimized_hqp_perp.py', 'optimized_perp_full_online.py')
 
 
 def _controller_name(metadata):
@@ -436,7 +437,7 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
         checks['candidate_logged_qp_hard_constraints_accepted'] = (
             violation is not None and violation <= feasibility + 1e-9)
     elif str(b.get('controller', '')).endswith(
-            ('optimized_hqp.py', 'optimized_hqp_perp.py',
+            ('optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_perp_full_online.py',
              'impedance_hqp.py', 'controller_impedance_hqp.py')):
         checks['candidate_primary_qp_updates_solved'] = False
     comparison = {'baseline_identity_reason': identity_reason, 'scenario': scenario,

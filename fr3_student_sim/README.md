@@ -1,6 +1,6 @@
 # fr3_student_sim
 
-Four FR3 experiments in Gazebo with joint-torque control. All control the
+Five FR3 experiments in Gazebo with joint-torque control. All control the
 position of `fr3_fingertip`; gripper orientation remains free.
 
 | Experiment                                                         | Controller in `fr3_sim/controllers/` | Configuration                                 |
@@ -9,6 +9,7 @@ position of `fr3_fingertip`; gripper orientation remains free.
 | Cartesian impedance with constrained posture and mass minimization | `optimized_hqp.py`                   | `config/circle_tracking_optimized_hqp.yaml` |
 | Perpendicular approach with the baseline control law               | `baseline_perp.py`                   | `config/baseline_perp.yaml`                 |
 | Perpendicular approach with Cartesian impedance and HQP            | `optimized_hqp_perp.py`              | `config/optimized_hqp_perp.yaml`            |
+| Perpendicular HQP with online-only mass minimization               | `optimized_perp_full_online.py`       | `config/optimized_perp_full_online.yaml`    |
 
 [Progress](docs/progress.md) retains the development history. Earlier archived
 experiments remain outside the active directories in `trash/`. Historical
@@ -43,7 +44,9 @@ tracking law is in `controllers/circle_tracking.py`.
 `controllers/optimized_hqp.py` contains both the reusable
 `ImpedanceHQPController` law and the circular experiment's `Controller`
 subclass. `controllers/optimized_hqp_perp.py` supplies the perpendicular
-reference to that same reusable class. Numerical helpers remain in `methods/`.
+reference to that same reusable class. `controllers/optimized_perp_full_online.py`
+reuses the perpendicular adapter with posture attraction disabled.
+Numerical helpers remain in `methods/`.
 `simulation/fr3_model.py` wraps Pinocchio, while
 `simulation/runner.py` connects controllers to Gazebo.
 
@@ -139,15 +142,32 @@ ros2 launch fr3_student_sim student.launch.py \
 ```
 
 The approach and scheduled completion are the same as the perpendicular
-baseline. Add `gui:=false` for a headless run. Both HQP experiments require
+baseline. Add `gui:=false` for a headless run. All HQP experiments require
 the observer; QP infeasibility or existing safety stops can end them early.
+
+Perpendicular optimized HQP without an offline posture reference:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_perp_full_online.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/optimized_perp_full_online.yaml \
+  run_name:=optimized_perp_full_online \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.10 duration:=2
+```
+
+This variant has the same trajectory, hard/soft constraints and nominal
+0.77 s completion. Its mass objective is entirely online; no offline
+posture calculation is required. Add `gui:=false` for a headless run.
 
 Launch defaults to baseline. Omitting `task_config` selects the matching
 controller YAML; the launch defaults themselves remain
 1000 Hz, real-time factor 0.5 and duration 20 s.
 
 The canonical controller selectors are `baseline.py`, `optimized_hqp.py`
-and the perpendicular variants `baseline_perp.py` and `optimized_hqp_perp.py`.
+and the perpendicular variants `baseline_perp.py`, `optimized_hqp_perp.py`
+and `optimized_perp_full_online.py`.
 The former `circle_tracking/controller_baseline.py` selector remains an
 alias for baseline. `impedance_hqp.py`, `controller_impedance_hqp.py` and
 `circle_tracking/controller_impedance_hqp.py` remain aliases for
@@ -171,6 +191,9 @@ ros2 run fr3_student_sim plot_run "$latest_perp_log" --no-show
 
 latest_hqp_perp_log=$(ls -t runs/optimized_hqp_perp_[0-9]*.npz | head -n 1)
 ros2 run fr3_student_sim plot_run "$latest_hqp_perp_log" --no-show
+
+latest_online_perp_log=$(ls -t runs/optimized_perp_full_online_[0-9]*.npz | head -n 1)
+ros2 run fr3_student_sim plot_run "$latest_online_perp_log" --no-show
 ```
 
 ## Controllers and configuration
@@ -185,7 +208,7 @@ shared wall is at x = 0.62 m, with outward normal (-1, 0, 0), stiffness
 The perpendicular experiments share the initial pose and wall, using the
 straight reference described below instead of the circle.
 
-The seven active YAML files are:
+The eight active YAML files are:
 
 | File                                          | Role                                                                                                           |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -193,6 +216,7 @@ The seven active YAML files are:
 | `config/circle_tracking_optimized_hqp.yaml` | Impedance, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                  |
 | `config/optimized_hqp_perp.yaml`            | The same perpendicular reference with the existing impedance/HQP gains, posture, mass objective and constraints. |
+| `config/optimized_perp_full_online.yaml`    | The same perpendicular HQP experiment without an offline posture reference or postural attraction. |
 | `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                            |
 | `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                         |
 | `config/controllers.yaml`                   | Gazebo effort-controller joint list.                                                                           |
@@ -382,7 +406,8 @@ predictions, without using true contact force or subtracting the residual
 from the commanded torque. Predictive constraints remain conditional on
 the assumed disturbance envelope, not a guarantee under arbitrary impacts.
 
-This mode is enabled only in `optimized_hqp_perp.yaml`. The circular HQP
+This mode is enabled in `optimized_hqp_perp.yaml` and
+`optimized_perp_full_online.yaml`. The circular HQP
 keeps the strict two-level behavior when the option is absent or disabled.
 
 The headless soft-mode run `optimized_hqp_perp_20261112_090119.npz` completed
@@ -405,6 +430,34 @@ velocity-barrier groups; scalar maximum and normalized maximum slack are
 also logged. The existing status panel shows normalized slack and safety-QP
 status. The joint-margin panel distinguishes the preferred margin, hard QP
 margin and runner stop band; no extra PNG is introduced.
+
+### Perpendicular mass minimization entirely online
+
+`optimized_perp_full_online.py` reuses the perpendicular impedance/HQP
+controller without `q_posture_ref` or an attraction towards a preferred
+joint posture. Its adapter removes any supplied `q_posture_ref` before
+initializing the shared controller. The new YAML omits both that vector and
+the unused `posture_gain` setting. `initial_q` still defines the settling
+configuration and the Cartesian reference start; it does not become a
+secondary posture target.
+
+Trajectory, timing, observer, hard/soft constraints, impedance gains and
+nullspace damping match `optimized_hqp_perp.py`. The analytical mass
+gradient is recomputed online with the same gain 0.1. The existing 0.5 s
+startup ramp still activates the mass torque smoothly. The final HQP level
+therefore contains online mass minimization and damping, with no offline
+posture attraction. No static or dynamic mass-reduction result is assumed
+for this variant.
+
+The initial headless run completed the 0.77 s trial and first impact, with
+no missed samples or sampled hard-limit violations. Its entry mass was
+8.4977 kg at 0.19992 m/s; the current online-only gains have therefore not
+demonstrated a mass reduction relative to the perpendicular baseline.
+
+The existing ten-panel HQP, observer and collision figures support its logs.
+For a matched baseline comparison, substitute its latest log for
+`hqp_perp_log` in the perpendicular comparison command below; finite trial
+completion and the same hard/soft diagnostics are recognized.
 
 ### Offline posture workflow
 
@@ -644,6 +697,6 @@ included in `Controller.update` timing.
 
 Realism settings `joint_friction`, `mass_error`, `noise_q`, `noise_dq` and
 `seed` default to the nominal noiseless model. `run_batch` accepts a supplied
-batch YAML and selects the matching task for the four active controllers.
+batch YAML and selects the matching task for the five active controllers.
 When samples are missed, reduce simulation speed and inspect timing. A
 controller exception saves the current log and terminates the run.
