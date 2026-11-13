@@ -290,6 +290,9 @@ class ElasticHierarchicalAccelerationQP(HierarchicalAccelerationQP):
         super().__init__(n, settings)
         self._safety = None
         self._soft_groups = 3
+        self._safety_A = None
+        self._safety_lower = None
+        self._safety_upper = None
 
     def _run_safety(self, M, c, lower, upper, torque_limits,
                     soft_lower, soft_upper, soft_scale):
@@ -302,29 +305,49 @@ class ElasticHierarchicalAccelerationQP(HierarchicalAccelerationQP):
         # numerical scales without changing the physical feasible set.
         acceleration_scale = soft_scale[0]
         normalized_M = M * acceleration_scale[None, :] / torque_limits[:, None]
-        joint = np.arange(count) % n
-        index = np.arange(count)
-        # Rows: hard acceleration, torque, lower/upper soft bounds, z >= 0.
-        rows = np.r_[np.arange(n),
-                     n + np.tile(np.arange(n), n),
-                     2 * n + index, 2 * n + index,
-                     2 * n + count + index, 2 * n + count + index,
-                     2 * n + 2 * count + np.arange(2 * count)]
-        columns = np.r_[np.arange(n), np.repeat(np.arange(n), n),
-                        joint, n + index, joint, n + count + index,
-                        n + np.arange(2 * count)]
         soft_coefficients = (acceleration_scale / soft_scale).ravel()
-        values = np.r_[np.ones(n), normalized_M.ravel(order='F'),
-                       soft_coefficients, np.ones(count),
-                       soft_coefficients, -np.ones(count),
-                       np.ones(2 * count)]
-        A = sparse.csc_matrix((values, (rows, columns)),
-                              shape=(2 * n + 4 * count, size))
-        lo = np.r_[lower / acceleration_scale, -1.0 - c / torque_limits,
-                   (soft_lower / soft_scale).ravel(), np.full(count, -np.inf),
-                   np.zeros(2 * count)]
-        hi = np.r_[upper / acceleration_scale, 1.0 - c / torque_limits, np.full(count, np.inf),
-                   (soft_upper / soft_scale).ravel(), np.full(2 * count, np.inf)]
+        if self._safety_A is None:
+            joint = np.arange(count) % n
+            index = np.arange(count)
+            # Rows: hard acceleration, torque, lower/upper soft bounds, z >= 0.
+            rows = np.r_[np.arange(n),
+                         n + np.tile(np.arange(n), n),
+                         2 * n + index, 2 * n + index,
+                         2 * n + count + index, 2 * n + count + index,
+                         2 * n + 2 * count + np.arange(2 * count)]
+            columns = np.r_[np.arange(n), np.repeat(np.arange(n), n),
+                            joint, n + index, joint, n + count + index,
+                            n + np.arange(2 * count)]
+            values = np.r_[np.ones(n), normalized_M.ravel(order='F'),
+                           soft_coefficients, np.ones(count),
+                           soft_coefficients, -np.ones(count),
+                           np.ones(2 * count)]
+            A = sparse.csc_matrix((values, (rows, columns)),
+                                  shape=(2 * n + 4 * count, size))
+            self._safety_A = A
+            data_columns = np.repeat(np.arange(size), np.diff(A.indptr))
+            actuator = data_columns < n
+            self._safety_M_data = np.flatnonzero(
+                actuator & (A.indices >= n) & (A.indices < 2 * n))
+            self._safety_soft_data = np.flatnonzero(
+                actuator & (A.indices >= 2 * n) & (A.indices < 2 * n + 2 * count))
+            self._safety_soft_rows = (A.indices[self._safety_soft_data] - 2 * n) % count
+            self._safety_lower = np.full(A.shape[0], -np.inf)
+            self._safety_lower[2 * n + 2 * count:] = 0.0
+            self._safety_upper = np.full(A.shape[0], np.inf)
+        else:
+            A = self._safety_A
+            # Only numerical coefficients change; CSC order and explicit zeros
+            # remain exactly those of the first sparse construction.
+            A.data[self._safety_M_data] = normalized_M.ravel(order='F')
+            A.data[self._safety_soft_data] = soft_coefficients[self._safety_soft_rows]
+        lo, hi = self._safety_lower, self._safety_upper
+        lo[:n] = lower / acceleration_scale
+        lo[n:2 * n] = -1.0 - c / torque_limits
+        lo[2 * n:2 * n + count] = (soft_lower / soft_scale).ravel()
+        hi[:n] = upper / acceleration_scale
+        hi[n:2 * n] = 1.0 - c / torque_limits
+        hi[2 * n + count:2 * n + 2 * count] = (soft_upper / soft_scale).ravel()
         if self._safety is None:
             # Explicit zero acceleration weights make this a lexicographic
             # slack minimum, rather than a weighted trade-off with motion.

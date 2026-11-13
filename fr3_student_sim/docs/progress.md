@@ -2315,3 +2315,100 @@ ros2 launch fr3_student_sim student.launch.py \
 The existing `ros2 run fr3_student_sim plot_run LOG.npz --no-show` and
 `ros2 run fr3_student_sim compare_runs BASELINE.npz CANDIDATE.npz` commands
 retain their names and arguments.
+
+### One implementation of the primary tracking law (2026-11-13)
+
+Consolidated the already matching Cartesian acceleration feedback in
+`methods/cartesian_tracking.py`. Both baseline and optimized controllers
+now call the same `CartesianAccelerationTracking` implementation, with
+scalar or three-axis gains and common validation. The active YAML pairs
+retain position gain 100 s^-2 and velocity gain 20 s^-1. No Cartesian
+inertia factor scales this feedback; the optimized controller still uses
+its dynamically consistent projector for secondary motion.
+
+The circular reference now defaults to period 4 s in both families,
+matching the active YAML files. The perpendicular controllers continue to
+share their approach, braking and hold reference. Mass minimization,
+posture preferences, startup ramp and the strict/soft HQP configurations
+are retained. Both controller families log the primary requested Cartesian
+acceleration before their joint-space solution.
+
+Comparison reports distinguish matching acceleration feedback from
+historical impedance and unverifiable configurations using the saved
+formulation and gains, rather than the controller filename alone. A full
+comparison requires matching primary tracking. The interpretation still
+distinguishes this check from isolating the causal effect of mass
+minimization: secondary posture policies and constrained joint-space
+solutions remain different.
+
+Validation: the package builds with `colcon build --symlink-install
+--packages-select fr3_student_sim`, and all 19 focused tests pass. Controller
+tests exercise both references, two joint states, nonidentity inertias and
+scalar/axis-wise gains with the real strict and soft QP solvers. Installed
+controller selectors and YAML pairs were checked in the ROS container;
+`ros2 run fr3_student_sim compare_runs` verifies matching primary tracking
+in the saved configurations of the current circular and perpendicular logs.
+
+### README and comparison workflow audit (2026-11-13)
+
+Updated the active README to describe current acceleration-feedback logs,
+the shared tracking implementation and the recorded posture provenance.
+Historical trial details remain in this development history. Removed the
+active link to the no-longer-present impedance report. The four launch
+examples now explicitly request real-time factor 0.10 for both baseline and
+optimized; the launch default itself remains 0.5.
+
+The two independent comparison commands select available log families,
+including suffixed checks, and explain that newest files are not necessarily
+a matched pair. The JSON fields, default 30% mass target and 5% speed
+tolerance are documented together with the actual limits of the checks:
+real-time factor, observer configuration, missing-sample thresholds and
+tracking-error thresholds are not full-criterion gates. Existing results
+are separated from a future comparison with uniform execution settings.
+
+The comparison CLI now validates both input files before loading or writing
+anything. All 23 focused tests pass. Both README comparison commands were
+executed successfully with their output redirected to temporary JSON files;
+their actual primary-tracking statuses and pass/fail results agree with the
+README. Relative links and section anchors were also checked.
+
+### Circular optimized controller uses the existing soft hierarchy (2026-11-13)
+
+The strict run `circle_optimized_hqp_20261113_102215.npz` stopped at
+1.854 s on contradictory joint-6 acceleration bounds, lower -15.4051
+versus upper -17.0531 rad/s^2. Reconstructing the saved state identified
+the conflict between the 30 rad/s^2 acceleration preference and the
+0.15 rad preventive position barrier, tightened by the observer uncertainty;
+the physical joint margin was still about 0.15884 rad.
+
+Enabled the same `safety.soft_constraints` block as the perpendicular
+controller in `config/circle_tracking_optimized_hqp.yaml`: hard position
+margin 0.06 rad, with acceleration/preventive barrier groups normalized by
+30 rad/s^2. Position/velocity predictions and command/nominal motor torque
+limits remain mandatory. Tracking gains, reference, posture, mass objective,
+observer guards and numeric limit values are retained. The existing shared
+controller selects its three-level QP automatically from this setting.
+
+Replaying the exact failed state reproduces the strict exception; switching
+only to the soft hierarchy returns accepted safety and tracking solutions,
+with maximum hard-constraint violation 2.05e-7 and maximum preference slack
+0.82408 rad/s^2. This confirms the policy addresses the recorded conflict
+independently of the slower end-to-end validation setting.
+
+Built the package and passed all 23 local tests, extending the existing
+ignored controller test to include a circular soft case. A headless isolated
+ROS/Gazebo run at requested RTF 0.10 completed 20 s and five collision
+detections, saved as `circle_optimized_hqp_soft_20261113_102927.npz`.
+All 19165 safety, tracking and secondary solves were accepted. No saved
+physical position, hard-margin, velocity, command-torque or nominal-motor-
+torque violations were found; the minimum physical joint margin was
+0.15819 rad. First-impact mass was 4.91942 kg versus baseline 7.18772 kg
+(-31.558%), with peak force 18.349 N and complete compression/release.
+
+The comparison report is `runs/optimized_hqp_circle_soft_comparison.json`,
+and the three figures share the new NPZ stem. The report's implemented full
+criterion passes. Timing remains a separate limitation: measured RTF 0.0984,
+4.17% missed samples, controller 3.17 ms mean and 7.25 ms p95. The baseline
+has different measured RTF, so this is not a matched timing or real-time
+feasibility claim. Earlier `sample_gap` failures remain distinct from
+constraint incompatibility; their guards were not relaxed.

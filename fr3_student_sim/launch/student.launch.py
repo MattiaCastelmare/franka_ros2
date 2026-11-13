@@ -36,7 +36,7 @@ ARGS = {
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
     'observer': ('true', 'Enable momentum observer and collision detection '
-                          '(required by the impedance-HQP controller)'),
+                          '(required by the optimized HQP controllers)'),
     'observer_config': ('', 'Observer gain and residual thresholds YAML '
                             '(empty = config/observer.yaml)'),
     'stop_at_detachment': ('false', 'End the run when the tool first leaves the wall'),
@@ -186,6 +186,11 @@ def _launch(context):
     runner = Node(
         package=PKG, executable='runner', name='student_runner', output='screen',
         emulate_tty=True,
+        # Small 7x7/3x3 kernels benefit from a bounded BLAS pool. Respect
+        # explicit user overrides; apply defaults only to the runner process.
+        additional_env={key: os.environ.get(key, '1') for key in
+                        ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                         'BLIS_NUM_THREADS')},
         parameters=[{'use_sim_time': True, 'urdf_path': model_urdf_path, 'controller': controller,
                      'noise_q': float(a['noise_q']), 'noise_dq': float(a['noise_dq']),
                      'seed': int(a['seed']), 'mass_error': float(a['mass_error']),
@@ -195,6 +200,7 @@ def _launch(context):
                      'observer_enabled': on('observer'), 'observer_config': observer_cfg,
                      'stop_at_detachment': on('stop_at_detachment'), 'duration': float(a['duration']),
                      'control_rate': float(a['control_rate']),
+                     'real_time_factor': float(a['real_time_factor']),
                      'log_dir': a['log_dir'] or runs_dir(),
                      'run_name': a['run_name']}])
 

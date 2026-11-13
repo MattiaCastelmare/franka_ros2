@@ -20,6 +20,11 @@ The virtual wall torque is kept out of the observer input.
 Optional realism: Gaussian noise on the q, dq the controller sees (``noise_q``,
 ``noise_dq``); the log and the wall always use the true state. The runner also
 warns when the hand body (not only the fingertip) goes into the wall.
+Collision-onset and hand-body warning messages are queued until the run ends,
+keeping terminal I/O out of the control callback; monitoring and detection
+callbacks remain synchronous. ``callback_ms`` measures the complete RUN
+callback from entry through monitoring, control, wall evaluation, publishing and log-row
+construction, excluding final saving and deferred console output.
 The log is one ``.npz`` per run in ``log_dir``; see :mod:`fr3_sim.analysis.plot_run`.
 """
 from __future__ import annotations
@@ -77,7 +82,8 @@ class Runner(Node):
         super().__init__('student_runner', enable_rosout=False)
         P = {
             'urdf_path': '', 'controller': '', 'task_config': '', 'wall_config': '',
-            'duration': 20.0, 'control_rate': 1000.0, 'settle_time': 2.0,
+            'duration': 20.0, 'control_rate': 1000.0, 'real_time_factor': 0.5,
+            'settle_time': 2.0,
             'log_dir': 'runs', 'run_name': '', 'exit_on_done': True, 'wall_enabled': True,
             'stop_at_detachment': False, 'noise_q': 0.0, 'noise_dq': 0.0, 'seed': 0,
             'mass_error': 0.0, 'joint_friction': False,
@@ -94,6 +100,9 @@ class Runner(Node):
         self.wall.enabled = bool(g('wall_enabled'))
         self.duration = float(g('duration'))
         self.dt_ctrl = 1.0 / float(g('control_rate'))
+        self.requested_real_time_factor = float(g('real_time_factor'))
+        if not np.isfinite(self.requested_real_time_factor) or self.requested_real_time_factor <= 0.0:
+            raise ValueError('real_time_factor must be positive and finite')
         self.settle_time = float(g('settle_time'))
         self.exit_on_done = bool(g('exit_on_done'))
         self.stop_at_detachment = bool(g('stop_at_detachment'))
@@ -134,6 +143,7 @@ class Runner(Node):
         self.ctrl_ms = 0.0
         self.rows = []
         self.user_rows = []
+        self._pending_run_messages = []
         self.stop_reason = ''
         self.wall_t0 = None
         self.get_logger().info(
@@ -144,6 +154,7 @@ class Runner(Node):
 
     # ── main loop ─────────────────────────────────────────────────────────────
     def _on_js(self, msg: JointState):
+        callback_start = time.perf_counter()
         try:
             idx = [msg.name.index(j) for j in ARM_JOINTS]
         except ValueError:
@@ -192,7 +203,7 @@ class Runner(Node):
         try:
             message = self.collision_monitor.update(t, q_m, dq_m, tau_applied)
             if message is not None:
-                self.get_logger().info(message)
+                self._pending_run_messages.append(('info', message))
         except Exception:
             self.get_logger().error(traceback.format_exc())
             self._finish('exception in momentum observer')
@@ -239,21 +250,25 @@ class Runner(Node):
             if (not self.hand_warned and self.hand_depth > 0.005
                     and self.hand_depth > max(delta, 0.0) + 0.005):
                 self.hand_warned = True
-                self.get_logger().warn(
+                self._pending_run_messages.append(('warn',
                     f't = {t:.2f} s: the HAND BODY is {1e3 * self.hand_depth:.0f} mm inside the '
                     f'wall, but the wall only pushes the fingertip. Keep the tool pointing at the '
-                    f'wall (e.g. control the orientation too). Logged as hand_depth.')
+                    f'wall (e.g. control the orientation too). Logged as hand_depth.'))
         self.rows.append(np.concatenate([
             [t], q, dq, self.tau_raw, self.tau_ctrl, tau_applied, tau_wall, p, v, F,
             [f_n, delta, v_n, float(f_n > 0), self.hand_depth, self.ctrl_ms,
              float(controller_updated),
-             time.monotonic() - self.wall_t0]]))
+             time.monotonic() - self.wall_t0,
+             1e3 * (time.perf_counter() - callback_start)]]))
 
         self.had_contact |= f_n > 0
         if not reason and self.stop_at_detachment and self.had_contact and delta < 0:
             reason = 'first detachment'
         if not reason and t >= self.duration:
             reason = 'duration reached'
+        # Fill the appended row only after all RUN work. Saving and deferred
+        # console output happen after this measurement and cannot affect it.
+        self.rows[-1][-1] = 1e3 * (time.perf_counter() - callback_start)
         if reason:
             self._finish(reason)
 
@@ -274,9 +289,17 @@ class Runner(Node):
         self.phase, self.stop_reason = 'DONE', reason
         (self.get_logger().warn if reason.startswith(('SAFETY', 'exception'))
          else self.get_logger().info)(f'run ended: {reason}')
-        self._save()
+        try:
+            self._save()
+        finally:
+            self._flush_run_messages()
         if self.exit_on_done:
             raise SystemExit(0)
+
+    def _flush_run_messages(self):
+        messages, self._pending_run_messages = self._pending_run_messages, []
+        for severity, message in messages:
+            getattr(self.get_logger(), severity)(message)
 
     def _save(self):
         R = np.array(self.rows)
@@ -286,7 +309,8 @@ class Runner(Node):
         cols, k, out = [('t', 1), ('q', 7), ('dq', 7), ('tau_cmd', 7), ('tau', 7),
                         ('tau_applied', 7), ('tau_wall', 7), ('p', 3), ('v', 3), ('F', 3), ('F_n', 1),
                         ('delta', 1), ('v_n', 1), ('contact', 1), ('hand_depth', 1), ('ctrl_ms', 1),
-                        ('controller_updated', 1), ('wall_clock', 1)], 0, {}
+                        ('controller_updated', 1), ('wall_clock', 1),
+                        ('callback_ms', 1)], 0, {}
         for name, n in cols:
             out[name] = R[:, k] if n == 1 else R[:, k:k + n]
             k += n
@@ -306,6 +330,10 @@ class Runner(Node):
                          'stiffness': self.wall.stiffness, 'damping': self.wall.damping,
                          'enabled': self.wall.enabled},
                 'control_rate': 1.0 / self.dt_ctrl, 'duration': self.duration,
+                'real_time_factor_requested': self.requested_real_time_factor,
+                'numeric_threads': {name: os.environ.get(name) for name in
+                                    ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS',
+                                     'MKL_NUM_THREADS', 'BLIS_NUM_THREADS')},
                 'realism': self.realism,
                 'observer': self.collision_monitor.metadata(self.torque_history.delay),
                 'stop_reason': self.stop_reason}
@@ -337,12 +365,28 @@ class Runner(Node):
                 f'Plant sample intervals over 1 ms simulated: '
                 f'{timing["sample_intervals_over_1ms"]}/{max(len(t) - 1, 0)} '
                 f'({timing["sample_intervals_over_1ms_pct"]:.2f}%).')
+        if timing.get('callback_samples'):
+            update_wall_summary = (
+                f'{timing["controller_wall_period_ms_requested"]:.3f} ms per controller update '
+                + (f'({timing["controller_update_over_requested_wall_period_pct"]:.2f}% updates over budget)'
+                   if calls else '(no controller updates)'))
+            self.get_logger().info(
+                f'RUN callback {timing["callback_ms_mean"]:.2f} ms mean / '
+                f'{timing["callback_ms_p95"]:.2f} ms p95 / '
+                f'{timing["callback_ms_max"]:.2f} ms max; requested wall budget at '
+                f'RTF={self.requested_real_time_factor:g}: '
+                f'{timing["plant_wall_period_ms_requested"]:.3f} ms per plant sample '
+                f'({timing["callback_over_requested_wall_period_pct"]:.2f}% callbacks over budget), '
+                f'{update_wall_summary}.')
 
 
 def _save_interrupted(node):
-    if node.phase not in ('DONE', 'WAIT') and node.rows:
-        node.stop_reason = node.stop_reason or 'interrupted (Ctrl+C)'
-        node._save()
+    try:
+        if node.phase not in ('DONE', 'WAIT') and node.rows:
+            node.stop_reason = node.stop_reason or 'interrupted (Ctrl+C)'
+            node._save()
+    finally:
+        node._flush_run_messages()
 
 
 def main():

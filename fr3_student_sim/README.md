@@ -7,13 +7,11 @@ position of `fr3_fingertip`; gripper orientation remains free.
 | Experiment                                                         | Controller in `fr3_sim/controllers/` | Configuration                                 |
 | ------------------------------------------------------------------ | -------------------------------------- | --------------------------------------------- |
 | Circular tracking with nullspace posture feedback                  | `baseline.py`                        | `config/circle_tracking_baseline.yaml`      |
-| Circular acceleration tracking with HQP and mass minimization       | `optimized_hqp.py`                   | `config/circle_tracking_optimized_hqp.yaml` |
+| Circular acceleration tracking with HQP and mass minimization      | `optimized_hqp.py`                   | `config/circle_tracking_optimized_hqp.yaml` |
 | Perpendicular approach with the baseline control law               | `baseline_perp.py`                   | `config/baseline_perp.yaml`                 |
 | Perpendicular acceleration tracking with HQP and mass minimization | `optimized_hqp_perp.py`              | `config/optimized_hqp_perp.yaml`            |
 
-[Progress](docs/progress.md) retains the development history. Earlier archived
-experiments remain outside the active directories in `trash/`. Historical
-logs and reports can refer to controllers that are no longer installed.
+[Progress](docs/progress.md) retains the development history.
 
 ## Project layout
 
@@ -40,7 +38,8 @@ fr3_student_sim/
 
 `controllers/base.py` defines the common interface. `controllers/loading.py`
 resolves controller names and loads their classes. The shared baseline
-tracking law is in `controllers/circle_tracking.py`.
+controller hierarchy is in `controllers/circle_tracking.py`; both baseline
+and optimized use the primary feedback in `methods/cartesian_tracking.py`.
 `controllers/optimized_hqp.py` contains both the reusable
 `HQPTrackingController` law and the circular experiment's `Controller`
 subclass. `controllers/optimized_hqp_perp.py` supplies the perpendicular
@@ -51,8 +50,7 @@ Numerical helpers remain in `methods/`.
 
 Plots are in `analysis/plot_run.py`, `analysis/plot_collision.py` and
 `analysis/plot_impedance.py`. First-impact metrics, timing and comparisons
-are kept beside them. The previous `students/` tree and the internal Python
-folder named `fr3_student_sim/` are replaced by this layout.
+are kept beside them.
 
 ROS executable names remain `runner`, `plot_run`, `run_batch` and
 `compare_runs`, under the ROS package `fr3_student_sim`. Python imports use
@@ -85,7 +83,7 @@ ros2 launch fr3_student_sim student.launch.py \
   run_name:=circle_baseline \
   log_dir:=/ros2_ws/src/fr3_student_sim/runs \
   wall:=true observer:=true stop_at_detachment:=false \
-  control_rate:=1000 real_time_factor:=0.50 duration:=20
+  control_rate:=1000 real_time_factor:=0.20 duration:=20
 ```
 
 Optimized Cartesian tracking with HQP:
@@ -97,14 +95,15 @@ ros2 launch fr3_student_sim student.launch.py \
   run_name:=circle_optimized_hqp \
   log_dir:=/ros2_ws/src/fr3_student_sim/runs \
   wall:=true observer:=true stop_at_detachment:=false \
-  control_rate:=1000 real_time_factor:=0.10 duration:=20
+  control_rate:=1000 real_time_factor:=0.20 duration:=20
 ```
 
-The HQP example uses real-time factor 0.10 to leave more wall-clock time for
-each simulated update. Execution load still matters: a lower factor does not
-guarantee receipt of every sample or QP feasibility. Add `gui:=false` for a
-headless run. Keep the rate and trajectory settings unchanged when comparing
-real-time factors.
+Use real-time factor 0.20 for all four experiments to give HQP more wall-clock time
+per simulated update and keep the requested timing settings equal within
+each pair. Execution load still matters: a lower factor does not guarantee
+receipt of every sample or QP feasibility. Add `gui:=false` to both members
+of a pair for headless runs. Keep the rate and trajectory settings unchanged
+when comparing real-time factors.
 
 The circle commands request up to 20 simulated seconds in RUN, after settling.
 Existing safety stops, controller termination, exceptions or `Ctrl+C` can end
@@ -120,7 +119,7 @@ ros2 launch fr3_student_sim student.launch.py \
   run_name:=baseline_perp \
   log_dir:=/ros2_ws/src/fr3_student_sim/runs \
   wall:=true observer:=true stop_at_detachment:=false \
-  control_rate:=1000 real_time_factor:=0.30 duration:=2
+  control_rate:=1000 real_time_factor:=0.20 duration:=2
 ```
 
 Add `gui:=false` to run without the Gazebo window. This experiment finishes
@@ -137,7 +136,7 @@ ros2 launch fr3_student_sim student.launch.py \
   run_name:=optimized_hqp_perp \
   log_dir:=/ros2_ws/src/fr3_student_sim/runs \
   wall:=true observer:=true stop_at_detachment:=false \
-  control_rate:=1000 real_time_factor:=0.10 duration:=2
+  control_rate:=1000 real_time_factor:=0.20 duration:=2
 ```
 
 The approach and scheduled completion are the same as the perpendicular
@@ -148,13 +147,9 @@ Launch defaults to baseline. Omitting `task_config` selects the matching
 controller YAML; the launch defaults themselves remain
 1000 Hz, real-time factor 0.5 and duration 20 s.
 
-The canonical controller selectors are `baseline.py`, `optimized_hqp.py`
-and the perpendicular variants `baseline_perp.py` and `optimized_hqp_perp.py`.
-The former `circle_tracking/controller_baseline.py` selector remains an
-alias for baseline. `impedance_hqp.py`, `controller_impedance_hqp.py` and
-`circle_tracking/controller_impedance_hqp.py` remain aliases for
-`optimized_hqp.py`. They resolve to the current files; there are no duplicate
-controller implementations. An absolute controller-file path is also supported.
+The built-in controller selectors are `baseline.py`, `baseline_perp.py`,
+`optimized_hqp.py` and `optimized_hqp_perp.py`. An absolute custom
+controller-file path is also supported.
 
 Save the three figures for the experiment you choose. In each new shell:
 
@@ -192,12 +187,13 @@ The pattern `circle_optimized_hqp_[0-9]*.npz` only matches a timestamp directly
 after `circle_optimized_hqp_`, so it excludes those preliminary logs. Check
 `duration_s` and `stop_reason` before using a log for a comparison: the short
 circular tracking check does not replace a full 20 s run. The comparison
-commands below retain the canonical run-name patterns.
+commands below also select by experiment prefix; check the selected files
+and their recorded settings before interpreting the report.
 
 ## Controllers and configuration
 
 The two circle experiments retain the same initial pose, a vertical x-z circle of
-radius 0.04 m, cruise period 4 s and startup ramp 1 s. The fingertip starts
+radius 0.04 m, cruise period 2 s and startup ramp 1 s. The fingertip starts
 near (0.56, 0, 0.50) m; the reference reaches x approximately 0.64 m. The
 shared wall is at x = 0.62 m, with outward normal (-1, 0, 0), stiffness
 20000 N/m and damping 15 N s/m. The reference's maximum overlap of roughly
@@ -208,15 +204,15 @@ straight reference described below instead of the circle.
 
 The seven active YAML files are:
 
-| File                                          | Role                                                                                                           |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `config/circle_tracking_baseline.yaml`      | Baseline initial pose, circle, Cartesian and nullspace gains.                                                  |
+| File                                          | Role                                                                                                                                 |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `config/circle_tracking_baseline.yaml`      | Baseline initial pose, circle, Cartesian and nullspace gains.                                                                        |
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
-| `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                  |
-| `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and baseline tracking gains, with HQP, posture, mass objective and constraints. |
-| `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                            |
-| `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                         |
-| `config/controllers.yaml`                   | Gazebo effort-controller joint list.                                                                           |
+| `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
+| `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and baseline tracking gains, with HQP, posture, mass objective and constraints.                     |
+| `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                                                  |
+| `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                                               |
+| `config/controllers.yaml`                   | Gazebo effort-controller joint list.                                                                                                 |
 
 ### Baseline
 
@@ -280,9 +276,13 @@ $$
 
 The optimized controller asks the HQP to attain `J @ u = b` as closely as
 the higher-priority constraints permit. Cartesian gains are configured as
-`tracking.kp_position` and `tracking.kd_position`; the previous physical
-stiffness/damping gains are no longer used. `user_tracking_acceleration`
-records the requested Cartesian acceleration. There is no
+`tracking.kp_position` and `tracking.kd_position`. Both controller families call
+the same `CartesianAccelerationTracking` implementation in
+`methods/cartesian_tracking.py`. The feedback is not multiplied by
+`Lambda^-1`; Cartesian inertia is used only for the optimized controller's
+dynamically consistent secondary projection. Both families record
+`user_tracking_acceleration`, before the joint-space solution and its
+constraints. There is no
 collision-triggered retreat or release state.
 
 ```yaml
@@ -300,16 +300,17 @@ dynamically consistent redundancy projector. A common primary tracking
 request does not imply identical joint torques when constraints or
 secondary objectives intervene.
 
-The initial headless checks of this tracking law covered 2.2 s of circular
-motion and the complete 0.77 s perpendicular trial. Both recorded a complete
-first impact, without missing samples or saved hard-limit violations. The
-logs use the `*_tracking_check_*` prefix; the short circular check is not a
-replacement for the full 20 s comparison.
+Each experiment's baseline and optimized controller use the same reference
+class and configured trajectory. Both circular YAML files set the period
+to 2 s; the perpendicular pair shares the approach, braking and
+final-hold schedule. Changing only the optimized gains in a custom YAML
+would change its tracking law: keep each pair's `tracking.kp_position` and
+`tracking.kd_position` equal when comparing them.
 
-In the circle configuration, the first QP finds the best feasible Cartesian
-tracking action. The second
-preserves the achieved Cartesian action while using the remaining freedom
-for optional posture feedback, mass-gradient torque and nullspace damping.
+Both active optimized configurations use three QP levels: minimum
+relaxation of preventive preferences under hard constraints, Cartesian
+tracking while preserving that relaxation, and secondary posture/mass/
+damping while preserving the achieved Cartesian action.
 The configured secondary gains are posture 25 s^-2, damping 10 s^-1 and
 mass gain 0.1 N m rad/kg.
 
@@ -332,9 +333,11 @@ The fixed posture is computed offline with SciPy SLSQP, not HQP. During a
 run, the online HQP considers attraction towards that fixed posture together
 with the analytical mass gradient evaluated at the current joint state.
 
-The circle safety configuration uses a 0.15 rad protected position margin,
-30 rad/s^2 acceleration cap and the configured joint velocity/torque bounds.
-The acceleration cap is an experiment parameter, not a datasheet value.
+Both optimized configurations prefer a 0.15 rad preventive position margin
+and 30 rad/s^2 acceleration magnitude. Those preferences are relaxable;
+the 0.06 rad hard position margin and configured velocity/torque limits
+remain mandatory. The acceleration preference is an experiment parameter,
+not a datasheet value.
 Torque constraints cover both command torque and nominal motor torque
 including gravity. The returned command does not add gravity: Gazebo
 already compensates it.
@@ -345,22 +348,23 @@ the empirical acceleration-error reserve. The reserve accounts for the
 observed residual rate, filter lag, sample age and command delay. It is not
 a certified bound on arbitrary impacts. Timing variations can make the
 robust constraints incompatible, even before a physical joint limit is
-reached. In the strict circle configuration, primary infeasibility
-terminates the run with bounded damping and
-a saved reason; rejected secondary solutions use that update's accepted
-primary solution. Limits are not silently relaxed.
+reached. A failed hard-safety QP terminates the run with bounded damping
+and a saved reason. Failed tracking or secondary solves can use the same
+update's verified preceding solution. Only the configured preventive
+preferences have slack; hard limits are not relaxed.
 
 Reusable components are:
 
-| Module under `fr3_sim/`              | Responsibility                                                           |
-| -------------------------------------- | ------------------------------------------------------------------------ |
-| `methods/circle_reference.py`        | Circular position, velocity and acceleration references.                 |
-| `methods/perpendicular_reference.py` | Smooth straight approach, braking and final hold along the wall normal.  |
-| `methods/mass_objective.py`          | Directional mass, analytical gradient and projected mass torque.         |
-| `controllers/optimized_hqp.py`       | Reference-independent Cartesian acceleration tracking/HQP law and circular experiment adapter. |
-| `methods/joint_constraints.py`       | Delayed-state prediction and tightened joint bounds.                     |
-| `methods/hierarchical_qp.py`         | Strict two-level HQP and optional three-level HQP with normalized soft-constraint slack. |
-| `methods/optimize_posture.py`        | Standalone offline preferred-posture search.                             |
+| Module under `fr3_sim/`              | Responsibility                                                                                     |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `methods/circle_reference.py`        | Circular position, velocity and acceleration references.                                           |
+| `methods/perpendicular_reference.py` | Smooth straight approach, braking and final hold along the wall normal.                            |
+| `methods/cartesian_tracking.py`      | Shared Cartesian acceleration feedback and gain validation for baseline and optimized controllers. |
+| `methods/mass_objective.py`          | Directional mass, analytical gradient and projected mass torque.                                   |
+| `controllers/optimized_hqp.py`       | Reference-independent Cartesian acceleration tracking/HQP law and circular experiment adapter.     |
+| `methods/joint_constraints.py`       | Delayed-state prediction and tightened joint bounds.                                               |
+| `methods/hierarchical_qp.py`         | Strict two-level HQP and optional three-level HQP with normalized soft-constraint slack.           |
+| `methods/optimize_posture.py`        | Standalone offline preferred-posture search.                                                       |
 
 Within `optimized_hqp.py`, `Controller` selects the circle reference with
 `sample(t)`; `optimized_hqp_perp.py` supplies `PerpendicularApproachReference`
@@ -379,40 +383,19 @@ overlap, 4 mm braking distance and a 0.15 s hold. The nominal scheduled end
 is around 0.77 s. Tracking remains active during contact; scheduled
 completion is independent of detection and true contact force.
 
-The perpendicular YAML contains its own `q_posture_ref`, recalculated from
-`baseline_perp_20261111_175507.npz` with the matching 0.50 s approach ramp
-and applied to `config/optimized_hqp_perp.yaml`. The selected static posture
-has directional mass 5.3343 kg versus the logged baseline's 7.6204 kg
-(-30%), with a minimum physical joint margin of 0.2245 rad. This is a static
-result at the reference contact point. The search
-details are in [the perpendicular posture report](docs/optimized_hqp_perp_posture.json).
-Online mass minimization remains active within the existing HQP priorities,
-but a 30% entry-mass reduction is not established for this scenario. Compare
+The perpendicular YAML supplies its own fixed `q_posture_ref`, selected
+offline for the matching approach and wall geometry. Use the
+[offline posture workflow](#offline-posture-workflow) to regenerate it.
+Online mass minimization remains active within the HQP priorities; a static
+mass-reduction target does not guarantee the same reduction at impact. Compare
 entry mass together with actual collision speed, first-impact metrics,
 tracking and joint margins before drawing conclusions. The unchanged
 0.5 s secondary startup ramp finishes before the nominal reference contact
 time of 0.55 s.
 
-The numerical trials below used the previous Cartesian-impedance tracking
-formulation and are retained as historical records. They do not validate
-the current acceleration-tracking controller; new runs are required.
+### Constraint hierarchy shared by both optimized controllers
 
-A previous headless trial with the 0.20 s approach ramp ended at 0.411 s on
-contradictory joint-6 acceleration bounds shortly after contact. Its first
-impact was incomplete. That trial used the earlier ramp and posture
-provenance; the current approach uses the 0.50 s ramp and a refreshed
-offline posture workflow. Both earlier trials used the strict constraint mode.
-
-With the 0.50 s ramp, the matched headless runs measured entry masses of
-7.6204 kg for baseline and 6.8612 kg for HQP (-9.96%), at about 0.1999 m/s.
-The baseline completed normally; the previous strict-constraint HQP stopped
-at 0.558 s on contradictory
-joint-6 acceleration bounds, leaving the first impact incomplete. Neither
-run missed plant samples. The longer ramp therefore does not resolve the
-constraint infeasibility or establish the 30% dynamic mass target. These
-results precede the soft-constraint mode.
-
-The perpendicular YAML enables `safety.soft_constraints`. Position and
+Both optimized YAML files enable `safety.soft_constraints`. Position and
 velocity predictions and actuator torque bounds remain hard. The hard QP
 position margin is 0.06 rad, leaving a 0.01 rad buffer before the runner's
 0.05 rad stop band. Command torque and nominal motor torque including
@@ -443,25 +426,16 @@ predictions, without using true contact force or subtracting the residual
 from the commanded torque. Predictive constraints remain conditional on
 the assumed disturbance envelope, not a guarantee under arbitrary impacts.
 
-This mode is enabled only in `optimized_hqp_perp.yaml`. The circular HQP
-keeps the strict two-level behavior when the option is absent or disabled.
+This mode is enabled in `circle_tracking_optimized_hqp.yaml` and
+`optimized_hqp_perp.yaml`. Disabling or omitting the option explicitly
+selects the earlier strict two-level behavior. The comparison and plotting
+read the selected mode from the log; they do not infer it from the shape
+of the trajectory.
 
-The headless soft-mode run `optimized_hqp_perp_20261112_090119.npz` completed
-the scheduled 0.77 s trial and its first impact. Saved samples respected
-the hard position/velocity/torque limits; the smallest physical joint margin
-was 0.4124 rad. The estimated joint-6 acceleration reached 42.1 rad/s^2,
-exceeding the relaxable 30 rad/s^2 preference. All safety and tracking QPs
-were accepted; 25 redundancy solves used the verified tracking fallback.
-The timing report records 0.52% missed samples over the logged span, with
-mean controller time 1.65 ms at requested real-time factor 0.10. Entry mass
-was 6.8612 kg versus baseline 7.6204 kg (-9.96%); these historical values
-do not establish the 30% dynamic target for the new tracking law. The saved
-report is `runs/optimized_hqp_perp_comparison.json`.
-
-This experiment uses the existing ten-panel HQP main figure, observer
-figure and first-impact collision figure. It records the shared HQP
-diagnostics and perpendicular-reference signals, including scheduled
-approach completion. `user_soft_slack_lower` and `user_soft_slack_upper`
+Both optimized experiments use the ten-panel HQP main figure, observer
+figure and first-impact collision figure. They record the shared HQP
+diagnostics; the perpendicular adapter additionally records its approach
+reference and scheduled trial completion. `user_soft_slack_lower` and `user_soft_slack_upper`
 record all seven joints for acceleration, position-barrier and
 velocity-barrier groups; scalar maximum and normalized maximum slack are
 also logged. The existing status panel shows normalized slack and safety-QP
@@ -527,16 +501,9 @@ and static search constraints; the circle configuration and its report
 remain separate. A static 30% target does not guarantee a 30% reduction at
 actual impact during the short approach.
 
-The configured perpendicular posture was generated with this workflow and
-copied into `config/optimized_hqp_perp.yaml`. Its report is
-[docs/optimized_hqp_perp_posture.json](docs/optimized_hqp_perp_posture.json).
-The circle YAML and its existing posture report are unchanged.
-
-The circle posture and its static search provenance are retained in
+Store the circle posture and static search provenance in
 [docs/optimized_posture.json](docs/optimized_posture.json). A static solution
 does not guarantee its mass reduction or margins throughout a simulation.
-Historical zero-mass-gain logs remain accepted for offline provenance;
-this compatibility does not require an installed controller of that name.
 
 ## Runtime and collision monitoring
 
@@ -571,6 +538,9 @@ telemetry. Monitoring advances on each received RUN joint-state sample.
 The configured gain is 30 s^-1 and threshold 0.1 N m, as scalars or seven
 joint values. Any joint exceeding its absolute threshold triggers detection;
 the residual norm is diagnostic only.
+Detection and hand-body warning messages are printed after the run ends to
+keep console I/O out of the control callback. Monitoring, detection callbacks
+and event logging still advance during RUN.
 
 The runner binds the monitor once. Baseline does not consume residuals for
 control. HQP reads `snapshot(t)`, containing a read-only residual, timestamp,
@@ -587,19 +557,8 @@ are logged, `X_observer.png`. The baseline main figure shows state and user
 signals. The HQP main figure has ten panels: position/reference, position
 error, joint torques, joint velocities, contact force, directional mass,
 actual/reference normal speed, joint margins, QP/observer status and compute
-time. `user_tracking_acceleration` stores the new primary acceleration
-reference; historical impedance logs can still contain
-`user_impedance_force`. Extra QP and disturbance diagnostics remain in the NPZ. Historical
-logs remain readable through the generic plotting path.
-
-For Python analysis, import the log helpers from the new namespace:
-
-```python
-from fr3_sim.analysis.plot_run import load_run, metrics
-
-run = load_run('runs/<log>.npz')
-summary = metrics(run)
-```
+time. `user_tracking_acceleration` stores the primary acceleration
+reference. Extra QP and disturbance diagnostics remain in the NPZ.
 
 The observer figure shows the seven residuals, thresholds, residual norm
 and detection times. The collision figure has six panels: directional mass,
@@ -616,62 +575,81 @@ Missing data and incomplete cycles are marked explicitly. Cumulative
 positive contact work is no longer reported. True wall force/torque is
 logged for offline evaluation only.
 
-For a matched comparison, run the existing baseline with the same timing
-settings as HQP:
+Use the four launch commands above to collect new pairs with the same
+requested real-time factor (0.20), control rate and GUI mode. Keep the
+initial state, reference, wall, observer and realism settings equal within
+each pair. A comparison reads two saved NPZ files; it does not run a
+simulation or replace their recorded settings with today's YAML files.
+
+Compare the latest circular baseline and optimized logs:
 
 ```bash
 source /ros2_ws/install/setup.bash
-ros2 launch fr3_student_sim student.launch.py \
-  controller:=baseline.py \
-  task_config:=/ros2_ws/src/fr3_student_sim/config/circle_tracking_baseline.yaml \
-  run_name:=circle_baseline_hqp_comparison \
-  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
-  wall:=true observer:=true stop_at_detachment:=false \
-  control_rate:=1000 real_time_factor:=0.10 duration:=20
-```
-
-Add `gui:=false` to both commands for headless runs. Keep initial state,
-trajectory, wall and realism settings identical, then compare the logs:
-
-```bash
 cd /ros2_ws/src/fr3_student_sim
-baseline_log=$(ls -t runs/circle_baseline_hqp_comparison_[0-9]*.npz | head -n 1)
-latest_hqp_log=$(ls -t runs/circle_optimized_hqp_[0-9]*.npz | head -n 1)
-ros2 run fr3_student_sim compare_runs "$baseline_log" "$latest_hqp_log" \
+ros2 run fr3_student_sim compare_runs \
+  "$(ls -t runs/circle_baseline_*.npz 2>/dev/null | head -n 1)" \
+  "$(ls -t runs/circle_optimized_hqp_*.npz 2>/dev/null | head -n 1)" \
   --output runs/optimized_hqp_comparison.json
 ```
 
+Compare the latest perpendicular baseline and optimized logs:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+ros2 run fr3_student_sim compare_runs \
+  "$(ls -t runs/baseline_perp_*.npz 2>/dev/null | head -n 1)" \
+  "$(ls -t runs/optimized_hqp_perp_*.npz 2>/dev/null | head -n 1)" \
+  --output runs/optimized_hqp_perp_comparison.json
+```
+
+These commands also accept run-name suffixes such as `_tracking_check`.
+They select the most recently modified file in each family, not an
+automatically matched pair. Inspect each report's `log_path`,
+`configured_duration_s`, `duration_s`, `stop_reason` and recorded scenario;
+for the full circular experiment, both configured durations must be 20 s.
+Replace the two quoted selections with explicit filenames when choosing a
+specific pair. Missing inputs produce a CLI error before any log is loaded
+or report written.
+
+The report is printed as JSON and saved to `--output`, replacing that file
+when it already exists. Reports are snapshots: rerun `compare_runs` after
+an analysis change or after choosing new logs. Generating a new report
+from an old NPZ does not rerun that experiment. The comparison creates no
+PNG files; use the separate plotting commands for figures.
+
 The JSON reports entry mass/speed, tracking, first-cycle force/impulse/
 penetration, saved joint limits, torque saturation, QP statuses and timing.
+It evaluates mass and speed at the sample immediately before the first
+contact, and computes the reduction as `1 - optimized_mass / baseline_mass`.
+The default mass-reduction target is 30%; the allowed relative entry-speed
+difference is 5%. Override them with `--mass-reduction-target` and
+`--entry-speed-tolerance` as fractions, for example `0.30` and `0.05`.
+
+Read the fields under `comparison` as follows:
+
+| Field                        | Meaning                                                                                                                                                                                                                                                                                |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `primary_tracking.status`  | `same`, `different` or `unverifiable`, based on the recognized controller and explicit law/gains in the saved configuration. Scalars and equivalent three-axis gain vectors compare equally.                                                                                     |
+| `scenario`                 | Per-field agreement of initial pose, circle/approach, wall, realism, control rate and configured duration.                                                                                                                                                                             |
+| `target_metrics_met`       | Initial checks: recognized baseline, matching scenario and mass direction, complete first impacts, available precontact errors, positive entry speeds within tolerance and mass reduction at least the target. It does not include the later tracking-law, completion or limit checks. |
+| `full_criterion_met`       | All implemented checks pass, including matching primary tracking, completion, sampled limits and the applicable QP/torque checks.                                                                                                                                                      |
+| `checks`, `unmet_checks` | Individual pass/fail checks and the names of all failed checks. Inspect these before interpreting either summary flag.                                                                                                                                                                 |
+
+A full comparison requires matching primary tracking law and Cartesian
+gains. Unknown or incomplete law/gain metadata fail that check. This checks
+the configuration recorded in the log, rather than identifying a source
+revision. Matching primary tracking does not isolate the effect of the mass
+gradient: HQP constraints and secondary posture policies still differ.
+
 For soft-constraint runs it separately reports the hard margin, runner stop
 band, safety-QP status, normalized slack and usage of each soft group.
 Entering the preferred 0.15 rad margin or exceeding the preferred
 acceleration is reported but does not by itself fail the hard-safety
 criterion. Missing or nonfinite hard-constraint diagnostics do not establish
-compliance. The strict circle comparison keeps its existing acceleration
-and protected-margin checks.
-A mass-only improvement cannot satisfy the full criterion when the run ends
-early or constraints are violated. The historical 20 s headless comparison
-at real-time factor 0.20 measured 4.919 kg versus baseline 7.188 kg before
-impact (-31.56%) at nearly identical entry speed, with first-cycle force
-18.79 N versus 22.09 N. Later GUI runs at 0.20 showed sensitivity to timing
-and stopped on incompatible bounds. These results are specific to their
-execution conditions and used the previous Cartesian-impedance tracking
-law; see [the report](docs/impedance_hqp_comparison.md). The historical
--31.56% result must be checked again with the current acceleration-tracking
-controller before being reported as a current result.
-
-For a perpendicular comparison, run `baseline_perp.py` and
-`optimized_hqp_perp.py` with matching execution settings, including
-`real_time_factor:=0.10`. Then compare their latest logs:
-
-```bash
-cd /ros2_ws/src/fr3_student_sim
-baseline_perp_log=$(ls -t runs/baseline_perp_[0-9]*.npz | head -n 1)
-hqp_perp_log=$(ls -t runs/optimized_hqp_perp_[0-9]*.npz | head -n 1)
-ros2 run fr3_student_sim compare_runs "$baseline_perp_log" "$hqp_perp_log" \
-  --output runs/optimized_hqp_perp_comparison.json
-```
+compliance. Logs recorded with strict constraints retain their acceleration
+and protected-margin checks. Constraint checks concern saved samples, not
+the continuous motion between them.
 
 Comparison checks distinguish circular and perpendicular references. For a
 finite approach, scheduled completion after the final hold counts as normal
@@ -681,6 +659,16 @@ Older perpendicular logs without `user_trial_complete` do not confirm
 scheduled completion. Their first-impact metrics remain readable; rerun
 the baseline with the current controller for full completion validation.
 
+The full criterion does not check matching observer settings or real-time
+factors, and it has no acceptance threshold for missed samples, controller
+runtime or tracking-error RMS/max. These diagnostics are reported separately.
+Force peak, impulse and penetration are measured but do not have automatic
+improvement thresholds. Inspect `baseline.timing` and `candidate.timing`,
+including `real_time_factor_measured` and `missed_samples_pct`, as well as
+the tracking summaries. A true `full_criterion_met` is therefore limited to
+the implemented checks, not a general validation of experimental timing or
+proof that mass minimization alone caused an impact change.
+
 ## Timing and launch options
 
 `controller_updated` identifies actual updates. `ctrl_ms` and the QP timing
@@ -689,22 +677,29 @@ virtual-wall evaluation and ROS publication. Summaries use only update rows
 and report mean, p95, maximum, and counts over `1000/control_rate` ms. That
 comparison assumes RTF = 1; it is distinct from lost simulated-time samples.
 Plant timing separately records missing 1 kHz samples, gaps and maximum gap.
-The requested real-time factor is not saved in metadata; measured wall time
-is available. Averages alone do not establish real-time feasibility.
+New logs also contain `callback_ms` for the complete RUN callback, including
+monitoring, control, wall evaluation, publication and row construction. It
+excludes executor/transport wait, final saving and deferred console output.
+Metadata records `real_time_factor_requested` and `numeric_threads`;
+comparison timing includes the requested wall-clock budgets and callback
+statistics. At 1000 Hz and RTF 0.20, that budget is 5 ms per sample.
+Older logs can lack these fields. Averages alone do not establish real-time
+feasibility. The runner defaults numeric-library thread counts to one while
+respecting explicit environment overrides.
 For three-level runs, `user_qp_safety_ms` and the comparison summary also
 report the wall time of the leading slack-minimization QP. This stage is
 included in `Controller.update` timing.
 
 | Option                               | Default                            | Meaning                                                                                                    |
 | ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `controller`                       | `baseline.py`                    | Built-in controller name, absolute path, or `none` for simulator only. Legacy selectors remain accepted. |
+| `controller`                       | `baseline.py`                    | One of the four listed controllers, an absolute custom path, or `none` for simulator only.              |
 | `task_config`                      | Matching controller YAML           | Override the selected task.                                                                                |
 | `wall`, `observer`               | `true`                           | HQP requires the observer; baseline can run without it.                                                    |
 | `wall_config`, `observer_config` | Shared YAML files                  | Override wall or observer parameters.                                                                      |
 | `duration`                         | `20.0`                           | Maximum RUN duration in simulated seconds.                                                                 |
 | `stop_at_detachment`               | `false`                          | Optionally end at first wall detachment.                                                                   |
 | `control_rate`                     | `1000`                           | Nominal controller frequency in simulated Hz.                                                              |
-| `real_time_factor`                 | `0.5`                            | Requested simulation speed; HQP examples use 0.10.                                                         |
+| `real_time_factor`                 | `0.5`                            | Requested simulation speed; use 0.20 for all four experiments.                                             |
 | `run_name`, `log_dir`            | Controller name, package `runs/` | Log prefix and destination.                                                                                |
 | `gui`                              | `true`                           | Open Gazebo GUI.                                                                                           |
 | `partition`                        | Empty                              | Gazebo transport partition.                                                                                |

@@ -11,12 +11,13 @@ import numpy as np
 
 from fr3_sim.controllers.base import StudentController
 
+from fr3_sim.methods.cartesian_tracking import CartesianAccelerationTracking
 from fr3_sim.methods.circle_reference import CircleReference
 from fr3_sim.methods.hierarchical_qp import (
     ElasticHierarchicalAccelerationQP, HierarchicalAccelerationQP, QPInfeasibleError,
 )
 from fr3_sim.methods.joint_constraints import JointConstraints, vector
-from fr3_sim.methods.mass_objective import DirectionalMassObjective, projected_mass_torque
+from fr3_sim.methods.mass_objective import DirectionalMassObjective
 
 
 class HQPTrackingController(StudentController):
@@ -34,10 +35,10 @@ class HQPTrackingController(StudentController):
         self.reference = reference
         self.monitor = None
         tracking = params.get('tracking', {})
-        self.kp_position = vector(tracking.get('kp_position', 100.0), 3,
-                                  'tracking.kp_position', positive=True)
-        self.kd_position = vector(tracking.get('kd_position', 20.0), 3,
-                                  'tracking.kd_position', positive=True)
+        self.cartesian_tracking = CartesianAccelerationTracking(
+            tracking.get('kp_position', 100.0), tracking.get('kd_position', 20.0))
+        self.kp_position = self.cartesian_tracking.kp_position
+        self.kd_position = self.cartesian_tracking.kd_position
         # A scalar keeps M N k symmetric positive semidefinite. Arbitrary
         # diagonal acceleration gains would not generally remain dissipative.
         self.null_damping = float(tracking.get('nullspace_damping', 10.0))
@@ -123,11 +124,13 @@ class HQPTrackingController(StudentController):
         ep, ev = p_ref - p, v_ref - J @ dq
         # Same position/velocity-error acceleration feedback as the baseline.
         # W remains above for the secondary projector, not for tracking gains.
-        tracking_acceleration = a_ref + self.kp_position * ep + self.kd_position * ev
+        tracking_acceleration = self.cartesian_tracking.acceleration(a_ref, ep, ev)
         task_target = tracking_acceleration - self.robot.jdot_dq(q, dq)
         posture = np.zeros(7) if self.q_posture is None else self.posture_gain * (self.q_posture - q)
-        mass_kg, gradient = self.mass_objective.evaluate(q, M=M, J=J)
-        tau_mass = projected_mass_torque(M, J, gradient, self.mass_gain)
+        mass_kg, gradient = self.mass_objective.evaluate(q, M=M, J=J, M_inv=M_inv)
+        # The torque projector is N.T; reuse the same dynamically consistent
+        # projector instead of solving for it again in the mass utility.
+        tau_mass = -self.mass_gain * (N.T @ gradient)
         # Activate secondary attraction smoothly at RUN startup. Damping,
         # Cartesian tracking and every safety constraint remain active.
         # Scale preferences before the QPs, never their constrained output.

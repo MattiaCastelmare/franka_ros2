@@ -4,7 +4,7 @@
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 circle:
   radius: 0.04  # [m]
-  period: 4.0   # [s]
+  period: 2.0   # [s]
   ramp: 1.0     # [s]
 
 # Optional secondary posture, reused from the existing offline search.
@@ -24,13 +24,19 @@ mass_minimization:
   direction: [-1.0, 0.0, 0.0]       # fixed world direction at controlled point
 
 safety:
-  position_margin: 0.15             # [rad] from physical limits; runner stops at 0.05
+  position_margin: 0.15             # [rad] preferred preventive margin, relaxable below
   velocity_max: [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26]  # [rad/s]
-  acceleration_max: 30.0             # [rad/s^2], experiment cap, not a datasheet value
+  acceleration_max: 30.0             # [rad/s^2] preferred acceleration limit, relaxable
   torque_max: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]    # [N m], command AND nominal motor incl. g
   position_barrier_rate: 8.0         # [1/s], two equal position-barrier poles
   velocity_barrier_rate: 10.0        # [1/s]
   command_delay_s: 0.003             # [s], transport/scheduling prediction allowance
+  soft_constraints:
+    enabled: true                   # same three-level HQP as the perpendicular experiment
+    hard_position_margin: 0.06       # [rad] mandatory; 0.01 rad before the runner's stop band
+    acceleration_scale: 30.0         # [rad/s^2] normalize acceleration preference slack
+    position_scale: 30.0             # [rad/s^2] normalize preventive position-barrier slack
+    velocity_scale: 30.0             # [rad/s^2] normalize preventive velocity-barrier slack
 
 disturbance_estimate:
   warmup_s: 0.2                     # [s] continuous measured history before using r
@@ -52,5 +58,5 @@ qp:
   polish: false
   adaptive_rho: true
 
-# Infeasible primary QP terminates the run with bounded damping; no relaxed limits.
+# Infeasible hard safety QP ends the trial; only the configured preferences have slack.
 failure_damping: [30.0, 30.0, 30.0, 20.0, 10.0, 10.0, 5.0]

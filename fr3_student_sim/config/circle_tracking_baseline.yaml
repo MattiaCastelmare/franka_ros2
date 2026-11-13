@@ -6,7 +6,7 @@ initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1
 
 circle:
   radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
-  period: 4.0   # [s] period at cruise angular speed
+  period: 2.0   # [s] period at cruise angular speed
   ramp: 1.0     # [s] smooth startup
 
 tracking:

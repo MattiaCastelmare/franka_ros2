@@ -9,6 +9,7 @@ import numpy as np
 
 from fr3_sim.controllers.base import StudentController
 
+from fr3_sim.methods.cartesian_tracking import CartesianAccelerationTracking
 from fr3_sim.methods.circle_reference import CircleReference
 
 
@@ -20,8 +21,10 @@ class PositionTrackingController(StudentController):
         self.p_initial = robot.position(params['initial_q'])
         self.reference = self._make_reference(self.p_initial, params)
         tracking = params.get('tracking', {})
-        self.kp_position = float(tracking.get('kp_position', 100.0))
-        self.kd_position = float(tracking.get('kd_position', 20.0))
+        self.cartesian_tracking = CartesianAccelerationTracking(
+            tracking.get('kp_position', 100.0), tracking.get('kd_position', 20.0))
+        self.kp_position = self.cartesian_tracking.kp_position
+        self.kd_position = self.cartesian_tracking.kd_position
 
     def _make_reference(self, start_position, params):
         """Allow experiment adapters to reuse the tracking law with another path."""
@@ -29,7 +32,7 @@ class PositionTrackingController(StudentController):
         return CircleReference(
             start_position,
             radius=circle.get('radius', 0.04),
-            period=circle.get('period', 8.0),
+            period=circle.get('period', 4.0),
             ramp=circle.get('ramp', 1.0),
         )
 
@@ -42,8 +45,7 @@ class PositionTrackingController(StudentController):
         velocity_error = v_ref - J @ dq
 
         # Cartesian PD with acceleration feedforward (lecture 13, slide 11).
-        a = (a_ref + self.kp_position * position_error
-             + self.kd_position * velocity_error)
+        a = self.cartesian_tracking.acceleration(a_ref, position_error, velocity_error)
 
         # Minimum-norm solution (lecture 02, slide 7), with qdd_0 = 0.
         J_pinv = np.linalg.pinv(J)
@@ -62,6 +64,7 @@ class PositionTrackingController(StudentController):
             'p_initial': self.p_initial.copy(),
             'position_error': position_error.copy(),
             'velocity_error': velocity_error.copy(),
+            'tracking_acceleration': a.copy(),
             'qdd_command': qdd_command.copy(),
         })
         return torque

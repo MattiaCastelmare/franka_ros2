@@ -33,20 +33,25 @@ class DirectionalMassObjective:
         self.normal = (normal / length).copy()
         self.robot = robot
 
-    def evaluate(self, q, *, M=None, J=None):
+    def evaluate(self, q, *, M=None, J=None, M_inv=None):
         """Return mass [kg] and gradient [kg/rad] at ``q`` [rad].
 
-        Optional M and J reuse the controller's nominal matrices at this q.
+        Optional M, J and M_inv reuse the controller's nominal matrices at
+        this q. Supplying M_inv avoids another factorization of M; callers
+        that omit it retain the direct solve.
         All model outputs used below are snapshots, since Pinocchio shares
         its working data between dynamics and kinematics calls.
         """
         q = np.asarray(q, dtype=float)
         if q.ndim != 1 or q.size == 0 or not np.all(np.isfinite(q)):
             raise ValueError('joint positions must be a finite, nonempty vector')
-        M = self.robot.mass_matrix(q) if M is None else np.asarray(M, dtype=float)
         J = self.robot.jacobian_pos(q) if J is None else np.asarray(J, dtype=float)
         j = J.T @ self.normal
-        x = np.linalg.solve(M, j)
+        if M_inv is None:
+            M = self.robot.mass_matrix(q) if M is None else np.asarray(M, dtype=float)
+            x = np.linalg.solve(M, j)
+        else:
+            x = np.asarray(M_inv, dtype=float) @ j
         mass = 1.0 / float(j @ x)
         Jdot = self.robot.jacobian_pos_time_variation(q, x)
         C = self.robot.coriolis_matrix(q, x)

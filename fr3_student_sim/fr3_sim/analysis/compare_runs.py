@@ -23,6 +23,13 @@ from fr3_sim.analysis.timing import timing_metrics
 # Include removed controller names only to keep historical logs readable.
 _PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
                      'optimized_hqp_perp.py', 'optimized_perp_full_online.py')
+_HQP_TRACKING_CONTROLLERS = ('optimized_hqp.py', 'optimized_hqp_perp.py',
+                             'optimized_perp_full_online.py', 'impedance_hqp.py',
+                             'controller_impedance_hqp.py')
+_ACCELERATION_TRACKING_CONTROLLERS = (
+    'baseline.py', 'baseline_perp.py', 'controller_baseline.py',
+    'controller_baseline_perp.py', 'controller_optimized.py',
+) + _HQP_TRACKING_CONTROLLERS
 
 
 def _controller_name(metadata):
@@ -301,6 +308,74 @@ def _same(a, b):
     return a == b
 
 
+def _primary_tracking(metadata):
+    """Identify recorded tracking settings without guessing historical defaults.
+
+    HQP filenames have survived the change from physical impedance gains to
+    acceleration feedback. Their names alone do not establish the control law.
+    """
+    out = {'law': 'unknown', 'gains': {}, 'metadata_complete': False,
+           'reason': 'explicit primary-tracking gains are not available'}
+    name = _controller_name(metadata)
+    if name not in _ACCELERATION_TRACKING_CONTROLLERS:
+        out['reason'] = 'controller implementation is not recognized'
+        return out
+    params = metadata.get('params', {})
+    if not isinstance(params, dict):
+        return out
+    tracking, impedance = params.get('tracking'), params.get('impedance')
+    has_tracking = isinstance(tracking, dict) and any(
+        key in tracking for key in ('kp_position', 'kd_position'))
+    has_impedance = isinstance(impedance, dict) and bool(impedance)
+    if has_tracking and has_impedance:
+        out['reason'] = 'both acceleration-tracking and legacy impedance settings are recorded'
+        return out
+    if has_tracking:
+        out['law'] = 'cartesian_acceleration_feedback'
+        settings, keys = tracking, ('kp_position', 'kd_position')
+    elif has_impedance and name in _HQP_TRACKING_CONTROLLERS:
+        out['law'] = 'cartesian_impedance'
+        settings, keys = impedance, ('stiffness', 'damping')
+    else:
+        return out
+    for key in keys:
+        value = settings.get(key)
+        try:
+            gain = np.asarray(value, dtype=float)
+            if gain.ndim == 0:
+                gain = np.full(3, float(gain))
+        except (TypeError, ValueError, OverflowError):
+            gain = None
+        valid = (gain is not None and gain.shape == (3,)
+                 and np.all(np.isfinite(gain)) and np.all(gain > 0.0))
+        out['gains'][key] = gain.tolist() if valid else None
+    out['metadata_complete'] = all(value is not None for value in out['gains'].values())
+    out['reason'] = ('explicit primary-tracking gains are complete'
+                     if out['metadata_complete'] else
+                     'primary-tracking gains must be explicit positive finite scalars or three-vectors')
+    return out
+
+
+def _compare_primary_tracking(baseline_metadata, candidate_metadata):
+    baseline, candidate = map(_primary_tracking, (baseline_metadata, candidate_metadata))
+    out = {'baseline': baseline, 'candidate': candidate, 'status': 'unverifiable',
+           'same': None, 'gain_matches': None,
+           'reason': 'the same primary tracking cannot be verified from the recorded metadata'}
+    if not baseline['metadata_complete'] or not candidate['metadata_complete']:
+        return out
+    if baseline['law'] != candidate['law']:
+        out.update(status='different', same=False,
+                   reason='primary tracking uses acceleration feedback in one run and physical impedance in the other')
+        return out
+    matches = {key: _same(baseline['gains'][key], candidate['gains'][key])
+               for key in baseline['gains']}
+    same = all(matches.values())
+    out.update(status='same' if same else 'different', same=same, gain_matches=matches,
+               reason=('the recorded primary tracking law and Cartesian gains match'
+                       if same else 'the recorded Cartesian primary-tracking gains differ'))
+    return out
+
+
 def _baseline_identity(run):
     meta = run.get('meta', {})
     name = _controller_name(meta)
@@ -378,6 +453,8 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
         'measured_mass_reduction_at_least_target': reduction is not None and reduction >= mass_reduction_target - 1e-12,
     }
     metrics_met = all(checks.values())
+    primary_tracking = _compare_primary_tracking(a, b)
+    checks['same_primary_tracking'] = primary_tracking['same'] is True
     for label, summary in summaries.items():
         limits = summary['limits']
         if _controller_name(summary) in _PERP_CONTROLLERS:
@@ -442,6 +519,7 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
              'impedance_hqp.py', 'controller_impedance_hqp.py')):
         checks['candidate_primary_qp_updates_solved'] = False
     comparison = {'baseline_identity_reason': identity_reason, 'scenario': scenario,
+                  'primary_tracking': primary_tracking,
                   'measured_mass_reduction_fraction': reduction,
                   'mass_reduction_target_fraction': mass_reduction_target,
                   'entry_speed_relative_difference': speed_difference,
@@ -457,7 +535,9 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
                       'reason': ('soft acceleration preference; exceedances are reported separately from hard safety compliance'
                                  if elastic else 'sampled finite-difference check; observed excess rejects success, absence of excess is not a continuous-time certificate'),
                   },
-                  'interpretation': 'overall controller comparison; different control laws do not isolate the causal effect of mass minimization'}
+                  'interpretation': primary_tracking['reason'] + '; overall controller comparison: '
+                      'HQP, constraints and secondary posture/damping can also differ, '
+                      'so this does not isolate the causal effect of mass minimization'}
     return _json_safe({'definition': 'first compression-release cycle; precontact mass/speed from preceding sample',
                        'constraint_scope': 'saved samples only, not a continuous-time safety certificate',
                        'baseline': summaries['baseline'], 'candidate': summaries['candidate'],
@@ -488,6 +568,9 @@ def main(argv=None):
     parser.add_argument('--mass-reduction-target', type=float, default=0.30,
                         help='required directional-mass reduction (default 0.30)')
     args = parser.parse_args(argv)
+    for label, path in (('baseline', args.baseline), ('candidate', args.candidate)):
+        if not path.is_file():
+            parser.error(f'{label} log file not found: {path}')
     report = compare_runs(load_run(args.baseline), load_run(args.candidate),
                           entry_speed_tolerance=args.entry_speed_tolerance,
                           mass_reduction_target=args.mass_reduction_target)
