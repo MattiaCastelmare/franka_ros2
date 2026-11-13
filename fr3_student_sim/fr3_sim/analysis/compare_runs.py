@@ -616,8 +616,13 @@ def main(argv=None):
     report['candidate']['log_path'] = str(args.candidate)
     encoded = json.dumps(report, indent=2, allow_nan=False)
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(encoded + '\n', encoding='utf-8')
+        try:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(encoded + '\n', encoding='utf-8')
+        except OSError as exc:
+            parser.error(
+                f'cannot write report to {args.output}: {exc}. '
+                'Choose another writable --output path or omit --output to print JSON.')
     print(encoded)
 
 

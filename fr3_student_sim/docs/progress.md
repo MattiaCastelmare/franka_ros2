@@ -2554,3 +2554,21 @@ torques (maximum difference 0 N m), phase/blend/activation values and
 completion/failure states. The check is recorded in
 `runs/optimized_3phases_perp_isolation_check.json`. This is a deterministic
 replay comparison, not a new closed-loop simulation or timing benchmark.
+
+### Comparison report write errors on the shared filesystem (2026-11-13)
+
+The Docker-side lookup of the fixed comparison-report filename returned
+`Operation not permitted` even though the host reported no such file and
+new temporary JSON files could be created in `runs`. Saving the comparison
+under a fresh timestamped filename succeeded. The README command now uses
+a timestamped destination and documents explicit alternatives for a denied
+shared path. No filesystem permissions are changed.
+
+The comparison CLI catches output-directory/file `OSError` and reports a
+readable argparse error instead of a traceback; it does not silently change
+the output destination. Checks with denied `mkdir` and `write_text`
+exercise both failure paths. The actual latest optimized/perpendicular
+pair was compared successfully in
+`runs/optimized_hqp_perp_vs_3phases_20261113_162750.json`, using input logs
+`optimized_hqp_perp_20261113_162033.npz` and
+`optimized_3phases_perp_20261113_162202.npz`.

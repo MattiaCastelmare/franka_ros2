@@ -781,10 +781,18 @@ if [ -z "$optimized_perp_log" ]; then
 elif [ -z "$threephase_perp_log" ]; then
   printf '%s\n' 'Missing runs/optimized_3phases_perp_*.npz: run optimized_3phases_perp.py first using the launch command above.'
 else
+  comparison_report="runs/optimized_hqp_perp_vs_3phases_$(date +%Y%m%d_%H%M%S).json"
   ros2 run fr3_student_sim compare_runs "$optimized_perp_log" "$threephase_perp_log" \
-    --output runs/optimized_hqp_perp_vs_3phases_comparison.json
+    --output "$comparison_report"
 fi
 ```
+
+This command writes a timestamped JSON so each comparison has its own
+destination. If Docker denies access to a path in the shared `runs`
+directory, choose a fresh filename, or use `--output /tmp/comparison.json`
+to save inside the container. Omitting `--output` prints the JSON without
+writing a file. A write failure is reported as a CLI error, without changing
+permissions or silently choosing another destination.
 
 Run both controllers with matching execution settings before using this
 command. An empty file selection otherwise becomes `.` when parsed as a
@@ -815,7 +823,8 @@ specific pair. Missing inputs produce a CLI error before any log is loaded
 or report written.
 
 The report is printed as JSON and saved to `--output`, replacing that file
-when it already exists. Reports are snapshots: rerun `compare_runs` after
+when it already exists and is writable. The optimized-versus-three-phase
+command above uses a fresh timestamped destination. Reports are snapshots: rerun `compare_runs` after
 an analysis change or after choosing new logs. Generating a new report
 from an old NPZ does not rerun that experiment. The comparison creates no
 PNG files; use the separate plotting commands for figures.
