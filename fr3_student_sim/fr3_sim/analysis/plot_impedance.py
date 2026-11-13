@@ -14,6 +14,12 @@ def impedance_figure(run, plt):
         axes[0].plot(t, run['p'][:, i], color=color, label=name)
         axes[0].plot(t, run['user_p_ref'][:, i], '--', color=color, label=name + ' ref')
         axes[1].plot(t, 1000 * run['user_position_error'][:, i], label=name)
+        if 'user_contact_p_ref' in run:
+            axes[0].plot(t, run['user_contact_p_ref'][:, i], ':', color=color,
+                         label=name + ' contact equilibrium')
+        if 'user_contact_position_error' in run:
+            axes[1].plot(t, 1000 * run['user_contact_position_error'][:, i], ':',
+                         color=color, label=name + ' contact error')
     for i in range(7):
         label = f'joint {i + 1}'
         axes[2].plot(t, run['tau'][:, i], label=label)
@@ -44,6 +50,17 @@ def impedance_figure(run, plt):
                      label='max normalized slack')
     if 'user_startup_scale' in run:
         axes[8].plot(t, run['user_startup_scale'], color='tab:purple', label='startup scale')
+    if 'user_phase' in run:
+        axes[8].step(t, run['user_phase'], where='post', color='tab:brown',
+                     label='phase (0 approach, 1 transition, 2 contact)')
+    if 'user_contact_blend' in run:
+        axes[8].plot(t, run['user_contact_blend'], color='tab:cyan', label='contact blend')
+    if 'user_secondary_scale' in run:
+        axes[8].plot(t, run['user_secondary_scale'], '--', color='tab:green',
+                     label='mass / posture scale')
+    if 'user_contact_latched' in run:
+        axes[8].plot(t, run['user_contact_latched'], ':', color='tab:pink',
+                     label='contact latched')
     axes[9].plot(t, run['ctrl_ms'], label='Controller.update')
     if 'user_qp_safety_ms' in run:
         axes[9].plot(t, run['user_qp_safety_ms'], lw=0.8, alpha=0.7, label='safety QP')
@@ -57,7 +74,8 @@ def impedance_figure(run, plt):
         axis.grid(alpha=0.3)
         axis.legend(loc='upper right', fontsize=7, ncol=4)
     axes[-1].set_xlabel('simulation time [s]')
-    title = ('Cartesian tracking and hierarchical QP' if 'user_tracking_acceleration' in run
+    title = ('Three-phase approach / transition / contact with HQP' if 'user_phase' in run
+             else 'Cartesian tracking and hierarchical QP' if 'user_tracking_acceleration' in run
              else 'Cartesian impedance and hierarchical QP')
     fig.suptitle(title)
     fig.tight_layout(rect=(0, 0, 1, 0.985))

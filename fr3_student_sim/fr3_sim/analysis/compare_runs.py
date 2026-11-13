@@ -22,8 +22,10 @@ from fr3_sim.analysis.timing import timing_metrics
 
 # Include removed controller names only to keep historical logs readable.
 _PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
-                     'optimized_hqp_perp.py', 'optimized_perp_full_online.py')
+                     'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
+                     'optimized_perp_full_online.py')
 _HQP_TRACKING_CONTROLLERS = ('optimized_hqp.py', 'optimized_hqp_perp.py',
+                             'optimized_3phases_perp.py',
                              'optimized_perp_full_online.py', 'impedance_hqp.py',
                              'controller_impedance_hqp.py')
 _ACCELERATION_TRACKING_CONTROLLERS = (
@@ -331,7 +333,8 @@ def _primary_tracking(metadata):
         out['reason'] = 'both acceleration-tracking and legacy impedance settings are recorded'
         return out
     if has_tracking:
-        out['law'] = 'cartesian_acceleration_feedback'
+        out['law'] = ('three_phase_tracking_impedance' if name == 'optimized_3phases_perp.py'
+                      else 'cartesian_acceleration_feedback')
         settings, keys = tracking, ('kp_position', 'kd_position')
     elif has_impedance and name in _HQP_TRACKING_CONTROLLERS:
         out['law'] = 'cartesian_impedance'
@@ -349,10 +352,40 @@ def _primary_tracking(metadata):
         valid = (gain is not None and gain.shape == (3,)
                  and np.all(np.isfinite(gain)) and np.all(gain > 0.0))
         out['gains'][key] = gain.tolist() if valid else None
-    out['metadata_complete'] = all(value is not None for value in out['gains'].values())
-    out['reason'] = ('explicit primary-tracking gains are complete'
-                     if out['metadata_complete'] else
-                     'primary-tracking gains must be explicit positive finite scalars or three-vectors')
+    complete = all(value is not None for value in out['gains'].values())
+    if out['law'] == 'three_phase_tracking_impedance':
+        # The approach gains alone do not identify this controller's contact
+        # law or when its transition occurs. Never classify it as the same
+        # baseline feedback simply because both YAMLs contain 100/20.
+        phase = params.get('three_phases', {})
+        phase = phase if isinstance(phase, dict) else {}
+        nonnegative = {'contact_distance', 'contact_penetration'}
+        policy = {}
+        for key in ('transition_distance', 'contact_distance', 'contact_confirmation_s',
+                    'contact_hold_duration', 'contact_timeout', 'contact_penetration',
+                    'stiffness_normal', 'stiffness_tangent', 'damping_normal', 'damping_tangent'):
+            raw = phase.get(key)
+            try:
+                value = float(raw)
+                valid = (not isinstance(raw, bool) and np.isfinite(value)
+                         and (value >= 0.0 if key in nonnegative else value > 0.0))
+            except (TypeError, ValueError, OverflowError):
+                value, valid = None, False
+            policy[key] = value if valid else None
+        out['phase_policy'] = policy
+        complete = complete and all(value is not None for value in policy.values())
+        if complete:
+            complete = (policy['contact_distance'] < policy['transition_distance']
+                        and policy['contact_confirmation_s'] < policy['contact_timeout'])
+        out['metadata_complete'] = bool(complete)
+        out['reason'] = ('explicit approach gains and three-phase contact policy are complete'
+                         if complete else
+                         'explicit valid approach gains and three-phase contact policy are required')
+    else:
+        out['metadata_complete'] = complete
+        out['reason'] = ('explicit primary-tracking gains are complete'
+                         if complete else
+                         'primary-tracking gains must be explicit positive finite scalars or three-vectors')
     return out
 
 
@@ -365,14 +398,18 @@ def _compare_primary_tracking(baseline_metadata, candidate_metadata):
         return out
     if baseline['law'] != candidate['law']:
         out.update(status='different', same=False,
-                   reason='primary tracking uses acceleration feedback in one run and physical impedance in the other')
+                   reason=('primary tracking formulations differ: '
+                           f"{baseline['law']} versus {candidate['law']}"))
         return out
     matches = {key: _same(baseline['gains'][key], candidate['gains'][key])
                for key in baseline['gains']}
-    same = all(matches.values())
+    policy_matches = _same(baseline.get('phase_policy'), candidate.get('phase_policy'))
+    same = all(matches.values()) and policy_matches
+    if 'phase_policy' in baseline or 'phase_policy' in candidate:
+        out['phase_policy_matches'] = policy_matches
     out.update(status='same' if same else 'different', same=same, gain_matches=matches,
                reason=('the recorded primary tracking law and Cartesian gains match'
-                       if same else 'the recorded Cartesian primary-tracking gains differ'))
+                       if same else 'the recorded Cartesian primary-tracking gains or phase policies differ'))
     return out
 
 
@@ -515,7 +552,8 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
         checks['candidate_logged_qp_hard_constraints_accepted'] = (
             violation is not None and violation <= feasibility + 1e-9)
     elif str(b.get('controller', '')).endswith(
-            ('optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_perp_full_online.py',
+            ('optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
+             'optimized_perp_full_online.py',
              'impedance_hqp.py', 'controller_impedance_hqp.py')):
         checks['candidate_primary_qp_updates_solved'] = False
     comparison = {'baseline_identity_reason': identity_reason, 'scenario': scenario,

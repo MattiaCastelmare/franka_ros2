@@ -1,6 +1,6 @@
 # fr3_student_sim
 
-Four controller variants for two FR3 experiments in Gazebo with joint-torque
+Five controller variants for two FR3 experiments in Gazebo with joint-torque
 control: circular tracking and perpendicular collision. All control the
 position of `fr3_fingertip`; gripper orientation remains free.
 
@@ -10,6 +10,7 @@ position of `fr3_fingertip`; gripper orientation remains free.
 | Circular acceleration tracking with HQP and mass minimization      | `optimized_hqp.py`                   | `config/circle_tracking_optimized_hqp.yaml` |
 | Perpendicular approach with the baseline control law               | `baseline_perp.py`                   | `config/baseline_perp.yaml`                 |
 | Perpendicular acceleration tracking with HQP and mass minimization | `optimized_hqp_perp.py`              | `config/optimized_hqp_perp.yaml`            |
+| Perpendicular preparation, transition and compliant contact       | `optimized_3phases_perp.py`          | `config/optimized_3phases_perp.yaml`        |
 
 [Progress](docs/progress.md) retains the development history.
 
@@ -38,12 +39,17 @@ fr3_student_sim/
 
 `controllers/base.py` defines the common interface. `controllers/loading.py`
 resolves controller names and loads their classes. The shared baseline
-controller hierarchy is in `controllers/circle_tracking.py`; both baseline
-and optimized use the primary feedback in `methods/cartesian_tracking.py`.
+controller hierarchy is in `controllers/circle_tracking.py`; baseline and
+the standard optimized variants use the primary feedback in
+`methods/cartesian_tracking.py`.
 `controllers/optimized_hqp.py` contains both the reusable
 `HQPTrackingController` law and the circular experiment's `Controller`
 subclass. `controllers/optimized_hqp_perp.py` supplies the perpendicular
-reference to that same reusable class.
+reference to that same reusable class. `controllers/optimized_3phases_perp.py`
+extends the perpendicular variant with phase-dependent objectives, reusing
+its initialization and observer estimate, plus the existing reference,
+mass utility, constraints and HQP. Its phase-dependent update is implemented
+locally in the new controller; `optimized_hqp.py` retains its original code.
 Numerical helpers remain in `methods/`.
 `simulation/fr3_model.py` wraps Pinocchio, while
 `simulation/runner.py` connects controllers to Gazebo.
@@ -98,7 +104,7 @@ ros2 launch fr3_student_sim student.launch.py \
   control_rate:=1000 real_time_factor:=0.20 duration:=20
 ```
 
-Use real-time factor 0.20 for all four experiments to give HQP more wall-clock time
+Use real-time factor 0.20 for all five experiments to give HQP more wall-clock time
 per simulated update and keep the requested timing settings equal within
 each pair. Execution load still matters: a lower factor does not guarantee
 receipt of every sample or QP feasibility. Add `gui:=false` to both members
@@ -143,12 +149,33 @@ The approach and scheduled completion are the same as the perpendicular
 baseline. Add `gui:=false` for a headless run. All HQP experiments require
 the observer; QP infeasibility or existing safety stops can end them early.
 
+Perpendicular optimized three-phase variant:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_3phases_perp.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/optimized_3phases_perp.yaml \
+  run_name:=optimized_3phases_perp \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.20 duration:=2
+```
+
+This variant prepares the low-mass posture before contact, fades the mass
+and posture attraction near the plane, and uses a compliant contact target.
+It completes only after confirmed contact and its final hold. A missing
+contact produces a timeout with `user_trial_complete=0`; crossing the
+geometric plane alone does not confirm contact. See
+[the three-phase controller](#perpendicular-optimized-three-phase-controller)
+for the transition, reference and completion rules. Add `gui:=false` for a
+headless run. `duration:=2` remains the runner's overall upper bound.
+
 Launch defaults to baseline. Omitting `task_config` selects the matching
 controller YAML; the launch defaults themselves remain
 1000 Hz, real-time factor 0.5 and duration 20 s.
 
 The built-in controller selectors are `baseline.py`, `baseline_perp.py`,
-`optimized_hqp.py` and `optimized_hqp_perp.py`. An absolute custom
+`optimized_hqp.py`, `optimized_hqp_perp.py` and `optimized_3phases_perp.py`. An absolute custom
 controller-file path is also supported.
 
 Save the three figures for the experiment you choose. In each new shell:
@@ -182,6 +209,12 @@ Perpendicular optimized HQP:
 ros2 run fr3_student_sim plot_run "$(ls -t runs/optimized_hqp_perp_*.npz 2>/dev/null | head -n 1)" --no-show
 ```
 
+Perpendicular optimized three-phase variant:
+
+```bash
+ros2 run fr3_student_sim plot_run "$(ls -t runs/optimized_3phases_perp_*.npz 2>/dev/null | head -n 1)" --no-show
+```
+
 These plotting patterns include run-name suffixes such as `_tracking_check`.
 The pattern `circle_optimized_hqp_[0-9]*.npz` only matches a timestamp directly
 after `circle_optimized_hqp_`, so it excludes those preliminary logs. Check
@@ -202,7 +235,7 @@ shared wall is at x = 0.62 m, with outward normal (-1, 0, 0), stiffness
 The perpendicular experiments share the initial pose and wall, using the
 straight reference described below instead of the circle.
 
-The seven active YAML files are:
+The eight active YAML files are:
 
 | File                                          | Role                                                                                                                                 |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -210,6 +243,7 @@ The seven active YAML files are:
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
 | `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and baseline tracking gains, with HQP, posture, mass objective and constraints.                     |
+| `config/optimized_3phases_perp.yaml`        | Perpendicular reference and shared HQP settings, with distance-based transition, contact impedance, confirmation and timeout.        |
 | `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                                                  |
 | `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                                               |
 | `config/controllers.yaml`                   | Gazebo effort-controller joint list.                                                                                                 |
@@ -263,7 +297,8 @@ earlier. Additional saved signals are `user_normal_speed`,
 
 ### Optimized HQP: the baseline Cartesian tracking law with constrained redundancy
 
-Baseline and optimized controllers now request the same Cartesian
+The baseline and standard optimized controllers (`optimized_hqp.py` and
+`optimized_hqp_perp.py`) request the same Cartesian
 acceleration feedback, with position gain 100 s^-2 and velocity gain
 20 s^-1 on each axis:
 
@@ -282,8 +317,9 @@ the same `CartesianAccelerationTracking` implementation in
 `Lambda^-1`; Cartesian inertia is used only for the optimized controller's
 dynamically consistent secondary projection. Both families record
 `user_tracking_acceleration`, before the joint-space solution and its
-constraints. There is no
-collision-triggered retreat or release state.
+constraints. These two standard optimized variants have no
+collision-triggered retreat or release state. The separate three-phase
+variant changes its primary objective during transition and contact.
 
 ```yaml
 tracking:
@@ -307,7 +343,7 @@ final-hold schedule. Changing only the optimized gains in a custom YAML
 would change its tracking law: keep each pair's `tracking.kp_position` and
 `tracking.kd_position` equal when comparing them.
 
-Both active optimized configurations use three QP levels: minimum
+All three active optimized configurations use three QP levels: minimum
 relaxation of preventive preferences under hard constraints, Cartesian
 tracking while preserving that relaxation, and secondary posture/mass/
 damping while preserving the achieved Cartesian action.
@@ -333,7 +369,7 @@ The fixed posture is computed offline with SciPy SLSQP, not HQP. During a
 run, the online HQP considers attraction towards that fixed posture together
 with the analytical mass gradient evaluated at the current joint state.
 
-Both optimized configurations prefer a 0.15 rad preventive position margin
+All three optimized configurations prefer a 0.15 rad preventive position margin
 and 30 rad/s^2 acceleration magnitude. Those preferences are relaxable;
 the 0.06 rad hard position margin and configured velocity/torque limits
 remain mandatory. The acceleration preference is an experiment parameter,
@@ -342,8 +378,11 @@ Torque constraints cover both command torque and nominal motor torque
 including gravity. The returned command does not add gravity: Gazebo
 already compensates it.
 
-The residual affects constraint predictions only; it is not subtracted from
-the tracking command. `disturbance_estimate` configures validity checks and
+In the two standard optimized variants, the residual affects constraint
+predictions only; it is not subtracted from the tracking command. The
+three-phase variant also uses a valid residual to confirm contact, while
+keeping the same constraint predictions and omitting torque compensation.
+`disturbance_estimate` configures validity checks and
 the empirical acceleration-error reserve. The reserve accounts for the
 observed residual rate, filter lag, sample age and command delay. It is not
 a certified bound on arbitrary impacts. Timing variations can make the
@@ -362,6 +401,7 @@ Reusable components are:
 | `methods/cartesian_tracking.py`      | Shared Cartesian acceleration feedback and gain validation for baseline and optimized controllers. |
 | `methods/mass_objective.py`          | Directional mass, analytical gradient and projected mass torque.                                   |
 | `controllers/optimized_hqp.py`       | Reference-independent Cartesian acceleration tracking/HQP law and circular experiment adapter.     |
+| `controllers/optimized_3phases_perp.py` | Local three-phase control update, reusing initialization, observer estimation, reference, constraints and HQP utilities. |
 | `methods/joint_constraints.py`       | Delayed-state prediction and tightened joint bounds.                                               |
 | `methods/hierarchical_qp.py`         | Strict two-level HQP and optional three-level HQP with normalized soft-constraint slack.           |
 | `methods/optimize_posture.py`        | Standalone offline preferred-posture search.                                                       |
@@ -393,9 +433,131 @@ tracking and joint margins before drawing conclusions. The unchanged
 0.5 s secondary startup ramp finishes before the nominal reference contact
 time of 0.55 s.
 
-### Constraint hierarchy shared by both optimized controllers
+### Perpendicular optimized three-phase controller
 
-Both optimized YAML files enable `safety.soft_constraints`. Position and
+`optimized_3phases_perp.py` is a separate variant of `optimized_hqp_perp.py`.
+It inherits the existing perpendicular initialization and observer-estimate
+method, and reuses the reference, analytical mass utility, joint constraints
+and three-level HQP solver. The phase state, objective construction,
+per-step solve orchestration, logging and completion policy are local to
+the new controller. `optimized_hqp.py` and its original update are unchanged;
+no phase hook is added to the existing controller. The new logic changes
+the objectives supplied to the solver; it does not blend or rescale an
+already constrained torque output.
+
+| Phase (`user_phase`) | Primary task | Secondary mass/posture attraction |
+| --- | --- | --- |
+| 0 — approach | Baseline-style Cartesian acceleration feedback, gains 100/20. | Active with the existing startup ramp. |
+| 1 — transition | Continuous blend from acceleration feedback to contact impedance. | Fades with `1 - contact_blend`; nullspace damping remains active. |
+| 2 — confirmed contact | Contact impedance after the geometric blend has reached one. | Disabled; safety and nullspace damping remain active. |
+
+Let $n$ be the outward unit normal of the configured plane, $p_w$ its
+point, and $d=n^T(p-p_w)$ the signed gap computed from the measured
+fingertip position. A smoothstep transition starts at
+`three_phases.transition_distance=0.010` m and reaches full contact
+impedance at `contact_distance=0.002` m:
+
+$$
+z=\operatorname{clip}\left(\frac{0.010-d}{0.010-0.002},0,1\right),
+\qquad \beta_{candidate}=z^2(3-2z).
+$$
+
+The stored blend $\beta$ never decreases, so backing away or small
+measurement fluctuations cannot reactivate mass optimization. Completing
+this geometric transition is preparation for contact, not a contact
+measurement. In particular, `wall:=false` must not be interpreted as a
+confirmed collision just because the fingertip crosses the plane.
+
+The fixed contact equilibrium is the projection of the initial fingertip
+position onto the plane, shifted inward by `contact_penetration`:
+
+$$
+p_c=p_0-n\,n^T(p_0-p_w)-\delta_c n,
+\qquad \delta_c=\texttt{contact\_penetration}=0\ \mathrm{m}.
+$$
+
+Its desired velocity and acceleration are zero. With $P_n=nn^T$ and
+$P_t=I-P_n$, the configured physical gains are
+
+$$
+K_c=300P_n+600P_t\quad[\mathrm{N/m}],\qquad
+D_c=60P_n+120P_t\quad[\mathrm{N\,s/m}].
+$$
+
+Thus the normal response is softer than the tangential response, including
+for a rotated wall. At each update the controller forms
+
+$$
+\begin{aligned}
+a_{PD}&=a_r+K_p(p_r-p)+K_d(v_r-J\dot q),\\
+F_c&=K_c(p_c-p)-D_cJ\dot q,\\
+a_c&=(JM^{-1}J^T)F_c,\\
+a_{target}&=(1-\beta)a_{PD}+\beta a_c,\\
+b&=a_{target}-\dot J\dot q.
+\end{aligned}
+$$
+
+The shared HQP solves for this $b$ with its existing hard and soft
+constraints. Natural Cartesian inertia deliberately scales the contact
+impedance; it does not scale the approach-phase PD gains. This makes the
+multiphase primary law different from the baseline and standard optimized
+tracking law once the transition begins. No true wall force, wall stiffness
+or reconstructed Cartesian force is used by the controller.
+
+Both the mass-gradient torque and attraction to `q_posture_ref` are
+multiplied by $1-\beta$, in addition to the unchanged startup ramp. At
+$\beta=1$ the analytical mass gradient is no longer evaluated, while
+directional mass itself remains logged. Nullspace damping, observer
+validity guards, joint/torque constraints and bounded-damping failure
+handling remain active in every phase. The three QP levels are retained;
+disabling the mass objective does not by itself remove any solve.
+
+Contact confirmation requires all of the following continuously for
+`contact_confirmation_s=0.003` simulated seconds: an observer snapshot
+valid under the existing freshness/warmup checks, at least one residual
+component above its configured detection threshold, and measured gap no
+greater than `contact_distance`. The confirmation is latched; it does not
+switch back on a subsequent release or residual fluctuation. A residual
+alone far from the plane does not confirm contact. The observer remains a
+filtered estimate, so this confirmation is not the true contact-onset time.
+
+Normal completion requires confirmed contact and
+
+$$
+t\ge\max(t_{motion\_end},t_{contact\_confirmed})
+ +\texttt{contact\_hold\_duration},
+\qquad \texttt{contact\_hold\_duration}=0.15\ \mathrm{s}.
+$$
+
+If no contact has been confirmed by
+`reference.motion_end_time + contact_timeout`, with `contact_timeout=0.50`
+s, the controller records a missing-contact failure and leaves
+`user_trial_complete=0`. Existing QP/observer failures, runner safety stops
+and the launch duration upper bound can terminate earlier.
+
+The nominal reference generator is retained with its 10 mm endpoint.
+`user_p_ref`, `user_v_ref`, `user_a_ref`, `user_reference_depth` and their
+position/velocity errors continue to describe that nominal reference.
+During transition/contact, the actual primary target is the blended
+acceleration above, not the PD acceleration inferred from those errors.
+`user_contact_p_ref` and `user_contact_position_error` identify the fixed
+contact equilibrium and its error; `user_impedance_force` is $F_c$;
+`user_nominal_tracking_acceleration` is $a_{PD}$; and
+`user_tracking_acceleration` is the blended $a_{target}$.
+The phase, `user_contact_blend`, `user_secondary_scale`, and latched-contact
+diagnostics appear beside the existing HQP logs. Plotting uses the existing
+three-figure workflow and shows the phase/blend in the HQP status panel.
+
+Use the same measured entry-speed, timing and first-impact diagnostics when
+evaluating this variant. A baseline-versus-three-phase comparison intentionally
+reports a different primary tracking law and cannot pass the standard
+`same_primary_tracking`/`full_criterion_met` check merely because its approach
+gains are 100/20. It tests a different contact strategy as well as mass
+preparation, rather than isolating the effect of the mass gradient alone.
+
+### Constraint hierarchy shared by the optimized controllers
+
+All three optimized YAML files enable `safety.soft_constraints`. Position and
 velocity predictions and actuator torque bounds remain hard. The hard QP
 position margin is 0.06 rad, leaving a 0.01 rad buffer before the runner's
 0.05 rad stop band. Command torque and nominal motor torque including
@@ -426,13 +588,13 @@ predictions, without using true contact force or subtracting the residual
 from the commanded torque. Predictive constraints remain conditional on
 the assumed disturbance envelope, not a guarantee under arbitrary impacts.
 
-This mode is enabled in `circle_tracking_optimized_hqp.yaml` and
-`optimized_hqp_perp.yaml`. Disabling or omitting the option explicitly
+This mode is enabled in `circle_tracking_optimized_hqp.yaml`,
+`optimized_hqp_perp.yaml` and `optimized_3phases_perp.yaml`. Disabling or omitting the option explicitly
 selects the earlier strict two-level behavior. The comparison and plotting
 read the selected mode from the log; they do not infer it from the shape
 of the trajectory.
 
-Both optimized experiments use the ten-panel HQP main figure, observer
+All optimized experiments use the ten-panel HQP main figure, observer
 figure and first-impact collision figure. They record the shared HQP
 diagnostics; the perpendicular adapter additionally records its approach
 reference and scheduled trial completion. `user_soft_slack_lower` and `user_soft_slack_upper`
@@ -548,7 +710,11 @@ age, sample interval, filter time constants, validity and reason. Its YAML
 requires 0.2 s warmup, with maximum gap/age 0.01 s. Initialization uses a zero
 estimate plus a separate reserve; stale/discontinuous data terminate with a
 recorded reason. Snapshot validity does not remove low-pass lag or establish
-a disturbance-error guarantee. Threshold events do not switch its tracking.
+a disturbance-error guarantee. Threshold events do not switch the standard
+HQP variants' tracking. The three-phase variant additionally checks the
+valid residual against the threshold, with proximity and persistence, to
+latch its contact phase; its compliance transition already starts from
+measured geometry before that confirmation.
 
 ## Logs, plots and comparison
 
@@ -575,7 +741,7 @@ Missing data and incomplete cycles are marked explicitly. Cumulative
 positive contact work is no longer reported. True wall force/torque is
 logged for offline evaluation only.
 
-Use the four launch commands above to collect new pairs with the same
+Use the baseline and standard optimized launch commands above to collect new pairs with the same
 requested real-time factor (0.20), control rate and GUI mode. Keep the
 initial state, reference, wall, observer and realism settings equal within
 each pair. A comparison reads two saved NPZ files; it does not run a
@@ -602,6 +768,42 @@ ros2 run fr3_student_sim compare_runs \
   "$(ls -t runs/optimized_hqp_perp_*.npz 2>/dev/null | head -n 1)" \
   --output runs/optimized_hqp_perp_comparison.json
 ```
+
+Compare the latest standard perpendicular optimized and three-phase logs:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+optimized_perp_log=$(ls -t runs/optimized_hqp_perp_*.npz 2>/dev/null | head -n 1)
+threephase_perp_log=$(ls -t runs/optimized_3phases_perp_*.npz 2>/dev/null | head -n 1)
+if [ -z "$optimized_perp_log" ]; then
+  printf '%s\n' 'Missing runs/optimized_hqp_perp_*.npz: run optimized_hqp_perp.py first using the launch command above.'
+elif [ -z "$threephase_perp_log" ]; then
+  printf '%s\n' 'Missing runs/optimized_3phases_perp_*.npz: run optimized_3phases_perp.py first using the launch command above.'
+else
+  ros2 run fr3_student_sim compare_runs "$optimized_perp_log" "$threephase_perp_log" \
+    --output runs/optimized_hqp_perp_vs_3phases_comparison.json
+fi
+```
+
+Run both controllers with matching execution settings before using this
+command. An empty file selection otherwise becomes `.` when parsed as a
+path, producing `baseline log file not found: .`; the checks above identify
+the missing run before calling the comparison. In this JSON, `baseline` is the standard `optimized_hqp_perp`
+reference run and `candidate` is `optimized_3phases_perp`. The mass reduction
+is therefore `1 - three_phase_entry_mass / standard_optimized_entry_mass`.
+Both sections report impact, tracking, limits, QP diagnostics and timing.
+Tracking errors use the nominal reference in both runs; in the three-phase
+run they do not measure deviation from the separate contact equilibrium.
+
+The existing automatic success criteria are designed for a recognized
+baseline and matching primary tracking. For this controller-to-controller
+comparison, `recognized_baseline=false` and
+`primary_tracking.status=different` are expected with complete metadata:
+the first run is optimized and the second changes its contact law.
+Consequently, `target_metrics_met` and `full_criterion_met` are not suitable
+as an overall verdict for this pair. Compare the numerical metrics and
+individual checks, including actual entry speeds, completion and timing.
 
 These commands also accept run-name suffixes such as `_tracking_check`.
 They select the most recently modified file in each family, not an
@@ -641,6 +843,10 @@ gains. Unknown or incomplete law/gain metadata fail that check. This checks
 the configuration recorded in the log, rather than identifying a source
 revision. Matching primary tracking does not isolate the effect of the mass
 gradient: HQP constraints and secondary posture policies still differ.
+The three-phase variant records a distinct primary law because it blends
+that acceleration feedback into physical contact impedance. Its metrics
+can be inspected with the same comparison CLI, but a comparison against
+the standard baseline intentionally fails `same_primary_tracking`.
 
 For soft-constraint runs it separately reports the hard margin, runner stop
 band, safety-QP status, normalized slack and usage of each soft group.
@@ -692,20 +898,20 @@ included in `Controller.update` timing.
 
 | Option                               | Default                            | Meaning                                                                                                    |
 | ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `controller`                       | `baseline.py`                    | One of the four listed controllers, an absolute custom path, or `none` for simulator only.              |
+| `controller`                       | `baseline.py`                    | One of the five listed controllers, an absolute custom path, or `none` for simulator only.              |
 | `task_config`                      | Matching controller YAML           | Override the selected task.                                                                                |
 | `wall`, `observer`               | `true`                           | HQP requires the observer; baseline can run without it.                                                    |
 | `wall_config`, `observer_config` | Shared YAML files                  | Override wall or observer parameters.                                                                      |
 | `duration`                         | `20.0`                           | Maximum RUN duration in simulated seconds.                                                                 |
 | `stop_at_detachment`               | `false`                          | Optionally end at first wall detachment.                                                                   |
 | `control_rate`                     | `1000`                           | Nominal controller frequency in simulated Hz.                                                              |
-| `real_time_factor`                 | `0.5`                            | Requested simulation speed; use 0.20 for all four experiments.                                             |
+| `real_time_factor`                 | `0.5`                            | Requested simulation speed; use 0.20 for all five experiments.                                             |
 | `run_name`, `log_dir`            | Controller name, package `runs/` | Log prefix and destination.                                                                                |
 | `gui`                              | `true`                           | Open Gazebo GUI.                                                                                           |
 | `partition`                        | Empty                              | Gazebo transport partition.                                                                                |
 
 Realism settings `joint_friction`, `mass_error`, `noise_q`, `noise_dq` and
 `seed` default to the nominal noiseless model. `run_batch` accepts a supplied
-batch YAML and selects the matching task for the four active controllers.
+batch YAML and selects the matching task for the five active controllers.
 When samples are missed, reduce simulation speed and inspect timing. A
 controller exception saves the current log and terminates the run.

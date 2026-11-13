@@ -5,7 +5,7 @@
     ros2 launch fr3_student_sim student.launch.py wall:=false duration:=10 gui:=false
 
 ``controller`` selects baseline.py, baseline_perp.py, optimized_hqp.py,
-optimized_hqp_perp.py or an absolute custom Python file. Legacy controller
+optimized_hqp_perp.py, optimized_3phases_perp.py or an absolute custom Python file. Legacy controller
 selectors remain aliases. When a run ends (duration, ``done``, safety
 stop) the log is saved in ``log_dir`` and everything shuts down.
 """
@@ -29,7 +29,7 @@ PKG = 'fr3_student_sim'
 QUIET = {'stdout': 'log', 'stderr': 'log'}     # helper processes: ~/.ros/log only
 
 ARGS = {
-    'controller': ('baseline.py', 'baseline.py, baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py, a legacy selector or an absolute Python file; '
+    'controller': ('baseline.py', 'baseline.py, baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py, optimized_3phases_perp.py, a legacy selector or an absolute Python file; '
                                        '"none" = only the robot, commanded from the terminal'),
     'task_config': ('', 'Task YAML passed to the controller as self.params '
                         '(empty = matching controller YAML)'),

@@ -161,7 +161,8 @@ def plot(run: dict, path_png: str, show: bool = True):
     import matplotlib.pyplot as plt
     # Removed controller names remain log-format identifiers, never imports.
     if Path(run['meta'].get('controller', '')).name in (
-            'optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_perp_full_online.py',
+            'optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
+            'optimized_perp_full_online.py',
             'impedance_hqp.py', 'controller_impedance_hqp.py'):
         from fr3_sim.analysis.plot_impedance import impedance_figure
         fig = impedance_figure(run, plt)

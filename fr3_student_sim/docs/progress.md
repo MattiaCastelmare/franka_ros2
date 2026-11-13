@@ -2412,3 +2412,145 @@ criterion passes. Timing remains a separate limitation: measured RTF 0.0984,
 has different measured RTF, so this is not a matched timing or real-time
 feasibility claim. Earlier `sample_gap` failures remain distinct from
 constraint incompatibility; their guards were not relaxed.
+
+### Three-phase perpendicular optimized controller (2026-11-13)
+
+Added the separate `controllers/optimized_3phases_perp.py` experiment and
+`config/optimized_3phases_perp.yaml`. The active inventory contains five
+controllers and eight YAML files. The new selector and matching default
+task are integrated with launch/loading, plotting and saved-run analysis.
+The original `optimized_hqp_perp.py` remains available as its own experiment.
+
+The variant reuses the existing perpendicular reference, shared optimized
+control update, analytical mass utility, observer and constrained HQP.
+The shared controller exposes phase-dependent objective construction;
+the default objective continues to use Cartesian acceleration feedback
+with gains 100/20. No separate numerical-method module or copy of the QP
+and safety implementation is introduced for this experiment.
+
+The new controller uses three phases:
+
+1. Approach with the baseline-style Cartesian PD acceleration request,
+   the existing secondary startup ramp, low-mass posture attraction and
+   analytical mass-gradient torque.
+2. A distance-based transition from measured plane gap 10 mm to 2 mm,
+   using a monotone smoothstep blend. The primary target changes from
+   acceleration tracking to contact impedance; the same blend fades both
+   low-mass posture attraction and the mass-gradient torque.
+3. Confirmed contact with the low-mass attraction disabled, preserving
+   nullspace damping and all observer/safety guards.
+
+The contact equilibrium is fixed at the projection of the initial fingertip
+position onto the configured plane, with default inward offset zero. The
+contact stiffness is 300 N/m along the wall normal and 600 N/m tangentially;
+damping is 60 and 120 N s/m respectively. The gain matrices use normal and
+tangential projectors, so their meaning is preserved for a rotated wall.
+The contact acceleration target is `W @ impedance_force`, with static
+equilibrium velocity/acceleration, and is blended with the standard PD
+acceleration before subtracting `Jdot*dq` and solving the shared HQP.
+
+This is deliberately a different primary law during transition/contact,
+not a claim that the new controller retains the baseline's acceleration
+gains throughout the experiment. Blending occurs before optimization,
+never on the constrained output torque. Hard/soft joint and torque bounds,
+gravity convention, scheduling checks and bounded-damping failure handling
+are reused. All three QP levels remain; once the secondary gate is zero,
+the analytical mass gradient is skipped while scalar effective mass
+continues to be recorded.
+
+Geometric preparation and contact confirmation are distinct. Confirmation
+requires a valid observer snapshot, a residual component above the existing
+joint detection threshold and measured gap at most 2 mm, continuously for
+3 ms. Confirmation is latched. No wall object, true contact force or wall
+stiffness is passed to the controller. Plane crossing with `wall:=false`
+therefore does not itself confirm contact. The observer's filter lag
+remains part of the estimate and is not removed by the confirmation rule.
+
+Normal completion requires confirmed contact and a 0.15 s hold after the
+later of nominal motion end and confirmation. Missing confirmation by
+nominal motion end plus 0.50 s terminates with a recorded timeout and
+`trial_complete=0`. The runner's launch duration and other stops remain
+upper bounds. The inherited reference keeps its 10 mm nominal endpoint,
+but the contact equilibrium has its own logged position; nominal reference
+errors must not be interpreted as the contact-impedance error.
+
+The controller logs phase, contact blend, secondary activation, confirmation,
+fixed contact equilibrium/error, nominal PD acceleration and contact
+impedance force alongside the existing HQP diagnostics. The main plot
+shows phase/blend without creating another figure. Saved-run comparisons
+recognize the variant as a distinct multifase tracking/impedance law;
+matching approach gains alone cannot satisfy `same_primary_tracking`
+against a standard baseline. Mass, entry speed, impact and timing metrics
+remain available for inspection.
+
+The README includes its launch and plotting commands, configuration,
+phase equations, completion/timeout behavior and comparison limits.
+No dynamic mass-reduction, collision-force improvement or runtime
+improvement is established merely by adding this controller.
+
+Validation: `colcon build --symlink-install --packages-select fr3_student_sim`
+succeeds, as does a separate temporary build/install. A stale generated
+package build still referenced removed YAML files; it was preserved as
+`/ros2_ws/build/fr3_student_sim_before_threephases` and the package rebuilt.
+All 19 cases in `test/test_optimized_3phases_perp.py` pass in the ROS
+container with the real strict/elastic QP implementation. They cover
+approach equivalence to the original perpendicular controller, monotone
+blending, validity/proximity/persistence and latch, rotated-plane gains,
+gradient skipping and continued nullspace damping, completion/timeout,
+failure preservation, configuration validation, selectors and comparison
+of the distinct contact policy.
+
+A headless isolated Gazebo trial at requested RTF 0.10 completed normally
+at 0.770 s with `trial_complete=1`, saved as
+`runs/optimized_3phases_perp_validation_20261113_152627.npz`.
+Approach, transition and confirmed-contact phases were all recorded;
+transition started at 0.500 s, true first contact at 0.555 s, and observer
+confirmation at 0.563 s. The blend was monotone and mass torque was zero
+at full compliance. Every logged safety, tracking and redundancy solve
+returned status 1. Maximum logged QP violation was 8.80e-6; saved joint
+positions, speeds, command torques and nominal motor torques respected
+their hard bounds, with minimum physical joint margin 0.43160 rad.
+The first compression/release cycle completed at 0.613 s. Entry speed
+was 0.1594 m/s, entry directional mass 6.863 kg and peak wall force
+53.48 N. These figures are a functional trial, not a matched improvement
+comparison: the compliant transition changes entry speed.
+
+All three plot files were generated successfully. A compact check report
+is `runs/optimized_3phases_perp_validation_summary.json`. Timing remains
+limited: 2.86% missed simulated samples, controller mean 2.00 ms and p95
+4.79 ms. This trial does not establish real-time 1 kHz operation or a
+speedup over the original controller.
+
+### Three-phase implementation isolated from the original controller (2026-11-13)
+
+Following the requirement to keep `controllers/optimized_hqp.py` exactly
+as it was before this addition, the shared-objective-hook refactor described
+in the preceding entry is superseded. The original controller file is
+restored, including its original `update`; it contains no three-phase
+state, activation gate or phase-specific extension hook.
+
+`controllers/optimized_3phases_perp.py` retains inheritance for initialization,
+the perpendicular reference and observer-estimate method. Its three-phase
+objective construction, per-step update orchestration, diagnostic logging
+and trial termination are implemented locally. It calls the existing mass,
+joint-constraint and hierarchical-QP utilities directly, without introducing
+a separate numerical-method module or changing their behavior for the
+original experiments. The phase definitions, gains, contact confirmation,
+pre-solve blending and mass/posture deactivation policy remain those
+described above.
+
+The README now documents this separation explicitly. The build, focused-test
+and functional-trial results recorded in the preceding entry belong to the
+earlier shared-hook iteration; they are retained as development history and
+do not by themselves validate the subsequent isolation of the update.
+
+Isolation validation: `git diff` is empty for both original controller files
+(`optimized_hqp.py` and `optimized_hqp_perp.py`). All 21 focused test cases
+pass, including checks that both original optimized variants retain their
+Cartesian PD request and mass-gradient evaluation near the wall. Replaying
+all 748 control updates from the recorded Gazebo trial through the saved
+shared-hook implementation and the isolated implementation gives identical
+torques (maximum difference 0 N m), phase/blend/activation values and
+completion/failure states. The check is recorded in
+`runs/optimized_3phases_perp_isolation_check.json`. This is a deterministic
+replay comparison, not a new closed-loop simulation or timing benchmark.
