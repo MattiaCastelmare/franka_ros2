@@ -5,7 +5,7 @@ initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]  # [rad], fr3_joint1
 
 approach:
   speed: 0.20                 # [m/s] reference normal speed at the plane crossing
-  acceleration_duration: 0.50 # [s] smooth startup; 50 mm travelled before cruise
+  acceleration_duration: 0.10 # [s] smooth startup; 10 mm travelled before cruise
   penetration: 0.010          # [m] final REFERENCE overlap (10 mm), not actual penetration
   braking_distance: 0.004     # [m] final braking segment; cruise for 6 mm beyond the plane
   hold_duration: 0.15         # [s] short endpoint hold, then controller.done ends the trial

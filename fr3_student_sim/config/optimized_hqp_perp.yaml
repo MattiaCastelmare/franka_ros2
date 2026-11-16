@@ -5,7 +5,7 @@ initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
 approach:
   speed: 0.20                 # [m/s] same reference entry speed as baseline_perp
-  acceleration_duration: 0.50 # [s] same smooth startup as baseline_perp
+  acceleration_duration: 0.10 # [s] same smooth startup as baseline_perp
   penetration: 0.010          # [m] final REFERENCE overlap (10 mm), not actual penetration
   braking_distance: 0.004     # [m] cruise 6 mm beyond the plane, then brake over 4 mm
   hold_duration: 0.15         # [s] brief endpoint hold, then controller.done
@@ -19,12 +19,12 @@ q_posture_ref: [0.0016912193606702206, 0.15746110356315518, 0.003155880790772255
 tracking:
   kp_position: 100.0                # [1/s^2] same Cartesian position-error gain as baseline_perp
   kd_position: 20.0                 # [1/s] same Cartesian velocity-error gain as baseline_perp
-  nullspace_damping: 10.0           # [1/s], secondary acceleration target
-  posture_gain: 25.0                # [1/s^2], ignored without q_posture_ref
-  startup_ramp_duration: 0.5        # [s] secondary attraction ramp; complete before nominal contact (~0.55 s)
+  nullspace_damping: 24.0           # [1/s], secondary acceleration target
+  posture_gain: 144.0               # [1/s^2], ignored without q_posture_ref
+  startup_ramp_duration: 0.1        # [s] secondary attraction ramp; complete before nominal contact (~0.35 s)
 
 mass_minimization:
-  gain: 0.1                         # [N m rad/kg], analytical mass gradient
+  gain: 2.0                         # [N m rad/kg], analytical mass gradient
   direction: [-1.0, 0.0, 0.0]       # fixed world direction; parallel to current wall normal
 
 safety:
@@ -32,7 +32,7 @@ safety:
   velocity_max: [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26]  # [rad/s]
   acceleration_max: 30.0             # [rad/s^2] preferred acceleration limit, relaxable
   torque_max: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]    # [N m], command AND nominal motor incl. g
-  position_barrier_rate: 8.0         # [1/s]
+  position_barrier_rate: 12.0        # [1/s]
   velocity_barrier_rate: 10.0        # [1/s]
   command_delay_s: 0.003             # [s] transport/scheduling prediction allowance
   soft_constraints:

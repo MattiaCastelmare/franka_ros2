@@ -2572,3 +2572,15 @@ pair was compared successfully in
 `runs/optimized_hqp_perp_vs_3phases_20261113_162750.json`, using input logs
 `optimized_hqp_perp_20261113_162033.npz` and
 `optimized_3phases_perp_20261113_162202.npz`.
+
+### Standard perpendicular ramps shortened (2026-11-16)
+
+The baseline and standard optimized perpendicular YAML files now set
+`approach.acceleration_duration` to 0.10 s; the standard optimized
+secondary-objective startup ramp is also 0.10 s. At 0.20 m/s with an
+approximately 60 mm initial gap, the reference reaches the plane near
+0.35 s, brakes from 0.38 to 0.42 s and ends its hold near 0.57 s.
+These are nominal reference timings, not new simulation measurements.
+The circular settings and three-phase variant retain their own ramps;
+the latter still uses 0.50 s for both reference and secondary activation.
+Earlier trial records above describe their original configurations.

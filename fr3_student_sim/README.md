@@ -129,7 +129,7 @@ ros2 launch fr3_student_sim student.launch.py \
 ```
 
 Add `gui:=false` to run without the Gazebo window. This experiment finishes
-after its approach, braking and short hold, nominally about 0.77 simulated
+after its approach, braking and short hold, nominally about 0.57 simulated
 seconds after RUN starts with the default geometry. `duration:=2` is an
 upper bound, not an additional final hold.
 
@@ -242,8 +242,8 @@ The eight active YAML files are:
 | `config/circle_tracking_baseline.yaml`      | Baseline initial pose, circle, Cartesian and nullspace gains.                                                                        |
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
-| `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and baseline tracking gains, with HQP, posture, mass objective and constraints.                     |
-| `config/optimized_3phases_perp.yaml`        | Perpendicular reference and shared HQP settings, with distance-based transition, contact impedance, confirmation and timeout.        |
+| `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and Cartesian baseline gains, with HQP, posture, mass objective and constraints.                     |
+| `config/optimized_3phases_perp.yaml`        | Perpendicular reference and shared HQP implementation, with distance-based transition, contact impedance, confirmation and timeout.  |
 | `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                                                  |
 | `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                                               |
 | `config/controllers.yaml`                   | Gazebo effort-controller joint list.                                                                                                 |
@@ -275,14 +275,14 @@ changing the control law. It has no additional joint-limit constraints.
 `methods/perpendicular_reference.py` generates a straight approach along
 the negative wall normal from the initial fingertip position. With the
 shared vertical wall this is horizontal motion towards increasing x. The
-configured reference speed is 0.20 m/s, reached with a smooth 0.50 s ramp.
+configured reference speed is 0.20 m/s, reached with a smooth 0.10 s ramp.
 It crosses the wall plane at constant speed, continues for 6 mm, then
 smoothly brakes over 4 mm to a final reference overlap of 10 mm. The final
 reference is held for 0.15 s before the controller ends the run. Parameters
 are configurable in `config/baseline_perp.yaml`.
 
 With an initial gap of about 60 mm, the nominal reference reaches the wall
-at about 0.55 s, brakes from about 0.58 to 0.62 s and finishes around 0.77 s.
+at about 0.35 s, brakes from about 0.38 to 0.42 s and finishes around 0.57 s.
 These are reference timings: contact force and tracking error determine the
 actual contact time, speed and penetration. Check `entry_speed_mps` in the
 collision metrics before comparing controllers; a 0.20 m/s reference does
@@ -321,13 +321,19 @@ constraints. These two standard optimized variants have no
 collision-triggered retreat or release state. The separate three-phase
 variant changes its primary objective during transition and contact.
 
+For the standard perpendicular optimized configuration:
+
 ```yaml
 tracking:
   kp_position: 100.0          # [1/s^2], matching the baseline
   kd_position: 20.0           # [1/s], matching the baseline
-  nullspace_damping: 10.0     # unchanged secondary damping
-  posture_gain: 25.0          # unchanged attraction towards q_posture_ref
-  startup_ramp_duration: 0.5  # unchanged secondary-objective activation
+  nullspace_damping: 24.0     # [1/s], secondary damping
+  posture_gain: 144.0         # [1/s^2], attraction towards q_posture_ref
+  startup_ramp_duration: 0.1  # [s], activation of posture and mass objectives
+mass_minimization:
+  gain: 2.0                  # [N m rad/kg]
+safety:
+  position_barrier_rate: 12.0 # [1/s], preventive soft position barrier
 ```
 
 The baseline still realizes its task with a pseudoinverse and kinematic
@@ -336,10 +342,10 @@ dynamically consistent redundancy projector. A common primary tracking
 request does not imply identical joint torques when constraints or
 secondary objectives intervene.
 
-Each experiment's baseline and optimized controller use the same reference
+Each baseline and its standard optimized counterpart use the same reference
 class and configured trajectory. Both circular YAML files set the period
 to 2 s; the perpendicular pair shares the approach, braking and
-final-hold schedule. Changing only the optimized gains in a custom YAML
+final-hold schedule. Changing only the optimized Cartesian gains in a custom YAML
 would change its tracking law: keep each pair's `tracking.kp_position` and
 `tracking.kd_position` equal when comparing them.
 
@@ -347,12 +353,14 @@ All three active optimized configurations use three QP levels: minimum
 relaxation of preventive preferences under hard constraints, Cartesian
 tracking while preserving that relaxation, and secondary posture/mass/
 damping while preserving the achieved Cartesian action.
-The configured secondary gains are posture 25 s^-2, damping 10 s^-1 and
-mass gain 0.1 N m rad/kg.
+The circular and three-phase configurations use posture gain 25 s^-2,
+damping 10 s^-1 and mass gain 0.1 N m rad/kg. The standard perpendicular
+configuration uses 144 s^-2, 24 s^-1 and 2 N m rad/kg respectively.
 
 `tracking.startup_ramp_duration` smoothly activates posture attraction and
 mass torque at the beginning of RUN, using a cubic scale from zero to one.
-Its current value is 0.5 s; setting it to zero restores immediate activation.
+It is 0.10 s in `optimized_hqp_perp.yaml` and 0.50 s in the circular and
+three-phase configurations. Setting it to zero restores immediate activation.
 Cartesian tracking, nullspace damping and all QP constraints remain active
 throughout. The final constrained command is not multiplied by the ramp.
 `user_startup_scale` records the factor and appears in the HQP status panel;
@@ -414,13 +422,14 @@ container. Pinocchio supplies the kinematic and dynamic model.
 
 ### Perpendicular optimized HQP
 
-`optimized_hqp_perp.py` uses the same Cartesian acceleration tracking law, gains,
-residual validity checks and secondary-objective startup ramp as
-`optimized_hqp.py`, with the soft-constraint mode described below.
+`optimized_hqp_perp.py` uses the same Cartesian acceleration tracking law,
+primary gains (100/20) and residual validity checks as `optimized_hqp.py`,
+with a 0.10 s secondary-objective startup ramp and the soft-constraint mode
+described below.
 Its reference is the same straight approach as
-`baseline_perp.py`: 0.20 m/s, a 0.50 s speed ramp, 10 mm final reference
+`baseline_perp.py`: 0.20 m/s, a 0.10 s speed ramp, 10 mm final reference
 overlap, 4 mm braking distance and a 0.15 s hold. The nominal scheduled end
-is around 0.77 s. Tracking remains active during contact; scheduled
+is around 0.57 s. Tracking remains active during contact; scheduled
 completion is independent of detection and true contact force.
 
 The perpendicular YAML supplies its own fixed `q_posture_ref`, selected
@@ -429,13 +438,28 @@ offline for the matching approach and wall geometry. Use the
 Online mass minimization remains active within the HQP priorities; a static
 mass-reduction target does not guarantee the same reduction at impact. Compare
 entry mass together with actual collision speed, first-impact metrics,
-tracking and joint margins before drawing conclusions. The unchanged
-0.5 s secondary startup ramp finishes before the nominal reference contact
-time of 0.55 s.
+tracking and joint margins before drawing conclusions. The 0.10 s
+secondary startup ramp finishes before the nominal reference contact
+time of 0.35 s.
+
+The secondary gains target this short precontact window: after startup,
+about 0.25 s remain at full activation. Posture gain 144 and damping 24
+correspond to a critically damped 12 rad/s response in the ideal scalar
+model (`Kp = omega_n^2`, `Kd = 2 * omega_n`). This guides the tuning;
+variable projections and HQP constraints affect the actual response.
+Mass gain 2 and position-barrier rate 12 were selected by comparing
+simulation candidates for precontact mass, entry speed, torque and joint
+margin. The barrier permits faster motion far from the preventive margin
+and stronger braking near it, while hard limits remain unchanged.
+This tuning applies to the standard perpendicular approach; reassess it
+when approach timing changes. Faster secondary motion can increase joint
+accelerations and soft-constraint relaxation.
 
 ### Perpendicular optimized three-phase controller
 
 `optimized_3phases_perp.py` is a separate variant of `optimized_hqp_perp.py`.
+Its YAML retains a 0.50 s reference-speed ramp and a 0.50 s secondary startup
+ramp, configured independently of the standard perpendicular pair.
 It inherits the existing perpendicular initialization and observer-estimate
 method, and reuses the reference, analytical mass utility, joint constraints
 and three-level HQP solver. The phase state, objective construction,
@@ -795,7 +819,10 @@ writing a file. A write failure is reported as a CLI error, without changing
 permissions or silently choosing another destination.
 
 Run both controllers with matching execution settings before using this
-command. An empty file selection otherwise becomes `.` when parsed as a
+command. For a matching nominal reference, also align
+`approach.acceleration_duration`: the current standard and three-phase
+configurations use 0.10 s and 0.50 s respectively.
+An empty file selection otherwise becomes `.` when parsed as a
 path, producing `baseline log file not found: .`; the checks above identify
 the missing run before calling the comparison. In this JSON, `baseline` is the standard `optimized_hqp_perp`
 reference run and `candidate` is `optimized_3phases_perp`. The mass reduction

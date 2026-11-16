@@ -5,7 +5,7 @@ initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
 approach:
   speed: 0.20                 # [m/s] same reference entry speed as baseline_perp
-  acceleration_duration: 0.50 # [s] same smooth startup as baseline_perp
+  acceleration_duration: 0.50 # [s] reference ramp configured independently of baseline_perp
   penetration: 0.010          # [m] final REFERENCE overlap (10 mm), not actual penetration
   braking_distance: 0.004     # [m] cruise 6 mm beyond the plane, then brake over 4 mm
   hold_duration: 0.15         # [s] nominal reference metadata; actual trial hold is three_phases.contact_hold_duration
