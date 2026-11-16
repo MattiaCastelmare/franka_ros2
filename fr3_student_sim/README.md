@@ -282,7 +282,7 @@ and their recorded settings before interpreting the report.
 
 ## Controllers and configuration
 
-The two circle experiments retain the same initial pose, a vertical x-z circle of
+The circular experiments share the same initial pose, a vertical x-z circle of
 radius 0.04 m, cruise period 2 s and startup ramp 1 s. The fingertip starts
 near (0.56, 0, 0.50) m; the reference reaches x approximately 0.64 m. The
 shared wall is at x = 0.62 m, with outward normal (-1, 0, 0), stiffness

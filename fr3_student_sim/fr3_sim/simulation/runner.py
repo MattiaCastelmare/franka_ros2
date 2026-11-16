@@ -134,6 +134,7 @@ class Runner(Node):
                                             QoSProfile(depth=1))
         self.phase = 'WAIT'
         self.t0_sim = None
+        self.t0_sim_ns = None
         self.t_last_ctrl = -np.inf
         self.tau_ctrl = np.zeros(7)
         self.torque_history = AppliedTorqueHistory(delay=LATENCY_SAMPLES * 1e-3)
@@ -162,6 +163,7 @@ class Runner(Node):
         q = np.array([msg.position[i] for i in idx])
         dq = np.array([msg.velocity[i] for i in idx])
         t_sim = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
+        t_sim_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         previous_sample_time = self.last_sample_time
         if previous_sample_time is not None and t_sim <= previous_sample_time:
             return
@@ -186,7 +188,7 @@ class Runner(Node):
                 # Start the reference clock at the first actual RUN sample.
                 # Startup logging or a delayed state must not advance a ramp
                 # before the controller has sent its first command.
-                self.phase, self.t0_sim, self.wall_t0 = 'RUN', None, None
+                self.phase, self.t0_sim, self.t0_sim_ns, self.wall_t0 = 'RUN', None, None, None
                 self.last_control_time = t_sim
                 message = (
                     f'RUN started after {elapsed:.1f} s of settling: |q - initial_q| = '
@@ -203,8 +205,11 @@ class Runner(Node):
 
         if self.t0_sim is None:
             self.t0_sim = t_sim
+            self.t0_sim_ns = t_sim_ns
             self.wall_t0 = time.monotonic()
-        t = t_sim - self.t0_sim
+        # Subtract integer stamps before converting to seconds, so a large
+        # absolute origin cannot round an exact duration boundary down.
+        t = (t_sim_ns - self.t0_sim_ns) / 1_000_000_000
         # The command acting on this interval was already clipped before being
         # recorded. It excludes the wall, and gravity cancels the plugin's g(q).
         tau_applied = self.torque_history.mean(previous_sample_time, t_sim)
