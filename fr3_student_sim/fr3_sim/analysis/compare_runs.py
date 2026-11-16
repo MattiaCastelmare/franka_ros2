@@ -23,9 +23,11 @@ from fr3_sim.analysis.timing import timing_metrics
 # Include removed controller names only to keep historical logs readable.
 _PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
                      'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
+                     'optimized_hqp_full_online.py',
                      'optimized_perp_full_online.py')
 _HQP_TRACKING_CONTROLLERS = ('optimized_hqp.py', 'optimized_hqp_perp.py',
                              'optimized_3phases_perp.py',
+                             'optimized_hqp_full_online.py',
                              'optimized_perp_full_online.py', 'impedance_hqp.py',
                              'controller_impedance_hqp.py')
 _ACCELERATION_TRACKING_CONTROLLERS = (
@@ -556,6 +558,7 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
             violation is not None and violation <= feasibility + 1e-9)
     elif str(b.get('controller', '')).endswith(
             ('optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
+             'optimized_hqp_full_online.py',
              'optimized_perp_full_online.py',
              'impedance_hqp.py', 'controller_impedance_hqp.py')):
         checks['candidate_primary_qp_updates_solved'] = False
