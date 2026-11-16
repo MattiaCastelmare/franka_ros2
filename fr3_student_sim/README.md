@@ -353,14 +353,16 @@ All three active optimized configurations use three QP levels: minimum
 relaxation of preventive preferences under hard constraints, Cartesian
 tracking while preserving that relaxation, and secondary posture/mass/
 damping while preserving the achieved Cartesian action.
-The circular and three-phase configurations use posture gain 25 s^-2,
-damping 10 s^-1 and mass gain 0.1 N m rad/kg. The standard perpendicular
-configuration uses 144 s^-2, 24 s^-1 and 2 N m rad/kg respectively.
+The circular and three-phase configurations use posture gain 25 s^-2 and
+damping 10 s^-1. Their mass gains are 0.8 and 0.1 N m rad/kg respectively.
+The standard perpendicular configuration uses posture gain 144 s^-2,
+damping 24 s^-1 and mass gain 2 N m rad/kg.
 
 `tracking.startup_ramp_duration` smoothly activates posture attraction and
 mass torque at the beginning of RUN, using a cubic scale from zero to one.
-It is 0.10 s in `optimized_hqp_perp.yaml` and 0.50 s in the circular and
-three-phase configurations. Setting it to zero restores immediate activation.
+It is 0.30 s in `circle_tracking_optimized_hqp.yaml`, 0.10 s in
+`optimized_hqp_perp.yaml` and 0.50 s in `optimized_3phases_perp.yaml`.
+Setting it to zero restores immediate activation.
 Cartesian tracking, nullspace damping and all QP constraints remain active
 throughout. The final constrained command is not multiplied by the ramp.
 `user_startup_scale` records the factor and appears in the HQP status panel;
@@ -419,6 +421,87 @@ Within `optimized_hqp.py`, `Controller` selects the circle reference with
 to `HQPTrackingController`. OSQP and
 SciPy are declared runtime dependencies and are present in the existing
 container. Pinocchio supplies the kinematic and dynamic model.
+
+### Circular optimized gains: mass at the first impact
+
+The active circular HQP configuration uses the following mass-priority
+tuning, selected from 18 nominal Gazebo screening runs on 16 November 2026:
+
+```yaml
+tracking:
+  kp_position: 100.0
+  kd_position: 20.0
+  nullspace_damping: 10.0
+  posture_gain: 25.0
+  startup_ramp_duration: 0.3
+mass_minimization:
+  gain: 0.8
+```
+
+The objective is the directional effective mass at the sample immediately
+before the first contact, not the fastest convergence to the offline
+posture. Each screen used 2 simulated seconds, 1000 Hz nominal control,
+requested real-time factor 0.10, no GUI and no added noise, friction or mass
+error. The baseline retains Cartesian gains 100/20 and nullspace gains
+25/10 towards `initial_q`. Both controllers keep the same circle: radius
+0.04 m, period 2 s and angular startup ramp 1 s.
+
+With the configured initial pose and wall, the reference reaches the plane
+at approximately 1.166653 s, with normal speed 0.108831 m/s. The measured
+first contact in the selected run was at 1.167 s. A 0.30 s secondary ramp
+leaves about 0.867 s at full activation before that crossing, compared with
+0.667 s for the previous 0.50 s ramp. Posture and mass action already grow
+during the ramp; these intervals are not a startup dead time. Lowering the
+real-time factor gives the computation more wall-clock time but does not
+increase the simulated approach time.
+
+The selection keeps the Cartesian feedback at 100/20 because paired tests
+with 64/16 and 144/24 barely changed the HQP's entry mass (approximately
+5.077 kg with the previous secondary settings). They instead changed its
+contact force and impulse. Increasing the postural gains alone, up to
+64/16 with mass gain 0.1, only reduced entry mass to approximately 5.052 kg.
+Attraction towards a fixed posture chosen for a static 30% reduction can
+compete with further mass-gradient motion. The larger mass gain 0.8 gives
+the analytical gradient more influence while retaining postural attraction
+25 and nullspace damping 10. The main measured benefit comes from this
+mass-gain increase; the entry-mass difference between ramps 0.30 and 0.50 s
+at mass gain 0.8 was only about 2 g, not proof of a precise optimum at 0.30 s.
+
+| First-impact measurement | Baseline | Previous circular HQP (ramp 0.5, mass gain 0.1) | Selected circular HQP (ramp 0.3, mass gain 0.8) |
+| --- | --- | --- | --- |
+| Entry effective mass [kg] | 7.189144 | 5.076575 | 4.653976 |
+| Entry normal speed [m/s] | 0.108934 | 0.108922 | 0.108927 |
+| First-cycle peak force [N] | 43.1467 | 36.1331 | 34.4654 |
+| Minimum physical joint-6 margin over 2 s [rad] | 0.384242 | 0.177442 | 0.153303 |
+
+The selected mass is 35.26% below the baseline and 8.32% below the previous
+HQP, at comparable entry speeds. It was the lowest entry mass among the
+14 HQP candidates that completed their 2 s screen and met the tested
+tracking, speed, joint/torque-limit and QP-status checks. All three QP
+levels were accepted in the selected run, with no sampled hard-limit or
+torque violations. Its maximum precontact Cartesian error was about
+0.0327 mm. The controller law, observer, HQP priorities, torque convention
+and hard/soft constraint settings are unchanged by this gain selection.
+
+This is a first-impact tuning on the nominal model, not a global optimum
+or validation of the complete 20 s circular experiment. The gain-mass
+range tested ended at 0.8. There was one screen per setting, and the joint-6
+margin is now close to the preferred 0.15 rad margin, although above the
+hard 0.06 rad margin. Repeated impacts, uncertainty and timing need further
+validation before making stronger claims. The no-posture candidate had a
+slightly lower entry mass but stopped early on an observer `sample_gap`;
+it was excluded from the completed-screen selection, without attributing
+that timing failure to instability of its gains.
+
+Local detailed evidence and reproducible batch configurations are in
+`runs/gain_analysis_circular_20261116/`, including
+`analisi_guadagni_circular.md`, `screen_results.json` and `selection.json`.
+The selected log is
+`gain_circle_20261116_hqp_p25_d10_r30_m80_20261116_093430.npz`.
+These local run artifacts are ignored by Git; the values and limitations
+above document the rationale independently of their availability.
+Only the circular optimized YAML adopts these gains; the perpendicular
+and three-phase variants retain their own settings.
 
 ### Perpendicular optimized HQP
 

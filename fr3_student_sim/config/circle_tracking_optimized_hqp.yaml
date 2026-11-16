@@ -17,10 +17,10 @@ tracking:
   kd_position: 20.0                 # [1/s] same Cartesian velocity-error gain as baseline
   nullspace_damping: 10.0           # [1/s], in the secondary acceleration target
   posture_gain: 25.0                # [1/s^2], ignored if q_posture_ref is absent
-  startup_ramp_duration: 0.5        # [s], smooth activation of posture/mass; 0 disables ramp
+  startup_ramp_duration: 0.3        # [s], mass/posture preparation before nominal contact (~1.167 s)
 
 mass_minimization:
-  gain: 0.1                         # [N m rad/kg], analytical gradient
+  gain: 0.8                         # [N m rad/kg], mass-priority circular tuning; see README
   direction: [-1.0, 0.0, 0.0]       # fixed world direction at controlled point
 
 safety:
