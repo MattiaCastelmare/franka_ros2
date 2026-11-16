@@ -18,7 +18,7 @@ tracking:
   startup_ramp_duration: 0.1        # [s] online mass-gradient ramp; complete before nominal contact (~0.35 s)
 
 mass_minimization:
-  gain: 2.0                         # [N m rad/kg], analytical mass gradient evaluated online
+  gain: 4.0                         # [N m rad/kg], online gradient weight tuned for the short precontact interval
   direction: [-1.0, 0.0, 0.0]       # fixed world direction; parallel to current wall normal
 
 safety:

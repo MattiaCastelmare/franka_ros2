@@ -275,7 +275,7 @@ The nine active YAML files are:
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
 | `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and Cartesian baseline gains, with HQP, posture, mass objective and constraints.                     |
-| `config/optimized_hqp_full_online.yaml`     | The standard perpendicular reference/HQP settings, without offline posture attraction; online mass gradient and damping remain.      |
+| `config/optimized_hqp_full_online.yaml`     | Standard perpendicular reference and shared HQP implementation, with independently tuned online mass descent and no offline posture. |
 | `config/optimized_3phases_perp.yaml`        | Perpendicular reference and shared HQP implementation, with distance-based transition, contact impedance, confirmation and timeout.  |
 | `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                                                  |
 | `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                                               |
@@ -391,15 +391,19 @@ The circular and three-phase configurations use posture gain 25 s^-2 and
 damping 10 s^-1. Their mass gains are 0.8 and 0.1 N m rad/kg respectively.
 The standard perpendicular configuration uses posture gain 144 s^-2,
 damping 24 s^-1 and mass gain 2 N m rad/kg.
-The full-online perpendicular configuration retains damping 24 s^-1 and
-mass gain 2 N m rad/kg, with posture gain zero and no offline posture target.
+The full-online perpendicular configuration uses damping 24 s^-1 and
+mass gain 4 N m rad/kg, with posture gain zero and no offline posture target.
 
 `tracking.startup_ramp_duration` smoothly activates posture attraction and
 mass torque at the beginning of RUN, using a cubic scale from zero to one.
 It is 0.30 s in `circle_tracking_optimized_hqp.yaml`, 0.10 s in
 both `optimized_hqp_perp.yaml` and `optimized_hqp_full_online.yaml`, and
 0.50 s in `optimized_3phases_perp.yaml`.
-Setting it to zero restores immediate activation.
+Setting `tracking.startup_ramp_duration` to zero restores immediate activation.
+RUN time starts at the first received RUN joint-state sample, so the first
+controller update sees `t=0` and both the reference and secondary ramps start
+from zero. Absolute sample timestamps are retained for torque-history
+alignment. New logs record this convention in `run_time_origin`.
 Cartesian tracking, nullspace damping and all QP constraints remain active
 throughout. The final constrained command is not multiplied by the ramp.
 `user_startup_scale` records the factor and appears in the HQP status panel;
@@ -587,10 +591,11 @@ constraints, three-level HQP and termination behavior. No additional
 trajectory generator, numerical-method module or copy of the control law
 is needed for this variant.
 
-Its YAML matches the standard perpendicular settings except for the
-postural objective: `q_posture_ref` is absent and `tracking.posture_gain`
+Its reference, Cartesian tracking, constraints, observer and QP settings
+match the standard perpendicular configuration. The secondary objective
+is tuned independently: `q_posture_ref` is absent and `tracking.posture_gain`
 is zero. The primary gains remain 100 s^-2 and 20 s^-1, nullspace damping
-24 s^-1, secondary startup ramp 0.10 s and mass gain 2 N m rad/kg. The
+24 s^-1, secondary startup ramp 0.10 s and mass gain 4 N m rad/kg. The
 position-barrier rate remains 12 s^-1. `initial_q` still defines the
 settling pose and the initial point of the reference; it does not become
 a substitute preferred posture. The controller also ignores an offline
@@ -610,7 +615,7 @@ u_{sec}=\bar Jb-k_dN\dot q+M^{-1}\tau_m,
 m_n(q)=\frac{1}{n^TJM^{-1}J^Tn}.
 $$
 
-Here $\rho(t)$ is the existing 0.10 s smooth startup ramp. There is no term
+Here $\rho(t)$ is the configured 0.10 s smooth startup ramp. There is no term
 $N k_p(q_{post}-q)$ and no offline optimized configuration is used as an
 attractor. The gradient is evaluated analytically at the current state;
 the final HQP still balances its secondary target with the achieved
@@ -618,6 +623,16 @@ Cartesian task and the hard/soft constraints. The name “full online”
 describes where the mass-reduction preference comes from: it does not
 mean that the QP directly minimizes future impact mass, identifies a
 global minimum or guarantees a particular percentage reduction.
+
+Without an offline attractor, the mass-gradient drive and nullspace damping
+must be balanced over the short precontact interval, nominally about 0.35 s.
+The mass weight, damping and startup ramp were compared numerically for
+entry mass, actual speed, QP acceptance and joint margins. The selected
+weight 4 strengthens mass descent against the retained damping; a
+postural PD critical-damping formula does not apply with posture gain zero.
+More aggressive preferences can consume additional preventive margin for
+little mass benefit. Revalidate this scenario-specific tuning when approach
+timing changes.
 
 The reference is the standard 0.20 m/s perpendicular approach with a
 0.10 s speed ramp, 10 mm nominal overlap, 4 mm braking and 0.15 s final
@@ -634,6 +649,8 @@ improvement by construction. Compare saved runs under the same reference,
 wall and execution settings, and inspect actual entry speed, complete
 first-impact metrics, sampled limits and timing. A matching primary law
 does not isolate every difference in the secondary strategy.
+The independently tuned mass weight also differs from the standard variant,
+so their comparison evaluates both the posture strategy and gradient weight.
 
 ### Perpendicular optimized three-phase controller
 
@@ -989,6 +1006,21 @@ ros2 run fr3_student_sim compare_runs \
   "$(ls -t runs/optimized_hqp_perp_*.npz 2>/dev/null | head -n 1)" \
   --output runs/optimized_hqp_perp_comparison.json
 ```
+
+Compare the latest standard perpendicular optimized and full-online logs:
+
+```bash
+source /ros2_ws/install/setup.bash
+cd /ros2_ws/src/fr3_student_sim
+
+ros2 run fr3_student_sim compare_runs \
+  "$(ls -t runs/optimized_hqp_perp_*.npz | head -n 1)" \
+  "$(ls -t runs/optimized_hqp_full_online_*.npz | head -n 1)" \
+  --output "runs/optimized_perp_vs_full_online_$(date +%Y%m%d_%H%M%S).json"
+```
+
+Here `baseline` is the standard optimized controller and `candidate` is the
+full-online variant.
 
 Compare the latest standard perpendicular optimized and three-phase logs:
 

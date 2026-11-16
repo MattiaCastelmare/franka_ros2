@@ -1,14 +1,16 @@
 # Progress: FR3 simulation experiments
 
-This document preserves the development history. The 2026-11-09 cleanup
-retained baseline and hybrid retreat; the later optimized variant adds a
-third active entry point, followed by a fourth with preventive joint release.
-Earlier sections
-describe the layout and defaults before that cleanup: archived `students/`,
-`config/` and `test/` paths now live under `fr3_student_sim/trash/`, retaining
-their relative structure. Shared tracking and reference implementations now
-live in `students/utils/`. Use the current package README and the final
-development entries below for the active files and commands.
+This document preserves the chronological development history. Controller
+names, directory layouts, settings and validation results in older entries
+describe their respective revisions; later entries supersede them. Use the
+current package README for active controllers, configuration and commands.
+Shared implementations now live under `fr3_sim/controllers`, `fr3_sim/methods`,
+`fr3_sim/analysis`, `fr3_sim/monitoring` and `fr3_sim/simulation`.
+
+Local run artifacts and tests under `runs/` and `test/` are ignored by Git.
+Historical paths may no longer be present after cleanup. Recorded validation
+results apply to the corresponding configuration, not automatically to later
+gain changes or controller revisions.
 
 The analytical-gradient implementation and timing reports added on
 2026-11-10 supersede the finite-difference details in earlier entries.
@@ -2661,3 +2663,193 @@ estimate exceeded the preferred 30 rad/s^2 on 25 samples. Four nominal
 samples were missed, with maximum interval 5 ms; controller time was
 1.684 ms mean / 2.345 ms p95. These observations do not establish
 real-time operation at RTF=1 or uninterrupted secondary mass optimization.
+
+### Shared runtime reuse and timing diagnostics (recorded 2026-11-16)
+
+The shared HQP controller reuses the current inverse inertia and dynamic
+nullspace projector for the analytical mass term. The elastic safety QP
+caches its sparse CSC pattern and numerical buffers. These changes preserve
+the objectives and constraint hierarchy. Launch defaults the runner's BLAS
+thread settings to one while respecting explicit environment overrides.
+
+Logs distinguish `Controller.update` time from `callback_ms`, the complete
+RUN callback work, and record `real_time_factor_requested` and numerical
+thread settings. At 1000 Hz and requested RTF 0.20 the wall-clock budget is
+5 ms per simulated plant sample, while the nominal RTF=1 comparison remains
+1 ms. Collision-onset and hand-body console messages are deferred until
+the run ends; monitoring and controller notifications remain synchronous.
+These implementation details do not establish real-time 1 kHz feasibility.
+
+### Standard perpendicular HQP gains for the shortened approach (2026-11-16)
+
+The standard perpendicular YAML uses posture gain 144 s^-2, nullspace
+damping 24 s^-1, mass gain 2 N m rad/kg and preventive position-barrier rate
+12 s^-1. Its secondary startup remains 0.10 s. Baseline and optimized retain
+the same Cartesian feedback 100/20 and approach reference; baseline
+nullspace gains remain 25/10 towards `initial_q`.
+
+The 144/24 pair corresponds to a critically damped 12 rad/s response only
+in the ideal scalar approximation. The mass weight and preventive barrier
+were selected numerically for the approximately 0.35 s precontact interval;
+hard margins and physical limits were retained. This is scenario-specific
+tuning, not an analytical global optimum.
+
+Recorded validation at RTF 0.20: two complete nominal trials returned
+`full_criterion_met=true`, with entry mass about 5.19574 kg, 31.84% below
+the paired baseline, peak first-impact force about 69.05 N and impulse
+2.6585 Ns. Safety and primary QPs were accepted throughout; each trial
+used 39 secondary fallbacks after contact. The minimum physical margin
+was about 0.15975 rad and the finite-difference acceleration estimate
+reached 48.34 rad/s^2, exceeding the soft preference of 30. Local evidence
+is in `runs/gain_analysis_20261116/report.md` and its comparison files.
+
+### Circular first-impact gain selection recorded (2026-11-16)
+
+The circular selection already documented in the README and commit
+`a36e586` uses mass gain 0.8 N m rad/kg and secondary startup 0.30 s,
+retaining posture/damping 25/10 and Cartesian feedback 100/20. The shared
+circle remains radius 0.04 m, period 2 s and angular startup 1 s.
+
+The README records 18 nominal 2 s Gazebo screening trials at RTF 0.10.
+The selected entry mass was 4.653976 kg versus baseline 7.189144 kg
+(35.26% reduction), with approximately equal entry speeds of 0.10893 m/s.
+Its minimum joint-6 margin over that screen was 0.153303 rad. These are
+recorded first-impact screening results, not a new simulation for this
+documentation update or validation of the full 20 s circular experiment.
+The original local circular screening directory is absent from this
+checkout; the README retains the selection rationale and limitations.
+
+### Three-phase normal entry speed aligned (2026-11-16)
+
+The three-phase approach now shares speed 0.20 m/s and reference ramp
+0.10 s with the other perpendicular controllers. Its independent secondary
+startup remains 0.50 s, with posture/damping 25/10, mass gain 0.1 and
+position-barrier rate 8. The geometric 10-to-2 mm blend still fades
+mass/posture and enables tangential compliance. Normal acceleration retains
+the shared Cartesian tracking target until the first measured gap <= 0,
+then blends to impedance over `normal_transition_duration=0.003` s.
+Both blends are monotone. Plane crossing is latched independently of
+observer-based contact confirmation; acceleration projectors act after
+the Cartesian inverse inertia to prevent normal coupling before crossing.
+
+New diagnostics are `user_normal_contact_blend`, `user_plane_crossed` and
+`user_plane_crossing_time`. Plots distinguish both blends and observer
+confirmation. Comparison metadata requires the normal transition duration;
+older logs lacking it cannot verify the current phase policy.
+
+Recorded validation: 54 focused tests passed. Matched RTF 0.20 simulations
+measured entry speeds 0.19970 m/s (baseline), 0.19974 m/s (standard HQP)
+and 0.19974 m/s (three-phase), with 0.19969 m/s in its repeat. Both
+three-phase trials completed, with zero missed samples. A no-wall run
+crossed the plane without confirming contact and ended by the expected
+missing-contact timeout. Entry mass was about 8.226 kg: matching speed
+does not establish a mass-reduction result for this variant. The temporary
+speed-validation directory is no longer present in this checkout.
+
+### Independent full-online gain tuning (2026-11-16)
+
+The active full-online YAML now uses mass gain 4 N m rad/kg, retaining
+nullspace damping 24 s^-1 and startup 0.10 s. Posture gain remains zero
+and no offline target is used. Cartesian feedback 100/20, approach,
+observer, QP settings and hard/soft constraint settings are unchanged.
+Only the mass weight changed in the applied configuration, from 2 to 4.
+
+The study compared 11 full-online settings in 17 simulations including
+baseline/hybrid references and repeated finalists, all at RTF 0.20 and
+1000 Hz. Three repetitions of the selected setting completed the trial
+and first impact with `full_criterion_met=true`. Entry mass ranged from
+5.19950 to 5.19958 kg, about 31.78% below the paired 7.62193 kg baseline;
+the original full-online setting measured 5.94194 kg (22.04% reduction).
+Entry speed stayed near 0.20 m/s. Selected peak force was about 69.02 N
+and impulse 2.6533 Ns, versus baseline 85.24 N and 3.5438 Ns.
+
+Safety and primary QPs were accepted on every update; each selected trial
+used 40 secondary fallbacks after contact. Minimum physical margin was
+about 0.15198 rad and estimated acceleration reached 49.68 rad/s^2.
+The 30 rad/s^2 preference remains soft. Whole-trial normalized-slack
+counts ranged from 16.11% to 27.26% across repetitions and cover any soft
+group, not just acceleration-limit exceedances. More aggressive candidates
+offered small mass improvements while consuming the preferred margin;
+the alternative gain 2/damping 12 had one primary failure in three trials.
+
+Without posture attraction, the postural PD critical-damping rule does
+not determine the nullspace damping. The selected balance is numerical
+and specific to the current approach. Local configurations, logs, JSON
+comparisons and the report/figure are in `runs/full_online_tuning_20261116/`.
+The README documents the independent tuning; launch and plot commands
+were preserved, as were the other controllers and their configurations.
+
+### Deferred ROS logger severity error corrected (2026-11-16)
+
+The queued end-of-run messages previously called different logger methods
+through one `getattr` call site. The installed `rclpy` caches severity per
+call site, so an INFO collision message followed by a WARN hand-body
+message raised `ValueError('Logger severity cannot be changed between calls.')`.
+The exception occurred after saving; the pending queue had already been
+cleared, so the warning and later messages were lost.
+
+`simulation/runner.py` now uses separate explicit INFO/WARN call sites for
+the deferred queue, settling outcome and end-of-run reason. Message order,
+deferred output, saving and control behavior are preserved; gains were
+not changed by this fix. Three regression tests passed with the real
+`rclpy` logger, without a ROS node or Gazebo: mixed/repeated/empty flushes,
+normal and safety completion, and flushing after a save exception while
+preserving the original exception. The local test file remains ignored.
+
+The user's existing `optimized_hqp_full_online_20261116_153240.npz` was
+read successfully: 561 samples, scheduled completion at 0.57 s and no
+primary/safety QP failures. Its saved data were complete despite the
+subsequent console error. No new simulation was needed for the logger fix.
+
+### Standard optimized versus full-online comparison command (2026-11-16)
+
+The README comparison section now includes the command selecting the latest
+`optimized_hqp_perp_*.npz` as reference and `optimized_hqp_full_online_*.npz`
+as candidate, saving a timestamped `optimized_perp_vs_full_online_*.json`.
+Existing commands and comparison criteria are unchanged.
+
+### Startup clock alignment and initial false collision event (2026-11-16)
+
+The user's full-online log `optimized_hqp_full_online_20261116_154434.npz`
+contains a residual-threshold event at 0.014 s, before true contact at
+0.351 s. Its first RUN measurement was already at controller time 0.011 s:
+the reference and 0.10 s mass ramp had advanced before the first command.
+The first complete `Controller.update` took 8.87 ms and the callback
+9.57 ms against a 5 ms wall-clock budget at RTF 0.20. The three QPs account
+for about 1.56 ms of that update; the rest was not separately profiled.
+
+During the initial delayed publication, torque history assumed the new
+joint-2 command was applied before measured momentum responded. The
+command rose from about 0.00085 to 2.8376 N m; two impulse discrepancies
+explain the -0.16057 N m residual. An offline observer replay reproduces
+the residual to floating-point accuracy. A global change of actuator delay
+would worsen the later alignment, so delay, observer and threshold were
+retained.
+
+The runner now sets the simulation-time origin at the first actual RUN
+joint-state sample. Its first controller call receives t=0, starting the
+reference and secondary activation ramp from zero while the initial cold
+computation completes. Absolute sample timestamps and the preceding SETTLE
+torque-history interval are preserved. New metadata records
+`run_time_origin=first RUN joint-state sample`. No output-torque blending,
+detection blanking, threshold increase or warmup gating was added. The
+full-online settings remain mass gain 4, damping 24 and startup 0.10 s.
+
+Validation: 30 focused tests passed, including four callback tests for a
+delayed first sample, continuous timestamps, 500 Hz control with 1 kHz
+monitoring, and DONE handling. An isolated baseline and three full-online
+Gazebo trials at RTF 0.20 completed. One online trial imposed an additional
+15 ms first-update delay, producing a measured 21.30 ms first update;
+this overrun and missed samples remain visible in the timing diagnostics.
+
+There were no precontact threshold events in any of the three online
+trials. Maximum precontact absolute residual was about 0.01363 N m in
+the two normal trials and 0.04107 N m with the imposed delay, below the
+unchanged 0.1 N m threshold. Entry mass remained about 5.1992 kg (31.79%
+below the paired baseline), entry speed about 0.20 m/s, and all three
+comparisons returned `full_criterion_met=true` with safety/primary QPs
+accepted throughout. Secondary fallbacks remain after contact. Later
+onsets at 0.551-0.553 s correspond to real re-contact: wall force becomes
+positive again at 0.548-0.550 s and reaches 3.60-4.06 N at detection.
+Those events remain recorded. Local validation logs and comparisons are
+under `runs/full_online_startup_20261116/`.

@@ -183,17 +183,27 @@ class Runner(Node):
             settled = err < SETTLED_Q and speed < SETTLED_DQ
             if elapsed >= self.settle_time and (settled or
                                                 elapsed >= self.settle_time + SETTLE_TIMEOUT):
-                self.phase, self.t0_sim, self.wall_t0 = 'RUN', t_sim, time.monotonic()
+                # Start the reference clock at the first actual RUN sample.
+                # Startup logging or a delayed state must not advance a ramp
+                # before the controller has sent its first command.
+                self.phase, self.t0_sim, self.wall_t0 = 'RUN', None, None
                 self.last_control_time = t_sim
-                (self.get_logger().info if settled else self.get_logger().warn)(
+                message = (
                     f'RUN started after {elapsed:.1f} s of settling: |q - initial_q| = '
                     f'{err:.4f} rad, |dq| = {speed:.4f} rad/s'
                     + ('' if settled else '  (NOT fully at rest: check initial_q)'))
+                if settled:
+                    self.get_logger().info(message)
+                else:
+                    self.get_logger().warn(message)
             return
         if self.phase == 'DONE':
             self._publish(-STOP_KD * dq)
             return
 
+        if self.t0_sim is None:
+            self.t0_sim = t_sim
+            self.wall_t0 = time.monotonic()
         t = t_sim - self.t0_sim
         # The command acting on this interval was already clipped before being
         # recorded. It excludes the wall, and gravity cancels the plugin's g(q).
@@ -287,8 +297,10 @@ class Runner(Node):
     # ── end of run ────────────────────────────────────────────────────────────
     def _finish(self, reason: str):
         self.phase, self.stop_reason = 'DONE', reason
-        (self.get_logger().warn if reason.startswith(('SAFETY', 'exception'))
-         else self.get_logger().info)(f'run ended: {reason}')
+        if reason.startswith(('SAFETY', 'exception')):
+            self.get_logger().warn(f'run ended: {reason}')
+        else:
+            self.get_logger().info(f'run ended: {reason}')
         try:
             self._save()
         finally:
@@ -298,8 +310,14 @@ class Runner(Node):
 
     def _flush_run_messages(self):
         messages, self._pending_run_messages = self._pending_run_messages, []
+        # rclpy caches severity per call site; each level needs its own line.
         for severity, message in messages:
-            getattr(self.get_logger(), severity)(message)
+            if severity == 'info':
+                self.get_logger().info(message)
+            elif severity == 'warn':
+                self.get_logger().warn(message)
+            else:
+                raise ValueError(f'unsupported deferred log severity: {severity!r}')
 
     def _save(self):
         R = np.array(self.rows)
@@ -330,6 +348,7 @@ class Runner(Node):
                          'stiffness': self.wall.stiffness, 'damping': self.wall.damping,
                          'enabled': self.wall.enabled},
                 'control_rate': 1.0 / self.dt_ctrl, 'duration': self.duration,
+                'run_time_origin': 'first RUN joint-state sample',
                 'real_time_factor_requested': self.requested_real_time_factor,
                 'numeric_threads': {name: os.environ.get(name) for name in
                                     ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS',
