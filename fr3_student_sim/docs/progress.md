@@ -2664,6 +2664,14 @@ samples were missed, with maximum interval 5 ms; controller time was
 1.684 ms mean / 2.345 ms p95. These observations do not establish
 real-time operation at RTF=1 or uninterrupted secondary mass optimization.
 
+The following 2026-11-16 entries preserve two parallel development histories:
+upstream changes through the startup-clock correction, followed by the local
+circular adapter and 4/12 gain study. Their order here does not imply that
+either branch already contained the other's changes. Each validation result
+applies to its recorded revision and settings. Upstream startup-clock trials
+used 4/24/0.10; local circular and 4/12 trials used the earlier runner. Neither
+set establishes validation of the integrated current runner with 4/12 gains.
+
 ### Shared runtime reuse and timing diagnostics (recorded 2026-11-16)
 
 The shared HQP controller reuses the current inverse inertia and dynamic
@@ -2748,7 +2756,7 @@ speed-validation directory is no longer present in this checkout.
 
 ### Independent full-online gain tuning (2026-11-16)
 
-The active full-online YAML now uses mass gain 4 N m rad/kg, retaining
+In this upstream revision, the full-online YAML used mass gain 4 N m rad/kg, retaining
 nullspace damping 24 s^-1 and startup 0.10 s. Posture gain remains zero
 and no offline target is used. Cartesian feedback 100/20, approach,
 observer, QP settings and hard/soft constraint settings are unchanged.
@@ -2833,7 +2841,8 @@ computation completes. Absolute sample timestamps and the preceding SETTLE
 torque-history interval are preserved. New metadata records
 `run_time_origin=first RUN joint-state sample`. No output-torque blending,
 detection blanking, threshold increase or warmup gating was added. The
-full-online settings remain mass gain 4, damping 24 and startup 0.10 s.
+full-online settings in this upstream validation were mass gain 4, damping
+24 and startup 0.10 s.
 
 Validation: 30 focused tests passed, including four callback tests for a
 delayed first sample, continuous timestamps, 500 Hz control with 1 kHz
@@ -2853,3 +2862,126 @@ onsets at 0.551-0.553 s correspond to real re-contact: wall force becomes
 positive again at 0.548-0.550 s and reaches 3.60-4.06 N at detection.
 Those events remain recorded. Local validation logs and comparisons are
 under `runs/full_online_startup_20261116/`.
+
+### Circular full-online controller (2026-11-16)
+
+Added `controllers/optimized_full_online_circular.py` and
+`config/optimized_full_online_circular.yaml`. The adapter derives from the
+existing circular `optimized_hqp.Controller`, preserving its complete HQP
+update and `CircleReference`. Like the perpendicular full-online adapter,
+it removes `q_posture_ref` and forces posture gain to zero on copied
+parameters. No offline posture search or additional numerical helper is
+used. Existing controller implementations remain unchanged.
+
+The new circle uses the baseline initial pose and radius/period/reference
+ramp 0.04 m / 2 s / 1 s, Cartesian gains 100/20 and initial full-online
+secondary settings mass gain 2, damping 24 s^-1, mass ramp 0.10 s. Safety,
+observer and QP settings start from the perpendicular full-online setup,
+including position-barrier rate 12 s^-1. Its YAML stays independent from
+the subsequent perpendicular tuning: a contact near 1.167 s allows a
+different preparation interval from the perpendicular contact near 0.35 s.
+
+Loader aliases, matching default YAML, launch help, HQP plotting dispatch
+and comparison recognition include the new circular controller. It is
+not classified as a perpendicular scheduled trial. README inventory now
+lists seven controllers and ten YAML files, and includes launch and plot
+commands with the `optimized_full_online_circular` run prefix.
+
+Validation: package build passed. All 38 local tests passed after the
+gain changes (4 circular, 13 full-online perpendicular, 21 existing
+perpendicular/three-phase regressions). Circular tests check ignored custom
+offline settings without mutating inputs, existing circle/reference/HQP
+equivalence, active analytical mass descent, aliases and circular duration
+completion. Local tests retain the package's existing ignored status.
+
+A nominal headless Gazebo run at 1000 Hz, requested RTF 0.10 and duration
+2 s ended with `duration reached`: 1996 updates, safety/primary/secondary
+QP status 1 on every update, zero actuator clipping. First contact was at
+1.167 s, first impact complete at 1.226 s, entry mass 4.6233 kg and entry
+speed 0.10893 m/s. Minimum sampled physical margin was 0.14886 rad: the
+0.15 rad preventive preference was relaxed, while the 0.06 rad hard
+margin was respected. These measurements are a functional check, not a
+separate circular tuning or a validation of the README's 20 s horizon.
+The log `runs/optimized_full_online_circular_validation_20261116_163803.npz`,
+its summary JSON and all three plot PNG files were generated successfully.
+
+### Full-online perpendicular gain tuning (2026-11-16)
+
+Ran 17 nominal Gazebo trials at 1000 Hz and requested RTF 0.10: 13 distinct
+HQP gain/damping/ramp configurations, one baseline, and three confirmation
+repeats. Artifacts, batch YAMLs, generated configuration snapshots, scripts,
+all-trial JSON/Markdown, final applied-gain aggregation and PNG/PDF charts
+are retained under `runs/gain_tuning_full_online_20261116/` and `runs/`.
+The objective is minimum entry mass among the tested nominally admissible
+settings, with Cartesian gains 100/20, reference and safety unchanged.
+
+Relative to this local branch's 2/24 starting point, applied only two
+changes to `config/optimized_hqp_full_online.yaml`:
+mass gain 2 -> 4 and nullspace damping 24 -> 12 s^-1. The mass startup
+ramp remains 0.10 s. There is still no offline posture. Original optimized
+controllers and YAMLs retain their settings; the new circular full-online
+YAML keeps its separately validated initial settings 2/24/0.10.
+
+The screen required completed scheduled trials and first impacts, entry
+speed within 5% of baseline, precontact RMS <= 1 mm, sampled physical and
+configured hard limits, accepted safety/primary QPs and finite secondary
+diagnostics. Nominal selection additionally required the preferred
+0.15 rad physical margin and at most 5% precontact secondary fallbacks.
+The separate hard-only ranking preserves candidates that relaxed the
+preferred margin. Two configurations were rejected for primary failures;
+no solver tolerances or safety guards were relaxed to admit them.
+
+Selected gains 4/12/0.10 produced 5.181173–5.181179 kg entry mass over
+three trials (mean 5.181176 kg), with entry speed
+0.199795–0.199842 m/s, maximum precontact RMS 0.06549 mm and minimum
+physical margin 0.151122 rad. The previous 2/24/0.10 mean was 5.941216 kg
+over two trials; baseline entry mass was 7.622092 kg. This is a 12.79%
+reduction against the previous full-online and 32.02% against this baseline.
+The faster 0.05 s mass ramp reached 5.129544 kg but only 0.146567 rad
+minimum margin, so it was not selected for nominal operation.
+
+All selected trials met the safety/primary and sampled limit criteria,
+with zero precontact secondary fallbacks. There were 114 secondary
+fallbacks over 1697 updates across the complete selected trials, all after
+contact; these retain the fresh verified primary command. Soft preferences
+were relaxed. Thus the experiment does not establish uninterrupted
+secondary minimization during contact or guarantees between samples.
+
+The gain-zero HQP control measured 8.899386 kg, distinct from baseline:
+its dynamically consistent redundancy and absence of the baseline's
+initial-pose attraction also affect joint motion. The report therefore
+distinguishes activating the mass gradient from comparing the two families.
+
+Final package build and 38 local regression tests passed. One intermediate
+confirmation attempt and test run encountered a stale/truncated YAML view
+in the Docker shared volume after a host edit; the source file was intact.
+An atomic rewrite refreshed that view, and tests/confirmation were rerun
+successfully. Some consoles also show the post-save ROS logger severity
+error that existed in the revision used for this tuning. Their NPZ files
+were already complete; the runner was not modified as part of this tuning.
+The upstream logger fix described above is included after integration.
+
+README documents the chosen gains, preparation-time rationale, measured
+tradeoff and repeated-run results. These are nominal finite-screen results,
+not a global optimum, uncertainty certification or a circular gain tuning.
+
+### Integration with remote runtime fixes (2026-11-16)
+
+Integrated upstream revision `2583810c` with the local circular full-online
+adapter and perpendicular 4/12/0.10 tuning. The remote three-phase
+entry-speed/contact updates, comparison metadata, plotting changes,
+startup-clock alignment and deferred logger fix are preserved. Conflicting
+documentation retains both historical studies with their original settings
+and runtime revisions; active full-online gains are documented consistently.
+
+All 17 targeted full-online tests passed on the integrated package, and
+Python syntax checks passed. Fresh headless Gazebo checks at 1000 Hz and
+requested RTF 0.10 completed the perpendicular scheduled trial and a 2 s
+circular run. Both logs record `run_time_origin=first RUN joint-state sample`
+and a first controller timestamp of zero. First impacts were complete,
+with zero safety/primary QP failures, hard-margin violations or torque
+clipping. Entry mass was 5.18108 kg for perpendicular 4/12 and 4.62332 kg
+for circular 2/24. The perpendicular retained 38 secondary fallbacks;
+the circular had none. These are functional integration checks, not a
+repeat of the 17-run tuning search. Batch settings, console and summary
+JSON are under `runs/git_sync_validation_20261116/`.

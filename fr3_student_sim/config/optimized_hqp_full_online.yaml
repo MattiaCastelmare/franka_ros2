@@ -13,12 +13,12 @@ approach:
 tracking:
   kp_position: 100.0                # [1/s^2] same Cartesian position-error gain as baseline_perp
   kd_position: 20.0                 # [1/s] same Cartesian velocity-error gain as baseline_perp
-  nullspace_damping: 24.0           # [1/s], secondary acceleration target
+  nullspace_damping: 12.0           # [1/s] mass-priority tuning before contact at ~0.35 s; see README
   posture_gain: 0.0                 # always disabled by this controller, including custom YAML
   startup_ramp_duration: 0.1        # [s] online mass-gradient ramp; complete before nominal contact (~0.35 s)
 
 mass_minimization:
-  gain: 4.0                         # [N m rad/kg], online gradient weight tuned for the short precontact interval
+  gain: 4.0                         # [N m rad/kg] online mass-priority tuning; see README and runs report
   direction: [-1.0, 0.0, 0.0]       # fixed world direction; parallel to current wall normal
 
 safety:

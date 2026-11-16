@@ -1,0 +1,58 @@
+# Controller: fr3_sim/controllers/optimized_full_online_circular.py
+# Full-online HQP with the existing circular reference, no offline posture.
+# Initial secondary settings from the perpendicular full-online variant;
+# these are not the outcome of a separate circular gain tuning.
+initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
+
+circle:
+  radius: 0.04                      # [m] same circle as the circular baseline
+  period: 2.0                       # [s]
+  ramp: 1.0                         # [s] reference startup, distinct from the mass ramp
+
+tracking:
+  kp_position: 100.0                # [1/s^2] same Cartesian gain as the baseline
+  kd_position: 20.0                 # [1/s] same Cartesian gain as the baseline
+  nullspace_damping: 24.0           # [1/s], secondary acceleration target
+  posture_gain: 0.0                 # always disabled, including custom YAML
+  startup_ramp_duration: 0.1        # [s] online mass-gradient ramp
+
+mass_minimization:
+  gain: 2.0                         # [N m rad/kg], analytical gradient evaluated online
+  direction: [-1.0, 0.0, 0.0]       # fixed world direction, parallel to wall normal
+
+safety:
+  position_margin: 0.15             # [rad] preferred preventive margin, relaxable below
+  velocity_max: [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26]  # [rad/s]
+  acceleration_max: 30.0            # [rad/s^2] preferred acceleration limit, relaxable
+  torque_max: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]    # [N m], command AND nominal motor incl. g
+  position_barrier_rate: 12.0        # [1/s]
+  velocity_barrier_rate: 10.0        # [1/s]
+  command_delay_s: 0.003             # [s] transport/scheduling prediction allowance
+  soft_constraints:
+    enabled: true                   # same three-level HQP as the full-online perpendicular
+    hard_position_margin: 0.06       # [rad] mandatory; 0.01 rad before runner stop band
+    acceleration_scale: 30.0         # [rad/s^2]
+    position_scale: 30.0             # [rad/s^2]
+    velocity_scale: 30.0             # [rad/s^2]
+
+disturbance_estimate:
+  warmup_s: 0.2                     # [s] continuous observer history before consuming residual
+  max_gap_s: 0.01                   # [s] maximum measurement/controller gap
+  max_age_s: 0.01                   # [s] maximum snapshot age
+  acceleration_error: 0.5           # [rad/s^2] valid-estimate uncertainty floor
+  invalid_acceleration_error: 1.0   # [rad/s^2] initialization reserve with zero estimate
+  lag_reserve_factor: 1.0           # empirical residual-lag allowance, not a certified bound
+
+qp:
+  primary_regularization: 1.0e-8
+  eps_abs: 1.0e-6
+  eps_rel: 1.0e-6
+  max_iter: 1000
+  check_termination: 10
+  feasibility_tolerance: 0.0002
+  equality_tolerance: 0.00002
+  polish: false
+  adaptive_rho: true
+
+# Infeasible hard safety QP ends the trial; only configured preferences have slack.
+failure_damping: [30.0, 30.0, 30.0, 20.0, 10.0, 10.0, 5.0]
