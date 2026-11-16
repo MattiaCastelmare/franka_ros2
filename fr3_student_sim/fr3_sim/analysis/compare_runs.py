@@ -361,7 +361,8 @@ def _primary_tracking(metadata):
         phase = phase if isinstance(phase, dict) else {}
         nonnegative = {'contact_distance', 'contact_penetration'}
         policy = {}
-        for key in ('transition_distance', 'contact_distance', 'contact_confirmation_s',
+        for key in ('transition_distance', 'contact_distance', 'normal_transition_duration',
+                    'contact_confirmation_s',
                     'contact_hold_duration', 'contact_timeout', 'contact_penetration',
                     'stiffness_normal', 'stiffness_tangent', 'damping_normal', 'damping_tangent'):
             raw = phase.get(key)
@@ -372,6 +373,8 @@ def _primary_tracking(metadata):
             except (TypeError, ValueError, OverflowError):
                 value, valid = None, False
             policy[key] = value if valid else None
+        policy['normal_activation'] = ('measured_plane_crossing'
+                                       if policy['normal_transition_duration'] is not None else None)
         out['phase_policy'] = policy
         complete = complete and all(value is not None for value in policy.values())
         if complete:

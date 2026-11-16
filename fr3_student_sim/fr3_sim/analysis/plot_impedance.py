@@ -54,13 +54,18 @@ def impedance_figure(run, plt):
         axes[8].step(t, run['user_phase'], where='post', color='tab:brown',
                      label='phase (0 approach, 1 transition, 2 contact)')
     if 'user_contact_blend' in run:
-        axes[8].plot(t, run['user_contact_blend'], color='tab:cyan', label='contact blend')
+        blend_label = ('tangential / secondary blend' if 'user_normal_contact_blend' in run
+                       else 'contact blend')
+        axes[8].plot(t, run['user_contact_blend'], color='tab:cyan', label=blend_label)
+    if 'user_normal_contact_blend' in run:
+        axes[8].plot(t, run['user_normal_contact_blend'], color='tab:olive',
+                     label='normal contact blend')
     if 'user_secondary_scale' in run:
         axes[8].plot(t, run['user_secondary_scale'], '--', color='tab:green',
                      label='mass / posture scale')
     if 'user_contact_latched' in run:
         axes[8].plot(t, run['user_contact_latched'], ':', color='tab:pink',
-                     label='contact latched')
+                     label='observer contact confirmed')
     axes[9].plot(t, run['ctrl_ms'], label='Controller.update')
     if 'user_qp_safety_ms' in run:
         axes[9].plot(t, run['user_qp_safety_ms'], lw=0.8, alpha=0.7, label='safety QP')

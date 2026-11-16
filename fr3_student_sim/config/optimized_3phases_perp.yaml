@@ -1,11 +1,11 @@
 # Controller: fr3_sim/controllers/optimized_3phases_perp.py
-# Baseline-style approach, predictive transition, then natural-inertia impedance.
+# Matched normal-speed approach, tangential preparation, then contact impedance.
 # Observer confirms contact and tightens constraints; no true contact force is used.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
 approach:
   speed: 0.20                 # [m/s] same reference entry speed as baseline_perp
-  acceleration_duration: 0.50 # [s] reference ramp configured independently of baseline_perp
+  acceleration_duration: 0.10 # [s] same reference ramp as the other perpendicular controllers
   penetration: 0.010          # [m] final REFERENCE overlap (10 mm), not actual penetration
   braking_distance: 0.004     # [m] cruise 6 mm beyond the plane, then brake over 4 mm
   hold_duration: 0.15         # [s] nominal reference metadata; actual trial hold is three_phases.contact_hold_duration
@@ -21,7 +21,7 @@ tracking:
   kd_position: 20.0                 # [1/s] same Cartesian velocity-error gain as baseline_perp
   nullspace_damping: 10.0           # [1/s], secondary acceleration target
   posture_gain: 25.0                # [1/s^2], ignored without q_posture_ref
-  startup_ramp_duration: 0.5        # [s] secondary attraction ramp; complete before nominal contact (~0.55 s)
+  startup_ramp_duration: 0.5         # [s] independent posture/mass activation ramp
 
 mass_minimization:
   gain: 0.1                         # [N m rad/kg], analytical mass gradient
@@ -65,11 +65,13 @@ qp:
 failure_damping: [30.0, 30.0, 30.0, 20.0, 10.0, 10.0, 5.0]
 
 # Distances refer to the measured outward signed tool/plane gap.
-# Blend is monotone: smoothstep from 10 mm to 2 mm before the plane.
-# Contact confirmation is separate from the anticipatory compliance blend.
+# Tangential/secondary blend is monotone, from 10 mm to 2 mm before the plane.
+# Normal tracking continues until measured plane crossing, then blends in time.
+# Observer contact confirmation remains separate from geometric crossing.
 three_phases:
-  transition_distance: 0.010     # [m] start fading mass and posture / enabling compliance
-  contact_distance: 0.002        # [m] full compliance, zero mass/posture attraction
+  transition_distance: 0.010     # [m] start fading mass/posture and enabling tangential compliance
+  contact_distance: 0.002        # [m] full tangential blend, zero mass/posture attraction
+  normal_transition_duration: 0.003 # [s] normal impedance blend after first measured gap <= 0
   contact_confirmation_s: 0.003  # [s] continuous valid residual over detector threshold nearby
   contact_hold_duration: 0.15    # [s] after max(nominal motion end, confirmed contact)
   contact_timeout: 0.50          # [s] beyond nominal motion end without confirmed contact

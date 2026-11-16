@@ -22,6 +22,7 @@ class Controller(PerpendicularController):
         defaults = {
             'transition_distance': 0.010,
             'contact_distance': 0.002,
+            'normal_transition_duration': 0.003,
             'contact_confirmation_s': 0.003,
             'contact_hold_duration': 0.15,
             'contact_timeout': 0.50,
@@ -44,6 +45,8 @@ class Controller(PerpendicularController):
             setattr(self, name, value)
         if self.transition_distance <= self.contact_distance:
             raise ValueError('transition_distance must exceed contact_distance')
+        if self.normal_transition_duration <= 0.0:
+            raise ValueError('normal_transition_duration must be positive')
         if self.contact_confirmation_s <= 0.0 or self.contact_hold_duration <= 0.0:
             raise ValueError('contact confirmation and hold durations must be positive')
         if self.contact_timeout <= self.contact_confirmation_s:
@@ -54,6 +57,8 @@ class Controller(PerpendicularController):
         normal = self.reference.normal
         normal_projector = np.outer(normal, normal)
         tangent_projector = np.eye(3) - normal_projector
+        self.normal_projector = normal_projector
+        self.tangent_projector = tangent_projector
         self.contact_stiffness = (self.stiffness_normal * normal_projector
                                   + self.stiffness_tangent * tangent_projector)
         self.contact_damping = (self.damping_normal * normal_projector
@@ -66,6 +71,8 @@ class Controller(PerpendicularController):
                               * (self.reference.gap + self.contact_penetration))
         self.phase = 0
         self.contact_blend = 0.0
+        self.normal_contact_blend = 0.0
+        self.plane_crossing_time = None
         self.contact_time = None
         self._contact_candidate_since = None
         self._phase_log = {}
@@ -73,12 +80,20 @@ class Controller(PerpendicularController):
     def _tracking_objectives(self, t, p_ref, v_ref, a_ref, p, velocity, W, snapshot):
         nominal = self.cartesian_tracking.acceleration(a_ref, p_ref - p, v_ref - velocity)
         gap = self.reference.gap + float(self.reference.normal @ (p - self.reference.start_position))
-        # Distance, not nominal crossing time, anticipates the impact. Retain
-        # the greatest blend reached, so rebound/noise never restarts the
-        # posture search or switches the robot back to stiff tracking.
+        # Distance anticipates tangential compliance and fades posture/mass.
+        # Normal tracking is preserved until measured plane crossing, so the
+        # fixed contact equilibrium cannot brake the incoming motion early.
         progress = float(np.clip((self.transition_distance - gap)
                                  / (self.transition_distance - self.contact_distance), 0.0, 1.0))
         self.contact_blend = max(self.contact_blend, progress**2 * (3.0 - 2.0 * progress))
+        if self.plane_crossing_time is None and gap <= 0.0:
+            self.plane_crossing_time = float(t)
+        if self.plane_crossing_time is not None:
+            normal_progress = float(np.clip(
+                (t - self.plane_crossing_time) / self.normal_transition_duration, 0.0, 1.0))
+            self.normal_contact_blend = max(
+                self.normal_contact_blend,
+                normal_progress**2 * (3.0 - 2.0 * normal_progress))
         residual_contact = (snapshot.valid and gap <= self.contact_distance
                             and bool(np.any(np.abs(snapshot.residual)
                                             > self.monitor.detector.threshold)))
@@ -96,10 +111,19 @@ class Controller(PerpendicularController):
                  - self.contact_damping @ velocity)
         contact_acceleration = W @ force
         activation = 1.0 - self.contact_blend
-        acceleration = activation * nominal + self.contact_blend * contact_acceleration
+        # Project accelerations after W: off-diagonal Cartesian inertia can
+        # otherwise leak a tangential force into the normal acceleration.
+        delta = contact_acceleration - nominal
+        acceleration = (nominal
+                        + self.contact_blend * (self.tangent_projector @ delta)
+                        + self.normal_contact_blend * (self.normal_projector @ delta))
         self._phase_log = {
             'phase': float(self.phase),
             'contact_blend': self.contact_blend,
+            'normal_contact_blend': self.normal_contact_blend,
+            'plane_crossed': float(self.plane_crossing_time is not None),
+            'plane_crossing_time': (np.nan if self.plane_crossing_time is None
+                                    else self.plane_crossing_time),
             'wall_gap': gap,
             'contact_detected': float(self.contact_time is not None),
             'contact_latched': float(self.contact_time is not None),

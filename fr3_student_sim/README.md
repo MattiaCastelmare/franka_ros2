@@ -541,8 +541,9 @@ accelerations and soft-constraint relaxation.
 ### Perpendicular optimized three-phase controller
 
 `optimized_3phases_perp.py` is a separate variant of `optimized_hqp_perp.py`.
-Its YAML retains a 0.50 s reference-speed ramp and a 0.50 s secondary startup
-ramp, configured independently of the standard perpendicular pair.
+Its YAML uses the same 0.20 m/s reference speed and 0.10 s approach ramp as
+the other perpendicular controllers. Its secondary startup ramp remains
+independently configured at 0.50 s.
 It inherits the existing perpendicular initialization and observer-estimate
 method, and reuses the reference, analytical mass utility, joint constraints
 and three-level HQP solver. The phase state, objective construction,
@@ -555,14 +556,14 @@ already constrained torque output.
 | Phase (`user_phase`) | Primary task | Secondary mass/posture attraction |
 | --- | --- | --- |
 | 0 — approach | Baseline-style Cartesian acceleration feedback, gains 100/20. | Active with the existing startup ramp. |
-| 1 — transition | Continuous blend from acceleration feedback to contact impedance. | Fades with `1 - contact_blend`; nullspace damping remains active. |
-| 2 — confirmed contact | Contact impedance after the geometric blend has reached one. | Disabled; safety and nullspace damping remain active. |
+| 1 — transition | Tangential compliance blends in before contact; normal tracking continues until measured plane crossing, then blends to impedance. | Fades with `1 - contact_blend`; nullspace damping remains active. |
+| 2 — confirmed contact | Observer-confirmed contact; the normal impedance blend completes on its own crossing-based schedule. | Disabled once the geometric blend reaches one; safety and nullspace damping remain active. |
 
 Let $n$ be the outward unit normal of the configured plane, $p_w$ its
 point, and $d=n^T(p-p_w)$ the signed gap computed from the measured
 fingertip position. A smoothstep transition starts at
-`three_phases.transition_distance=0.010` m and reaches full contact
-impedance at `contact_distance=0.002` m:
+`three_phases.transition_distance=0.010` m and reaches full tangential
+compliance and zero mass/posture attraction at `contact_distance=0.002` m:
 
 $$
 z=\operatorname{clip}\left(\frac{0.010-d}{0.010-0.002},0,1\right),
@@ -574,6 +575,13 @@ measurement fluctuations cannot reactivate mass optimization. Completing
 this geometric transition is preparation for contact, not a contact
 measurement. In particular, `wall:=false` must not be interpreted as a
 confirmed collision just because the fingertip crosses the plane.
+
+The normal component retains the baseline-style acceleration target until
+the first measured gap $d\le0$. From that latched crossing time, a separate
+monotone smoothstep $\beta_n$ grows from zero to one over
+`normal_transition_duration=0.003` s. This avoids braking the incoming
+normal motion before impact. Plane crossing uses measured position and
+known geometry; observer contact confirmation remains a separate event.
 
 The fixed contact equilibrium is the projection of the initial fingertip
 position onto the plane, shifted inward by `contact_penetration`:
@@ -599,7 +607,7 @@ $$
 a_{PD}&=a_r+K_p(p_r-p)+K_d(v_r-J\dot q),\\
 F_c&=K_c(p_c-p)-D_cJ\dot q,\\
 a_c&=(JM^{-1}J^T)F_c,\\
-a_{target}&=(1-\beta)a_{PD}+\beta a_c,\\
+a_{target}&=a_{PD}+\beta P_t(a_c-a_{PD})+\beta_n P_n(a_c-a_{PD}),\\
 b&=a_{target}-\dot J\dot q.
 \end{aligned}
 $$
@@ -610,6 +618,9 @@ impedance; it does not scale the approach-phase PD gains. This makes the
 multiphase primary law different from the baseline and standard optimized
 tracking law once the transition begins. No true wall force, wall stiffness
 or reconstructed Cartesian force is used by the controller.
+The projectors act on accelerations after multiplication by $JM^{-1}J^T$,
+so coupled Cartesian inertia cannot introduce anticipatory normal braking.
+When both blends reach one, the full contact impedance is recovered.
 
 Both the mass-gradient torque and attraction to `q_posture_ref` are
 multiplied by $1-\beta$, in addition to the unchanged startup ramp. At
@@ -651,9 +662,11 @@ acceleration above, not the PD acceleration inferred from those errors.
 contact equilibrium and its error; `user_impedance_force` is $F_c$;
 `user_nominal_tracking_acceleration` is $a_{PD}$; and
 `user_tracking_acceleration` is the blended $a_{target}$.
-The phase, `user_contact_blend`, `user_secondary_scale`, and latched-contact
-diagnostics appear beside the existing HQP logs. Plotting uses the existing
-three-figure workflow and shows the phase/blend in the HQP status panel.
+The phase, tangential/secondary `user_contact_blend`,
+`user_normal_contact_blend`, `user_secondary_scale`, `user_plane_crossed`,
+`user_plane_crossing_time` and observer-confirmed contact diagnostics appear
+beside the existing HQP logs. Plotting uses the existing three-figure workflow
+and shows the phase and both blends in the HQP status panel.
 
 Use the same measured entry-speed, timing and first-impact diagnostics when
 evaluating this variant. A baseline-versus-three-phase comparison intentionally
@@ -661,6 +674,8 @@ reports a different primary tracking law and cannot pass the standard
 `same_primary_tracking`/`full_criterion_met` check merely because its approach
 gains are 100/20. It tests a different contact strategy as well as mass
 preparation, rather than isolating the effect of the mass gradient alone.
+Three-phase policy metadata requires an explicit `normal_transition_duration`;
+historical logs without it cannot verify the current primary law.
 
 ### Constraint hierarchy shared by the optimized controllers
 
@@ -820,8 +835,9 @@ recorded reason. Snapshot validity does not remove low-pass lag or establish
 a disturbance-error guarantee. Threshold events do not switch the standard
 HQP variants' tracking. The three-phase variant additionally checks the
 valid residual against the threshold, with proximity and persistence, to
-latch its contact phase; its compliance transition already starts from
-measured geometry before that confirmation.
+latch its contact phase. Tangential compliance starts from proximity;
+normal compliance starts after measured plane crossing, independently of
+that observer confirmation.
 
 ## Logs, plots and comparison
 
@@ -902,9 +918,9 @@ writing a file. A write failure is reported as a CLI error, without changing
 permissions or silently choosing another destination.
 
 Run both controllers with matching execution settings before using this
-command. For a matching nominal reference, also align
-`approach.acceleration_duration`: the current standard and three-phase
-configurations use 0.10 s and 0.50 s respectively.
+command. All three perpendicular configurations use the same 0.20 m/s
+reference speed and 0.10 s approach ramp. Check the measured entry speeds
+in the JSON as well as the reference settings.
 An empty file selection otherwise becomes `.` when parsed as a
 path, producing `baseline log file not found: .`; the checks above identify
 the missing run before calling the comparison. In this JSON, `baseline` is the standard `optimized_hqp_perp`
