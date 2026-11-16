@@ -2584,3 +2584,80 @@ These are nominal reference timings, not new simulation measurements.
 The circular settings and three-phase variant retain their own ramps;
 the latter still uses 0.50 s for both reference and secondary activation.
 Earlier trial records above describe their original configurations.
+
+### Perpendicular HQP with online-only mass minimization (2026-11-16)
+
+Added `controllers/optimized_hqp_full_online.py` with its matching
+`config/optimized_hqp_full_online.yaml`. The active inventory now contains
+six controller variants and nine YAML files. Controller selection, default
+task loading, launch help and plotting/comparison recognition include the
+new variant.
+
+The new controller derives from the existing `optimized_hqp_perp.Controller`
+and reuses its initialization, perpendicular reference, complete control
+update, observer estimate, analytical mass objective, constraints, HQP and
+scheduled termination. It removes `q_posture_ref` from a copied parameter
+dictionary and forces `tracking.posture_gain=0`, also when a custom YAML
+supplies an offline target. The caller's parameter dictionary is preserved.
+No new numerical-method module or duplicated control update is introduced;
+the existing controller implementations retain their behavior.
+
+The remaining configuration matches the current standard perpendicular
+experiment: Cartesian gains 100/20, nullspace damping 24 s^-1, secondary
+startup ramp 0.10 s, mass gain 2 N m rad/kg and position-barrier rate
+12 s^-1. The reference keeps its 0.20 m/s approach, 0.10 s speed ramp,
+10 mm nominal overlap, 4 mm braking and 0.15 s endpoint hold, with nominal
+completion near 0.57 s. Existing safety/QP/observer stops can terminate
+earlier.
+
+The secondary target now combines the dynamically consistent primary
+solution, nullspace damping and the projected analytical mass gradient
+evaluated at the current configuration. There is no attraction to a fixed
+offline posture or to `initial_q`; the latter still sets the settling pose
+and reference start. The existing startup scale activates the mass-gradient
+term, while nullspace damping remains active throughout. Mass minimization
+continues during contact as in the standard perpendicular controller; this
+variant does not introduce the three-phase contact-impedance switch.
+
+The four optimized YAML files retain the shared three-level soft hierarchy:
+hard position/velocity predictions and command/nominal-motor torque limits,
+minimum relaxation of preventive preferences, Cartesian tracking and the
+secondary objective. Removing posture attraction changes the secondary
+strategy, not the primary 100/20 law or the safety policy. It does not mean
+that the QP directly minimizes future impact mass or guarantees a global
+minimum, a particular reduction percentage or better collision forces.
+
+The README now includes the sixth controller, ninth YAML, selector, launch
+and plotting commands, the full-online secondary equation and the distinct
+gain/ramp settings of all optimized variants. Its comparison guidance keeps
+entry speed, complete first-impact metrics, sampled limits and timing
+separate from claims about the causal effect of mass minimization.
+
+Validation: `colcon build --symlink-install --packages-select fr3_student_sim`
+passed. The 13 local full-online tests and 21 existing perpendicular/
+three-phase regressions passed together (34 tests). They cover parameter
+isolation, ignored offline targets, an active analytical mass gradient with
+nonconstant inertia, unchanged reference/constraints/damping/fallback,
+selector/comparison recognition and equality of both YAML configurations
+except the disabled postural objective. The local `test/` directory retains
+its existing ignored status.
+
+A nominal headless Gazebo run with observer and wall enabled, 1000 Hz,
+requested real-time factor 0.10 and duration cap 2 s completed its scheduled
+trial at 0.57 s (566 samples). The log is
+`runs/optimized_hqp_full_online_validation_20261116_103321.npz`; its
+`.summary.json` and three PNG figures were generated with the existing
+analysis tools. First contact was at 0.350 s, entry mass 5.9415 kg and
+entry speed 0.19983 m/s; the first impact ended by detachment at 0.412 s.
+Its peak force was 74.02 N and peak first-impact penetration 3.695 mm.
+This is a functional validation of one run, not a paired performance study.
+
+Safety and primary QPs solved on all 566 updates. The existing secondary
+fallback was used on 34 updates (30 failed independent numerical checks,
+4 infeasible secondary solves), retaining the fresh verified primary
+solution. No sampled position/velocity-limit violation or actuator clipping
+was recorded; soft preferences were relaxed. The sampled acceleration
+estimate exceeded the preferred 30 rad/s^2 on 25 samples. Four nominal
+samples were missed, with maximum interval 5 ms; controller time was
+1.684 ms mean / 2.345 ms p95. These observations do not establish
+real-time operation at RTF=1 or uninterrupted secondary mass optimization.

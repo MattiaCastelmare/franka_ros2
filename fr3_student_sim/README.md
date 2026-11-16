@@ -1,6 +1,6 @@
 # fr3_student_sim
 
-Five controller variants for two FR3 experiments in Gazebo with joint-torque
+Six controller variants for two FR3 experiments in Gazebo with joint-torque
 control: circular tracking and perpendicular collision. All control the
 position of `fr3_fingertip`; gripper orientation remains free.
 
@@ -10,6 +10,7 @@ position of `fr3_fingertip`; gripper orientation remains free.
 | Circular acceleration tracking with HQP and mass minimization      | `optimized_hqp.py`                   | `config/circle_tracking_optimized_hqp.yaml` |
 | Perpendicular approach with the baseline control law               | `baseline_perp.py`                   | `config/baseline_perp.yaml`                 |
 | Perpendicular acceleration tracking with HQP and mass minimization | `optimized_hqp_perp.py`              | `config/optimized_hqp_perp.yaml`            |
+| Perpendicular HQP with online mass gradient and no offline posture | `optimized_hqp_full_online.py`       | `config/optimized_hqp_full_online.yaml`     |
 | Perpendicular preparation, transition and compliant contact       | `optimized_3phases_perp.py`          | `config/optimized_3phases_perp.yaml`        |
 
 [Progress](docs/progress.md) retains the development history.
@@ -50,6 +51,9 @@ extends the perpendicular variant with phase-dependent objectives, reusing
 its initialization and observer estimate, plus the existing reference,
 mass utility, constraints and HQP. Its phase-dependent update is implemented
 locally in the new controller; `optimized_hqp.py` retains its original code.
+`controllers/optimized_hqp_full_online.py` reuses the standard perpendicular
+controller, omitting offline posture attraction while retaining the online
+mass-gradient objective and nullspace damping.
 Numerical helpers remain in `methods/`.
 `simulation/fr3_model.py` wraps Pinocchio, while
 `simulation/runner.py` connects controllers to Gazebo.
@@ -104,7 +108,7 @@ ros2 launch fr3_student_sim student.launch.py \
   control_rate:=1000 real_time_factor:=0.20 duration:=20
 ```
 
-Use real-time factor 0.20 for all five experiments to give HQP more wall-clock time
+Use real-time factor 0.20 for all six experiments to give HQP more wall-clock time
 per simulated update and keep the requested timing settings equal within
 each pair. Execution load still matters: a lower factor does not guarantee
 receipt of every sample or QP feasibility. Add `gui:=false` to both members
@@ -149,6 +153,27 @@ The approach and scheduled completion are the same as the perpendicular
 baseline. Add `gui:=false` for a headless run. All HQP experiments require
 the observer; QP infeasibility or existing safety stops can end them early.
 
+Perpendicular optimized HQP with online-only mass minimization:
+
+```bash
+ros2 launch fr3_student_sim student.launch.py \
+  controller:=optimized_hqp_full_online.py \
+  task_config:=/ros2_ws/src/fr3_student_sim/config/optimized_hqp_full_online.yaml \
+  run_name:=optimized_hqp_full_online \
+  log_dir:=/ros2_ws/src/fr3_student_sim/runs \
+  wall:=true observer:=true stop_at_detachment:=false \
+  control_rate:=1000 real_time_factor:=0.20 duration:=2
+```
+
+This is a variant of the standard perpendicular controller, with the same
+reference, primary tracking gains, observer and constraints. It uses no
+offline `q_posture_ref` and has zero postural attraction; mass reduction
+comes from the analytical gradient evaluated during the run. Its nominal
+scheduled completion is the same approximately 0.57 s as the standard
+perpendicular pair. Add `gui:=false` for a headless run. The launch duration
+is still an upper bound, and observer/QP failures or safety stops can end
+the run earlier.
+
 Perpendicular optimized three-phase variant:
 
 ```bash
@@ -175,7 +200,8 @@ controller YAML; the launch defaults themselves remain
 1000 Hz, real-time factor 0.5 and duration 20 s.
 
 The built-in controller selectors are `baseline.py`, `baseline_perp.py`,
-`optimized_hqp.py`, `optimized_hqp_perp.py` and `optimized_3phases_perp.py`. An absolute custom
+`optimized_hqp.py`, `optimized_hqp_perp.py`, `optimized_hqp_full_online.py`
+and `optimized_3phases_perp.py`. An absolute custom
 controller-file path is also supported.
 
 Save the three figures for the experiment you choose. In each new shell:
@@ -209,6 +235,12 @@ Perpendicular optimized HQP:
 ros2 run fr3_student_sim plot_run "$(ls -t runs/optimized_hqp_perp_*.npz 2>/dev/null | head -n 1)" --no-show
 ```
 
+Perpendicular online-only optimized HQP:
+
+```bash
+ros2 run fr3_student_sim plot_run "$(ls -t runs/optimized_hqp_full_online_*.npz 2>/dev/null | head -n 1)" --no-show
+```
+
 Perpendicular optimized three-phase variant:
 
 ```bash
@@ -235,7 +267,7 @@ shared wall is at x = 0.62 m, with outward normal (-1, 0, 0), stiffness
 The perpendicular experiments share the initial pose and wall, using the
 straight reference described below instead of the circle.
 
-The eight active YAML files are:
+The nine active YAML files are:
 
 | File                                          | Role                                                                                                                                 |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -243,6 +275,7 @@ The eight active YAML files are:
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
 | `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and Cartesian baseline gains, with HQP, posture, mass objective and constraints.                     |
+| `config/optimized_hqp_full_online.yaml`     | The standard perpendicular reference/HQP settings, without offline posture attraction; online mass gradient and damping remain.      |
 | `config/optimized_3phases_perp.yaml`        | Perpendicular reference and shared HQP implementation, with distance-based transition, contact impedance, confirmation and timeout.  |
 | `config/wall.yaml`                          | Shared virtual plane and contact stiffness/damping.                                                                                  |
 | `config/observer.yaml`                      | Observer gain and residual thresholds.                                                                                               |
@@ -297,8 +330,9 @@ earlier. Additional saved signals are `user_normal_speed`,
 
 ### Optimized HQP: the baseline Cartesian tracking law with constrained redundancy
 
-The baseline and standard optimized controllers (`optimized_hqp.py` and
-`optimized_hqp_perp.py`) request the same Cartesian
+The baseline and acceleration-tracking optimized controllers
+(`optimized_hqp.py`, `optimized_hqp_perp.py` and
+`optimized_hqp_full_online.py`) request the same Cartesian
 acceleration feedback, with position gain 100 s^-2 and velocity gain
 20 s^-1 on each axis:
 
@@ -317,7 +351,7 @@ the same `CartesianAccelerationTracking` implementation in
 `Lambda^-1`; Cartesian inertia is used only for the optimized controller's
 dynamically consistent secondary projection. Both families record
 `user_tracking_acceleration`, before the joint-space solution and its
-constraints. These two standard optimized variants have no
+constraints. These three acceleration-tracking optimized variants have no
 collision-triggered retreat or release state. The separate three-phase
 variant changes its primary objective during transition and contact.
 
@@ -349,7 +383,7 @@ final-hold schedule. Changing only the optimized Cartesian gains in a custom YAM
 would change its tracking law: keep each pair's `tracking.kp_position` and
 `tracking.kd_position` equal when comparing them.
 
-All three active optimized configurations use three QP levels: minimum
+All four active optimized configurations use three QP levels: minimum
 relaxation of preventive preferences under hard constraints, Cartesian
 tracking while preserving that relaxation, and secondary posture/mass/
 damping while preserving the achieved Cartesian action.
@@ -357,11 +391,14 @@ The circular and three-phase configurations use posture gain 25 s^-2 and
 damping 10 s^-1. Their mass gains are 0.8 and 0.1 N m rad/kg respectively.
 The standard perpendicular configuration uses posture gain 144 s^-2,
 damping 24 s^-1 and mass gain 2 N m rad/kg.
+The full-online perpendicular configuration retains damping 24 s^-1 and
+mass gain 2 N m rad/kg, with posture gain zero and no offline posture target.
 
 `tracking.startup_ramp_duration` smoothly activates posture attraction and
 mass torque at the beginning of RUN, using a cubic scale from zero to one.
 It is 0.30 s in `circle_tracking_optimized_hqp.yaml`, 0.10 s in
-`optimized_hqp_perp.yaml` and 0.50 s in `optimized_3phases_perp.yaml`.
+both `optimized_hqp_perp.yaml` and `optimized_hqp_full_online.yaml`, and
+0.50 s in `optimized_3phases_perp.yaml`.
 Setting it to zero restores immediate activation.
 Cartesian tracking, nullspace damping and all QP constraints remain active
 throughout. The final constrained command is not multiplied by the ramp.
@@ -376,10 +413,12 @@ the settling pose and reference start. The analytical mass objective uses the
 explicit fixed world direction `mass_minimization.direction` at the tool;
 it does not infer an unknown contact point or read true contact force.
 The fixed posture is computed offline with SciPy SLSQP, not HQP. During a
-run, the online HQP considers attraction towards that fixed posture together
-with the analytical mass gradient evaluated at the current joint state.
+run, a controller configured with this target considers attraction towards
+that fixed posture together with the analytical mass gradient evaluated at
+the current joint state. The full-online variant has no such target and
+uses the mass gradient with nullspace damping instead.
 
-All three optimized configurations prefer a 0.15 rad preventive position margin
+All four optimized configurations prefer a 0.15 rad preventive position margin
 and 30 rad/s^2 acceleration magnitude. Those preferences are relaxable;
 the 0.06 rad hard position margin and configured velocity/torque limits
 remain mandatory. The acceleration preference is an experiment parameter,
@@ -388,7 +427,7 @@ Torque constraints cover both command torque and nominal motor torque
 including gravity. The returned command does not add gravity: Gazebo
 already compensates it.
 
-In the two standard optimized variants, the residual affects constraint
+In the three acceleration-tracking optimized variants, the residual affects constraint
 predictions only; it is not subtracted from the tracking command. The
 three-phase variant also uses a valid residual to confirm contact, while
 keeping the same constraint predictions and omitting torque compensation.
@@ -411,6 +450,7 @@ Reusable components are:
 | `methods/cartesian_tracking.py`      | Shared Cartesian acceleration feedback and gain validation for baseline and optimized controllers. |
 | `methods/mass_objective.py`          | Directional mass, analytical gradient and projected mass torque.                                   |
 | `controllers/optimized_hqp.py`       | Reference-independent Cartesian acceleration tracking/HQP law and circular experiment adapter.     |
+| `controllers/optimized_hqp_full_online.py` | Perpendicular adapter without offline posture attraction, reusing the original control update and online mass objective. |
 | `controllers/optimized_3phases_perp.py` | Local three-phase control update, reusing initialization, observer estimation, reference, constraints and HQP utilities. |
 | `methods/joint_constraints.py`       | Delayed-state prediction and tightened joint bounds.                                               |
 | `methods/hierarchical_qp.py`         | Strict two-level HQP and optional three-level HQP with normalized soft-constraint slack.           |
@@ -538,6 +578,63 @@ This tuning applies to the standard perpendicular approach; reassess it
 when approach timing changes. Faster secondary motion can increase joint
 accelerations and soft-constraint relaxation.
 
+### Perpendicular optimized HQP with online-only mass minimization
+
+`optimized_hqp_full_online.py` is a separate variant of
+`optimized_hqp_perp.py`. It reuses the existing initialization, control
+update, perpendicular reference, observer, mass utility, delayed joint
+constraints, three-level HQP and termination behavior. No additional
+trajectory generator, numerical-method module or copy of the control law
+is needed for this variant.
+
+Its YAML matches the standard perpendicular settings except for the
+postural objective: `q_posture_ref` is absent and `tracking.posture_gain`
+is zero. The primary gains remain 100 s^-2 and 20 s^-1, nullspace damping
+24 s^-1, secondary startup ramp 0.10 s and mass gain 2 N m rad/kg. The
+position-barrier rate remains 12 s^-1. `initial_q` still defines the
+settling pose and the initial point of the reference; it does not become
+a substitute preferred posture. The controller also ignores an offline
+`q_posture_ref` supplied in a custom YAML and forces posture gain to zero,
+without modifying the caller's parameter dictionary.
+The runner's metadata still records the supplied configuration; these two
+postural settings are ignored by this controller even if present there.
+
+With the same dynamically consistent projectors as the standard optimized
+controller, its secondary acceleration target is
+
+$$
+u_{sec}=\bar Jb-k_dN\dot q+M^{-1}\tau_m,
+\qquad
+\tau_m=-\rho(t)k_mN^T\nabla_q m_n(q),
+\qquad
+m_n(q)=\frac{1}{n^TJM^{-1}J^Tn}.
+$$
+
+Here $\rho(t)$ is the existing 0.10 s smooth startup ramp. There is no term
+$N k_p(q_{post}-q)$ and no offline optimized configuration is used as an
+attractor. The gradient is evaluated analytically at the current state;
+the final HQP still balances its secondary target with the achieved
+Cartesian task and the hard/soft constraints. The name “full online”
+describes where the mass-reduction preference comes from: it does not
+mean that the QP directly minimizes future impact mass, identifies a
+global minimum or guarantees a particular percentage reduction.
+
+The reference is the standard 0.20 m/s perpendicular approach with a
+0.10 s speed ramp, 10 mm nominal overlap, 4 mm braking and 0.15 s final
+hold. Mass-gradient attraction and damping continue during contact;
+there is no switch to the three-phase contact impedance and no
+collision-triggered release. The existing observer continues to tighten
+constraint predictions rather than directly compensating external torque.
+All shared HQP and perpendicular diagnostics remain available through the
+existing plotting and comparison tools.
+
+Removing the fixed posture can change joint motion, entry mass, speed,
+tracking and constraint activity. It does not establish a performance
+improvement by construction. Compare saved runs under the same reference,
+wall and execution settings, and inspect actual entry speed, complete
+first-impact metrics, sampled limits and timing. A matching primary law
+does not isolate every difference in the secondary strategy.
+
 ### Perpendicular optimized three-phase controller
 
 `optimized_3phases_perp.py` is a separate variant of `optimized_hqp_perp.py`.
@@ -664,7 +761,7 @@ preparation, rather than isolating the effect of the mass gradient alone.
 
 ### Constraint hierarchy shared by the optimized controllers
 
-All three optimized YAML files enable `safety.soft_constraints`. Position and
+All four optimized YAML files enable `safety.soft_constraints`. Position and
 velocity predictions and actuator torque bounds remain hard. The hard QP
 position margin is 0.06 rad, leaving a 0.01 rad buffer before the runner's
 0.05 rad stop band. Command torque and nominal motor torque including
@@ -696,7 +793,8 @@ from the commanded torque. Predictive constraints remain conditional on
 the assumed disturbance envelope, not a guarantee under arbitrary impacts.
 
 This mode is enabled in `circle_tracking_optimized_hqp.yaml`,
-`optimized_hqp_perp.yaml` and `optimized_3phases_perp.yaml`. Disabling or omitting the option explicitly
+`optimized_hqp_perp.yaml`, `optimized_hqp_full_online.yaml` and
+`optimized_3phases_perp.yaml`. Disabling or omitting the option explicitly
 selects the earlier strict two-level behavior. The comparison and plotting
 read the selected mode from the log; they do not infer it from the shape
 of the trajectory.
@@ -1017,20 +1115,20 @@ included in `Controller.update` timing.
 
 | Option                               | Default                            | Meaning                                                                                                    |
 | ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `controller`                       | `baseline.py`                    | One of the five listed controllers, an absolute custom path, or `none` for simulator only.              |
+| `controller`                       | `baseline.py`                    | One of the six listed controllers, an absolute custom path, or `none` for simulator only.              |
 | `task_config`                      | Matching controller YAML           | Override the selected task.                                                                                |
 | `wall`, `observer`               | `true`                           | HQP requires the observer; baseline can run without it.                                                    |
 | `wall_config`, `observer_config` | Shared YAML files                  | Override wall or observer parameters.                                                                      |
 | `duration`                         | `20.0`                           | Maximum RUN duration in simulated seconds.                                                                 |
 | `stop_at_detachment`               | `false`                          | Optionally end at first wall detachment.                                                                   |
 | `control_rate`                     | `1000`                           | Nominal controller frequency in simulated Hz.                                                              |
-| `real_time_factor`                 | `0.5`                            | Requested simulation speed; use 0.20 for all five experiments.                                             |
+| `real_time_factor`                 | `0.5`                            | Requested simulation speed; use 0.20 for all six experiments.                                             |
 | `run_name`, `log_dir`            | Controller name, package `runs/` | Log prefix and destination.                                                                                |
 | `gui`                              | `true`                           | Open Gazebo GUI.                                                                                           |
 | `partition`                        | Empty                              | Gazebo transport partition.                                                                                |
 
 Realism settings `joint_friction`, `mass_error`, `noise_q`, `noise_dq` and
 `seed` default to the nominal noiseless model. `run_batch` accepts a supplied
-batch YAML and selects the matching task for the five active controllers.
+batch YAML and selects the matching task for the six active controllers.
 When samples are missed, reduce simulation speed and inspect timing. A
 controller exception saves the current log and terminates the run.
