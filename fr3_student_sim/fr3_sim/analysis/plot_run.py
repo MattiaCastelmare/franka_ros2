@@ -12,6 +12,8 @@ joint residuals, their detection thresholds, the residual norm and detection tim
 directional mass, normal velocity, contact force, penetration, normal impulse
 and a pre-contact normal kinetic-energy summary. The interval ends at the first
 detachment or the start of recompression, whichever occurs first.
+The three circular controllers also produce ``X_all_collisions.png`` with
+the same quantities over the full run, using one cycle per recorded contact.
 Impedance-HQP logs use ten main panels; all user diagnostics remain in the
 NPZ. Baseline and historical logs use the generic layout for their user signals.
 Further analyses (detection delay, tracking error ...) can be computed from
@@ -51,6 +53,7 @@ from pathlib import Path
 import numpy as np
 
 from fr3_sim.analysis.plot_collision import collision_figure
+from fr3_sim.analysis.plot_all_collisions import all_collisions_figure, is_circular_run
 from fr3_sim.analysis.impact_metrics import first_impact
 from fr3_sim.analysis.timing import timing_metrics
 
@@ -206,7 +209,7 @@ def plot(run: dict, path_png: str, show: bool = True):
 
 
 def _save_figures(run, fig, path_png, show, plt):
-    """Shared output paths for all controllers: main, observer, collision."""
+    """Save standard figures and the additional full-run circular contacts."""
     fig.savefig(path_png, dpi=110)
     print(f'  plot: {path_png}')
     observer_fig = None
@@ -221,12 +224,20 @@ def _save_figures(run, fig, path_png, show, plt):
     collision_path = path.with_name(path.stem + '_collision' + path.suffix)
     collision_fig.savefig(collision_path, dpi=110)
     print(f'  collision plot: {collision_path}')
+    all_collisions_fig = None
+    if is_circular_run(run):
+        all_collisions_fig = all_collisions_figure(run, plt)
+        all_collisions_path = path.with_name(path.stem + '_all_collisions' + path.suffix)
+        all_collisions_fig.savefig(all_collisions_path, dpi=110)
+        print(f'  all collisions plot: {all_collisions_path}')
     if show:
         plt.show()
     plt.close(fig)
     if observer_fig is not None:
         plt.close(observer_fig)
     plt.close(collision_fig)
+    if all_collisions_fig is not None:
+        plt.close(all_collisions_fig)
 
 
 def main():

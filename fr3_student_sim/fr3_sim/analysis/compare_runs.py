@@ -470,6 +470,11 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
         'control_rate': (a.get('control_rate'), b.get('control_rate')),
         'duration': (a.get('duration'), b.get('duration')),
     }
+    if reference_key == 'circle':
+        # Saved phase diagnostics identify the executed policy even when a
+        # custom YAML omitted lap_return and used the adapter's defaults.
+        scenario_fields['circular_lap_return'] = (
+            'user_lap_returning' in baseline, 'user_lap_returning' in candidate)
     scenario = {key: {'match': va is not None and vb is not None and _same(va, vb),
                       'baseline': va, 'candidate': vb}
                 for key, (va, vb) in scenario_fields.items()}

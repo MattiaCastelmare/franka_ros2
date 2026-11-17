@@ -1,20 +1,25 @@
 # Controller: fr3_sim/controllers/optimized_full_online_circular.py
-# Full-online HQP with the existing circular reference, no offline posture.
-# Initial secondary settings from the perpendicular full-online variant;
-# these are not the outcome of a separate circular gain tuning.
+# Online mass descent during each circle, then a physical return to initial_q.
+# Both phases use the same HQP; no offline optimum or continuous q0 attraction.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]
 
 circle:
   radius: 0.04                      # [m] same circle as the circular baseline
   period: 2.0                       # [s]
   ramp: 1.0                         # [s] reference startup, distinct from the mass ramp
+  lap_return:
+    transition_duration: 0.2        # [s] smooth braking and mass/posture/damping handover
+    posture_gain: 25.0              # [1/s^2] only during return; damping = 2*sqrt(gain)
+    position_tolerance: 0.001        # [rad] maximum joint error before restarting
+    velocity_tolerance: 0.005        # [rad/s] maximum joint speed before restarting
+    timeout: 5.0                    # [s] stop if the return does not settle
 
 tracking:
   kp_position: 100.0                # [1/s^2] same Cartesian gain as the baseline
   kd_position: 20.0                 # [1/s] same Cartesian gain as the baseline
   nullspace_damping: 24.0           # [1/s], secondary acceleration target
-  posture_gain: 0.0                 # always disabled, including custom YAML
-  startup_ramp_duration: 0.1        # [s] online mass-gradient ramp
+  posture_gain: 0.0                 # disabled during tracking, including custom YAML
+  startup_ramp_duration: 0.1        # [s] mass/damping ramp on each tracking restart
 
 mass_minimization:
   gain: 2.0                         # [N m rad/kg], analytical gradient evaluated online

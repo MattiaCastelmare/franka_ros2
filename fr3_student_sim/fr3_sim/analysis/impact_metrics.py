@@ -129,3 +129,38 @@ def first_impact(run: dict) -> dict:
         'peak_penetration_mm': None if penetration is None else float(np.max(penetration)),
     })
     return out
+
+
+def all_impacts(run: dict) -> list[dict]:
+    """Return one first-compression/release result per contiguous contact episode.
+
+    Episodes are defined only by recorded ``F_n > 0``. Each local run includes
+    the preceding sample when available and the first detached sample when
+    available. Recompression can end the first cycle within an episode, but
+    never creates another episode while contact remains continuous.
+
+    The results have the same structure as :func:`first_impact`. Their raw
+    arrays cover the local episode, keeping absolute simulation timestamps;
+    ``contact_start_index`` and ``precontact_index`` refer to the original run.
+    Missing precontact data and incomplete cycles retain ``first_impact``'s
+    semantics. No detection signal or minimum inter-impact interval is used.
+    """
+    validated = first_impact(run)
+    force = validated['normal_force_N']
+    if force is None or not np.any(force > 0.0):
+        return []
+    contact = force > 0.0
+    starts = np.flatnonzero(contact & ~np.r_[False, contact[:-1]])
+    ends = np.flatnonzero(contact & ~np.r_[contact[1:], False])
+    keys = ('t', 'F_n', 'v_n', 'delta', 'user_mass_kg')
+    impacts = []
+    for start, end in zip(starts, ends):
+        left = max(0, int(start) - 1)
+        right = min(len(contact), int(end) + 2)
+        local = {key: np.asarray(run[key])[left:right] for key in keys if key in run}
+        impact = first_impact(local)
+        impact['contact_start_index'] += left
+        if impact['precontact_index'] is not None:
+            impact['precontact_index'] += left
+        impacts.append(impact)
+    return impacts

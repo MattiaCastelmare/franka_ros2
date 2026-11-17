@@ -2985,3 +2985,202 @@ for circular 2/24. The perpendicular retained 38 secondary fallbacks;
 the circular had none. These are functional integration checks, not a
 repeat of the 17-run tuning search. Batch settings, console and summary
 JSON are under `runs/git_sync_validation_20261116/`.
+
+### Circular full-online timing and hand geometry analysis (2026-11-17)
+
+Analyzed the saved 20 s run
+`optimized_full_online_circular_20261117_154432.npz` and its three plots,
+without changing the controller, gains or detector. The spurious onset
+cluster is at 12.027, 12.030, 12.036, 12.040 and 12.045 s. Fingertip wall
+force and wall torque are zero in the surrounding 11.98-12.10 s window;
+all three QP levels report status 1 there.
+
+Callbacks of 11-15 ms precede the cluster, exceeding the 5 ms budget at
+requested RTF 0.20; the full run misses about 6.06% of nominal samples.
+Torque history and momentum-inferred input diverge during the transient:
+at 12.048 s joint 2 history assumes about -12.998 N m while momentum
+implies about -8.181 N m. Its residual peaks near 0.472 N m. The residual
+rate also enlarges the robust acceleration reserve and tightens the
+joint-6 barrier, amplifying command variations while the QPs remain solved.
+The direct mass-gradient torque stays smooth. These data indicate variable
+command-application latency; the log cannot identify the exact CPU or
+scheduling source, and an initial startup ramp does not address this
+mid-run event.
+
+The unusual poses have a separate structural cause: only three fingertip
+coordinates are controlled, with free orientation, four redundant degrees
+of freedom and no posture attraction. At the 3.110 s warning, the fingertip
+is 6.423 mm outside the wall with about 0.038 mm tracking error, while the
+hand bounding-box proxy penetrates 5.306 mm; hand rotation from its initial
+orientation is about 27 degrees. Maximum logged proxy depth is 51.158 mm
+at 9.737 s. By 12.5 s hand rotation exceeds 112 degrees. Sampled joint and
+torque limits do not impose hand-volume clearance from the wall.
+
+The wall is visual-only in Gazebo; virtual force is applied exclusively at
+the fingertip. `hand_depth` is a geometric diagnostic, not an additional
+collision force or a detector input. The warning therefore does not directly
+cause the spurious residual. A physically representative full-hand comparison
+requires an orientation/clearance objective or an extended contact model,
+alongside verification of torque timing. Local evidence, a zoom figure and
+the offline script are in `runs/circular_online_analysis_20261117/`.
+
+### Weak initial-pose attraction in circular full-online (2026-11-17)
+
+Added an optional initial-pose preference to
+`optimized_full_online_circular.py`, reusing the existing nullspace term
+and smooth startup ramp. Positive `tracking.posture_gain` now attracts
+towards `initial_q`; an external offline `q_posture_ref` is still ignored.
+Zero or an omitted gain retains the previous pure gradient/damping behavior.
+The wrapper copies its parameters. Primary tracking, the analytical mass
+gradient, shared HQP implementation and all other controllers are unchanged.
+
+Screened gains 0, 2, 5 and 10 s^-2 in four headless 8 s Gazebo trials at
+1000 Hz and requested RTF 0.20, followed by a 20 s confirmation of gain 10.
+All five trials completed. Over the matched first 8 s, maximum absolute
+joint-5 rotation decreased from 106.79 degrees without attraction to
+53.93 degrees with gain 10; peak hand-depth proxy decreased from 48.91
+to 28.83 mm. First-impact entry mass changed from 4.623313 to 4.626050 kg
+(+0.059%), with entry speed unchanged to the reported precision at
+0.10893 m/s. This is a limited nominal screen, not an analytical optimum.
+
+Applied posture gain 10 s^-2 in the circular full-online YAML, retaining
+mass gain 2, damping 24 s^-1 and the 0.10 s startup ramp. On the full 20 s
+confirmation, hand rotation measured at the same circle phase approaches
+43.5 degrees rather than continuing the previous large drift. All three
+QP levels were accepted on every saved update; sampled hard position,
+velocity and torque limits were respected, with no actuator clipping.
+The soft 0.15 rad position preference was briefly relaxed: minimum physical
+margin was 0.148856 rad, above the 0.06 rad hard margin. Thirteen nominal
+samples were missed (0.065%); this single run does not establish a timing
+improvement from the posture preference.
+
+This preference does not impose orientation or collision avoidance. The
+hand warning still occurs near 3.152 s, and the full-run hand-depth proxy
+reaches 35.58 mm. The virtual wall still acts only on the fingertip.
+README describes this limitation and the gain-zero option; launch/plot
+commands are unchanged. Sixteen focused regression tests passed, including
+legacy equivalence at zero gain, nullspace projection, startup ramp and
+parameter isolation. Local settings, logs, summaries and the comparison
+report are under `runs/circular_q0_20261117/` (ignored by Git).
+
+### Full-run circular collision figure (2026-11-17)
+
+`plot_run` now also saves `X_all_collisions.png` for `baseline.py`,
+`optimized_hqp.py` and `optimized_full_online_circular.py`. The existing
+commands, first-impact collision figure, observer figure and comparison
+metrics retain their behavior. Perpendicular controllers do not produce
+the additional figure.
+
+The new six-panel figure shows mass, normal speed, force, penetration,
+per-contact impulse and precontact energy over the full experiment.
+`all_impacts` extracts contiguous positive-force episodes, including
+recontacts after detachment, independently of observer detections. Each
+episode reuses `first_impact` with its preceding sample and first detached
+sample: the impulse resets and ends at detachment or recompression, and
+entry energy uses the strictly preceding mass and speed. Missing data and
+partial cycles remain explicit; continuous contact is not split merely
+because of recompression. The helper does not evaluate robot dynamics.
+
+Twelve focused tests passed for irregular sample times, impulse/energy,
+partial contacts, missing signals, close recontacts and spurious detections.
+Rendered the complete plotting pipeline on three existing 20 s circular
+logs (20 recorded contact episodes each) and one perpendicular log, which
+correctly omitted the extra PNG. First-impact metrics remained identical.
+Also rendered no-contact, missing-force, incomplete and missing-speed
+cases. Visually checked the figures and staggered contact numbers to keep
+close rebounds legible. Validation artifacts are in
+`runs/all_collisions_validation_20261117/`; the three new circular PNGs
+were also saved beside their source logs. No new simulations were run.
+
+### Circular full-online return between laps (2026-11-17)
+
+Replaced the continuous weak q0 preference introduced earlier today with
+a physical return between complete revolutions, only in
+`optimized_full_online_circular.py`. The perpendicular full-online and all
+other controllers retain their behavior. The adapter has two phases and
+continues to call the existing HQP update; no shared control/solver/runner
+code was changed.
+
+TRACK has no posture target or attraction, including custom offline settings.
+It uses mass gain 2 and damping 24 s^-1. After one geometric revolution,
+RETURN holds the initial Cartesian point, disables the mass term and uses
+initial_q as a nullspace target, with gain 25 s^-2 and critical nominal
+damping 10 s^-1. The Cartesian reference switches to a hold at the transition;
+the existing feedback brakes the tool, without assigning joint positions.
+Restart requires max joint error <= 0.001 rad and max speed <= 0.005 rad/s;
+a 5 s return timeout ends the trial explicitly. Options are under
+`circle.lap_return`.
+
+The local circle clock restarts after return. A local 0.10 s ramp activates
+the mass term on each lap and the posture term on each return. Observer,
+residual, torque history and safety timing keep absolute RUN time. Phase,
+lap index/time and measured q0 error/speed are logged. Comparison now checks
+the saved return-phase diagnostics as well as YAML, identifying the changed
+schedule even when a custom task omitted the new block. The tracking law
+still matches; the full scenario differs from continuous circle runs.
+
+A fresh 20 s nominal headless run at 1000 Hz and requested RTF 0.20 completed
+five full circles, four complete returns lasting 1.692-1.696 s and part of
+the final return before the configured duration ended. Every restart met
+both tolerances. All three QP levels returned status 1 on all 19996 updates;
+sampled hard position, velocity and torque limits were respected, with no
+clipping. Minimum physical margin was 0.148857 rad: the preferred 0.15 rad
+margin remains soft. Five nominal samples were missed (0.025%).
+
+First-impact mass/speed were 4.623310 kg / 0.108931 m/s, consistent with the
+previous pure-online first lap. Maximum absolute joint-5 rotation was
+18.16 degrees; hand rotation at successive lap ends stayed near 19.6-19.7
+degrees instead of accumulating. Hand-depth proxy still reached 5.344 mm:
+the return is not a within-lap orientation or collision-avoidance constraint.
+The run contains ten recorded contact episodes including recontacts.
+All four figures, settings, source snapshot, console, summary and comparison
+evidence are under `runs/circular_lap_return_20261117/` (ignored by Git).
+README reflects the new phases, pause and comparison policy; commands remain
+unchanged.
+Forty-two focused controller tests passed, covering first-lap equivalence,
+phase transitions, return criteria, absolute observer timing, repeated ramps,
+timeout, input isolation and the unchanged perpendicular variant. All 18
+existing comparison tests also passed; real-log checks confirmed the changed
+scenario is detected even when the custom YAML omits `lap_return`.
+
+### Single maximum labels on all-contact figures (2026-11-17)
+
+Added one first-impact-style numeric annotation per all-contact panel. Each
+label selects the largest absolute per-contact metric, retaining its sign:
+precontact mass/speed, peak force, maximum penetration, cycle impulse and
+precontact energy. Selection excludes missing/nonfinite values and marks
+partial cycles. These are contact metrics rather than full-run signal peaks;
+the energy maximum is selected independently, not recomputed from separate
+mass/speed maxima. The original first-impact figure is unchanged.
+
+Verified negative-speed selection, precontact rather than intercontact
+extrema, one numeric label per panel and unavailable-data labels. Regenerated
+the latest three circular figures and the lap-return validation figure,
+with visual checks. Evidence is under `runs/all_collisions_labels_20261117/`.
+No simulation or controller changes were needed.
+
+### Smooth entry into the circular lap return (2026-11-17)
+
+The saved circular run `optimized_full_online_circular_20261117_174953.npz`
+has noncontact detection onsets at 6.694 and 19.286 s, both 2 ms after
+RETURN entry. Force is zero and the fingertip is about 60 mm outside the
+wall. The reference speed jumped from 0.12566 m/s to zero, the mass-torque
+norm from 15.39 N m to zero, and the command changed by about 6.96 N m.
+No timing gap or callback overrun occurred around these two events.
+
+Added `circle.lap_return.transition_duration: 0.2`. A local quintic braking
+reference preserves position, velocity and acceleration at entry and ends
+at the initial Cartesian point at rest. The same 0.20 s smoothstep fades
+mass gain to zero and blends return attraction and damping. On subsequent
+tracking restarts, damping also blends over the existing 0.10 s mass ramp.
+Restart waits for braking completion as well as the existing q/dq tolerances.
+The shared HQP, constraints, observer history and detection thresholds are
+unchanged. README describes the new transition; launch commands are unchanged.
+
+An 8 s nominal headless check at 1000 Hz / requested RTF 0.20 completed
+two return entries (2.500 and 6.799 s). Its only detections were at 1.172
+and 5.471 s, with positive contact force; no noncontact detections occurred.
+This short check covers two transitions, not a repeated 20 s evaluation.
+All 48 focused controller tests passed, including C2 reference boundaries,
+mass/posture/damping crossfades and the unchanged perpendicular behavior.
+Logs, settings and all four plots are in `runs/circular_lap_ramp_20261117/`.

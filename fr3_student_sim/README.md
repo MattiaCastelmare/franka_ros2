@@ -55,13 +55,15 @@ locally in the new controller; `optimized_hqp.py` retains its original code.
 `controllers/optimized_hqp_full_online.py` reuses the standard perpendicular
 controller, omitting offline posture attraction while retaining the online
 mass-gradient objective and nullspace damping.
-`controllers/optimized_full_online_circular.py` applies the same online-only
-policy to the existing circular HQP adapter and `CircleReference`.
+`controllers/optimized_full_online_circular.py` uses online mass descent
+during each circle and returns physically to `initial_q` between laps,
+reusing the existing circular HQP adapter and `CircleReference`.
 Numerical helpers remain in `methods/`.
 `simulation/fr3_model.py` wraps Pinocchio, while
 `simulation/runner.py` connects controllers to Gazebo.
 
-Plots are in `analysis/plot_run.py`, `analysis/plot_collision.py` and
+Plots are in `analysis/plot_run.py`, `analysis/plot_collision.py`,
+`analysis/plot_all_collisions.py` and
 `analysis/plot_impedance.py`. First-impact metrics, timing and comparisons
 are kept beside them.
 
@@ -123,9 +125,9 @@ ros2 launch fr3_student_sim student.launch.py \
   control_rate:=1000 real_time_factor:=0.20 duration:=20
 ```
 
-This variant follows the baseline circle without offline posture attraction.
-Its separate YAML starts from full-online secondary gains; perpendicular
-tuning does not establish their suitability for the circle.
+This variant has no posture attraction during tracking. After each complete
+circle it pauses to return physically to `initial_q`, then restarts the
+reference and mass ramps. The return time is included in the 20 s run.
 
 Use real-time factor 0.20 for all seven experiments to give HQP more wall-clock time
 per simulated update and keep the requested timing settings equal within
@@ -223,7 +225,8 @@ The built-in controller selectors are `baseline.py`, `baseline_perp.py`,
 plus `optimized_full_online_circular.py` and `optimized_3phases_perp.py`. An absolute custom
 controller-file path is also supported.
 
-Save the three figures for the experiment you choose. In each new shell:
+Save the figures for the experiment you choose. With the observer enabled,
+there are four for circular runs and three for perpendicular runs. In each new shell:
 
 ```bash
 source /ros2_ws/install/setup.bash
@@ -298,7 +301,7 @@ The ten active YAML files are:
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `config/circle_tracking_baseline.yaml`      | Baseline initial pose, circle, Cartesian and nullspace gains.                                                                        |
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
-| `config/optimized_full_online_circular.yaml` | Circular reference and full-online HQP without offline posture attraction. |
+| `config/optimized_full_online_circular.yaml` | Online circular tracking, followed by a physical return to the initial pose between laps; no offline optimized target. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
 | `config/optimized_hqp_perp.yaml`            | The same perpendicular reference and Cartesian baseline gains, with HQP, posture, mass objective and constraints.                     |
 | `config/optimized_hqp_full_online.yaml`     | Standard perpendicular reference and shared HQP implementation, with independently tuned online mass descent and no offline posture. |
@@ -419,15 +422,17 @@ The standard perpendicular configuration uses posture gain 144 s^-2,
 damping 24 s^-1 and mass gain 2 N m rad/kg.
 The full-online perpendicular configuration uses tuned damping 12 s^-1 and
 mass gain 4 N m rad/kg, with posture gain zero and no offline posture target.
-The circular full-online YAML initially uses damping 24 s^-1, mass gain 2
-and posture gain zero, independently of subsequent perpendicular tuning.
+The circular full-online YAML uses damping 24 s^-1, mass gain 2 and
+posture gain zero during tracking. Between laps it disables mass descent
+and returns to `initial_q` with posture gain 25 s^-2 and damping 10 s^-1.
 
 `tracking.startup_ramp_duration` smoothly activates posture attraction and
 mass torque at the beginning of RUN, using a cubic scale from zero to one.
 It is 0.30 s in `circle_tracking_optimized_hqp.yaml`, 0.10 s in
 both `optimized_hqp_perp.yaml` and `optimized_hqp_full_online.yaml`, and
 0.50 s in `optimized_3phases_perp.yaml`.
-The circular full-online startup ramp is initially 0.10 s.
+The circular full-online secondary ramp is 0.10 s and restarts at each
+tracking/return phase, using its local phase clock.
 Setting `tracking.startup_ramp_duration` to zero restores immediate activation.
 RUN time starts at the first received RUN joint-state sample, so the first
 controller update sees `t=0` and both the reference and secondary ramps start
@@ -440,16 +445,19 @@ throughout. The final constrained command is not multiplied by the ramp.
 detector remain active, so this does not hide startup events. Retuning the
 duration changes the startup joint motion; recheck residuals and entry mass.
 
-`q_posture_ref` supplies the existing offline low-mass posture. Removing that
-key omits posture attraction in this controller. `initial_q` still defines
-the settling pose and reference start. The analytical mass objective uses the
+`q_posture_ref` supplies the offline low-mass posture in the standard optimized
+controllers and the three-phase variant. Removing that key omits their offline
+posture attraction. `initial_q` defines the settling pose and reference start;
+it also supplies the between-lap return target in the circular full-online variant.
+The analytical mass objective uses the
 explicit fixed world direction `mass_minimization.direction` at the tool;
 it does not infer an unknown contact point or read true contact force.
 The fixed posture is computed offline with SciPy SLSQP, not HQP. During a
 run, a controller configured with this target considers attraction towards
 that fixed posture together with the analytical mass gradient evaluated at
-the current joint state. The full-online variant has no such target and
-uses the mass gradient with nullspace damping instead.
+the current joint state. The perpendicular full-online variant uses only the
+mass gradient and nullspace damping. Its circular counterpart does the same
+during tracking and returns to `initial_q` only between laps.
 
 All five optimized configurations prefer a 0.15 rad preventive position margin
 and 30 rad/s^2 acceleration magnitude. Those preferences are relaxable;
@@ -747,34 +755,42 @@ execution paths; they do not repeat the gain search or its paired study.
 
 ### Circular full-online controller
 
-`optimized_full_online_circular.py` has the same online mass-gradient
-secondary law as the perpendicular full-online variant above. It derives
-from the existing circular HQP adapter, so `CircleReference` supplies the
-position, velocity and acceleration instead of the perpendicular approach.
-It removes any custom `q_posture_ref` and forces posture gain to zero on
-copied parameters. No offline optimizer or posture file is required.
+`optimized_full_online_circular.py` alternates two phases using the existing
+HQP update. During tracking it follows one complete `CircleReference`
+revolution with online mass gain 2, nullspace damping 24 s^-1 and no posture
+attraction, even if a custom YAML supplies `tracking.posture_gain` or
+`q_posture_ref`. Cartesian gains remain 100/20. No offline optimizer is used.
 
-`config/optimized_full_online_circular.yaml` uses the baseline circle
-(radius 0.04 m, period 2 s, reference ramp 1 s), Cartesian gains 100/20,
-initial mass gain 2, nullspace damping 24 s^-1 and mass startup ramp 0.10 s.
-The reference ramp and mass ramp have different roles. Safety, observer and
-QP settings start from the perpendicular full-online configuration,
-including position-barrier rate 12 s^-1. This separate configuration needs
-its own tuning: the nominal circular contact near 1.167 s allows more
-preparation time than the perpendicular contact near 0.35 s.
+At the end of the revolution, a 0.20 s quintic braking reference joins the
+current position, velocity and acceleration to the starting point at rest.
+Over this `circle.lap_return.transition_duration`, the mass term fades to
+zero while return attraction and damping change smoothly. The reference
+then holds the starting point while the nullspace returns the joints
+physically towards `initial_q`. `circle.lap_return.posture_gain` is 25 s^-2, with damping
+`2*sqrt(posture_gain)` = 10 s^-1. The next lap starts only when every joint
+is within 0.001 rad of `initial_q` and every joint speed is at most
+0.005 rad/s. A return lasting 5 s stops the run with an explicit timeout.
+These tolerances and timeout are configured under `circle.lap_return`.
 
-Mass descent continues throughout the circle, including contact. The run
-ends at the configured duration or an existing failure/safety stop; it has
-no perpendicular `trial_complete` schedule and no three-phase impedance
-switch. The original circular and perpendicular controllers retain their
-implementations. Plotting and comparison recognize this as a circular HQP
-controller with the shared Cartesian acceleration law.
+Only the local reference clock restarts. The observer, torque history and
+HQP keep absolute RUN time and their existing state. The 1 s circle ramp
+and 0.10 s mass/damping ramp restart on each lap. Return attraction ramps
+over the 0.20 s braking transition. No joint positions are assigned or teleported. The shared HQP
+and all joint/torque constraints remain active in both phases.
 
-A headless nominal validation completed 2 s at requested RTF 0.10, including
-the first compression/release cycle, with all three QP levels accepted on
-every update. The launch example requests up to 20 s; that longer horizon
-is separate from this functional check. This recorded circular run also
-predates integration of the runner's startup-clock correction.
+With cruise period 2 s and reference ramp 1 s, one geometric revolution
+takes 2.5 s, followed by the variable return pause. All phases count towards
+the configured run duration, so a 20 s run has fewer laps than a continuous
+circle. `user_lap_index`, `user_lap_returning`, `user_lap_time`,
+`user_q0_error` and `user_q0_speed` record the schedule and return criteria.
+Comparison checks include `circle.lap_return` and the saved lap-phase
+diagnostics, so default return behavior in custom YAMLs is also recognized.
+This timing policy differs from the continuous circular baseline/optimized
+scenario, despite sharing the Cartesian tracking law and circle geometry.
+
+The perpendicular full-online and other controllers keep their existing
+behavior. A between-lap return limits accumulated postural drift; it does
+not impose an orientation or hand-wall clearance constraint within a lap.
 
 ### Perpendicular optimized three-phase controller
 
@@ -1097,6 +1113,16 @@ ending at detachment or the start of recompression, whichever occurs first.
 Recompression uses the interpolated zero crossing from outward to inward
 normal speed. The onset is first recorded `F_n > 0`, independent of observer
 threshold events. Time panels include 50 ms before onset.
+
+The three circular controllers additionally produce `X_all_collisions.png`:
+the same six quantities over the entire run, with numbered contact episodes
+starting at each transition to `F_n > 0`. Impulse resets at each contact and
+uses the same compression-release end rules; energy uses the sample before
+each contact. Incomplete cycles are marked explicitly. Observer detections
+do not create additional contact episodes. The existing `X_collision.png`
+and comparison metrics still describe only the first impact.
+Each panel has one numeric label: the contact metric with the largest
+absolute value across all episodes, retaining its original sign.
 
 Mass and speed use the sample strictly before contact, with
 `E_n = 0.5 * m_n * v_n**2`. Impulse uses trapezoids at actual timestamps.
