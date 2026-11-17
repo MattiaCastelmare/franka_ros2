@@ -28,4 +28,3 @@ MUJOCO_LOG.TXT
 
 # Configurazione Docker e Xpra locale per Mac
 /mac_config/
-docker-compose.yml
