@@ -16,13 +16,19 @@ modify a recording, a production file or the installed workspace. Large outputs 
 | `r1_executor_replay.py` | R1 | container (isolated domain) | As `qpperf_executor_replay.py`, but the executor is built by the **production** `make_executor` from the node's own `executor_mode` (`-p executor_mode:=<mode>`), and each tick records the inputs it used (joint-state header, nominal, distances, constraint-snapshot build time) and each command |
 | `r1_compare.py` | R1 | host or container (numpy) | Per-run timing, CPU, input ages in reconstructed true playback time, deviation from the sequential reference per 10 ms slot, and cross-run deviations (within-mode noise floors and multi vs single) |
 | `r1_snapshot_attribution.py` | R1 | host or container (numpy) | Splits each run's ticks by whether the constraint snapshot they used was built in their own 20 ms period, and the output deviation of each group (F-8-17) |
+| `m1_executor_replay.py` | M1 (C-074) | container (isolated domain) | Runs `r1_executor_replay.py` **unmodified** (via `runpy`) in three arms: `single`, `mt1` (sets the module constant `MULTI_EXECUTOR_THREADS = 1` in its own process only, so the production `make_executor` builds `MultiThreadedExecutor(1)`) and `mt3` (production default). Adds only recording: each `/cbf_status` row, the executor class and worker count, subscriptions and timers, and the resolved parameter dump. `M1_DRY=1` stops after construction |
+| `m1_analyze.py` | M1 | host (numpy, sqlite3 read-only) | Per-run metrics in the E3 window [t0+2, t0+30] s (sim and wall separately), the pre-registered validity checks including workload equivalence with E3-05's recorded `n_rows`, per-arm statistics and the position of `mt1` between `single` and `mt3` |
+| `m1_run.sh`, `m1_batch.sh` | M1 | host (drives the container) | One replay with pre-checks (no ROS/Gazebo processes; governor/EPP as recorded, never changed), copy-back and validity check; the nine runs in the sealed Latin-square order, stopping at the first abort or invalid run, with no retry |
 
 Reports: [S6B1_CLEARANCE_AUDIT.md](../../validation/00_baseline/S6B1_CLEARANCE_AUDIT.md),
 [QP_PERFORMANCE_ROOT_CAUSE.md](../../validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md),
 [R1_EXECUTOR_CONFIGURATION.md](../../refactoring/R1_EXECUTOR_CONFIGURATION.md).
 
 The `r1_*` outputs and sealed copies of the scripts are in `~/franka_baseline_evidence/refactor_r1_executor/`
-(`03_replay/`, `04_scripts/`), not in the baseline evidence tree.
+(`03_replay/`, `04_scripts/`), not in the baseline evidence tree. The `m1_*` protocol, sealed scripts
+(`scripts/`, and `scripts_a01/` per Addendum 01), runs and analysis are in
+`~/franka_baseline_evidence/refactor_r1_m1/`; report:
+[R1_M1_EXECUTOR_THREAD_REPLAY.md](../../refactoring/R1_M1_EXECUTOR_THREAD_REPLAY.md).
 
 The `qpperf_*` scripts never modify the node: they wrap its methods at class level before
 construction, and every executor or switch-interval variant applies only inside the benchmark
