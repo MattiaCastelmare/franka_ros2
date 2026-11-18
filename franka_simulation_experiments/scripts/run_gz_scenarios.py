@@ -47,6 +47,12 @@ def main():
                     help='pin cbf_safety_filter to this CPU in every cell (see batch.run_one): '
                          'the QP loop is compute-bound and an arm that builds more rows misses '
                          'its target rate by more, which contaminates every rate-derived metric')
+    ap.add_argument('--episode-start', default='legacy', choices=['legacy', 'phase'],
+                    help='H2: legacy (default, unchanged) or phase: the obstacle is born after one '
+                         'clean tracked cycle, at the curve phase --start-phase (motion pentagon only)')
+    ap.add_argument('--start-phase', type=float, default=None, help='[cycles] with --episode-start phase')
+    ap.add_argument('--start-timeout-s', type=float, default=None,
+                    help='[s sim] with --episode-start phase: the run fails (no birth) after this')
     ap.add_argument('--set', nargs='*', default=[], metavar='KEY=VALUE',
                     help='per-run overrides applied to every cell (conditions.resolve)')
     ap.add_argument('--report-path', default='')
@@ -85,6 +91,15 @@ def main():
     if a.filter_cpu:
         for c in cells:
             c['filter_cpu'] = a.filter_cpu
+    if a.episode_start != 'legacy':
+        for c in cells:
+            c['episode_start'] = a.episode_start
+            if a.start_phase is not None:
+                c['start_phase'] = a.start_phase
+            if a.start_timeout_s is not None:
+                c['start_timeout_s'] = a.start_timeout_s
+    elif a.start_phase is not None or a.start_timeout_s is not None:
+        ap.error('--start-phase / --start-timeout-s need --episode-start phase')
     print(f'SIM batch: {len(cells)} cells -> {bd}', flush=True)
     csv_path = batch.run_grid(bd, cells, log=lambda s: print(s, flush=True))
     print(f'SIM batch done -> {csv_path}')

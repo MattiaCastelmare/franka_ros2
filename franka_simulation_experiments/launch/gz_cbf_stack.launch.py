@@ -58,6 +58,12 @@ _ARGS = {
                        'loses ticks: 245 Hz unpinned vs 300 Hz pinned, measured. Avoid CPU 3 '
                        'while the real robot runs on this host (its rt_pin_cpu core)'),
     'rl_onnx_model': ('', 'motion:=rl only'),
+    # H2 (harness, opt-in): WHEN the obstacle is born. legacy = the supervisor's original start,
+    # unchanged; phase = after one clean tracked cycle, at the curve phase start_phase
+    # (episode_supervisor.py, simexp/phase_start.py). motion:=pentagon only.
+    'episode_start': ('legacy', 'legacy | phase (H2 phase-aligned obstacle birth)'),
+    'start_phase': ('0.0', '[cycles] episode_start:=phase only: curve phase of the birth'),
+    'start_timeout_s': ('90.0', '[s sim] episode_start:=phase only: fail the run (no birth) after'),
 }
 
 _ONE_THREAD = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}
@@ -118,6 +124,12 @@ def _launch(context):
     if motion == 'scenario' and scen is None:
         raise RuntimeError('motion:=scenario needs scenario:=<name>')
     scene = p['scene'] or (scen['scene'] if scen else 'rig')
+    episode_start = p['episode_start'].strip().lower() or 'legacy'
+    if episode_start not in ('legacy', 'phase'):
+        raise RuntimeError(f'episode_start:={episode_start}: expected legacy or phase')
+    if episode_start == 'phase' and motion != 'pentagon':
+        raise RuntimeError('episode_start:=phase needs motion:=pentagon (it aligns the birth with '
+                           "pentagon_qddot_commander's curve)")
     duration = (float(p['duration_s']) if p['duration_s'] != ''
                 else (scen['T'] if scen else 0.0))
     perception_mode = p['perception'].strip().lower()
@@ -158,6 +170,9 @@ def _launch(context):
         'emulated_fps': float(p['emulated_fps']) if perception_mode == 'emulated' else None,
         'filter_cpu': p['filter_cpu'] or None,
         'scene': scene,
+        **({'episode_start': {'mode': 'phase', 'start_phase': float(p['start_phase']),
+                              'start_timeout_s': float(p['start_timeout_s'])}}
+           if episode_start == 'phase' else {}),
         'condition': cond['toggles'],
         'condition_description': cond['description'],
         'files': {'world': world, 'controllers': ctrl_yaml, 'perception_config': rtd_cfg,
@@ -219,7 +234,11 @@ def _launch(context):
                       parameters=[{'run_dir': run_dir, 'duration_s': float(duration),
                                    'perception': rows,
                                    'start_offset_s': float(scen['start_offset_s'] if scen
-                                                           else 0.0)}])
+                                                           else 0.0),
+                                   **({'start_mode': 'phase',
+                                       'start_phase': float(p['start_phase']),
+                                       'start_timeout_s': float(p['start_timeout_s'])}
+                                      if episode_start == 'phase' else {})}])
     if motion == 'scenario':
         actions.append(TimerAction(period=3.0, actions=[Node(
             package='franka_simulation_experiments', executable='scenario_commander',

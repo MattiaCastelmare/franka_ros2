@@ -169,6 +169,13 @@ def run_one(batch_dir: str, c: dict, *, timeout_s: float = 400.0) -> dict:
     # a comparison of the arms (the slew box makes jerk = max_qddot_delta/dt).
     if c.get('filter_cpu') not in (None, ''):
         extra['filter_cpu'] = str(c['filter_cpu'])
+    # H2 phase-aligned obstacle birth: a HARNESS setting like filter_cpu, absent from cell_name()
+    # so that two arms differing only in a condition keep comparable names. Unset = legacy start.
+    if c.get('episode_start') not in (None, '', 'legacy'):
+        extra['episode_start'] = str(c['episode_start'])
+        for k in ('start_phase', 'start_timeout_s'):
+            if c.get(k) is not None:
+                extra[k] = f'{float(c[k]):g}'
     rr = runner.run_cell(rd, condition=c['condition'], scenario=c['scenario'], seed=c['seed'],
                          perception=c['perception'], timeout_s=timeout_s,
                          extra_args=extra or None, sets=c.get('sets'))
