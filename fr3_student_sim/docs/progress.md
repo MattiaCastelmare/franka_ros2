@@ -3184,3 +3184,48 @@ This short check covers two transitions, not a repeated 20 s evaluation.
 All 48 focused controller tests passed, including C2 reference boundaries,
 mass/posture/damping crossfades and the unchanged perpendicular behavior.
 Logs, settings and all four plots are in `runs/circular_lap_ramp_20261117/`.
+
+### English controller comparison report and PDF (2026-11-18)
+
+Created `docs/report.md` and compiled `docs/report.pdf` from the Markdown.
+The report covers both baselines and full-online optimized controllers,
+their exact acceleration laws, three-level elastic HQP formulation and
+OSQP solution/fallback policy. It explains analytical tracking/posture
+gain choices, empirical mass/damping tuning and the observer rationale
+for trajectory, startup and lap-return ramps.
+
+Selected four existing logs at requested RTF 0.20. The latest circular
+20 s run after the 0.20 s transition is compared with the continuous
+baseline, explicitly distinguishing first impacts from different complete
+run schedules. The perpendicular 4/12 pair comes from the same legacy
+tuning study, with absent time-origin metadata disclosed. First-impact
+mass reductions are 35.69% and 32.02%; force, impulse, penetration, speed,
+tracking, QP fallbacks, soft preferences and computation time are reported
+from the saved data. No new simulations or control changes were made.
+
+Four comparison figures (PNG and vector PDF), machine-readable measurements
+and the LaTeX wrapper are in `docs/report_assets/`. `docs/build_report.py`
+builds the PDF with the native LaTeX Markdown package in two passes;
+intermediates remain under `runs/report_20261118/`. All 68 available NPZs
+were inventoried to select the evidence. Tables and formulas were checked
+against extracted PDF text, all pages were rendered for visual inspection,
+and the final layout has no LaTeX warnings or overflow.
+
+### Original run plots in sequential report comparisons (2026-11-18)
+
+Replaced the report's four composite/overlaid figures with eight standard
+per-run plots. Circular and perpendicular first-impact comparisons now show
+the baseline followed by full-online. Circular all-contact plots and the
+before/after observer plots are likewise presented separately. Each plot
+occupies its own PDF page. The superseded composites are archived under
+`runs/report_20261118/archived_comparison_figures/`.
+
+Original PNGs are copied without alteration into `docs/report_assets/`;
+`plot_sources.json` records their source paths and SHA-256 checksums. The
+two missing perpendicular collision PNGs were generated beside the exact
+selected tuning logs with the standard collision plotter, preserving the
+4/12 comparison and its measured data. No simulation, control or measurement
+changes were made. Recompiled the Markdown report and checked the resulting
+PDF's image order, captions and numeric tables.
+The revised PDF has 19 A4 pages and eight separate original figures; all
+source/destination image hashes match and compilation has no layout warnings.
