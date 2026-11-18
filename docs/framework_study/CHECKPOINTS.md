@@ -2309,3 +2309,55 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    One pair, one seed: a description, not an estimate.
 5. **E3-03 vs E3-05:** discussed in F-8-34 (supervisor +28 % of a core, RTF 0.62 → 0.70; cause Inferred).
 6. **Exact next action:** wait for the user's review. Seeds 1 and 2 are not started.
+
+## C-071 — 2026-11-18 — Seed-1 pair E3-07 (multi) / E3-08 (single), H2; compared with seed 0; stopped before seed 2
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `7202a9c` (docs-only C-070 commit, approved by the user).
+  These C-071 docs were committed docs-only before seed 2, with the user's approval. Stashes 3, unchanged.
+1. **Protocol.**
+   - PREREGISTRATION.md covers every `scripts_h2` run; it names only E3-05 (multi) and E3-06 (single)
+     and fixes no order for later seeds.
+   - Every recorded pair ran multi first (03→04, 05→06), so the seed-1 pair followed the same order:
+     07 multi, then 08 single after the 07 gate had been reviewed.
+   - Preflight for seed 1 in both modes: OK. Installed hashes and scripts are identical to E3-05. The code
+     tree outside the docs is identical (`4bac173e…`).
+   - The resolved configuration differs from seed 0 only in `seed` and `start_offset_s` (not applied
+     under H2, so a nominal repeat: F-8-35); multi and single differ only in `executor_mode`.
+   - CPU (`host_env/07_*`, `08_*`) identical to E3-05: powersave, EPP performance.
+2. **Runs** (`E3_EXPECT_HEAD=7202a9c…`, no repeat flag needed): both runs rc 0 and GATE_CONTINUE; every
+   stop rule PASS; V1–V7 VALID; sealed (148 files each); copy 66/66; no leftovers.
+
+   | | E3-07 multi | E3-08 single |
+   |---|---|---|
+   | QP | 82.93 Hz (RATE_FAIL, recorded) | 99.83 Hz (R15 PASS) |
+   | missed slots | 512 | 5 |
+   | min clearance / lower bound (m) | 0.11891 / 0.11835 | 0.11945 / 0.11913 |
+   | controller active | 6.12 s, 0 HARD | 12.68 s, lost call, 6 HARD resets / 548 ticks |
+   | clean window | 1.842 cyc, max \|e\| 19.7 mm | 1.298 cyc, max \|e\| 19.8 mm |
+   | t0 | 22.458 | 22.439 |
+   | birth phase error (cyc) | −1.7e-4 | −1.4e-4 |
+   | perception (frame / QP row, s) | 0.027 / 0.137 | 0.057 / 0.145 |
+   | self-mask (visible/deleted/hidden px) | 621/0/0 | 621/0/0 |
+
+3. **Pair comparison** `compare_07_08/` (sealed): **COMPARABLE**. After t0+2 s, multi vs single:
+
+   | Metric | multi | single |
+   |---|---:|---:|
+   | ticks per sim s | 82.67 | 99.81 |
+   | gap p99 / max (ms) | 47.6 / 72 | 15 / 20 |
+   | gaps ≥ 50 ms | 20 | 0 |
+   | rows p50 | 26 | 26 |
+   | rebuilds per s | 41.5 | 50.0 |
+   | build p50 / p95 (ms) | 16.4 / 25.2 | 8.7 / 12.2 |
+   | solve p50 / p95 (ms) | 2.9 / 8.4 | 1.1 / 2.1 |
+   | snapshot age p50 (ms) | 20 | 0 |
+   | filter CPU (% of a core) | 107 | 91 |
+   | RTF | 0.645 | 0.661 |
+   | min clearance (m) | 0.1189 | 0.1195 |
+   | \|e\| p95 (m) | 0.125 | 0.130 |
+
+   Phase 4/6 (38–40 rows): multi 72.7, single 99.8.
+4. **Across seeds:** F-8-36 (the startup race occurred in every single run) and F-8-37 (multi is bound by
+   wall-clock throughput, about 47–54 ticks/s; single stays at its period). F-8-34's hypothesis is
+   weakened.
+5. **Exact next action:** wait for the user's review. Seed 2 is not started.
