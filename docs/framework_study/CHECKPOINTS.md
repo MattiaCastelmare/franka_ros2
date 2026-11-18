@@ -2441,3 +2441,51 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 5. **Exact next action:** wait for the user's approval. Recommended: M1 (offline replay, `single`
    / `MT(1)` / `MT(3)` × 3, E3-05 bag), which first needs approval for a replay-tool variant under
    `docs/framework_study/tools/`.
+
+## C-074 — 2026-11-18 — M1 executor-thread replay (approved), validation, analysis, code-path trace, proposals and test plan; stopped
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `a756c76`. **No commit** (the user's approval
+  is needed). Stashes 3, unchanged. No Gazebo, no build, no pytest of the packages, no production,
+  R1, H2, E3-harness, pre-registration or CPU change. Container `franka_ros2` up, idle; governor
+  `powersave` × 28 (unchanged); no ROS or Gazebo process at the end.
+1. **M1** (user approval, message 10): protocol `refactor_r1_m1/protocol/M1_PROTOCOL.md` sealed
+   before any run.
+   - Three arms (single / MT(1) via the in-process module constant / MT(3)) × 3 reps in the sealed
+     Latin-square order, on E3-05's bag at rate 0.70.
+   - Smoke first (not counted). Nine data runs m1_01…m1_09, all valid, no retry. Raw data sealed in
+     `SHA256SUMS_raw_data` (91 files, read-only).
+   - Addenda: 01 (numpy-bool JSON, before the data runs); 02 (launch mode 444 → 555, rc 126,
+     before any run, logs `batch_attempt0_*` kept); 03 (D-M1-2 window-edge fix, after the runs;
+     recomputation 0 differences).
+2. **Validation (message 11, phase 1):** ten checks all PASS (report §1.2). Inputs, parameters
+   (264 keys equal except `executor_mode`), executor class and workers, harness hashes, RTF 0.700,
+   workload vs E3-05 and order are all verified.
+3. **Results** (F-8-42, F-8-43): single / MT(1) / MT(3):
+   - rebuild 2.57 / 4.10 / 6.80 ms;
+   - solve 0.37 / 0.67 / 1.20 ms;
+   - CPU 49 / 64 / 72 %;
+   - snapshot age 3.5 / 3.5 / 19 ms;
+   - no tick loss in any arm;
+   - pre-registered reading **H-AB**.
+
+   The GIL is not proven (Inferred). Event handling is about 60 % of CPU in every arm.
+4. **Code-path trace:** F-8-44 (governor σ from mutable builder state, snapshot inconsistency under
+   `multi`), F-8-45 (diagnostic shared state), F-8-46 (`set_input_rate` mid-build). F-8-47 records
+   the analysis-tool defects. Chapter 16 has 172 rows; check_docs 14/14; check_state exit 2 (the
+   expected R1/H2 REVIEW).
+5. **Tools** (untracked, `tools/baseline_validation/`): `m1_executor_replay.py`, `m1_run.sh`,
+   `m1_batch.sh`, `m1_analyze.py` (= `scripts_a03/`), `test_m1_tools.py`; README rows.
+   - `python3 -I -X dev …/test_m1_tools.py`: **31/31 pass, 0 skip, 0 warnings**.
+   - Mutation check: 19/31 fail on the sealed original script, 1/31 on Addendum 01's, 0 on the
+     current one.
+   - `analysis/` sealed in `SHA256SUMS_analysis` (9 files, read-only), with `tests/`.
+6. **Report:** `refactoring/R1_M1_EXECUTOR_THREAD_REPLAY.md`:
+   - results §2, mechanisms §3, path and findings §4;
+   - **proposals** P1–P6 §5, none implemented: P1 `executor_mode: single` default; P2 σ in
+     `ConstraintSnap`; P3 direct OSQP `Ax` fill;
+   - test plan A–E §6, executed tests §7, assessment §8, blockers §9.
+7. **Exact next action:** wait for the user's review. Choices:
+   - (i) approve P1 as step R2 with the §6 offline tests;
+   - (ii) approve M3 (headroom under load) first.
+
+   M2 needs a py-spy install. Commit approval is pending for the C-074 docs and tools.
