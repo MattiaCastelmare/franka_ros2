@@ -2253,3 +2253,59 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
      - RTF 0.70; filter 110 % of one core.
    - **Comparison:** E3-03's QP rate was 86.9 Hz (F-8-32; historical, not controlled).
 3. **Exact next action:** wait for the user's decision on E3-06 and on committing these docs.
+
+## C-070 — 2026-11-18 — E3-06 (seed 0, single, H2) run and analysed; E3-05/06 pair compared; stopped
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `e9d51c6` (the docs-only C-069 commit, approved by the
+  user). The C-070 docs were committed docs-only before seed 1, with the user's approval. Stashes 3,
+  unchanged.
+1. **Comparability, before the run** (evidence `refactor_r1_e3/host_env/06_comparability/`):
+   - E3-05 ran at `83fae8d`, E3-06 at `e9d51c6`; between them only `PROGRESS.md` and `CHECKPOINTS.md`
+     changed. The tree outside `docs/framework_study/` hashes identically (`4bac173e…`).
+   - The 18 installed hashes are identical to E3-05's preflight, and INSTALLED == SOURCE.
+   - `scripts_h2` hashes identical; PREREGISTRATION `523a00d3…`.
+   - The resolved configuration differs from E3-05 only in `executor_mode` (69 keys).
+   - CPU unchanged (`host_env/06_{before,after}.txt`).
+   - `e3_h2_compare.py` and PREREGISTRATION §5 compare configuration, not HEAD, and R05 checks each run
+     against its own HEAD, so the docs-only commit does not affect the pair.
+2. **Run and analysis:**
+   - `E3_ALLOW_REPEAT=1 E3_EXPECT_HEAD=e9d51c6… e3_run.sh 06 0 single`: rc 0, runner wall 84 s.
+   - `e3_analyze.sh 06_s0_single`: **GATE_CONTINUE**; 148 files sealed; copy 66/66; no leftovers.
+   - Runs 01, 03, 04 and 05 are still intact.
+3. **E3-06 results (Runtime (recorded)):**
+   - **Start:**
+     - lost `list_controllers` call → controller active only at 12.88 s;
+     - 5 HARD resets (520 ticks, last at 14.08 s);
+     - clean window from 14.39 s (1.343 cycles, max |e| 19.7 mm);
+     - polls 247/247 answered, 0 timeouts, 0 stale;
+     - announced 22.460 for t0 22.959 (lead 0.499 s);
+     - birth phase 0.99967 (−3.3e-4 cyc), so V1–V7 VALID (F-8-33).
+   - **Safety:** g0 0.4197 m; min clearance 0.12022 m (bound 0.11970 m) at 34.31 s, so R14 PASS;
+     reflex PASS, 0 trips; 0 faults; 0 fallbacks.
+   - **Perception:** self-mask 621/0/0 px; frame +0.043 s; QP row +0.142 s.
+   - **QP:**
+     - 99.00 ticks per sim s (R15 PASS, within ±5 %); 30 missed slots;
+     - gaps 10/15/18/27 ms (p50/p95/p99/max);
+     - rebuilds 50.0 /s, 9.25 ms p50; solve 1.17 ms p50;
+     - filter 97 % CPU, 3 threads; RTF 0.72.
+4. **Pair comparison** (`e3_h2_compare.py`, `refactor_r1_e3/compare_05_06/`, sealed): **COMPARABLE**.
+   Window t ≥ t0+2 s, multi vs single:
+
+   | Metric | multi | single |
+   |---|---:|---:|
+   | ticks per sim s | 66.76 | 98.96 |
+   | gap p99 / max (ms) | 67 / 94 | 18 / 27 |
+   | gaps ≥ 50 ms | 81 | 0 |
+   | rows p50 | 25 | 26 |
+   | rebuilds per s | 34.5 | 50.0 |
+   | build p50 / p95 (ms) | 16.3 / 24.8 | 9.3 / 13.5 |
+   | solve p50 / p95 (ms) | 3.0 / 9.3 | 1.2 / 3.2 |
+   | snapshot age p50 (ms) | 21 | 0 |
+   | filter CPU (% of a core) | 110 | 97 |
+   | RTF | 0.697 | 0.716 |
+   | min clearance (m) | 0.1217 | 0.1202 |
+   | \|e\| p95 (m) | 0.148 | 0.152 |
+
+   One pair, one seed: a description, not an estimate.
+5. **E3-03 vs E3-05:** discussed in F-8-34 (supervisor +28 % of a core, RTF 0.62 → 0.70; cause Inferred).
+6. **Exact next action:** wait for the user's review. Seeds 1 and 2 are not started.

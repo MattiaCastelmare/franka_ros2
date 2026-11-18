@@ -6,9 +6,9 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-18, checkpoint C-069 (E3-05 run and analysed: H2 start worked, gate CONTINUE; docs committed before E3-06). Before it: C-068 (H2 committed `186b823`, docs `9e0235d`, targeted
+- **Last updated:** 2026-11-18, checkpoint C-070 (E3-06 run and analysed: gate CONTINUE; the E3-05/06 pair is COMPARABLE; multi 66.8 vs single 99.0 ticks/s after t0+2 s; C-070 docs committed before seed 1). C-069 = E3-05 (docs commit `e9d51c6`). Before it: C-068 (H2 committed `186b823`, docs `9e0235d`, targeted
   build, E3-05/06 preflight OK). C-067 = the F-8-23/F-8-24 corrections; C-066 = the H2 review;
-  C-065 = the recovery after a host restart. Nothing is in progress; no Gazebo run since E3-04.
+  C-065 = the recovery after a host restart. Gazebo runs since: E3-05, E3-06 (H2, seed 0).
 - **Refactoring phase.**
   - **R1** (configurable CBF executor `executor_mode`, default `multi` = the historical MT3) is
     committed as `9bb2531` (pushed) on `refactor/cbf-executor-scheduling`. `73ed807` adds the
@@ -24,8 +24,8 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
     The timing gain is Runtime with n = 1 pair. The pair is not comparable for clearance.
   - **H2** (phase-aligned obstacle birth, harness only, opt-in `episode_start:=phase`):
-    **committed (`186b823`), built and installed (INSTALLED == SOURCE), preflight OK for E3-05 and
-    E3-06; not yet run in Gazebo.**
+    **committed (`186b823`), built and installed (INSTALLED == SOURCE), run in Gazebo as
+    E3-05 and E3-06 (seed 0, both GATE_CONTINUE, pair COMPARABLE; C-069, C-070).**
     C-066: review (F-8-23 medium, F-8-24…F-8-28 low). C-067: F-8-23 and F-8-24 fixed (bounded,
     fresh controller polling; one deadline from the first sim tick; sim-clock watchdog); suite 2 =
     179/179 from the source tree (`refactor_r1_e3/06_h2_fix_unit_tests/`). The pre-registration
@@ -49,14 +49,13 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   against its 121 IDs. Judge a sim cell by protocol §6.2. Save `working_tree.patch` before every
   run (F-6-11).
 - **Open items for the user**, each needing its own approval:
-  - E3-06 (single): `E3_ALLOW_REPEAT=1 E3_EXPECT_HEAD=<HEAD> e3_run.sh 06 0 single`, then
-    `e3_analyze.sh 06_s0_single` and `e3_h2_compare.py` (E3-05 done, C-069); the 22 slow Gazebo tests (legacy regression);
+  - seeds 1 and 2 (pairs 07/08, 09/10), each pair needing approval; E3-05/06 done (C-069, C-070); the 22 slow Gazebo tests (legacy regression);
   - re-run the matched-window comparison and the self-mask replay (both lost with the scratchpad);
   - F-8-20 and F-8-21 as production questions (gating the commander on the controller; the 0.16 m
     blind zone), F-8-17, F-8-18, R2, merging R1, pushing `73ed807`, `186b823` and the docs commits;
   - everything still open from C-062/C-063 (§5).
-- **Exact next action:** wait for the user's decision on E3-06 (seed 0, single). E3-05 is done
-  (`runs/05_s0_multi`, sealed, GATE_CONTINUE). Docs-only commit, then E3-06 (approved 2026-11-18).
+- **Exact next action:** seed-1 pair approved by the user on 2026-11-18 (docs commit, then
+  07 multi, gate review, 08 single, `e3_h2_compare.py`); seed 2 needs its own approval.
   No Gazebo run without explicit approval.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
@@ -410,7 +409,7 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 
 ### Baseline validation findings (S5, 2026-11-12)
 
-IDs `F-8-n`: "stage 8" is the verified-baseline phase (S1–S6A…), after the documentation stages 0–7. F-8-1…F-8-4 come from S5, F-8-5…F-8-7 from S6A, F-8-12 from S6B (one static-obstacle cell), F-8-13 from S6B.1 (offline clearance reconstruction), F-8-14…F-8-16 from the QP-performance analysis (isolated benchmarks, no Gazebo), F-8-17…F-8-18 from the R1 executor A/B (refactoring step R1, isolated benchmarks, no Gazebo), F-8-8…F-8-11 from S6A.1 (offline timing analysis), F-8-19…F-8-22 from the E3 Gazebo pilot of R1 (2026-11-16, recorded in C-065), F-8-23…F-8-29 from the H2 code review and unit-test session (C-066). F-8-30…F-8-32 from E3-05, the first H2 Gazebo run (C-069).
+IDs `F-8-n`: "stage 8" is the verified-baseline phase (S1–S6A…), after the documentation stages 0–7. F-8-1…F-8-4 come from S5, F-8-5…F-8-7 from S6A, F-8-12 from S6B (one static-obstacle cell), F-8-13 from S6B.1 (offline clearance reconstruction), F-8-14…F-8-16 from the QP-performance analysis (isolated benchmarks, no Gazebo), F-8-17…F-8-18 from the R1 executor A/B (refactoring step R1, isolated benchmarks, no Gazebo), F-8-8…F-8-11 from S6A.1 (offline timing analysis), F-8-19…F-8-22 from the E3 Gazebo pilot of R1 (2026-11-16, recorded in C-065), F-8-23…F-8-29 from the H2 code review and unit-test session (C-066). F-8-30…F-8-32 from E3-05, the first H2 Gazebo run (C-069). F-8-33…F-8-34 from E3-06 and the E3-05/06 comparison (C-070).
 Evidence: `~/franka_baseline_evidence/baseline_f708991/03_tests/`; report [validation/00_baseline/S5_TEST_RESULTS.md](validation/00_baseline/S5_TEST_RESULTS.md).
 
 | ID | Finding | Evidence | Label |
@@ -446,7 +445,9 @@ Evidence: `~/franka_baseline_evidence/baseline_f708991/03_tests/`; report [valid
 | F-8-29 | **Every container start makes a network `git fetch` in the gitignored `libfranka` and `franka_description` checkouts.** The entrypoint `/franka_entrypoint.sh` runs `vcs import /ros2_ws/src < franka.repos --recursive --skip-existing`. On 2026-11-18 11:21 it rewrote `libfranka/.git/FETCH_HEAD`, `franka_description/.git/FETCH_HEAD` and `libfranka/.git/modules/common/config`. The checked-out commits are unchanged (`155ddac`, `1ccde30`, = the preservation manifest), and so are the working trees. S2 (C-054) recorded "wrote nothing", which held for the working trees only. | `docker inspect` (entrypoint); file mtimes; `git -C … log/reflog` | Verified |
 | F-8-30 | **The qualifier's `controller_active_since` is the first time the qualifier saw the controller active, not the activation time.** In E3-05 the supervisor's continuous status history records the first fresh "active" answer at sim 4.74 s. The qualifier only exists once the commander parameters arrive, so its first sample, at 7.55 s, is what `decision.controller_active_since` and the R19 text report. The start logic is not affected (V7 and the window only need "active" from the window start onwards). Report the activation time from `episode.start.controller_history`. | E3-05 manifest `episode.start.{controller_history, qualifier.decision}`; `phase_start.py::StartQualifier` L141, L172 | Verified (Runtime (recorded)) |
 | F-8-31 | **E3-05 qualified with 0.2 mm of margin on the tracking-error limit.** The clean window (1.845 cycles from 11.72 s) had a max \|e\| of 19.8 mm against `track_err_max` = 20 mm. The window began just after the approach-to-cycle transition, while the error was still settling; the error over the last cycle before the birth (V3) was 4.7 mm. This is what the rule says, as pre-registered; it is recorded because a slightly worse settle would restart the window, and a run that cannot qualify fails at the 90 s deadline. | E3-05 manifest `qualifier.decision.window_max_err_m` 0.019781; `h2_metrics.json` V3 | Runtime (recorded) |
-| F-8-32 | **E3-05 (multi, H2 start) ran the QP at 67.1 ticks per sim s, against 86.9 in E3-03 (multi, legacy start).** Same seed, executor and code paths in the filter; per-rebuild (16.2 vs 16.9 ms p50) and per-solve (3.00 vs 3.04 ms p50) wall times are the same. The differences are fewer rebuilds per sim s (34.6 vs 43.1), a higher RTF (0.70 vs 0.65), longer gaps (p99 66.5 vs 38 ms) and slower curve-phase windows where more rows are active (phase 4/6: 49 Hz with 38 rows p50). Per wall second that is about 47 vs 56 ticks. The cause is **not established**. The two runs differ in the birth time and phase, so the obstacle meets the arm at different curve phases; with n = 1 each, this is not a controlled comparison. | E3-03 and E3-05 `analysis/gate.txt` | Runtime (recorded); cause Unverified |
+| F-8-32 | **E3-05 (multi, H2 start) ran the QP at 67.1 ticks per sim s, against 86.9 in E3-03 (multi, legacy start).** Same seed, executor and code paths in the filter; per-rebuild (16.2 vs 16.9 ms p50) and per-solve (3.00 vs 3.04 ms p50) wall times are the same. The differences are fewer rebuilds per sim s (34.6 vs 43.1), a higher RTF (0.70 vs 0.65), longer gaps (p99 66.5 vs 38 ms) and slower curve-phase windows where more rows are active (phase 4/6: 49 Hz with 38 rows p50). Per wall second that is about 47 vs 56 ticks. The cause is **not established**. The two runs differ in the birth time and phase, so the obstacle meets the arm at different curve phases; with n = 1 each, this is not a controlled comparison. | E3-03 and E3-05 `analysis/gate.txt` | Runtime (recorded); cause Unverified | *2026-11-18 note (C-070): partly explained by measured load differences (F-8-34); the cause is still not established.*
+| F-8-33 | **The startup race (F-8-20) recurred in E3-06, and H2 contained it.** The spawner's `list_controllers` call got no result within 10 s (attempt 1 of 3), so `rt_torque_controller` became active only at sim 12.88 s (11.0 s later than in E3-05). The commander had already started and logged 5 HARD resets (EE error up to 0.26 m, 520 HARD ticks, the last at 14.08 s). The supervisor counted 566 window restarts for `controller_inactive` and 151 for `tracking_error`, and opened the clean window only at 14.39 s (1.343 cycles, max \|e\| 19.7 mm). The birth came at phase −3.3e-4 cyc, with V1–V7 VALID and no HARD reset in the last cycle (V3). Across runs, the lost call appears in E3-03 (multi; no HARD reset), E3-04 (single; 4 HARD resets) and E3-06 (single; 5), but not in E3-01 or E3-05 (multi). It is therefore **not** executor-specific; whether HARD resets follow depends on whether the commander starts before the activation. The race is still a production question (F-8-20). | E3-06 manifest `episode.start.{controller_history, hard_reset_log_lines, qualifier.decision}`; `launch.log` of runs 01, 03–06 | Runtime (recorded); cross-run count Verified |
+| F-8-34 | **Measured load differences between the legacy-start runs (E3-03, E3-04) and the H2 runs (E3-05, E3-06).** `episode_supervisor` uses 57.8 / 58.1 % of a core in E3-03 / E3-04 and 85.4 / 86.7 % in E3-05 / E3-06, about **+28 %**; this is the H2 estimator and polling. The episode RTF is 0.616 / 0.624 against 0.698 / 0.720, and host busy cores 12.8 / 12.5 against 13.8 / 13.9. The workload of the filter itself is the same: rows p50 25 / 25 / 25 / 26, and the multi rebuild (16.9 vs 16.2 ms p50) and solve (3.04 vs 3.00 ms) times are equal. Arithmetically, the higher RTF alone lowers ticks per sim s by 0.616/0.698 = 0.88 (86.9 → about 76.7); the remaining 0.875 is a lower wall-clock tick rate (about 53.5 vs 46.8 per wall s). The single-threaded arm is near its 100 Hz period cap in both cases (99.93 → 99.00). **Hypothesis (Inferred, not tested):** the multi-threaded filter is more sensitive to the extra host load, and the higher RTF. The birth time and phase also differ between legacy and H2 runs, so this is not a controlled comparison. A cause would need a legacy-vs-H2 pair under one executor. | `analysis/s6b_analysis.json`, `s6b_host.json` and `gate.txt` of runs 03–06 | Runtime (recorded); cause Inferred |
 
 ## 5. Decisions and open questions
 
