@@ -6,7 +6,7 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-18, checkpoint C-071 (seed-1 pair E3-07 multi / E3-08 single: both GATE_CONTINUE, pair COMPARABLE, 82.7 vs 99.8 ticks/sim s after t0+2 s; C-071 docs `a7f9a48`). **C-072:** seed-2 pair, single first (E3-09) then multi (E3-10): both GATE_CONTINUE and COMPARABLE; three pairs single − multi = +20.0 ± 11.1 ticks/sim s (range 10.5–32.2); C-072 docs committed. C-070 (E3-06; seed-0 pair 66.8 vs 99.0; docs `7202a9c`). C-069 = E3-05 (docs commit `e9d51c6`). Before it: C-068 (H2 committed `186b823`, docs `9e0235d`, targeted
+- **Last updated:** 2026-11-18, checkpoint **C-073**: evidence-only mechanism analysis and validation-campaign proposal, [refactoring/R1_E3_MECHANISM_AND_VALIDATION_PLAN.md](refactoring/R1_E3_MECHANISM_AND_VALIDATION_PLAN.md); findings F-8-40, F-8-41; chapter 16 updated to F-8-41 (`5ce64f2` + C-073 commit); **no experiment run**. Earlier: C-071 (seed-1 pair E3-07 multi / E3-08 single: both GATE_CONTINUE, pair COMPARABLE, 82.7 vs 99.8 ticks/sim s after t0+2 s; C-071 docs `a7f9a48`). **C-072:** seed-2 pair, single first (E3-09) then multi (E3-10): both GATE_CONTINUE and COMPARABLE; three pairs single − multi = +20.0 ± 11.1 ticks/sim s (range 10.5–32.2); C-072 docs committed. C-070 (E3-06; seed-0 pair 66.8 vs 99.0; docs `7202a9c`). C-069 = E3-05 (docs commit `e9d51c6`). Before it: C-068 (H2 committed `186b823`, docs `9e0235d`, targeted
   build, E3-05/06 preflight OK). C-067 = the F-8-23/F-8-24 corrections; C-066 = the H2 review;
   C-065 = the recovery after a host restart. Gazebo runs since: E3-05, E3-06 (H2, seed 0), E3-07, E3-08 (H2, seed 1), E3-09, E3-10 (H2, seed 2, order reversed).
 - **Refactoring phase.**
@@ -31,8 +31,8 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
     179/179 from the source tree (`refactor_r1_e3/06_h2_fix_unit_tests/`). The pre-registration
     is `refactor_r1_e3/scripts_h2/PREREGISTRATION.md`, SHA-256 `523a00d3…7290` recorded in C-065.
 - **Documentation status:** Stages 0–7 complete (C-051); baseline S1–S6B.1 and the QP analysis
-  done (C-052…C-062). Findings: F-8-19…F-8-22 (C-065) and F-8-23…F-8-29 (C-066) added;
-  chapter 16 not yet updated.
+  done (C-052…C-062). Findings F-8-19…F-8-41 added (C-065…C-073); chapter 16 lists all of them
+  (166 findings, check_docs 14/14).
 - **Pinned branch:** `humble-mattia` = `origin/humble-mattia` = `625c179` (documentation and
   baseline). `check_state.py` reports REVIEW for the R1 and H2 source paths; expected, and the
   baseline moves only when R1 (or H2) is merged (§8).
@@ -49,14 +49,16 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   against its 121 IDs. Judge a sim cell by protocol §6.2. Save `working_tree.patch` before every
   run (F-6-11).
 - **Open items for the user**, each needing its own approval:
-  - E3 H2 pairs for seeds 0–2 done (C-069…C-072); no further seed approved; the 22 slow Gazebo tests (legacy regression);
+  - E3 H2 pairs for seeds 0–2 done (C-069…C-072); no further seed approved; C-073 proposal (M1, M2, M3; V1–V8) awaiting approval; the 22 slow Gazebo tests (legacy regression);
   - re-run the matched-window comparison and the self-mask replay (both lost with the scratchpad);
   - F-8-20 and F-8-21 as production questions (gating the commander on the controller; the 0.16 m
     blind zone), F-8-17, F-8-18, R2, merging R1, pushing `73ed807`, `186b823` and the docs commits;
   - everything still open from C-062/C-063 (§5).
-- **Exact next action:** wait for the user's review of the three-pair analysis (C-072). No further
-  experiment without approval; the C-072 docs are uncommitted.
-  No Gazebo run without explicit approval.
+- **Exact next action:** wait for the user's decision on the C-073 proposal. Recommended first:
+  **M1** (offline replay of E3-05's bag: `single`, `MT(1)`, `MT(3)` × 3, rotated order), which needs
+  approval for a replay-tool variant under `docs/framework_study/tools/`. M2 needs approval to install
+  py-spy; the Gazebo cells V1–V4 need a parameterised harness copy and a new pre-registration addendum
+  (F-8-41). Nothing is implemented. No Gazebo run without explicit approval.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -409,7 +411,7 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 
 ### Baseline validation findings (S5, 2026-11-12)
 
-IDs `F-8-n`: "stage 8" is the verified-baseline phase (S1–S6A…), after the documentation stages 0–7. F-8-1…F-8-4 come from S5, F-8-5…F-8-7 from S6A, F-8-12 from S6B (one static-obstacle cell), F-8-13 from S6B.1 (offline clearance reconstruction), F-8-14…F-8-16 from the QP-performance analysis (isolated benchmarks, no Gazebo), F-8-17…F-8-18 from the R1 executor A/B (refactoring step R1, isolated benchmarks, no Gazebo), F-8-8…F-8-11 from S6A.1 (offline timing analysis), F-8-19…F-8-22 from the E3 Gazebo pilot of R1 (2026-11-16, recorded in C-065), F-8-23…F-8-29 from the H2 code review and unit-test session (C-066). F-8-30…F-8-32 from E3-05, the first H2 Gazebo run (C-069). F-8-33…F-8-34 from E3-06 and the E3-05/06 comparison (C-070). F-8-35…F-8-37 from the seed-1 pair E3-07/08 (C-071). F-8-38…F-8-39 from the seed-2 pair E3-09/10 (order reversed) and the three-pair analysis (C-072).
+IDs `F-8-n`: "stage 8" is the verified-baseline phase (S1–S6A…), after the documentation stages 0–7. F-8-1…F-8-4 come from S5, F-8-5…F-8-7 from S6A, F-8-12 from S6B (one static-obstacle cell), F-8-13 from S6B.1 (offline clearance reconstruction), F-8-14…F-8-16 from the QP-performance analysis (isolated benchmarks, no Gazebo), F-8-17…F-8-18 from the R1 executor A/B (refactoring step R1, isolated benchmarks, no Gazebo), F-8-8…F-8-11 from S6A.1 (offline timing analysis), F-8-19…F-8-22 from the E3 Gazebo pilot of R1 (2026-11-16, recorded in C-065), F-8-23…F-8-29 from the H2 code review and unit-test session (C-066). F-8-30…F-8-32 from E3-05, the first H2 Gazebo run (C-069). F-8-33…F-8-34 from E3-06 and the E3-05/06 comparison (C-070). F-8-35…F-8-37 from the seed-1 pair E3-07/08 (C-071). F-8-38…F-8-39 from the seed-2 pair E3-09/10 (order reversed) and the three-pair analysis (C-072). F-8-40…F-8-41 from the evidence-only mechanism analysis and campaign design (C-073).
 Evidence: `~/franka_baseline_evidence/baseline_f708991/03_tests/`; report [validation/00_baseline/S5_TEST_RESULTS.md](validation/00_baseline/S5_TEST_RESULTS.md).
 
 | ID | Finding | Evidence | Label |
@@ -453,6 +455,8 @@ Evidence: `~/franka_baseline_evidence/baseline_f708991/03_tests/`; report [valid
 | F-8-37 | **Across 3 multi runs, the multi filter delivered about 47–54 QP ticks per wall second. The single filter stayed at its 100-per-sim-s period in every run.** Wall ticks/s (ticks per sim s × episode RTF): multi E3-03 53.6, E3-05 46.8, E3-07 53.6; single E3-04 62.4, E3-06 71.3, E3-08 65.8. Multi ticks per sim s therefore move with the RTF and with run-to-run throughput: 86.9 / 67.1 / 82.9 at RTF 0.616 / 0.698 / 0.647. Single stays at 99.0–99.9 whatever the RTF. The filter workload was matched within each pair (rows p50 equal, obstacle rows on 100 % of ticks). In the heaviest curve window (phase 4/6, 38–40 rows) multi dropped to 49.1 and 72.7 ticks/s, while single held 98.3 and 99.8. **Interpretation (Inferred):** the multi arm is bound by wall-clock throughput (each rebuild is about 2× and each solve about 2.7× slower, consistent with contention between threads), whereas single has headroom. E3-05's lower wall throughput (46.8) has no identified cause. | `analysis/s6b_analysis.json` and `s6b_host.json` of runs 03–08; `compare_05_06/`, `compare_07_08/` | Runtime (recorded); interpretation Inferred |
 | F-8-38 | **Reversing the order (seed 2: single first) did not reproduce the startup race in either arm.** In E3-09 (single, first) the controller was active at 6.28 s (0 lost calls, 0 HARD resets), and in E3-10 (multi, second) at 5.32 s (0, 0). Over the 8 E3 runs the lost `list_controllers` call occurred in 03 (multi, 1st), 04, 06 and 08 (single, 2nd), and in none of 01, 05, 07 (multi, 1st), 09 (single, 1st) or 10 (multi, 2nd). Executor and run position have identical splits (3/4 vs 1/5), so this sample cannot separate them, or either from chance. H2 contained every occurrence (all six H2 runs VALID). | `launch.log` and manifest `controller_history` of runs 01, 03–10; addendum `refactor_r1_e3/protocol/ADDENDUM_01_seed2_reversed_order.md` | Runtime (recorded); association Inconclusive |
 | F-8-39 | **Multi's QP rate rose steadily over the session; single stayed flat.** In time order, the H2 multi runs E3-05, 07 and 10 gave 66.8, 82.7 and 89.1 ticks/sim s (after t0+2 s). Their wall ticks/s were 46.8, 53.6 and 56.1, with episode RTF 0.698, 0.647 and 0.628 and host busy cores 13.8, 13.0 and 12.7. Single gave 99.0, 99.8 and 99.7. The configuration was identical (F-8-35) and only the seed-2 pair reversed the order, so a time trend in the host (thermal or background) cannot be separated from chance with three points. Per-operation times are stable within each mode (multi build p50 16.28–16.36 ms; single 8.59–9.32 ms). | `analysis/s6b_*.json` of runs 05–10 | Runtime (recorded); cause Unverified |
+| F-8-40 | **Per-tick structure of the H2 runs (t0+2…t0+30 s).** Single: late ticks (sim gap > 15 ms) occur **only** when a fresh rebuild is due (P = 0.40–0.49 with a rebuild, 0.000 without, all three runs); its wall rate tracks the local RTF (r = +0.91/+0.99/+0.98 over 1-s windows), so it delivers the sim period. Multi: late ticks also occur **without** a fresh rebuild (P = 0.157/0.113/0.103 vs 0.469/0.267/0.194 with one); its 1-s wall rate is uncorrelated with local RTF (r = −0.17/−0.21/−0.07), the signature of a wall-throughput ceiling. In multi the late fraction rises from the low to the high `n_rows` tercile in every run (+0.12/+0.07/+0.09; single +0.06/+0.02/+0.04), and rows > 30 add 2.5–3.4 ms to a rebuild in both modes. P- and E-core frequency medians were identical in all six runs (2100/1900 MHz); the filter's E-core share was not monotonic with multi's rate (0.43/0.48/0.47). Supports in-process serialisation under multi (GIL by elimination, F-8-14); **does not instrument it**. | `s6b_series.npz` (cbf_status fields 0, 13, 18, 37), `wall_pairs`, `s6b_host.json` of runs 05–10; analysis in `refactoring/R1_E3_MECHANISM_AND_VALIDATION_PLAN.md` §2 | Runtime (recorded) + Derived; mechanism Inferred |
+| F-8-41 | **The E3/H2 gate is static-obstacle specific.** V4's g_min = d_safe + v_ref·τ ignores the obstacle's own speed, and R13/R14's offline clearance pairs joint samples with the last obstacle pose (F-8-13: error up to \|v_obs\|·50 ms, 15 mm at 0.3 m/s). `e3_run.sh` also hard-codes the scenario and `--start-phase 0.0`. Running the E3 protocol on moving-obstacle cells, other scenarios or other phases therefore needs a new pre-registration addendum and a parameterised harness copy; the current gate would be optimistic for moving cells. | `scripts_h2/e3_h2_metrics.py` (V4), `e3_analyze.sh` (R13/R14), `e3_run.sh`; F-8-13 | Verified (code) + Derived |
 
 ## 5. Decisions and open questions
 

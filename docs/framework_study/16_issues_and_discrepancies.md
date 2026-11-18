@@ -167,6 +167,8 @@ every recorded run evidence about another revision).
 | F-8-34 | H2 runs vs legacy runs: supervisor +28 % of a core, RTF 0.62 → 0.70, +1 busy core; the hypothesis that this lowered multi's rate is **weakened** by E3-07 (same load, 82.9 Hz) | `s6b_*.json` runs 03–08 (cause Inferred) | S4 | P3 | medium | — | sim | none; superseded as an explanation by F-8-37/F-8-39 | F-8-32, F-8-37 |
 | F-8-35 | Under H2 the seed changes nothing the run uses (start offset not applied; depth noise off, dropout 0): seeds 1, 2 are nominal repeats | resolved configurations; launch files | S3 | P2 | high | — | sim | vary initial conditions explicitly (new pre-registration) for generalisation claims | F-8-28 |
 | F-8-39 | Multi's QP rate rose over the session (66.8 → 82.7 → 89.1 ticks/sim s; wall 46.8 → 53.6 → 56.1) while RTF and host load fell; single flat (99.0–99.8); cause Unverified | `s6b_*.json` runs 05–10 | S3 | P2 | medium | — | sim | counterbalanced, interleaved repeats; record host load | F-8-37 |
+| F-8-40 | Per-tick: single is late only when a rebuild is due (P 0.40–0.49 vs 0.000) and tracks local RTF (r ≈ +0.95); multi is also late without a rebuild (0.10–0.16), its wall rate ignores RTF (wall-throughput ceiling) and its late fraction rises with `n_rows`; core frequencies identical across runs | `s6b_series.npz`, `s6b_host.json` runs 05–10 (mechanism Inferred) | S4 | P3 | medium | — | sim | mechanism experiment M1/M2 (`R1_E3_MECHANISM_AND_VALIDATION_PLAN.md` §4) | F-8-14, F-8-39 |
+| F-8-41 | The E3/H2 gate (V4 g_min, R13/R14 reconstruction) assumes a static obstacle, and `e3_run.sh` hard-codes scenario and start phase; moving-obstacle cells need a new addendum and harness copy | `e3_h2_metrics.py`, `e3_analyze.sh`, `e3_run.sh` | S3 | P2 | high | — | sim | add v_obs to g_min and \|v_obs\|·0.05 m to the conservative bound before any moving cell | F-8-13 |
 
 ### B.8 ROS 2 integration
 
@@ -252,7 +254,7 @@ every recorded run evidence about another revision).
 | F-7-8 | The old technical guide is stale (E.3: QP size, fallback, slew rule, FIFO, logger truth) and misses the 10 mechanisms of E.4; its config values still match but 51 keys are missing | `check_guide_vs_code.py` (21 checks) | S3 | P3 | high | yes | — | Part E; do not use the guide as reference | F-0-9 |
 | F-8-11 | S6A record overstated "no obstacle row bound / only the box" (`n_act` = count h̄ < 0; slew bound and the gap-dependent link-speed cap also acted) and F-8-5's budget argument; corrected by dated notes | S6A.1 (code + Derived) | S4 | P3 | high | S6A.1 | — | none beyond the notes; read binding from per-row data in future runs | F-5-23, F-8-5 |
 
-Total: 164 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
+Total: 166 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
 asserts that every ID of PROGRESS §4 has exactly one row here.
 
 ---

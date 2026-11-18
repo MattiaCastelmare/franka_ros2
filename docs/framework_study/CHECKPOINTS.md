@@ -2408,3 +2408,36 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 
    F-8-38: race inconclusive. F-8-39: multi rose 66.8 → 82.7 → 89.1 over the session.
 6. **Exact next action:** wait for the user's review. No further experiment approved.
+
+## C-073 — 2026-11-18 — R1 mechanism analysis (existing evidence only) and validation-campaign proposal; stopped
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `5ce64f2` before this entry. Commits this
+  session, docs only, no trailer: `dc681a9` (C-072 docs), `5ce64f2` (chapter 16 F-8-19…F-8-39),
+  plus the C-073 docs commit. Stashes 3, unchanged. No Gazebo, no run, no build, no code, R1, H2,
+  harness, pre-registration, evidence or CPU change.
+1. **Analysed.**
+   - Per-tick series of E3-05…10 (`s6b_series.npz`, `cbf_status` fields 0/13/18/37, `wall_pairs`) and
+     `s6b_host.json`, read-only; the outputs went to the scratchpad only.
+   - Code: `cbf_safety_filter.py` (callback groups, timers, `_update_constraints`, `make_executor`,
+     `main`).
+   - Earlier analyses: `QP_PERFORMANCE_ROOT_CAUSE.md`, `R1_EXECUTOR_CONFIGURATION.md` §8/§11.
+   - Installed `scenarios.yaml` (pentagon and catalog entries); `scenario_catalog.resolve` (seed jitter
+     only where `jitter_m` > 0); the E3-05 cell bag topic list (complete inputs for an offline replay).
+2. **Document:** `refactoring/R1_E3_MECHANISM_AND_VALIDATION_PLAN.md`:
+   - §1 demonstrated / not demonstrated;
+   - §2 the seven questions, labelled;
+   - §3 architecture;
+   - §4 mechanism experiments M1–M3;
+   - §5 validation cells V1–V8 from existing pentagon scenarios;
+   - §6 prioritisation;
+   - §7 recommendation.
+3. **Findings:** F-8-40 (per-tick structure: single is late only with a rebuild and tracks RTF;
+   multi is late without a rebuild, has a wall-throughput ceiling and gets worse with rows) and
+   F-8-41 (the E3/H2 gate is static-obstacle specific; the harness hard-codes scenario and phase).
+   Both are also in chapter 16 (Total 166; check_docs 14/14).
+4. **Most plausible mechanism (Inferred, not instrumented):** in-process serialisation of
+   overlapping GIL-holding callbacks under MT3. Executor overhead (A) and host conditions (C) are
+   not excluded; the workload (D) is matched by design.
+5. **Exact next action:** wait for the user's approval. Recommended: M1 (offline replay, `single`
+   / `MT(1)` / `MT(3)` × 3, E3-05 bag), which first needs approval for a replay-tool variant under
+   `docs/framework_study/tools/`.
