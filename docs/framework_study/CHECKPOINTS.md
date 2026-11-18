@@ -1876,3 +1876,266 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    E2, F-8-17, F-8-18, R2, merging R1.
 4. **Exact next action:** start a new session at the repository root and paste the "Refactoring
    phase" prompt of `RESUME_PROMPT.md`; then wait for the user's decision.
+
+## C-065 — 2026-11-18 — Recovery after a host restart; E3 pilot and H2 recorded (documentation only) — stopped for review
+
+- Baseline / HEAD / branch: `ba68077052e8` (unchanged) / `73ed807` / `refactor/cbf-executor-scheduling`
+  (1 commit ahead of `origin`). `humble-mattia` = `origin/humble-mattia` = `625c179`, untouched.
+  Stashes: 3, untouched. **Gap closed by this entry:** the work of 2026-11-16 (the E3 pilot and H2)
+  was never checkpointed in the repository; it existed only in the evidence folder and in
+  account memory. Every claim below was re-checked against the evidence on 2026-11-18.
+1. **Recovery (approved by the user on 2026-11-18, read-only):**
+   - The host shut down at 2026-11-17 18:42 (`last -x`); the container `franka_ros2` exited with
+     137 at the same instant (`docker inspect` `FinishedAt` 17:42:46Z), restart policy `no`. No run,
+     build or test was in progress: the last write in `refactor_r1_e3/` and in the H2 files is
+     2026-11-16 13:02. Nothing was interrupted (Derived).
+   - Container stopped, not removed: its writable layer (install, quarantines, `/home/user/` scratch)
+     is preserved. `docker diff` shows no `phase_start` under `/ros2_ws/install`: H2 is **not built**.
+   - The previous session's scratchpad (E3-04 diagnosis scripts) was erased by the restart.
+2. **R1 commit history (Verified, `git log`):**
+   - `9bb2531` feat(cbf): configurable CBF filter executor (R1), default unchanged (C-063, C-064;
+     pushed).
+   - `73ed807` test: enable executor selection in Gazebo experiment harness (2026-11-16 10:39;
+     `conditions.yaml` +1 line; **not pushed**).
+   - H1 build (2026-11-16 10:28, evidence `refactor_r1_e3/00_h1_build/`): built from `9bb2531` plus
+     the `conditions.yaml` change that became `73ed807`; installed == source (39 compared,
+     0 differing); suite 2 121/121 with the same IDs as S5 and R1.
+   - `git diff 9bb2531 -- franka_experiments franka_rt_controllers franka_simulation franka_msgs`
+     is empty: the production code is exactly R1.
+3. **E3 pilot, seed 0, cell `pentagon_static_baseline_bare / full / gz / s0`** (evidence
+   `~/franka_baseline_evidence/refactor_r1_e3/runs/`, write-protected; harness `scripts/`):
+
+   | Run | Arm | Outcome (Runtime, recorded: `RUN_STATUS`, `analysis/gate.txt`) |
+   |---|---|---|
+   | E3-01 `01_s0_multi` | multi | **ABORTED** at postflight. A false copy mismatch: two listings sorted under different locales (F-8-19). Content 56/56 SHA-identical. Not part of the pilot. |
+   | E3-02 | — | No run directory exists. |
+   | E3-03 `03_s0_multi` | multi | GATE CONTINUE. QP 86.90 ticks/sim s (`RATE_FAIL`, recorded), 393 missed 10 ms slots, tick gap p95 29 / max 64 ms, 12 gaps ≥ 50 ms. Rebuild wall p50 16.9 ms, solve p50 3.04 ms, filter CPU 106.6 % of one core. RTF 0.647. Min clearance 0.1217 m (R14 pass). Birth gap 0.303 m. |
+   | E3-04 `04_s0_single` | single | **GATE STOP at R14:** min clearance 0.03957 m (`fr3_link8#1`) at t = 14.72 s against d_safe 0.10 m. QP 99.93 ticks/sim s, 2 missed slots, gap p95 12 / max 19 ms, 0 gaps ≥ 50 ms. Rebuild wall p50 8.80 ms, solve p50 1.07 ms. RTF 0.661. R01–R13 and R15–R18 pass (no contact, no fault, no fallback, reflex PASS). |
+
+   - **QP timing (Runtime, recorded; n = 1 pair):** single vs multi = 99.93 vs 86.90 ticks/sim s.
+     This is consistent with F-8-14 and R1's replay A/B. It is one seed on an unpinned
+     `powersave` host. A matched-window comparison (same phase window, rows and RTF) was made on
+     2026-11-16; its output was not preserved: **Unverified** until it is recomputed.
+   - **E3-04 clearance violation (Derived from `s6b1_reconstruction.npz`):** the ball appeared
+     (t0 = 14.43 s) **0.0589 m** from the arm, already inside d_safe. The minimum 0.0396 m came
+     0.29 s later. E3-03's ball appeared 0.303 m away. The violation is therefore a start-condition
+     confound (F-8-20, F-8-21), not evidence about the executor. The pair is **not comparable** for
+     clearance.
+   - **Startup race (F-8-20), Verified from E3-04's `launch.log`:** `controller_manager` failed to
+     send a `list_controllers` response (L252); `spawner_rt_torque_controller` retried after 10 s
+     (L292) and activated the controller only then (L298). Meanwhile the commander, started on its
+     own timer, ran its path and logged four HARD resets (EE error 0.082–0.260 m, L285–L304). The
+     birth phase therefore depends on startup timing and is not seeded (Derived).
+   - **Self-mask blind zone (F-8-21):** the gate `depth_gate_bias_m + depth_gate_tol_m` = 0.16 m is
+     Verified (`fr3_complete.yaml` L255–L262, L430). Its effect in E3-04 (all ball pixels deleted
+     from about t0 + 0.05 to t0 + 0.65 s; first visible frame t0 + 0.751 s observed, t0 + 0.70–0.75 s
+     in a `MaskBuilder` replay) is Runtime, recorded in `scripts_h2/PREREGISTRATION.md` §2 (V5
+     limitations). The replay itself was lost with the scratchpad, so this part is not
+     reproducible from preserved evidence until it is re-run (Unverified as a reproduction).
+   - The "pentagon" commander runs a **circle** (F-8-22).
+4. **H2 (phase-aligned obstacle birth, harness only): implemented, NOT validated.**
+   - Uncommitted. `episode_supervisor.py` (+250/−6: opt-in `start_mode:=phase`, default `legacy`);
+     `gz_cbf_stack.launch.py` (+21: `episode_start`, `start_phase`, `start_timeout_s`; phase needs
+     `motion:=pentagon`); `run_gz_scenarios.py` (+15); `simexp/batch.py` (+7). Untracked:
+     `simexp/phase_start.py` (311 lines: `PhaseEstimator`, `StartQualifier`, `StartConfig`) and
+     `test/test_phase_start.py` (37 cases).
+   - Not built. No unit-test pass on record: no log, and no compiled test file. Never run in Gazebo:
+     no run directory uses `episode_start`.
+   - Evidence-side harness copy `refactor_r1_e3/scripts_h2/`: `e3_run.sh` (refuses to start without
+     `E3_EXPECT_HEAD` = the H2 commit), `e3_analyze.sh`, `e3_h2_metrics.py` (V1–V7, R20),
+     `e3_h2_bag.py`, `e3_h2_compare.py`. `scripts/` stays as the record of E3-01…04.
+   - `PREREGISTRATION.md`: written 2026-11-16 13:02:05 (mtime), before any H2 run. Its constants
+     match `StartConfig` and `e3_h2_metrics.PREREG` (Verified). **SHA-256 recorded now:**
+     `523a00d3d32ef9640fcd2f516772b223be2b0d66db8da322d2c7457278a17290`. No earlier hash exists, so
+     "unchanged since it was written" can be checked from this entry on.
+5. **CPU governor (Verified, `preflight/host_resources.txt`):** E3-01, E3-03 and E3-04 all recorded
+   `powersave` on 28 of 28 CPUs; their EPP was not recorded. S6B recorded `powersave` with EPP
+   `performance`. The host now has `powersave` × 28 and EPP `performance`: the same state. The
+   recovery report's remark that earlier runs used `performance` came from account memory about
+   pre-study campaigns, not from study evidence. It is **withdrawn**.
+6. **Remaining (each needs approval):** the H2 review and unit tests (approved 2026-11-18, next);
+   then committing H2, the targeted rebuild, `e3_run.sh --preflight-only`, E3-05 (multi) and E3-06
+   (single); re-running the matched-window and self-mask replays; F-8-20 and F-8-21 as production
+   questions (R-steps); pushing `73ed807`.
+7. **Files read:** the H2 files and `episode_supervisor.py` in full; `pentagon_qddot_commander.py`
+   (path build, `_publish_ee_trace`, parameters); `gz_cbf_stack.launch.py`;
+   `scenario_obstacles_system.cpp` (start handling). Ledger unchanged: the two new files are not in
+   the ledger, and the baseline is not moved.
+8. **Documentation files updated:** this entry; PROGRESS §0 and §4 (F-8-19…F-8-22, the F-8-14 note,
+   the IDs note). Chapter 16 not yet updated.
+9. **Exact next action:** the H2 code review and the focused unit tests in the container (approved
+   2026-11-18), recorded as C-066.
+
+## C-066 — 2026-11-18 — H2 code review and focused unit tests — done; stopped for review
+
+- Baseline / HEAD / branch: `ba68077052e8` / `73ed807` / `refactor/cbf-executor-scheduling`. Stashes:
+  3, untouched. H2 is still uncommitted; no H2 file was modified in this session.
+1. **Done (approved by the user on 2026-11-18):**
+   - **Review of the complete H2 diff.** The four modified files and the two new ones were read in
+     full, together with the commander's path build and `_publish_ee_trace`, the `CompositePath`
+     phase mapping and the obstacle plugin's start handling. Results for the nine requested points:
+     1. Opt-in; legacy unchanged: **Verified**. Legacy keeps the same `_ready`/`_poll_controller`
+        path and the same t_start formula, and exits with 0. The new parameters, launch arguments,
+        batch extras, CLI options and manifest key appear only in phase mode. Legacy-visible
+        additions: the declared parameter `start_mode` and three declared launch arguments with
+        defaults.
+     2. Controller active before the birth: **Verified**, with the polling caveats F-8-23 and
+        F-8-25. The legacy readiness still applies, and the qualifier restarts its window on an
+        inactive controller.
+     3. Sim time only: **Verified**. Header stamps and the node clock; the launch sets
+        `use_sim_time` globally; `phase_start.py` never reads the wall clock.
+     4. Real trajectory identified: **Verified** for E3's circle. The curve is rebuilt from the live
+        commander's own parameters (GetParameters), with the commander's classes and branch order.
+        `CompositePath` evaluates the cycle at s − S_a. Lead-in samples are rejected by the 1 mm
+        on-curve tolerance. The limitations for other curves are in F-8-27.
+     5. Clean tracking for one full cycle before the announcement: **Verified** (window ≥ 1.0 cycle;
+        |e| ≤ 0.02 m; gaps ≤ 0.1 s; no backward step; least-squares rate ±2 %).
+     6. Spawner delays cannot shift the birth phase: **Verified** by design (geometric phase, and a
+        clean cycle after activation) and by tests (delays 0–17.3 s, a controller never activated,
+        a mid-window drop-out, HARD resets).
+     7. Missing data, tracking failures and timeouts handled safely: **Verified**. A failed start
+        sets status `start_failed`, exits with code 3 and never publishes `/sim/episode_start`, so
+        the plugin keeps the ball parked; the launch shuts down on the supervisor's exit. Caveats
+        F-8-23 and F-8-24. *Unverified:* whether exit code 3 reaches the batch runner through
+        `ros2 launch`. The manifest status (V1) is the dependable signal.
+     8. No production CBF, QP, commander or perception code modified: **Verified**
+        (`git diff 9bb2531` and `git status` limited to the harness).
+     9. Pre-registration: **Verified** that it was written before any H2 run (no run uses
+        `episode_start`). Its constants match the code. "Unchanged" can be shown only by its mtime
+        (2026-11-16 13:02:05) and, from now on, by the SHA-256 recorded in C-065.
+   - Concurrency: the supervisor runs under `rclpy.spin`, a single-threaded executor, so its
+     callbacks and timer are serialised and do not race (Verified). Pairing by exact stamp is sound,
+     because the commander stamps both messages from one clock read (Verified).
+   - **Tests** (evidence `~/franka_baseline_evidence/refactor_r1_e3/05_h2_unit_tests/`, sealed):
+     - `docker start franka_ros2`; the entrypoint's `vcs import` ran (F-8-29).
+     - Then, in `/ros2_ws/src/franka_simulation_experiments`, with the install sourced:
+       `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -v -rfEsxX --tb=long --durations=30
+       --junitxml=…`. Python 3.10.12, pytest 6.2.5.
+     - **rc 0: 158 passed, 22 deselected (slow), 0 failed, 0 skipped**, 1 pre-existing warning.
+     - Against H1's suite 2, the 121 common IDs are unchanged and the 37 new IDs are all in
+       `test_phase_start.py`.
+     - The H2 modules were imported from the source tree. `trajectory.py` and `timing_law.py` came
+       from the install, SHA-identical to the source. The sources' SHA-256 are in
+       `h2_sources_sha256.txt`; untracked files are not in `working_tree.patch`.
+     - No file was written into the repository by the tests.
+   - **Not covered by the tests:** the real ROS service round trips (stubbed), message loss, a run
+     in Gazebo, and curves other than the circle.
+2. **Remaining (each needs approval):**
+   - decide F-8-23 (fix before the commit, or accept) and F-8-24 (code or wording; a new
+     pre-registration file if the constants or the protocol change);
+   - commit H2;
+   - the targeted rebuild of `franka_simulation_experiments`;
+   - `E3_EXPECT_HEAD=<sha> e3_run.sh --preflight-only`;
+   - E3-05 and E3-06;
+   - the items of C-065 §6.
+3. **Files read:** see 1. Ledger unchanged (the new files are not in the ledger).
+4. **Documentation files updated:** this entry; PROGRESS §0 and §4 (F-8-23…F-8-29).
+5. **Findings:** F-8-23 (medium: controller polling can freeze); F-8-24, F-8-25, F-8-26, F-8-27,
+   F-8-28 (low or informational); F-8-29 (environment). No failing test. No bug that would let the
+   obstacle be born at an uncontrolled phase was found.
+6. **Environment at the end:** container `franka_ros2` **running** (started for the tests; idle,
+   only `/bin/bash`); no ROS or Gazebo process; governor not touched; container scratch
+   `/home/user/h2_20261118/`.
+7. **Exact next action:** the user's decision on F-8-23 and F-8-24, then (if approved) the H2
+   commit.
+
+## C-067 — 2026-11-18 — H2 corrections F-8-23 and F-8-24 — implemented and unit-tested; stopped for review
+
+- Baseline / HEAD / branch: `ba68077052e8` / `73ed807` / `refactor/cbf-executor-scheduling`. Stashes:
+  3, identical to the 2026-11-16 record (`622b60b`, `68a164b`, `d5f68c1`). H2 remains uncommitted
+  and unbuilt; no Gazebo run.
+1. **Done (approved by the user on 2026-11-18: F-8-23 and F-8-24 only):**
+   - **Mechanism checked first in the Humble rclpy source** (container `/opt/ros/humble`):
+     - `Client.call_async` registers a done-callback `remove_pending_request`, and
+       `Future.cancel()` runs it synchronously when no executor is attached.
+     - `Executor._execute_client` drops a response whose sequence number is no longer pending
+       (`KeyError`, "The request was cancelled").
+     - `Node.create_timer` accepts `clock=`, and `Timer.clock` exposes it.
+
+     So no blocking call and no architectural change was needed.
+   - **F-8-23**, in `episode_supervisor.py`, phase mode only:
+     - `_init_phase_start`: new parameters `start_ctrl_poll_s` 0.2, `start_ctrl_timeout_s` 1.0,
+       `start_ctrl_max_age_s` 0.5 (sim s) and `start_clock_stall_wall_s` 60 (monotonic wall s).
+       Poll state, `ctrl_stats`, and a STEADY-clock timer `_clock_watchdog`. The unused
+       `_ctrl_poll_t` was removed.
+     - `_poll_controller_continuous` rewritten:
+       - one request in flight at a time;
+       - an unanswered request is cancelled after the timeout, then re-sent;
+       - answers are aged from their request's **send** time;
+       - `controller_active` = fresh **and** active, recomputed on every tick, and the history
+         records why;
+       - `controller_name` empty keeps its legacy meaning (no gating).
+     - New `_clock_watchdog`: while WAITING only, if sim time has not advanced for the stall
+       limit, it sets status `start_failed` ("sim clock stalled"), exits with 3 and never
+       publishes `/sim/episode_start`. Wall time is used for this liveness check only.
+     - `finalise` adds `first_sim_tick`, `deadline_s`, `controller_status` and
+       `clock_stall_wall_s` under `episode.start`.
+     - Module docstring updated.
+   - **F-8-24:**
+     - `_poll_commander_params` sets `qual.t_first_poll = t_first_tick`;
+     - `_phase_tick` appends the deadline origin and the controller status to the failure reason;
+     - `phase_start.py` changes the `StartConfig.timeout_s` comment only.
+
+     The pre-registration's event is "the supervisor's first tick" (§1); the default stays 90 s.
+     **`PREREGISTRATION.md` is unchanged** (SHA-256 `523a00d3…7290`, as recorded in C-065).
+   - **Revision during the session:** the first version aged answers from their receipt. A reply
+     delayed in transport could then pass as fresh while describing a state up to
+     (delay + 0.5 s) old. It was changed to the send time before the final run. That
+     intermediate revision's suite run (178/178) is superseded and was not kept.
+   - **Tests:** 21 new in `test_phase_start.py` (57 + 1 = 58 in the module):
+     - a normal answer;
+     - a request never answered (cancelled and re-sent);
+     - a delayed answer at 0.3 s (accepted) and at 0.8 s (answered, but stale on arrival);
+     - a late answer after the timeout (ignored);
+     - rclpy removing a cancelled request (real client);
+     - active → inactive;
+     - a stale "active";
+     - 60 s of random answers with ≤ 1 request in flight;
+     - the deadline from the first tick, with parameters late or never;
+     - a controller activated after the deadline (fails, ball parked) and within it (starts a
+       full cycle after activation, phase error < 1e-3);
+     - status going stale (blocks the start);
+     - tracking never established;
+     - the sim clock stopped, never started, slow (RTF 0.0076, no trip), or stopped after the
+       birth (watchdog inert);
+     - a real `spin_once` with `use_sim_time` and no `/clock` → exit 3;
+     - legacy: no watchdog, no new parameters, polling unchanged.
+
+     Every no-birth case asserts that `/sim/episode_start` was never published. One test
+     threshold of mine was wrong (the "answered > 50" sanity bound in the random-polling test,
+     observed 33) and was set to > 10; the test's invariants were not changed.
+   - **Suite 2** (evidence `refactor_r1_e3/06_h2_fix_unit_tests/`, sealed): same command as C-066.
+     rc 0, **179 passed**, 22 deselected, 0 failed, 0 skipped, 1 pre-existing warning. Against
+     C-066 (158): no ID lost, no outcome change, 21 new IDs, all in `test_phase_start.py`. All 121
+     H1 IDs pass.
+   - **Scope (Verified):**
+     - `git diff 9bb2531` on `franka_experiments`, `franka_rt_controllers`, `franka_simulation`
+       and `franka_msgs` is empty: R1, the CBF/QP equations, the commander and perception are
+       unchanged.
+     - The changed paths are the H2 harness files and the docs only.
+     - Every `SHA256SUMS` under `~/franka_baseline_evidence/` verifies (15 folders).
+     - The only other file written is the gitignored host cache
+       `scripts/simexp/__pycache__/phase_start.cpython-313.pyc`, regenerated by a `py_compile`
+       syntax check. The `episode_supervisor` cache it also created was deleted.
+2. **Residual risks (not addressed, recorded):**
+   - A controller drop during the 0.25–0.5 s announcement lead is recorded
+     (`lead_violations` → V3 INVALID), not blocking: the birth time is already published.
+   - Nothing gates the controller status after the birth (unchanged).
+   - A single lost or slow (> 0.5 s) reply restarts the qualification window, so frequent losses
+     delay the start or fail it explicitly. The loss rate in Gazebo is Unverified.
+   - The 60 s wall stall limit is a judgment value: a simulator that takes longer than that to
+     publish its first `/clock` after the supervisor starts gives an explicit failure. Not
+     measured.
+   - Whether exit code 3 propagates through `ros2 launch` remains Unverified; the manifest
+     status is the signal.
+   - F-8-25…F-8-28 are unchanged.
+3. **Files read:** the rclpy Humble `client.py`, `executors.py`, `task.py`, `timer.py` and
+   `node.py` (relevant functions). Ledger unchanged.
+4. **Documentation files updated:** this entry; PROGRESS §0 and §4 (dated notes on F-8-23 and
+   F-8-24).
+5. **Checks:** `check_state.py` consistent, REVIEW on the R1/H2 paths (expected).
+   `check_docs.py` 12/14; its two failures (FACT 1b and 1c) are the known C-066 ones: F-8-19…F-8-29
+   are not yet in chapter 16 Part B.
+6. **Exact next action:** the user's review of the two corrections. Then, each with its own
+   approval: commit H2; targeted rebuild of `franka_simulation_experiments`;
+   `E3_EXPECT_HEAD=<sha> e3_run.sh --preflight-only`; E3-05 and E3-06.

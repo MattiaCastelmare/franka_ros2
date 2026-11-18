@@ -6,91 +6,56 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-12, checkpoint C-064 (shutdown; C-063 = R1 done). **Refactoring step R1
-  (configurable CBF executor) is implemented, tested, committed and pushed** on branch
-  `refactor/cbf-executor-scheduling` (one commit on top of `625c179`, at the user's request on
-  2026-11-12; not merged); no Gazebo.
-  - `executor_mode` (`multi` default = the historical `MultiThreadedExecutor(3)`, `single` =
-    `SingleThreadedExecutor`) in `cbf_safety_filter.py`, `config.py` and `fr3_control.yaml`; 22 new
-    tests pass; the S5 failing set is unchanged (35 IDs).
-  - The control equations are bit-identical (deterministic replay).
-  - In the 5 × 2 × 2 S6B-bag replay A/B, `single` removes the late and missed ticks and uses less
-    CPU. The joint state it uses is about 1–2 ms older; the constraint snapshot is much fresher.
-  - New findings: F-8-17 (under MT3, about 50 % of ticks use the previous constraint snapshot) and
-    F-8-18 (leaked temporary URDFs).
-  - Record: [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md);
-    evidence `~/franka_baseline_evidence/refactor_r1_executor/`.
-  - Before R1: the QP-performance root-cause analysis (C-062, F-8-14…F-8-16), and S1–S6B.1.
-- **Project status:** the read-only documentation phase is **complete** (Stages 0–7), committed and
-  pushed (HEAD `f708991`). C-052 added `tools/baseline_prep/` and observations O-1…O-8 (CHECKPOINTS
-  C-052; not yet finding IDs), S1 and S2 (C-053, C-054) added `validation/00_baseline/` and
-  observations O-9…O-13; S3 (C-055) rebuilt the six packages; S4 (C-056) verified them and
-  added O-14, O-15; S5 (C-057) ran the non-Gazebo tests, added F-8-1…F-8-4 and
-  O-16…O-18; S6A (C-058) ran one Gazebo smoke cell and added F-8-5…F-8-7; S6A.1 (C-059) analysed it
-  offline and added F-8-8…F-8-11; S6B (C-060) ran one static-obstacle cell and added F-8-12;
-  S6B.1 (C-061) reconstructed its clearance offline and added F-8-13; the QP-performance analysis
-  (C-062) added F-8-14…F-8-16 (141 findings). The container `franka_ros2` is
-  **running** since S2 (it was stopped, O-1).
-- **Last completed stage:** Stage 7 (Synthesis), 2026-11-11.
-- **Next pending stage:** none in the documentation plan. The refactoring phase has started with
-  **R1 only** (approved 2026-11-12). Every further production change (R2, …), and the Gazebo
-  validation of R1 (E3), needs the user's explicit, per-change approval and follows
-  [REFACTORING_READINESS.md](REFACTORING_READINESS.md) §10 and the validation protocol.
-- **Pinned branch:** `humble-mattia` (documentation and baseline). R1 lives on
-  `refactor/cbf-executor-scheduling` (committed and pushed, not merged). `check_state.py` therefore reports REVIEW for its
-  four source paths; that is expected, and the baseline moves only when R1 is merged (§8).
-- **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641`. This is the commit whose
-  ROS 2 source the chapters describe; the history is in §8.
-  - It is **not** the current HEAD. Commits that touch only `docs/framework_study/` or `CLAUDE.md`
-    move HEAD but leave the baseline valid.
-  - Any change to the source since this commit makes `tools/check_state.py` report REVIEW (exit code 2).
-  - Stashes: 3, never touched.
-- **Stage 7 deliverables:** ch. 14, 15, 16 (Parts A–E); appendices A (generated), B (generated), C;
-  `REFACTORING_READINESS.md`; `tools/stage7_verification/` (8 scripts, README, `run_all.sh`,
-  `results/observed_2026-11-11.txt`: 47/47); findings F-7-1…F-7-11 (125 in total at Stage 7; 138 with
-  the baseline findings F-8-1…F-8-13; 141 with F-8-14…F-8-16); questions
-  Q-7-1…Q-7-4; the coverage audit (§2, Stage 7 block).
-- **Verification on 2026-11-11 (C-051):** Stages 2–7 suites 480/480 PASS (433 re-run + 47 Stage 7);
-  `check_docs.py` 14/14; `check_state.py` consistent; no file outside `docs/framework_study/` differs
-  from the baseline.
-- **Open items for the user** (§5): **R1** (the opt-in `executor_mode`, implemented and tested
-  2026-11-12, uncommitted): commit or not, and the Gazebo A/B E3; experiments E1–E2 (QP_PERFORMANCE_ROOT_CAUSE §5);
-  F-8-17 (MT3 snapshot ordering) and F-8-18 (temporary URDFs); the next simulation step (Tier 1/Tier 2, not approved); after S6B and S6B.1 (done):
-  whether to accept the S6B clearance result (sphere model, one cell; S6B1 §6), whether to adopt the
-  bag reconstruction as a clearance check or fix the truth logger (F-6-5, F-8-13), the S6A1 §6.4 thresholds, the `pentagon_clear` reference, more
-  seeds, and the S6B §10 items (truth holes F-6-5, per-tick attribution F-8-12, margin semantics,
-  perception age F-8-9, host / RTF policy F-8-10); F-8-5 (the QP-rate miss: rebuild cost,
-  in-process contention, `--filter-cpu` or governor, the RATE_FAIL policy for a diagnostic run);
-  F-8-1 (regenerate the launch golden or not); Q-7-3 (rebuild and tests done; closing it is the user's call), Q-6-3 (validation thresholds), Q-6-4, Q-4-1, Q-4-2, Q-1-4/Q-5-1/Q-7-1, Q-7-2,
-  Q-7-4, Q-5-2, Q-3-1, Q-2-2, Q-1-5, Q-5-4; runtime: Q-2-3, Q-2-4, Q-3-2, Q-5-3, Q-6-5; external:
-  Q-4-3. Q-6-2 remains a reading task.
-  - **Install state after R1 (C-063):** the container's `franka_experiments` install is built from
-    the R1 working tree, which is the R1 commit. With the default `executor_mode: multi` it behaves
-    as the baseline; the deterministic replay is bit-identical. The pre-R1 install is kept in
-    `/ros2_ws/quarantine_r1_20261112/`.
-  - **State note (F-6-3, F-7-4):** until 2026-11-12 the container's installed workspace was a mixed
-    build of the other branch `fr3-student-sim`. S3 (C-055) rebuilt the six in-scope packages from
-    `f708991`; S4 (C-056) verified `INSTALLED == SOURCE`. Any later source edit needs a rebuild
-    (copy mode) before a run; `check_install_provenance.py` checks 2–3 now fail by design.
-  - Before resuming, make sure only one session writes to `docs/framework_study/`.
-- **Exact next action:** resume with the "Refactoring phase" prompt in
-  [RESUME_PROMPT.md](RESUME_PROMPT.md). Then wait for the user's decision on:
-  - **E3**, the Gazebo A/B of R1 (`multi` vs `single`). It needs its own approval and either a
-    `conditions.yaml` condition with `cbf_param_overrides: executor_mode=single` (a harness change,
-    itself to be approved) or a manual override;
-  - F-8-17 and F-8-18;
-  - R2 (not approved);
-  - merging R1 into `humble-mattia` (not approved; it would need the §8 baseline move).
+- **Last updated:** 2026-11-18, checkpoint C-067 (H2 corrections F-8-23 and F-8-24). C-066 = the H2
+  review and tests; C-065 = the recovery after a host restart, which records the work of
+  2026-11-16. Nothing is in progress.
+- **Refactoring phase.**
+  - **R1** (configurable CBF executor `executor_mode`, default `multi` = the historical MT3) is
+    committed as `9bb2531` (pushed) on `refactor/cbf-executor-scheduling`. `73ed807` adds the
+    `conditions.yaml` condition used by E3; it is **not pushed** (branch 1 ahead). Not merged. The
+    production code is exactly R1 (`git diff 9bb2531` empty outside the harness). Record:
+    [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md).
+  - **E3 pilot** (Gazebo A/B of R1, 2026-11-16, seed 0; evidence
+    `~/franka_baseline_evidence/refactor_r1_e3/runs/`):
+    - E3-01 (multi): ABORTED, harness false mismatch (F-8-19);
+    - E3-03 (multi): CONTINUE, 86.90 QP ticks/sim s, min clearance 0.122 m;
+    - E3-04 (single): STOP, 99.93 ticks/sim s, but min clearance 0.0396 m, because the ball was born
+      0.059 m from the arm (startup race F-8-20; self-mask blind zone F-8-21).
 
-  Nothing is in progress. Before any run, check that the installed `franka_experiments` still
-  equals the source, because R1 was built into the container (C-063):
-
-  ```
-  docker exec franka_ros2 bash -c 'cd /ros2_ws/src && sha256sum franka_experiments/franka_experiments/nodes/cbf_safety_filter.py && sha256sum /ros2_ws/install/franka_experiments/lib/python3.10/site-packages/franka_experiments/nodes/cbf_safety_filter.py'
-  ```
-
-  Judge any test run by its failing set against the 35 IDs of S5 (F-8-2). Judge a sim cell by
-  protocol §6.2. Save `working_tree.patch` by hand before every run (F-6-11).
+    The timing gain is Runtime with n = 1 pair. The pair is not comparable for clearance.
+  - **H2** (phase-aligned obstacle birth, harness only, opt-in `episode_start:=phase`):
+    **implemented and unit-tested, not validated in Gazebo**. Uncommitted, not built, never run.
+    C-066: review (F-8-23 medium, F-8-24…F-8-28 low). C-067: F-8-23 and F-8-24 fixed (bounded,
+    fresh controller polling; one deadline from the first sim tick; sim-clock watchdog); suite 2 =
+    179/179 from the source tree (`refactor_r1_e3/06_h2_fix_unit_tests/`). The pre-registration
+    is `refactor_r1_e3/scripts_h2/PREREGISTRATION.md`, SHA-256 `523a00d3…7290` recorded in C-065.
+- **Documentation status:** Stages 0–7 complete (C-051); baseline S1–S6B.1 and the QP analysis
+  done (C-052…C-062). Findings: F-8-19…F-8-22 (C-065) and F-8-23…F-8-29 (C-066) added;
+  chapter 16 not yet updated.
+- **Pinned branch:** `humble-mattia` = `origin/humble-mattia` = `625c179` (documentation and
+  baseline). `check_state.py` reports REVIEW for the R1 and H2 source paths; expected, and the
+  baseline moves only when R1 (or H2) is merged (§8).
+- **Documented source baseline:** `ba68077052e8d0fb3d4606c05dff553b75baa641` (history in §8). It is
+  **not** the current HEAD. Commits that touch only `docs/framework_study/` or `CLAUDE.md` leave it
+  valid. Stashes: 3, never touched.
+- **Environment (2026-11-18):** container `franka_ros2` **running** (restarted for the C-066 tests
+  after the host shutdown of 2026-11-17 killed it; idle; each start fetches in the nested
+  checkouts, F-8-29). Its install is the H1 build of R1, **without H2**. No ROS or
+  Gazebo process. CPU governor `powersave` × 28, EPP `performance`: the state every recorded
+  Gazebo run had (C-065 §5).
+- **Install-state rule:** any later source edit needs a rebuild (copy mode) before a run. Judge a
+  `franka_experiments` test run by its failing set against the 35 IDs of S5 (F-8-2), and suite 2
+  against its 121 IDs. Judge a sim cell by protocol §6.2. Save `working_tree.patch` before every
+  run (F-6-11).
+- **Open items for the user**, each needing its own approval:
+  - review C-067; commit H2; targeted rebuild of `franka_simulation_experiments`;
+    `E3_EXPECT_HEAD=<sha> e3_run.sh --preflight-only`; E3-05 (multi), E3-06 (single);
+  - re-run the matched-window comparison and the self-mask replay (both lost with the scratchpad);
+  - F-8-20 and F-8-21 as production questions (gating the commander on the controller; the 0.16 m
+    blind zone), F-8-17, F-8-18, R2, merging R1, pushing `73ed807`;
+  - everything still open from C-062/C-063 (§5).
+- **Exact next action:** wait for the user's review of C-067, then (if approved) commit H2. No
+  build, Gazebo run or E3 run without explicit approval.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
@@ -443,7 +408,7 @@ All are Static unless labelled otherwise. Chapter references point to the full d
 
 ### Baseline validation findings (S5, 2026-11-12)
 
-IDs `F-8-n`: "stage 8" is the verified-baseline phase (S1–S6A…), after the documentation stages 0–7. F-8-1…F-8-4 come from S5, F-8-5…F-8-7 from S6A, F-8-12 from S6B (one static-obstacle cell), F-8-13 from S6B.1 (offline clearance reconstruction), F-8-14…F-8-16 from the QP-performance analysis (isolated benchmarks, no Gazebo), F-8-17…F-8-18 from the R1 executor A/B (refactoring step R1, isolated benchmarks, no Gazebo), F-8-8…F-8-11 from S6A.1 (offline timing analysis).
+IDs `F-8-n`: "stage 8" is the verified-baseline phase (S1–S6A…), after the documentation stages 0–7. F-8-1…F-8-4 come from S5, F-8-5…F-8-7 from S6A, F-8-12 from S6B (one static-obstacle cell), F-8-13 from S6B.1 (offline clearance reconstruction), F-8-14…F-8-16 from the QP-performance analysis (isolated benchmarks, no Gazebo), F-8-17…F-8-18 from the R1 executor A/B (refactoring step R1, isolated benchmarks, no Gazebo), F-8-8…F-8-11 from S6A.1 (offline timing analysis), F-8-19…F-8-22 from the E3 Gazebo pilot of R1 (2026-11-16, recorded in C-065), F-8-23…F-8-29 from the H2 code review and unit-test session (C-066).
 Evidence: `~/franka_baseline_evidence/baseline_f708991/03_tests/`; report [validation/00_baseline/S5_TEST_RESULTS.md](validation/00_baseline/S5_TEST_RESULTS.md).
 
 | ID | Finding | Evidence | Label |
@@ -461,11 +426,22 @@ Evidence: `~/franka_baseline_evidence/baseline_f708991/03_tests/`; report [valid
 | F-8-11 | **Documentation error in the S6A record (own deliverable).** `S6A_GAZEBO_SMOKE.md` §0, §6 and §9 and C-058 stated that no obstacle row bound and that the only modification was the acceleration box. (a) `n_act` counts h̄ < 0 (`cbf_safety_filter.py` L1145), not binding rows (cf. F-5-23 c). (b) The per-tick slew bound also shaped the command (11 ticks at the bound). (c) The obstacle-gap-dependent link-speed cap was emitted in 7.43–7.70 s (`CBFDIAG vlink` 0.30–0.41 / 0.564 m/s, `link_speed_max` 1.3). (d) slew(clip(q̈_nom)) leaves a residual > 0.2 rad/s² on 61 ticks (max 1.17). An obstacle-dependent intervention is therefore **not established**, rather than absent. F-8-5's budget argument was also flawed (see its note). Corrected by dated notes; the original text is kept. **Note 2026-11-12 (S6B).** Item (d)'s residual test is itself not discriminating: the QP's target is the internally shaped nominal, which is not in the bag (F-8-12). | [validation/00_baseline/S6A1_PERFORMANCE_ANALYSIS.md](validation/00_baseline/S6A1_PERFORMANCE_ANALYSIS.md) §5; `05_offline_timing/out/s6a1_attribution.json` | Verified (code); Derived |
 | F-8-12 | **The recorded q̈_safe − q̈_nom difference is not evidence of QP intervention.** The QP minimises ‖q̈ − q̈_nom,shaped‖, where the shaped nominal is the commander's q̈_nom after the zone fade, the state governor, the tangential bias, go-around, escape, outrun and livelock (`cbf_safety_filter._qp_tick` L1198–1430). The shaped nominal is not published; CBFDIAG's `dnorm` uses it (`_report`, L1510) but is throttled to about 1 line in 5 ticks; the per-row active set is not logged (only per-family slack and violation sums per tick). In S6B, ‖q̈_safe − q̈_nom‖ > 0.2 rad/s² on 727 of 1246 ticks **far** from the obstacle (true gap > 0.30 m), where `dnorm` p95 = 0. The tangential bias alone was p50 0.19 rad/s² there, from sc / sing rows. So neither the bag difference nor the S6A.1 box + slew residual test (F-8-11 d) can attribute a deviation to a constraint family. Attribution needs the slack and violation fields, CBFDIAG, or new per-tick logging (a production change). | `cbf_safety_filter.py` L1198–1430, L1510, L1789; [validation/00_baseline/S6B_STATIC_OBSTACLE.md](validation/00_baseline/S6B_STATIC_OBSTACLE.md) §5 | Verified (code); Derived |
 | F-8-13 | **`truth.npz` pairs each joint sample with the last received obstacle pose, not the pose with the same stamp.** `ground_truth_node._js` uses `self.pos` (pose subscription depth 50 = 50 ms at 1 kHz; joint subscription depth 100 = 100 ms). After each 5 s save stall the node drains its joint backlog while the pose is already the newest. In S6B, 1947 of 27 949 episode samples (7 %) were paired with a pose 49–50 ms in the future, for 235–431 ms after each hole. The first episode sample used the still-parked pose (t_pose 10.549 vs 10.550). No effect for a static obstacle. For a moving obstacle the truth gap can be off by up to |v_obs| × 50 ms after each hole (2.5 cm at 0.5 m/s, Inferred). The recorded `t_pose` makes the lag detectable per sample. | `ground_truth_node.py` L58–79; [validation/00_baseline/S6B1_CLEARANCE_AUDIT.md](validation/00_baseline/S6B1_CLEARANCE_AUDIT.md) §4.2, §7; `07_clearance_audit/out/s6b1_supplementary.json` | Verified (code); Runtime (recorded); moving-obstacle effect Inferred |
-| F-8-14 | **The filter's three-thread executor does not keep the QP tick independent of the constraint rebuild.** *Note 2026-11-12 (R1): not superseded. R1 (branch `refactor/cbf-executor-scheduling`, uncommitted) adds the opt-in `executor_mode: single`; the default is still MT3, so this finding still describes the default. See F-8-17 and [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md).* `cbf_safety_filter.main` (L2070–2081) uses `MultiThreadedExecutor(num_threads=3)` with three `MutuallyExclusiveCallbackGroup`s. Its comment says "The QP thread must never wait on perception". All the work is Python, Pinocchio or small NumPy, which hold the GIL; OSQP's GIL-free solve is about 0.04 ms per tick. The threads therefore serialise on the GIL and the extra workers add no parallelism. Measured on the S6B bag replayed into the real node (isolated benchmark): ticks are late (sim gap ≥ 15 ms) only when a rebuild overlaps, P 7–27 % vs ≤ 0.5 %. Tick wait p50 is 2.3–2.6 ms with a concurrent rebuild vs 0.5–0.6 ms without. Under a `SingleThreadedExecutor` (harness-only change) late ticks fall from 195/656 to 0/1 and process CPU drops 27–37 %. With MT3 on E-cores at RTF 1, 1.9 % of ticks are missed. The waits are in-process (the process uses less than a core on an idle host); the node holds no Python lock (Verified), so the GIL is the cause by elimination, not instrumented. | [validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md](validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md) §2.3, §3.2; `08_qp_performance/out/phase2/` | Verified (code); Runtime (recorded, isolated benchmark); GIL Derived |
+| F-8-14 | **The filter's three-thread executor does not keep the QP tick independent of the constraint rebuild.** *Note 2026-11-12 (R1): not superseded. R1 (branch `refactor/cbf-executor-scheduling`, uncommitted) adds the opt-in `executor_mode: single`; the default is still MT3, so this finding still describes the default. See F-8-17 and [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md).* *Note 2026-11-18 (C-065, Gazebo pilot E3, one pair, seed 0, unpinned, `powersave`): `single` gave 99.93 QP ticks per sim s (2 missed slots, max gap 19 ms) against 86.90 for `multi` (393 missed, max 64 ms), at RTF 0.66 / 0.65. Runtime (recorded); n = 1; the matched-window check of 2026-11-16 was not preserved (Unverified). The pair is not comparable for clearance (F-8-20).* `cbf_safety_filter.main` (L2070–2081) uses `MultiThreadedExecutor(num_threads=3)` with three `MutuallyExclusiveCallbackGroup`s. Its comment says "The QP thread must never wait on perception". All the work is Python, Pinocchio or small NumPy, which hold the GIL; OSQP's GIL-free solve is about 0.04 ms per tick. The threads therefore serialise on the GIL and the extra workers add no parallelism. Measured on the S6B bag replayed into the real node (isolated benchmark): ticks are late (sim gap ≥ 15 ms) only when a rebuild overlaps, P 7–27 % vs ≤ 0.5 %. Tick wait p50 is 2.3–2.6 ms with a concurrent rebuild vs 0.5–0.6 ms without. Under a `SingleThreadedExecutor` (harness-only change) late ticks fall from 195/656 to 0/1 and process CPU drops 27–37 %. With MT3 on E-cores at RTF 1, 1.9 % of ticks are missed. The waits are in-process (the process uses less than a core on an idle host); the node holds no Python lock (Verified), so the GIL is the cause by elimination, not instrumented. | [validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md](validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md) §2.3, §3.2; `08_qp_performance/out/phase2/` | Verified (code); Runtime (recorded, isolated benchmark); GIL Derived |
 | F-8-15 | **Most of the filter's CPU is spent outside its callback bodies, in the rclpy executor.** In the replay at RTF 0.62 under MT3 the process used 63–71 % of a core. Callback bodies took 23–28 %, the Python wait loop (`wait_for_ready_callbacks`, 1–1.9 k iterations per wall s) 24–25 %, and worker dispatch, take and deserialisation about 10–13 %. The same work single-threaded used 44.5 % (bodies 17.5 %, loop 14.7 %). The loop is driven by the 1 kHz `/clock` (TimeSource subscription, `use_sim_time`; absent on hardware) and the 1 kHz joint states. When the rebuild compute is removed the loop's share rises to 43 %: overhead scales with the event rate, not the compute. Uncontended, all callbacks use 0.20 CPU-s per sim s. Sim-only in part: `/clock` does not exist on hardware. | [validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md](validation/00_baseline/QP_PERFORMANCE_ROOT_CAUSE.md) §2.2, §3.1 | Runtime (recorded, isolated benchmark); Derived |
 | F-8-16 | **The QP rebuilds an unchanged sparse constraint matrix on every tick.** `_solve` calls `setup()` only when the row count changes (L1684–1696, Verified), but on every other tick it passes `Ax=build_osqp_A(G, NV, n_slack).data` (L1697–1699). `build_osqp_A` (`cbf_qp_assembly.py` L73–84) builds a COO→CSC block, `sparse.identity` and `sparse.vstack` only to read `.data`. Profiled, that is about 27 % of the tick's CPU; OSQP's own `solve()` is about 3.5 %. The `.data` layout for a fixed `n_rows` is fully determined (dense CBF block followed by the identity), so the same array could be filled directly. Performance only; no correctness effect. | `cbf_safety_filter.py` L1684–1701; `cbf_qp_assembly.py` L38–84; `08_qp_performance/out/phase1/phase1_profile_qp.txt` | Verified (code); Runtime (recorded, profiler) |
 | F-8-17 | **Under the default `MultiThreadedExecutor(3)`, about half of the QP ticks use the constraint snapshot of the previous rebuild period.** The rebuild (`grp_perc`, 50 Hz) and every second tick (`grp_ctrl`, 100 Hz) fall due at the same instant. Under MT3 they start on different threads, and the tick reads `self._con` while the concurrent rebuild is still computing the new one. Nothing in the code orders the two groups (Verified). Measured on the S6B bag replayed into the real node, 5 runs × 2 host conditions: 49.3–50.6 % of episode ticks used a snapshot built before their own 20 ms grid point (single-threaded: 0.4 %). Constraint-snapshot age at tick start: p50 8.7 ms, p95 17.6 ms, max 22–28 ms (single-threaded: 0.17 / 9.5 / 11 ms). These ticks carry 55–79 % of the per-tick output deviations > 0.05 rad/s² from a schedule-ideal sequential replay. Deviation p95: 0.41 rad/s² under MT3 vs 0.055 rad/s² single-threaded; the reference command p95 is 2.1 rad/s². Which snapshot a tick sees is a scheduling property; the equations are bit-identical (R1 sequential replay). | `cbf_safety_filter.py` `__init__` (callback groups), `_update_constraints`, `_qp_tick`; [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md) §8–§9; `refactor_r1_executor/03_replay/analysis/` | Verified (code); Runtime (recorded, isolated benchmark); Derived |
 | F-8-18 | **The xacro-generated URDFs of the kinematics helpers are never deleted.** `kinematics.py::build_urdf_with_sc` (L603) and `build_urdf_no_hand` (L640) write to `tempfile.NamedTemporaryFile(delete=False)` and return the path. No caller removes the file: `cbf_safety_filter.py` L211, `cbf_state_rows.py` L2025, `iso_safety_monitor.py` L141, `experiment_logger.py` L337. Every start of these nodes leaves one or two `/tmp/fr3_*.urdf` files. The container's `/tmp` already held 38 743 of them before R1; R1's runs added 181. `load_pinocchio_model` in the same file (L60–69) does unlink its temporary file. Hygiene only; no control effect. | `utils/kinematics.py` L603–660; `docker_diff_*` in `refactor_r1_executor/01_build/` | Verified (code); Runtime (recorded) |
+| F-8-19 | **E3-01 was aborted by a false postflight mismatch in the E3 harness.** `e3_run.sh` compared two size+path listings sorted with `sort -k2`, one inside the container (`LC_ALL=C.UTF-8`) and one on the host (`en_US.UTF-8`). The two locales order `./wallbag.pid` and `./wallbag/…` differently. All 56 files are SHA-256 identical. Both listings now sort with `LC_ALL=C`; E3-01 stays ABORTED and is not part of the pilot. Harness only (evidence-side script), no production effect. | `runs/01_s0_multi/post_abort_review/ABORT_EXPLANATION.md` | Verified |
+| F-8-20 | **The obstacle's birth phase on the pentagon commander's path is not controlled, and depends on startup timing.** The commander starts on a fixed `TimerAction` (`commander_delay` = `control_delay` + 2 s, `torque_control_stack.launch.py` L24, L937), not gated on the controller. The legacy `episode_supervisor` start gates on `rt_torque_controller` active, the streams and `warmup_s` only, never on the path phase. In E3-04 a lost `list_controllers` response (`launch.log` L252) made the RT spawner retry after 10 s (L292, L298), so the controller was activated late while the commander ran its path: four HARD resets (EE error 0.082–0.260 m, L285–L304). The ball was born **0.0589 m** from the arm (inside d_safe 0.10 m); the minimum 0.0396 m followed 0.29 s later (R14 STOP). In E3-03 the birth gap was 0.303 m. | E3-04 `launch.log`; `analysis/s6b1_reconstruction.npz`; `gate.txt` | Verified (code, log); birth gaps Runtime (recorded); "not seeded" Derived |
+| F-8-21 | **The depth self-filter deletes any obstacle pixel inside the robot's dilated silhouette that lies less than 0.16 m in front of the arm's modelled surface, and the distance pipeline reads the deletion as free space.** `depth_gate_bias_m` 0.06 + `depth_gate_tol_m` = 0.16 m (`fr3_complete.yaml` L255–L262, L430; the YAML comment itself states the blind behaviour). In E3-04 every ball pixel was masked from about t0 + 0.05 s to t0 + 0.65 s; the first visible frame came at t0 + 0.751 s (observed), or t0 + 0.70–0.75 s in a `MaskBuilder` replay on the recorded q. A production perception finding, not an executor one. | `fr3_complete.yaml`; `scripts_h2/PREREGISTRATION.md` §2 (V5 limitations) | Verified (config); E3-04 window Runtime (recorded); the replay artefact was lost with the session scratchpad (re-run needed) |
+| F-8-22 | **The "pentagon" commander and scenario run a circle.** `fr3_control.yaml` L2642 `path_type: circle`; E3's start-up banner reports `start_xyz` [0.4, 0.25, 0.45] = P(0) of the circle (centre (0.4, 0, 0.45), r 0.25 m, plane yz, cycle 6 s). Names such as `pentagon_static_baseline_bare`, `pentagon_qddot_commander` and "pentagon p95" describe the node, not the curve. Naming only. | `fr3_control.yaml`; E3 `launch.log` L270 | Verified |
+| F-8-23 | **H2: a lost `list_controllers` response stops the supervisor's controller polling for good.** `_poll_controller_continuous` returns while `_list_fut` is not done, and nothing cancels or times out a pending future, so a response that is never delivered (the FastDDS failure seen in E3-04, `launch.log` L252) freezes `controller_active` at its last value. Frozen `False`: the start times out and fails explicitly (exit 3, no obstacle): safe, but a lost run. Frozen `True`: a later controller drop-out is invisible to the qualifier's `controller_inactive` check and to `controller_active_at_start` / V7. Only the tracking checks remain; they would catch an unpowered arm (Inferred). The legacy `_poll_controller` has the same pattern (pre-existing; it stops polling once active). `_par_fut` (GetParameters) can also stay pending, but then the start fails explicitly. The unit tests stub the poll, so this is untested. *Note 2026-11-18 (C-067): **addressed** in `_poll_controller_continuous` (phase mode only; legacy unchanged). At most one request is in flight. A request unanswered after `start_ctrl_timeout_s` = 1.0 s of sim time is cancelled: `Future.cancel()` runs rclpy's `remove_pending_request`, so a late response is dropped (KeyError branch of `Executor._execute_client`, Verified in the Humble source and in a test on a real client). The controller counts as active only while the last answer said so **and** its request was sent at most `start_ctrl_max_age_s` = 0.5 s (sim) ago. A STEADY-clock watchdog fails the start if sim time stops advancing for `start_clock_stall_wall_s` = 60 s of wall time. 21 regression tests; suite 2 179/179. Residual: a controller drop during the 0.25–0.5 s announcement lead is recorded (`lead_violations`, V3), not blocking.* | `episode_supervisor.py::_poll_controller_continuous`, `_poll_controller`, `_poll_commander_params` | Verified (code); frequency Unverified |
+| F-8-24 | **H2: the start timeout does not match the pre-registration's wording.** `PREREGISTRATION.md` §1: the obstacle is never born if the start has not happened "90 s (sim) after the supervisor's first tick". In the code, 90 s from the first tick applies only while the commander's parameters are missing (`_phase_tick`). Once they arrive, `StartQualifier.poll` starts its own 90 s at its first poll. Worst case about 2 × 90 s from the first tick. In practice the parameter fetch takes seconds, so the difference is small (Inferred). A wording or code decision is needed before E3-05. *Note 2026-11-18 (C-067): **fixed in the code; the pre-registration is unchanged**. The supervisor sets `StartQualifier.t_first_poll` to its first sim tick when the qualifier is created, so one deadline, `start_timeout_s` (90 s, unchanged) from the first sim tick, covers the parameter, controller and qualification stages. Tested: commander parameters at first tick + 20 s with a 30 s deadline fail at + 30.02 s, not + 50 s.* | `episode_supervisor.py::_phase_tick`; `phase_start.py::StartQualifier.poll`; `PREREGISTRATION.md` §1 | Verified (code) |
+| F-8-25 | **H2: "controller active on every tick of the window" is checked at the poll period, and phase mode adds a 5 Hz service load.** `feed()` receives the last polled state. The supervisor polls every 0.2 s of sim time plus the service latency, so a drop-out shorter than that is not seen by this check (the tracking check still applies). Phase mode keeps polling `list_controllers` for the whole run, legacy mode stops at activation. E3-05/06 (both phase) are comparable with each other, but not with E3-03/04 on controller-manager load (Inferred, magnitude unknown). | `episode_supervisor.py::_tick`, `_poll_controller_continuous`, `_ee_cb` | Verified (code); load effect Inferred |
+| F-8-26 | **H2 depends on `ee_desired`/`ee_actual` publishers with KEEP_LAST depth 1.** The commander publishes both with depth 1 (`pentagon_qddot_commander.py` L653–L654) and the same stamp (`_publish_ee_trace`, L1602–L1609, Verified: the exact-stamp pairing is sound). On a starved supervisor, samples can be overwritten before delivery. Unpaired samples are dropped, and gaps > 0.1 s restart the window: loss delays qualification, or at worst times it out (explicit), and can fail V3's ≥ 90 % pair criterion. It cannot shift the birth phase, which is geometric (Derived). The loss rate in Gazebo is Unverified. | `pentagon_qddot_commander.py`; `episode_supervisor.py::_ee_cb` | Verified (code); loss rate Unverified |
+| F-8-27 | **H2's phase estimator supports only fixed, simple closed curves.** `PhaseEstimator` takes the nearest point on the curve rebuilt from the commander's parameters. (a) `lissajous` (x = A sin 2t, y = B sin 3t, `trajectory.py`) self-intersects, so the phase is ambiguous at crossings. (b) With `plane: front` the commander uses a runtime frame (`_use_plane_frame`, L421–L425) that `build_cycle_path` does not reproduce. The launch checks only `motion:=pentagon`, not `path_type` or `plane`. The expected effect is window restarts and an explicit timeout rather than a wrong birth (Inferred; untested). E3 uses a circle in plane `yz`, for which the estimator is exact (tested). | `phase_start.py::PhaseEstimator`, `build_cycle_path`; `gz_cbf_stack.launch.py` | Verified (code); effect Inferred |
+| F-8-28 | **H2 phase mode does not apply `start_offset_s`** (the seeded sub-frame offset of the birth). The supervisor records it as `start_offset_s_not_applied`. The seed then no longer varies the birth relative to the 90 Hz camera grid; that phase is set by the run's timing. Deliberate and documented in the docstring. | `episode_supervisor.py` docstring, `finalise` | Verified (code) |
+| F-8-29 | **Every container start makes a network `git fetch` in the gitignored `libfranka` and `franka_description` checkouts.** The entrypoint `/franka_entrypoint.sh` runs `vcs import /ros2_ws/src < franka.repos --recursive --skip-existing`. On 2026-11-18 11:21 it rewrote `libfranka/.git/FETCH_HEAD`, `franka_description/.git/FETCH_HEAD` and `libfranka/.git/modules/common/config`. The checked-out commits are unchanged (`155ddac`, `1ccde30`, = the preservation manifest), and so are the working trees. S2 (C-054) recorded "wrote nothing", which held for the working trees only. | `docker inspect` (entrypoint); file mtimes; `git -C … log/reflog` | Verified |
 
 ## 5. Decisions and open questions
 
