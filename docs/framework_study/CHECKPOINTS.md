@@ -2361,3 +2361,50 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    wall-clock throughput, about 47–54 ticks/s; single stays at its period). F-8-34's hypothesis is
    weakened.
 5. **Exact next action:** wait for the user's review. Seed 2 is not started.
+
+## C-072 — 2026-11-18 — Seed-2 pair, order reversed: E3-09 (single, first) / E3-10 (multi, second); three-pair analysis; stopped
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `a7f9a48` (docs-only C-071 commit, approved by the user).
+  These C-072 docs were committed docs-only with the user's approval (2026-11-18). Stashes 3, unchanged.
+1. **Protocol.**
+   - Prospective addendum `refactor_r1_e3/protocol/ADDENDUM_01_seed2_reversed_order.md`, written
+     2026-11-18 12:12:39 UTC before either run. It is sealed: sha256 `a56aa664…4086`, read-only.
+   - The addendum records: seed 2; single first; the reason (run position confounded with the executor,
+     F-8-36); run IDs 09/10; everything else unchanged; a nominal repeat (F-8-35).
+   - PREREGISTRATION.md is unchanged (`523a00d3…`) and fixes no order. The runner has no order
+     dependency.
+   - `check_state.py` exit 2 = the expected REVIEW status. The 11 source paths are exactly R1
+     `9bb2531` (4), `73ed807` (1) and H2 `186b823` (6); there is no other drift since `ba68077`.
+2. **Setup.**
+   - Preflight seed 2 in both modes OK (multi repeated after E3-09).
+   - Installed hashes and scripts are identical to E3-05…08; the code tree is identical (`4bac173e…`).
+   - The resolved configuration differs from seed 1 only in `seed` and `start_offset_s`; the arms differ
+     only in `executor_mode`.
+   - CPU unchanged (`host_env/09_*`, `10_*`).
+3. **Runs:** both runs rc 0 and GATE_CONTINUE; every stop rule PASS; V1–V7 VALID; sealed (148 files
+   each); copy 66/66; no leftovers.
+
+   | | E3-09 single | E3-10 multi |
+   |---|---|---|
+   | QP | 99.67 Hz (R15 PASS) | 89.37 Hz (RATE_FAIL, recorded) |
+   | missed slots | 10 | 319 |
+   | min clearance / lower bound (m) | 0.11882 / 0.11804 | 0.11887 / 0.11820 |
+   | controller active | 6.28 s | 5.32 s |
+   | lost calls / HARD resets | 0 / 0 | 0 / 0 |
+   | perception (frame / QP row, s) | 0.049 / 0.137 | 0.054 / 0.157 |
+
+4. **Pair** `compare_09_10/` (sealed): **COMPARABLE**. After t0+2 s, single vs multi:
+   - 99.68 vs 89.14 ticks/s; gap p99 15 vs 36 ms; gaps ≥ 50 ms 0 vs 3;
+   - build p50 8.6 vs 16.3 ms; solve p50 1.05 vs 3.0 ms; snapshot age 0 vs 20 ms;
+   - CPU 91 vs 106 %; RTF 0.654 vs 0.628;
+   - min clearance 0.1188 vs 0.1189 m; |e| p95 0.131 vs 0.136 m.
+   - Phase 4/6: 100.4 vs 78.0 (rows 38 vs 46).
+5. **Three pairs (single − multi, after t0+2 s; mean ± sd [range], n = 3, descriptive only):**
+   - ticks/sim s: +20.0 ± 11.1 [10.5, 32.2]; multi 79.5 ± 11.5 [66.8, 89.1]; single 99.5 ± 0.5;
+   - gap p99: −34.2 ± 14.0 ms; missed slots per episode: multi 606 ± 344, single 15 ± 13;
+   - build p50: −7.4 ± 0.4 ms; solve p50: −1.89 ± 0.06 ms; snapshot age: −20.3 ± 0.6 ms;
+   - filter CPU: −14.5 ± 1.3 %; RTF: +0.020 ± 0.005;
+   - min clearance: −0.3 ± 1.0 mm; |e| p95: +1.2 ± 5.2 mm.
+
+   F-8-38: race inconclusive. F-8-39: multi rose 66.8 → 82.7 → 89.1 over the session.
+6. **Exact next action:** wait for the user's review. No further experiment approved.
