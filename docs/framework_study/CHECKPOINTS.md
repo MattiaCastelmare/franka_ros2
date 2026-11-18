@@ -2213,3 +2213,43 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    Gazebo tests; chapter 16 rows for F-8-19…F-8-29; pushing.
 3. **Exact next action:** after this commit, repeat both preflights at the new HEAD (docs-only, so
    the source is unchanged). Then wait for the user's authorisation of E3-05 and E3-06.
+
+## C-069 — 2026-11-18 — E3-05 (seed 0, multi, H2 phase start) run and analysed; stopped before E3-06
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `83fae8d` (clean at run time; stashes 3, unchanged).
+  This entry and the F-8-30…F-8-32 rows were committed docs-only, with the user's approval, before E3-06.
+  The pair stays comparable: `e3_h2_compare.py` and PREREGISTRATION §5 compare configuration, not HEAD,
+  and R05 checks each run against its own HEAD.
+1. **Done (approved by the user on 2026-11-18: E3-05 only):**
+   - Pre-run: HEAD, clean tree and INSTALLED == SOURCE were verified; the pre-registration was
+     unchanged (`523a00d3…`); no ROS/Gazebo process was running; `runs/05_*` was free.
+   - The CPU environment was recorded without any change in `refactor_r1_e3/host_env/05_{before,after}.txt`:
+     governor powersave × 28, EPP performance × 28.
+   - The H2 path was traced: `e3_run.sh` L51/L252 `START_ARGS` → `run_gz_scenarios` L94–100 →
+     `batch.py` L174–176 → `gz_cbf_stack` `episode_start:=phase` → the supervisor. The manifest
+     records `mode=phase`, `start_phase 0`, `deadline_s 90`.
+   - Run: `E3_ALLOW_REPEAT=1 E3_EXPECT_HEAD=83fae8d… e3_run.sh 05 0 multi`, rc 0, runner wall 88 s,
+     `RUN_STATUS` COMPLETE_PENDING_ANALYSIS.
+   - Analysis: `e3_analyze.sh 05_s0_multi`, 9/9 steps rc 0, **GATE_CONTINUE**; 148 files sealed;
+     copy 66/66 equal; no leftover processes.
+2. **Results (Runtime (recorded); `runs/05_s0_multi/analysis/{gate.txt,h2_metrics.json}`):**
+   - **Start:**
+     - first sim tick 0.113 s;
+     - controller fresh-active from 4.74 s (the qualifier first saw it at 7.55 s, F-8-30);
+     - controller-status polls: 250 sent / 250 answered, 0 timeouts, 0 stale;
+     - clean window from 11.72 s (1.845 cycles, max |e| 19.8 mm, F-8-31; rate ×1.0000);
+     - announced at 22.800 s for t0 = 23.290 s (lead 0.490 s); 0 HARD resets;
+     - phase at birth 0.99983 cyc (error −1.7e-4 cyc ≈ 1 ms); |e| at birth 3.4 mm.
+   - **Validity and safety:**
+     - V1–V7 all PASS; g0 = 0.4197 m against g_min 0.1875 m;
+     - self-mask at birth: 621 px visible, 0 deleted, 0 hidden;
+     - first frame +0.020 s (capture), first QP obstacle row +0.163 s;
+     - min clearance 0.12168 m (lower bound 0.12132 m) at t = 34.58 s, fr3_link8, so R14 PASS;
+     - reflex PASS, 0 trips; 0 faults; 0 fallbacks.
+   - **QP:**
+     - 67.11 ticks per sim s, RATE_FAIL, recorded under R15 (not a stop); 987 missed slots;
+     - gaps p50/p95/p99/max 11/48/66.5/94 ms;
+     - rebuilds 34.6 /s, 16.2 ms p50; solve 3.0 ms p50;
+     - RTF 0.70; filter 110 % of one core.
+   - **Comparison:** E3-03's QP rate was 86.9 Hz (F-8-32; historical, not controlled).
+3. **Exact next action:** wait for the user's decision on E3-06 and on committing these docs.
