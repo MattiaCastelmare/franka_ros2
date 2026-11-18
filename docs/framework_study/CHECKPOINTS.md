@@ -2139,3 +2139,77 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 6. **Exact next action:** the user's review of the two corrections. Then, each with its own
    approval: commit H2; targeted rebuild of `franka_simulation_experiments`;
    `E3_EXPECT_HEAD=<sha> e3_run.sh --preflight-only`; E3-05 and E3-06.
+
+## C-068 — 2026-11-18 — H2 committed, targeted build, E3-05/E3-06 preflight — done; stopped before any Gazebo run
+
+- Baseline / branch: `ba68077052e8` / `refactor/cbf-executor-scheduling`. Commits (local, not pushed):
+  `186b823` feat(sim): H2 (6 harness/test files); `9e0235d` docs: C-065…C-067; this entry is a
+  third, docs-only commit. Stashes: 3, unchanged (`622b60b`, `68a164b`, `d5f68c1`).
+1. **Done (approved by the user on 2026-11-18: verification, commit, build, preflight; no Gazebo):**
+   - **Final verification:**
+     - `git diff --check` clean;
+     - only the six H2 files and the two doc files had changed;
+     - the sources were SHA-identical to the 179/179 run;
+     - `git diff 9bb2531` empty on `franka_experiments`, `franka_rt_controllers`,
+       `franka_simulation` and `franka_msgs`;
+     - pre-registration `523a00d3…7290` unchanged;
+     - 16/16 evidence `SHA256SUMS` verify.
+   - **The 22 deselected slow tests** (`test/slow/test_phase1…5_*.py`, marker `slow`; IDs listed by
+     `pytest -m slow --collect-only`, which runs no fixture):
+     - phase1: plant and `RtTorqueController`, 4 tests;
+     - phase2: closed-loop pentagon chain, 5;
+     - phase3: simulated D455 through `real_time_distance`, 3;
+     - phase4: `ScenarioObstacles` laws and the supervisor's start time / parked-then-born, 7;
+     - phase5: one batch cell with emulated perception, 3.
+
+     Every module starts Gazebo (a plant fixture or `runner.run_cell`), so **none was executed**,
+     as the restrictions require. All of them use the legacy start. phase2, phase4 and phase5 touch
+     the supervisor's birth path, `batch.py` and the runner, so they are the Gazebo-level regression
+     check of "legacy unchanged". They need their own approval.
+   - **Build** (evidence `refactor_r1_e3/07_h2_build/`, sealed):
+     - only `franka_simulation_experiments` (all its dependencies are `exec_depend`);
+     - its previous `build/` and `install/` were moved to `/ros2_ws/quarantine_h2_20261118/`
+       (with `COLCON_IGNORE`);
+     - environment `/opt/ros/humble` only;
+     - `colcon build --base-paths src --packages-select franka_simulation_experiments --cmake-args
+       -DCMAKE_BUILD_TYPE=Release --event-handlers console_cohesion+`;
+     - **rc 0, 0.97 s**, no warning or error line.
+   - **Installed-source verification:**
+     - every installed source file of the package matches its committed blob, **40/40** (22
+       generated files, as at H1);
+     - `check_installed.py` INSTALLED == SOURCE (before the build: 4 H2 files differed, and
+       `phase_start.py` was absent);
+     - `simexp.phase_start` and `batch` import from the install, and the installed supervisor has
+       `_clock_watchdog`;
+     - `ListControllers`, `ControllerState`, `GetParameters`, `Log`, `MultiLinkDistance`,
+       `PointStamped`, `JointState` and `ClockType.STEADY_TIME` import;
+     - `run_gz_scenarios --help` lists `--episode-start`, `--start-phase` and `--start-timeout-s`;
+     - no `ros2` daemon; the container layer gained only the package and its quarantine.
+   - **Preflight** (`E3_EXPECT_HEAD=9e0235d… e3_run.sh --preflight-only 0 multi|single`; evidence
+     `refactor_r1_e3/08_h2_preflight/`): **both OK**.
+     - HEAD and branch correct, tree clean, 3 stashes, no orphan processes on the host or in the
+       container;
+     - 18/18 committed == installed pairs (H2 files, commander, path and timing laws, perception,
+       filter, configuration); INSTALLED == SOURCE;
+     - the two arms' resolved configurations differ only in `executor_mode` (and the cell name),
+       out of 69 keys;
+     - `scripts_sha256.txt` identical in both, `PREREGISTRATION.md` `523a00d3…`;
+     - governor `powersave` × 28 recorded by the script.
+
+     The script does not record EPP, so `host_cpu_env.txt` records it separately: EPP
+     `performance` × 28, intel_pstate active, turbo on, power profile `performance`.
+   - **Not covered by the preflight, checked separately:**
+     - H2 is enabled by the run command (`START_ARGS` = `--episode-start phase --start-phase 0.0
+       --start-timeout-s 90`, e3_run.sh L51, L252); R19 then requires `episode_start.mode == phase`
+       in the run's manifest;
+     - the run paths `runs/05_*`, `runs/06_*` and the container dirs `05_s0_multi`, `06_s0_single`
+       are free;
+     - seed 0 is already recorded in both modes (E3-01/03, E3-04), so the real runs need
+       **`E3_ALLOW_REPEAT=1`**, the script's deliberate-repeat switch (the preflight does not test
+       it).
+   - **Compatibility:** `e3_h2_metrics.py` only passes `controller_history` through, so its
+     3-tuple entries (C-067) need no analysis change.
+2. **Remaining (each needs approval):** E3-05, E3-06 (and their `e3_analyze.sh`); the slow
+   Gazebo tests; chapter 16 rows for F-8-19…F-8-29; pushing.
+3. **Exact next action:** after this commit, repeat both preflights at the new HEAD (docs-only, so
+   the source is unchanged). Then wait for the user's authorisation of E3-05 and E3-06.

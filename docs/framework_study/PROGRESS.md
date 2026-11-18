@@ -6,9 +6,9 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
 ## 0. Resume card (overwritten at every checkpoint)
 
-- **Last updated:** 2026-11-18, checkpoint C-067 (H2 corrections F-8-23 and F-8-24). C-066 = the H2
-  review and tests; C-065 = the recovery after a host restart, which records the work of
-  2026-11-16. Nothing is in progress.
+- **Last updated:** 2026-11-18, checkpoint C-068 (H2 committed `186b823`, docs `9e0235d`, targeted
+  build, E3-05/06 preflight OK). C-067 = the F-8-23/F-8-24 corrections; C-066 = the H2 review;
+  C-065 = the recovery after a host restart. Nothing is in progress; no Gazebo run since E3-04.
 - **Refactoring phase.**
   - **R1** (configurable CBF executor `executor_mode`, default `multi` = the historical MT3) is
     committed as `9bb2531` (pushed) on `refactor/cbf-executor-scheduling`. `73ed807` adds the
@@ -24,7 +24,8 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
 
     The timing gain is Runtime with n = 1 pair. The pair is not comparable for clearance.
   - **H2** (phase-aligned obstacle birth, harness only, opt-in `episode_start:=phase`):
-    **implemented and unit-tested, not validated in Gazebo**. Uncommitted, not built, never run.
+    **committed (`186b823`), built and installed (INSTALLED == SOURCE), preflight OK for E3-05 and
+    E3-06; not yet run in Gazebo.**
     C-066: review (F-8-23 medium, F-8-24…F-8-28 low). C-067: F-8-23 and F-8-24 fixed (bounded,
     fresh controller polling; one deadline from the first sim tick; sim-clock watchdog); suite 2 =
     179/179 from the source tree (`refactor_r1_e3/06_h2_fix_unit_tests/`). The pre-registration
@@ -48,14 +49,14 @@ Project rules: [/CLAUDE.md](../../CLAUDE.md). Session history: [CHECKPOINTS.md](
   against its 121 IDs. Judge a sim cell by protocol §6.2. Save `working_tree.patch` before every
   run (F-6-11).
 - **Open items for the user**, each needing its own approval:
-  - review C-067; commit H2; targeted rebuild of `franka_simulation_experiments`;
-    `E3_EXPECT_HEAD=<sha> e3_run.sh --preflight-only`; E3-05 (multi), E3-06 (single);
+  - E3-05 (multi), E3-06 (single): `E3_ALLOW_REPEAT=1 E3_EXPECT_HEAD=<HEAD> e3_run.sh 05 0 multi`
+    / `06 0 single`, each followed by `e3_analyze.sh`; the 22 slow Gazebo tests (legacy regression);
   - re-run the matched-window comparison and the self-mask replay (both lost with the scratchpad);
   - F-8-20 and F-8-21 as production questions (gating the commander on the controller; the 0.16 m
-    blind zone), F-8-17, F-8-18, R2, merging R1, pushing `73ed807`;
+    blind zone), F-8-17, F-8-18, R2, merging R1, pushing `73ed807`, `186b823` and the docs commits;
   - everything still open from C-062/C-063 (§5).
-- **Exact next action:** wait for the user's review of C-067, then (if approved) commit H2. No
-  build, Gazebo run or E3 run without explicit approval.
+- **Exact next action:** wait for the user's authorisation of E3-05 and E3-06. Before each run,
+  re-run its preflight at the then-current HEAD. No Gazebo run without explicit approval.
 - **Resume procedure:** follow "Resuming a session" in `/CLAUDE.md`, or paste
   [RESUME_PROMPT.md](RESUME_PROMPT.md).
 
