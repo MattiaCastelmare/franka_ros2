@@ -1,9 +1,15 @@
-"""R1: the CBF filter's executor is configurable (``executor_mode``), default unchanged.
+"""R1 + R2: the CBF filter's executor is configurable (``executor_mode``).
 
-What is pinned here, and why:
+R1 made it configurable with the default unchanged (``multi``); R2 made
+``single`` the shipped default (docs/framework_study/refactoring/
+R2_SINGLE_EXECUTOR_DEFAULT.md). What is pinned here, and why:
 
-* the shipped default is ``multi``, and ``multi`` builds exactly the historical
-  executor: ``MultiThreadedExecutor`` with 3 workers;
+* the shipped default is ``single`` (R2), and ``main()`` with the shipped
+  configuration really spins a ``SingleThreadedExecutor``; the installed copy
+  of ``fr3_control.yaml`` (the one the node reads) says the same as the source;
+* ``multi`` stays selectable explicitly (a ROS parameter override, as
+  ``cbf_param_overrides:=executor_mode=multi`` does), and builds exactly the
+  historical executor: ``MultiThreadedExecutor`` with 3 workers;
 * ``single`` builds a ``SingleThreadedExecutor``;
 * invalid values fail LOUDLY, both where launches set them (a ROS parameter
   override through ``declare_from_spec``) and in ``make_executor`` itself, and
@@ -51,9 +57,14 @@ def ros():
 
 # ── configuration ──────────────────────────────────────────────────────────
 
-def test_shipped_default_is_multi():
-    params = yaml.safe_load(open(YAML))['params']
-    assert params['executor_mode'] == 'multi'
+def test_shipped_default_is_single():
+    """R2: the source configuration ships ``single``."""
+    with open(YAML) as f:
+        params = yaml.safe_load(f)['params']
+    assert params['executor_mode'] == 'single'
+    # 'single' refuses a SCHED_FIFO priority, so the shipped default can only
+    # start if the shipped priority is 0 (make_executor).
+    assert params['qp_thread_fifo_prio'] == 0
 
 
 def test_spec_and_helper_agree_on_the_modes():
@@ -68,6 +79,17 @@ def test_ros_override_selects_single(ros):
     try:
         P = declare_from_spec(node, {'executor_mode': 'multi'}, SPEC)
         assert P.executor_mode == 'single'
+    finally:
+        node.destroy_node()
+
+
+def test_ros_override_selects_multi_over_a_single_yaml(ros):
+    """R2: the previous executor stays selectable without editing the YAML."""
+    node = Node('r2_override_multi', parameter_overrides=[
+        Parameter('executor_mode', value='multi')])
+    try:
+        P = declare_from_spec(node, {'executor_mode': 'single'}, SPEC)
+        assert P.executor_mode == 'multi'
     finally:
         node.destroy_node()
 
@@ -174,7 +196,7 @@ def _run_main(monkeypatch, mode, fifo=0):
     return spun
 
 
-def test_main_default_spins_the_three_thread_executor(monkeypatch):
+def test_main_multi_spins_the_three_thread_executor(monkeypatch):
     spun = _run_main(monkeypatch, 'multi')
     assert spun['type'] is MultiThreadedExecutor and spun['workers'] == 3
     assert len(spun['nodes']) == 1 and isinstance(spun['nodes'][0], _StubFilter)
@@ -186,6 +208,55 @@ def test_main_single_spins_a_single_threaded_executor(monkeypatch):
     assert spun['type'] is SingleThreadedExecutor
     assert len(spun['nodes']) == 1
     assert _StubFilter.destroyed and not rclpy.ok()
+
+
+def _run_real_main(monkeypatch, args):
+    """``main()`` with the REAL filter (installed configuration), spin stubbed.
+
+    The node is constructed exactly as ``ros2 run`` constructs it, so
+    ``executor_mode`` comes from the installed ``fr3_control.yaml`` plus any
+    ``--ros-args`` override; only ``spin`` is replaced, so no callback runs.
+    """
+    spun = {}
+
+    def fake_spin(self):
+        spun['type'] = type(self)
+        spun['workers'] = getattr(getattr(self, '_executor', None), '_max_workers', None)
+        nodes = list(self.get_nodes())
+        spun['n_nodes'] = len(nodes)
+        spun['node_type'] = type(nodes[0]).__name__
+        spun['mode'] = nodes[0].P.executor_mode
+        spun['config_path'] = nodes[0].P.config_path
+
+    monkeypatch.setattr(MultiThreadedExecutor, 'spin', fake_spin)
+    monkeypatch.setattr(SingleThreadedExecutor, 'spin', fake_spin)
+    assert not rclpy.ok()
+    M.main(args=args)
+    assert not rclpy.ok()
+    return spun
+
+
+def test_main_with_the_shipped_configuration_spins_a_single_threaded_executor(monkeypatch):
+    """R2 end to end: no override -> SingleThreadedExecutor, from the INSTALLED YAML.
+
+    Also catches a stale install: the node reads the copy colcon installed
+    (``P.config_path``), not the source file, so the two must agree.
+    """
+    spun = _run_real_main(monkeypatch, [])
+    assert spun['type'] is SingleThreadedExecutor
+    assert (spun['n_nodes'], spun['node_type'], spun['mode']) == (1, 'CBFSafetyFilter', 'single')
+    with open(spun['config_path']) as f:
+        installed = yaml.safe_load(f)['params']['executor_mode']
+    with open(YAML) as f:
+        source = yaml.safe_load(f)['params']['executor_mode']
+    assert installed == source == 'single', (spun['config_path'], installed, source)
+
+
+def test_main_explicit_multi_override_spins_the_three_thread_executor(monkeypatch):
+    """R2 rollback path: ``-p executor_mode:=multi`` still gives the historical MT(3)."""
+    spun = _run_real_main(monkeypatch, ['--ros-args', '-p', 'executor_mode:=multi'])
+    assert spun['type'] is MultiThreadedExecutor and spun['workers'] == 3
+    assert (spun['n_nodes'], spun['node_type'], spun['mode']) == (1, 'CBFSafetyFilter', 'multi')
 
 
 def test_main_refusal_cleans_up(monkeypatch):

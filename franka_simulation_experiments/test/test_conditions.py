@@ -8,6 +8,7 @@ from simexp import conditions as C
 
 REPO = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..', '..')
 LAUNCH_DEFAULTS = os.path.join(REPO, 'franka_experiments', 'config', 'launch_defaults.yaml')
+FR3_CONTROL = os.path.join(REPO, 'franka_experiments', 'config', 'fr3_control.yaml')
 
 
 def test_the_four_spec_conditions_exist_and_say_what_the_spec_says():
@@ -35,6 +36,32 @@ def test_the_cbf_block_mirrors_the_hardware_launch_defaults():
         ld = yaml.safe_load(f)
     for k, v in cfg['cbf'].items():
         assert ld[k] == v, f'{k}: conditions.yaml {v!r} vs launch_defaults.yaml {ld[k]!r}'
+
+
+def test_the_full_condition_runs_the_shipped_executor_and_multi_stays_selectable():
+    """R2 (F-8-53): ``full`` is "exactly as a bare hardware launch runs it", so
+    its executor_mode must be fr3_control.yaml's; a default change on one side
+    only would leave every Gazebo ``full`` cell on the old executor. The key is
+    kept so that ``--set executor_mode=multi`` can select the other arm."""
+    with open(FR3_CONTROL) as f:
+        shipped = yaml.safe_load(f)['params']['executor_mode']
+    assert shipped == 'single'
+    r = C.resolve('full')
+    assert r['cbf_params']['executor_mode'] == shipped
+    assert 'executor_mode=single' in r['stack_args']['cbf_param_overrides'].split(';')
+    m = C.resolve('full', {'executor_mode': 'multi'})
+    assert m['cbf_params']['executor_mode'] == 'multi'
+    assert 'executor_mode=multi' in m['stack_args']['cbf_param_overrides'].split(';')
+
+
+def test_no_other_condition_pins_the_executor():
+    """Every condition but ``full`` inherits the installed default, so no second
+    copy of the executor default can drift."""
+    cfg = C.load()
+    assert 'executor_mode' not in (cfg.get('cbf_params') or {})
+    pinned = sorted(n for n, c in cfg['conditions'].items()
+                    if 'executor_mode' in (c.get('cbf_params') or {}))
+    assert pinned == ['full']
 
 
 def test_overrides_reach_flags_and_perception_and_unknowns_are_refused():
