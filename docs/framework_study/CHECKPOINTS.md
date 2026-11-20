@@ -2489,3 +2489,36 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    - (ii) approve M3 (headroom under load) first.
 
    M2 needs a py-spy install. Commit approval is pending for the C-074 docs and tools.
+
+## C-075 — 2026-11-20 — Message-12 work: M1 committed, regression suites, M3 under host load (18/18 valid), F-8-44 tests, final report; stopped
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `8e0d004`. Commits this round (approved, user
+  authorship only, not pushed): `cc029db` (M1 tools), `8e0d004` (M1 docs C-074). **C-075 docs, M3
+  tools and the F-8-44 test are not committed** (approval needed). Stashes 3, unchanged. No Gazebo,
+  robot, build, py-spy, CPU-setting, production, R1, H2 or E3-harness change. Container `franka_ros2`
+  up, idle; no load worker, ROS or Gazebo process at the end.
+1. **Regression suites** (Runtime, `refactor_r1_m3/00_regression_tests/`, sealed): suite 1 35/9/1405
+   with the failing set and all 65 assertion lines identical to R1 (F-8-2); suite 2 179/179; suite 3
+   39/39; smoke 3/3. Priority areas 0 new failures.
+2. **M3 protocol** sealed before any data run (`protocol/M3_PROTOCOL.md`); Addendum 01 (thermal
+   guard = 4 consecutive samples) after attempt 0 aborted on a single-sample spike at m3_01 (user
+   choice "Addendum + restart"). Attempt 0 kept in `attempt0/`, not counted.
+3. **Attempt 1:** 18/18 runs OK and valid (load gates, replay gates, RTF 0.700, workload vs E3-05,
+   0 stale events in window). The host suspended between m3_17 and m3_18 (2026-11-18 16:08 →
+   2026-11-19 12:00 UTC, F-8-51); m3_18 kept, verdicts unchanged without it. Raw data sealed
+   (`SHA256SUMS_raw_data`, 181 files), analysis sealed (`SHA256SUMS_analysis`), read-only.
+4. **Results (F-8-48):** L1 ticks/sim s single / MT(1) / MT(3) 99.94 / 89.39 / 79.95 (L0 all 100);
+   MT(3) reproduces E3 multi (79.5), single reproduces E3 single. H1, H3, H5 supported; H2 by mean
+   only (not separated); H4 reproduced. GIL not proven.
+5. **F-8-44 (F-8-49):** `tools/f844/test_f844_governor_sigma_snapshot.py`, run 2: 6 pass + T6
+   expected failure, 0 skip (run 1 skipped all, pose search fixed before any result, F-8-50).
+   Evidence `refactor_r1_m3/02_f844/` sealed.
+6. **Tools:** `m3_load.sh`, `m3_host_sampler.py`, `m3_run.sh`, `m3_batch.sh`, `m3_analyze.py`,
+   `test_m3_tools.py` (21/21, 0 warnings; mutation check: 2 guard tests fail on the original
+   sampler); `test_m1_tools.py` 31/31. README rows added.
+7. **Report:** `refactoring/R1_M3_HOST_LOAD_AND_F844.md` (phases 1–7, decision answers §7.3,
+   proposals table). Findings F-8-48…F-8-51; chapter 16 176 rows.
+8. **Exact next action:** wait for the user's review of `refactoring/R1_M3_HOST_LOAD_AND_F844.md`
+   and approval to commit the C-075 docs/tools. Recommended next step (needs approval): R2 =
+   `executor_mode: single` default, configuration only, own branch, offline verification per §7.3
+   item 7; no merge before the F-8-41 addendum and the V2/V4 Gazebo pairs.
