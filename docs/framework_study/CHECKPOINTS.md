@@ -2550,3 +2550,29 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 7. **Report:** `refactoring/R2_READINESS_M3B_AND_TEST_TRIAGE.md`. Chapter 16: 180 rows.
 8. **Exact next action:** wait for the user's review and decision on R2, and approval to commit the
    C-076 docs and M3b tools. Nothing implemented.
+
+## C-077 — 2026-11-20 — Message-15 work: M3b committed, R2 implemented (not committed), offline validation, sealed performance regression, Gazebo plan; stopped
+
+- Branch / HEAD: `refactor/r2-single-executor-default` (new, from `168b163`) / `168b163`. Commits this
+  round (approved in message 15, user authorship only, not pushed): `0581aa9` (M3b tools), `168b163`
+  (M3b docs C-076). **R2 and the C-077 docs/tools are not committed.** Stashes 3, unchanged. No Gazebo,
+  robot, CPU-setting, CBF/QP or production-code change; `humble-mattia` untouched. Rebuild of both
+  packages (pre-R2 install quarantined). At the end: 0 load workers, 0 inhibitor locks, 0 container
+  ROS processes.
+1. **STEP 1:** M3b seals verified, tools == sealed copies, tests 17/17 and 21/21, check_docs 14/14.
+2. **STEP 2–3:** R2 = `fr3_control.yaml` `executor_mode: single` (+comment) and `conditions.yaml`
+   `full` pin `single` (key kept); no other file sets the key.
+3. **STEP 4:** shipped-default, config-consistency, real-`main()` construction (default and explicit
+   multi) tests; new shipped-executor smoke (teardown race in v1, F-8-59, fixed).
+4. **STEP 5:** suite 1 1408/35/9, failing set identical to M3 (0 new); suites 2/3 181/181, 39/39;
+   smokes 3/3, 10/10; executor-free outputs bit-identical in 11/12 (F-8-56); F-8-44 identical.
+   Evidence `refactor_r2/01…03` sealed.
+5. **STEP 6:** `04_perf/protocol/R2_PERF_PROTOCOL.md` sealed 14:40:55Z (SHA-256 `13a7a9b5…`); default
+   arm strips the executor key (F-8-57); 12/12 valid, no retry; A_L0, B_L0, C_L1 REPRODUCED, A_L1
+   NOT_REPRODUCED (gap p99 13 vs ≤ 12 ms in r2_04), overall NOT_REPRODUCED (F-8-60). Data and
+   analysis sealed, read-only.
+6. **STEP 7–8:** answers 1–9 and the Gazebo plan (static `bare` + moving `wander_close`, 2 seeds ×
+   D/M, F-8-41 correction identified in 5 places, not implemented) in
+   `refactoring/R2_SINGLE_EXECUTOR_DEFAULT.md`. F-8-58 (`--set` only for `full`). Chapter 16: 185 rows.
+7. **Exact next action:** wait for the user's review and decisions: commit R2 and the docs/tools;
+   the A_L1 excess; Gazebo (and the F-8-41 addendum). No merge, no push.

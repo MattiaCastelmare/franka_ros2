@@ -79,6 +79,7 @@ every recorded run evidence about another revision).
 | F-4-11 | No workspace or torque rows in the running QP; the acceleration box is the only actuator constraint | static + numerical | S3 | P2 | high | yes | no | a torque-feasibility check | F-4-6 |
 | F-5-15 | OSCBF cost Hessian condition number ~4.5·10⁶ | `check_oscbf.py` 5 | S3 | P3 | high | yes | no | rescale | F-4-10 |
 | F-8-16 | `_solve` rebuilds the full sparse `A` (COO→CSC, `identity`, `vstack`) on every tick only to pass `.data` to `update(Ax=…)`: about 27 % of the tick's CPU vs about 3.5 % for OSQP's solve | code + profiler | S4 | P3 | high | `qpperf_replay_profile.py` | no | fill `Ax` directly for a fixed row count (bit-identical) | F-8-14 |
+| F-8-56 | OSQP set up without `adaptive_rho_interval` (automatic, setup-time based): the executor-free replay was bit-identical in 11/12 runs; 1 run differed on 165 ticks (both 'solved', iterations differ, max \|Δq̈\| 0.038 rad/s²); not an R2 effect | `refactor_r2/02_sequential_identity/` | S4 | P2 | medium | yes | no | judge bit-identity on repeats or with a harness-only fixed interval; a production setting is its own step | F-8-14, F-8-49 |
 
 ### B.4 Robot dynamics and torque realization
 
@@ -174,6 +175,8 @@ every recorded run evidence about another revision).
 | F-8-50 | M3 harness defects (runner `set -u`, single-sample thermal guard false abort → Addendum 01, worker-count regex, F-8-44 test pose search skipped) caught before any counted result | `refactor_r1_m3/` (protocol, attempt0, analysis) | S4 | P3 | high | yes | — | none (fixed in the tools) | F-8-47 |
 | F-8-51 | Unplanned host suspend (18 → 19 Nov) between M3 runs m3_17 and m3_18; m3_18 valid, verdicts unchanged without it; harness has no suspend inhibitor | `journalctl`, `attempt1/logs/batch.txt` | S4 | P3 | high | yes | — | add `systemd-inhibit` to campaign harnesses (approval) | F-8-50 |
 | F-8-55 | Triage of the 35 suite-1 failures: 25 unimplemented-spec, 1 checker false positive, 1 outdated expectation, 8 stale golden; no new defect; none blocks R2; the golden is unaffected by R2's YAML edit | `refactor_r1_m3/00_regression_tests/`, code | S4 | P3 | high | yes | — | regenerate the golden as its own step; decide Q-7-2 | F-8-2, F-0-3, F-7-7, F-7-9, F-8-1 |
+| F-8-57 | The E3-05 parameter file pins `executor_mode: multi`; earlier replays overrode it with `-p` (as intended); a shipped-default replay must remove the key; Gazebo `full` after R2 tests the shipped value, not the no-override path | `refactor_r2/04_perf/preflight/` | S4 | P2 | high | yes | no | R2 default arm (copy without the key, override removed and recorded) | F-8-53 |
+| F-8-60 | R2 performance regression, sealed protocol, 12/12 valid: A_L0 / B_L0 / C_L1 reproduced (C_L1 94.1 ticks/sim s, not 100); A_L1 not reproduced by one 1 ms quantum of gap p99 in 1 of 3 runs (threshold set at M3's observed value, no spread allowance); overall NOT_REPRODUCED | `refactor_r2/04_perf/` | S4 | P2 | high | yes | no | user (msg 16): NOT accepted; verdict stays NOT_REPRODUCED, unresolved; non-blocking for investigation | F-8-48, F-8-52 |
 
 ### B.8 ROS 2 integration
 
@@ -204,6 +207,7 @@ every recorded run evidence about another revision).
 | F-8-52 | M3b (rate 1.0, single, 6/6 valid): idle 99.99 ticks/sim s (PASS, margin 1.71×); E3-like load 89.44 [86.36, 92.21] (FAIL, Python threads 0.92–0.96 core, constraints still fresh, p95 16 ms); offline statistics, not hardware RT | `refactor_r1_m3b/data/analysis/` (isolated benchmark) | S2 | P1 | high | `m3b_analyze.py` | no | R2 with a relative claim; P3 / P5 load reduction before hardware | F-8-48, F-8-43 |
 | F-8-53 | Gazebo `full` condition pins `executor_mode: multi` (`conditions.yaml` L109): a default change in `fr3_control.yaml` alone would not reach `full` cells | code, git | S3 | P1 | high | static | no | R2 changes the pin to `single` (key kept); consistency test T-R2-1 | F-8-17 |
 | F-8-54 | `smoke_cbf_safety_filter.py` spins its own 4-thread executor: no smoke test exercises the shipped executor | code | S4 | P2 | high | static | no | smoke variant with `make_executor(P.executor_mode)` (T-R2-3) | — |
+| F-8-59 | Executor `shutdown()` while its spin thread waits aborts the process (rc 134 after PASSED, 3/6 runs of the new smoke v1); fixed in the test; production `main()` not exposed | `refactor_r2/01_offline_tests/` | S4 | P3 | high | yes | no | join spin threads before shutdown in multi-executor tests | F-8-54 |
 | F-8-33 | The startup race recurred in E3-06: the spawner's `list_controllers` got no result in 10 s, controller active only at 12.88 s, 5 HARD resets before; H2 contained it (V1–V7 VALID) | E3-06 manifest, `launch.log` | S2 | P1 | high | — | sim | gate the commander on the controller; investigate the lost response | F-8-20, F-8-36, F-8-38 |
 | F-8-36 | The lost `list_controllers` call occurred in E3-03 (multi) and every single run E3-04/06/08 (followed by 4–6 HARD resets); no mechanism through the filter is known | `launch.log` runs 01, 03–08 | S3 | P2 | medium | — | sim | see F-8-38 (inconclusive) | F-8-33, F-8-38 |
 | F-8-37 | Multi delivered about 47–56 QP ticks per wall s, so its per-sim rate moves with RTF and run-to-run throughput (67–89); single stays at its 100-per-sim-s period; per-operation times about 2× (rebuild) and 2.7× (solve) longer under multi on matched workload | `s6b_*.json`, `compare_*` (interpretation Inferred) | S3 | P1 | high | — | sim | R1 `executor_mode: single` candidate; mechanism-isolation experiment | F-8-14, F-8-15, F-8-17, F-8-5 |
@@ -226,6 +230,7 @@ every recorded run evidence about another revision).
 | F-5-16 | Stale velocity-executor YAML (`rt_velocity_blender.yaml`) and `[ACTIVE]` diagnostics | static | S3 | P3 | high | static | no | remove the stale file, or wire it | F-5-7 |
 | F-3-8 | `path_kp_cart` units in comments are N/m (actual s⁻²) | static | S4 | P3 | high | static | no | correct the comments | — |
 | F-7-7 | `test_rate_scaling.py::test_the_shipped_config_states_durations` asserts `tracking.max_coast_s == 0.167`; the shipped `fr3_complete.yaml` says 0.8 (since 2026-11-01): the test must fail at the baseline | `check_guide_vs_code.py` E7 (static; not run) | S3 | P2 | high | static | no | update the test or the value, after Q-2-2 | Q-2-2, F-7-5 |
+| F-8-58 | `--set executor_mode` is accepted only by the `full` condition (the only one with the key); every other condition rejects it and runs the installed default (`single` after R2) | code, runtime call | S4 | P2 | high | yes | no | add the key to conditions that need an A/B, or a global `cbf_params` entry, as its own step | F-8-53 |
 
 ### B.10 Code structure and maintainability
 
@@ -268,7 +273,7 @@ every recorded run evidence about another revision).
 | F-7-8 | The old technical guide is stale (E.3: QP size, fallback, slew rule, FIFO, logger truth) and misses the 10 mechanisms of E.4; its config values still match but 51 keys are missing | `check_guide_vs_code.py` (21 checks) | S3 | P3 | high | yes | — | Part E; do not use the guide as reference | F-0-9 |
 | F-8-11 | S6A record overstated "no obstacle row bound / only the box" (`n_act` = count h̄ < 0; slew bound and the gap-dependent link-speed cap also acted) and F-8-5's budget argument; corrected by dated notes | S6A.1 (code + Derived) | S4 | P3 | high | S6A.1 | — | none beyond the notes; read binding from per-row data in future runs | F-5-23, F-8-5 |
 
-Total: 180 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
+Total: 185 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
 asserts that every ID of PROGRESS §4 has exactly one row here.
 
 ---
