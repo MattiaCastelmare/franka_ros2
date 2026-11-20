@@ -610,6 +610,18 @@ places (Verified, code).
 
 None of this touches production code. It needs its own approval.
 
+*C-078 note (2026-11-20).* Implemented in the harness only (`refactor_r2/06_f841/scripts_h3/`) and
+tested; no moving run was made. Three corrections to this table:
+- **v_obs,max = 0.4464 m/s, not 0.44.** 0.44 m/s is the maximum sampled over one 40 s episode, while
+  0.4464 m/s is the law's analytic supremum. g_min is therefore **0.2991 m**, not 0.2975.
+- **Row 3 uses the per-sample pose age, not a fixed 22 mm.**
+- **Two more static assumptions:**
+  - `e3_h2_bag.py` refuses any non-static law (`SystemExit`), so every moving run would have
+    GATE_STOPped;
+  - `e3_h2_metrics.py` computes the closing speed at p0.
+
+See [R2_GAZEBO_STATIC_AND_F841.md](R2_GAZEBO_STATIC_AND_F841.md) §6 and F-8-62.
+
 ### 8.5 Kept separate
 
 - **F-8-44 / P2:** σ carried in `ConstraintSnap`; its own step, with T1–T7, after R2. R2 is not blocked
