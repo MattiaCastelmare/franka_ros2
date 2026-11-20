@@ -2576,3 +2576,42 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    `refactoring/R2_SINGLE_EXECUTOR_DEFAULT.md`. F-8-58 (`--set` only for `full`). Chapter 16: 185 rows.
 7. **Exact next action:** wait for the user's review and decisions: commit R2 and the docs/tools;
    the A_L1 excess; Gazebo (and the F-8-41 addendum). No merge, no push.
+
+## C-078 — 2026-11-20 — Message-16 work: R2 committed, Gazebo static validation, F-8-41 harness correction; stopped
+
+- Branch / HEAD: `refactor/r2-single-executor-default` / `6d5caca`. Commits this round (approved in
+  message 16, user authorship only, not pushed, not merged): `cadaf62` (config), `359dd7c` (tests),
+  `6d5caca` (C-077 docs and `r2_*` tools). **C-078 docs and tools are not committed.** Stashes 3,
+  unchanged. No production, CBF, QP, perception or CPU-setting change; no moving-obstacle run; no
+  robot; no retry. At the end: 0 inhibitor locks, 0 container ROS processes.
+1. **STEP 1:** tree clean, installed YAML == source; three commits.
+2. **STEP 2:** `05_gz_static/protocol/R2GZ_PROTOCOL.md` sealed 17:00:53Z (SHA-256 `c8122e91…`);
+   pre-flight (4 arms, executor-only diff, 18/18 committed == installed, INSTALLED == SOURCE) and
+   tool tests sealed.
+3. **STEP 3:** batch 17:00:56–17:10:42Z under `systemd-inhibit`, D M M D: 4/4 GATE_CONTINUE and VALID,
+   pairs COMPARABLE, P1–P6 PASS. Campaign sealed (`SHA256SUMS_campaign`, 31 files, `043ebfba…`).
+4. **STEP 4 (F-8-61):** Q1 NO (D − M clearance −9.3 / −7.1 mm, tolerance 5 mm), Q2–Q5 YES, Q6
+   DOES_NOT_SUPPORT. Post hoc (`05b_gz_static_posthoc/`): D reproduces E3 single; 10-run clearance
+   spread 9.3 mm (F-8-63); `r2gz_summary` E3 references `None` (F-8-64).
+5. **STEP 5 (F-8-62):** `06_f841/scripts_h3/` C1–C6 + R23; g_min 0.2991 m (not 0.2975); host tests
+   17/17 (three test-code-only failed attempts kept), container 10/10; per-seed margins from the real
+   jitter; `ADDENDUM_F841.md` sealed (`SHA256SUMS` 86 files, 17:20:17Z), not executed.
+6. **Docs:** report `refactoring/R2_GAZEBO_STATIC_AND_F841.md`; tools copied to `tools/gz_validation/`
+   and `tools/f841/` (byte-identical to sealed); C-078 note in R2 report §8.4 and on F-8-41.
+   Chapter 16: 189 rows.
+7. **Exact next action:** wait for the user's review and decisions (commit C-078 docs/tools; Q1
+   repetition; moving phase; merge). No merge, no push.
+
+## C-079 — 2026-11-20 — Session closed: C-078 work committed, R2 branch pushed; stopped
+
+- Branch: `refactor/r2-single-executor-default`. Author identity checked (`git config`: Mattia
+  Castelmare); no AI author or co-author trailer. Stashes 3, unchanged. No experiment, build, Gazebo
+  or production change this round; sealed evidence untouched.
+1. Docs record the user's decision (message 17): **R2 is not approved for merging**; status table in
+   `refactoring/R2_GAZEBO_STATIC_AND_F841.md` §9a. Conclusions unchanged: offline NOT_REPRODUCED
+   (F-8-60), Gazebo static Q1 failed (F-8-61), moving-obstacle validation not performed, F-8-41
+   harness-only (F-8-62), F-8-44 open.
+2. Commits: the C-078 tools (`tools/gz_validation/`, `tools/f841/`), then the C-078 / C-079 docs.
+3. First push of the branch to `origin` (no force, no merge, no PR). It also publishes the branch's
+   earlier unpushed ancestors (`73ed807`, `186b823`, docs C-065…C-076, M1 / M3 / M3b tools).
+4. **Exact next action:** novelty development in the next session, after the user's approval and scope.
