@@ -2522,3 +2522,31 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    and approval to commit the C-075 docs/tools. Recommended next step (needs approval): R2 =
    `executor_mode: single` default, configuration only, own branch, offline verification per §7.3
    item 7; no merge before the F-8-41 addendum and the V2/V4 Gazebo pairs.
+
+## C-076 — 2026-11-20 — Message-14 work: M3 committed, package-test triage, M3b (single at rate 1.0 under load), R2 plan; stopped
+
+- Branch / HEAD: `refactor/cbf-executor-scheduling` / `c21a570`. Commits this round (approved in
+  message 14, user authorship only, not pushed): `8566d28` (M3 tools, F-8-44 test), `c21a570` (M3
+  docs C-075). **C-076 docs and the M3b tools are not committed.** Stashes 3, unchanged. No Gazebo,
+  robot, build, production, R1, H2, executor-default or CPU-setting change. At the end: 0 load
+  workers, 0 inhibitor locks, 0 container ROS processes.
+1. **STEP 1:** uncommitted set reviewed (M3 tools = sealed `scripts_a01`, F-8-44 test = sealed copy);
+   no production diff; every M3 seal verifies; suspend documented and sensitivity checked; two
+   commits.
+2. **STEP 2 (F-8-55):** the 35 failures are identical to the baseline and are all
+   test-infrastructure (25 unimplemented specifications, 1 checker false positive, 1 outdated
+   expectation, 8 stale golden); none blocks R2. The golden is not affected by R2's YAML edit.
+3. **STEP 3:** `refactor_r1_m3b/protocol/M3B_PROTOCOL.md` sealed 2026-11-20 13:06:20 UTC (SHA-256
+   `8d5206c1…`), before any run. Tools `m3b_run.sh`, `m3b_batch.sh`, `m3b_analyze.py`,
+   `test_m3b_tools.py` (17/17, 0 warnings; mutation check 3/3 detected); `scripts/` sealed.
+4. **STEP 4:** pre-flight sealed (repository, install == source, input hashes, CPU, processes,
+   inhibitor). Smoke run valid (not counted). Batch 13:08:56–13:21:20 UTC under `systemd-inhibit`:
+   6/6 OK and valid, no suspend, no retry. Raw data (67 files) and analysis sealed, read-only.
+5. **STEP 5 (F-8-52):** L0 PASS (99.99 ticks/sim s, margin 1.71×); L1 FAIL (89.44 [86.36, 92.21],
+   239–405 missed deadlines, Python threads 0.92–0.96 core); constraints stay fresh (p95 ≤ 16 ms).
+6. **STEP 6:** R2 change set (`fr3_control.yaml` value and comment, `conditions.yaml` `full` pin —
+   F-8-53), affected tests (2), new tests T-R2-1…3 (F-8-54), offline checks, Gazebo V2/V4 pairs,
+   rollback; F-8-44 and the 35 failures do not block R2.
+7. **Report:** `refactoring/R2_READINESS_M3B_AND_TEST_TRIAGE.md`. Chapter 16: 180 rows.
+8. **Exact next action:** wait for the user's review and decision on R2, and approval to commit the
+   C-076 docs and M3b tools. Nothing implemented.
