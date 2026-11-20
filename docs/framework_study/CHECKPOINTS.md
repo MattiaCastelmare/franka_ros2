@@ -2615,3 +2615,27 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
 3. First push of the branch to `origin` (no force, no merge, no PR). It also publishes the branch's
    earlier unpushed ancestors (`73ed807`, `186b823`, docs C-065…C-076, M1 / M3 / M3b tools).
 4. **Exact next action:** novelty development in the next session, after the user's approval and scope.
+
+## C-080 — 2026-11-20 — Integration of R1 / H2 and all documentation into `humble-mattia`; R2 left isolated
+
+- User approval: message 18, which explicitly authorised switching to `humble-mattia`, merging,
+  rebuilding, testing, pushing and safe branch cleanup. Author identity from `git config` (Mattia
+  Castelmare); no AI co-author. Stashes 3, unchanged (fingerprint `8e31744c…`). No production
+  algorithm, CBF, QP or acceptance criterion changed; no Gazebo; no robot.
+1. **Inspection:** the history is linear (`humble-mattia` `625c179` → R1 branch `168b163` → R2 branch
+   `9ba26d2`); R2 contains R1 / H2. Of 22 commits, five touch code; two of them are the R2 default
+   change (`cadaf62`, `359dd7c`).
+2. **Integration:** fast-forward to `168b163`, then `git cherry-pick -x` of the three R2
+   documentation-only commits. Outside the docs the tree equals `168b163`; the difference from R2 is
+   exactly `cadaf62` + `359dd7c`; the shipped default is `multi`.
+3. **Build and tests:** R2 install quarantined (`/ros2_ws/quarantine_hm_20261120/`); colcon rc 0;
+   install == source. Suites 1405/35/9, 179/0/0, 39/0/0 and smoke 3/3, identical test by test to M3
+   (the 35 known failures only; 0 new). check_docs 14/14; check_state REVIEW for the 11 R1 / H2 paths
+   (the B-2 review is pending). Evidence `~/franka_baseline_evidence/integration_humble_mattia_20261120/`.
+4. **Docs:** `refactoring/INTEGRATION_HUMBLE_MATTIA_20261120.md` (status 1–7, monolithic-node
+   candidates); findings F-8-65, F-8-66; chapter 16: 191 rows; `CLAUDE.md` exception updated.
+5. **Push and branch cleanup:** recorded in the final report of this session. Plan: push
+   `humble-mattia` (no force); safely delete the fully merged `refactor/cbf-executor-scheduling`;
+   keep `refactor/r2-single-executor-default`, which holds unmerged R2 code.
+6. **Exact next action:** wait for the user. The next phase is the B-2 baseline review, then the
+   incremental refactoring (record §7), each with its own approval.

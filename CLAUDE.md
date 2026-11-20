@@ -55,6 +55,11 @@ truth: do not rely on conversation history or on account-specific memory.
     approved step needs may change; the record is `docs/framework_study/refactoring/R<n>_*.md`.
     R1 (configurable CBF executor, branch `refactor/cbf-executor-scheduling`) was approved on
     2026-11-12. An approval covers one step only; Gazebo runs and the next step need their own.
+    **Integration (2026-11-20, C-080):** R1 and H2 (and all documentation) were merged into
+    `humble-mattia` at the user's explicit request; the shipped executor default there is `multi`.
+    R2 (default `single`, `cadaf62` / `359dd7c`) is **not** approved for merging and stays on
+    `refactor/r2-single-executor-default`. Merging into `humble-mattia` always needs the user's
+    explicit request.
 - **Git.**
   - Do not commit unless asked.
   - Never switch branches, reset, check out files, or apply, drop or modify stashes.

@@ -263,6 +263,7 @@ every recorded run evidence about another revision).
 | F-8-6 | Unclean Gazebo teardown after DONE: `gz_server` SIGABRT in the ign_ros2_control destructor; Python nodes raise on SIGINT (double `rclpy.shutdown`) | S6A `launch.log` | S4 | P3 | high | S6A | sim | clean shutdown handling; exclude teardown from the "no process died" check | — |
 | F-8-7 | Sim perception delivers 30.7 Hz of a 90 Hz camera (about 57–65 ms wall per frame; frames dropped by design, wall-bound, S6A.1); distances reach the filter 112 ms old (median) | S6A run (Runtime) | S3 | P2 | high | S6A | sim | profile `real_time_distance`; decide the bound before moving-obstacle cells | F-6-8, F-6-14 |
 | F-8-22 | The "pentagon" commander and scenario run a circle (`path_type: circle`) | `fr3_control.yaml` L2642; E3 banner | S4 | P3 | high | static | — | rename or document | — |
+| F-8-66 | `ConstraintBuilder.build` (`utils/cbf_state_rows.py` L2335–3816) is one 1,482-line method with about 25 interleaved row families and about 97 attributes carried between rebuilds; `cbf_safety_filter._qp_tick` is 474 lines and `__init__` 396; the state shared between the two is where F-8-44 / F-8-45 arise | `ast` line counts on `humble-mattia` (C-080) | S3 | P2 | high | static | no | decompose by row family behind output-identity characterisation tests, after the B-2 baseline review (integration record §7) | F-8-44, F-8-45 |
 
 ### B.11 Documentation inconsistencies
 
@@ -276,8 +277,9 @@ every recorded run evidence about another revision).
 | F-1-18 | Stage 0 extractor missed a file (fixed in the tool) | ledger | S4 | P3 | high | — | — | none (fixed) | — |
 | F-7-8 | The old technical guide is stale (E.3: QP size, fallback, slew rule, FIFO, logger truth) and misses the 10 mechanisms of E.4; its config values still match but 51 keys are missing | `check_guide_vs_code.py` (21 checks) | S3 | P3 | high | yes | — | Part E; do not use the guide as reference | F-0-9 |
 | F-8-11 | S6A record overstated "no obstacle row bound / only the box" (`n_act` = count h̄ < 0; slew bound and the gap-dependent link-speed cap also acted) and F-8-5's budget argument; corrected by dated notes | S6A.1 (code + Derived) | S4 | P3 | high | S6A.1 | — | none beyond the notes; read binding from per-row data in future runs | F-5-23, F-8-5 |
+| F-8-65 | `humble-mattia` carries the R2 documentation and tools (cherry-picked `0895a2c`, `68e2cdd`, `62c0c5f`) but not R2's code (`cadaf62`, `359dd7c`); those documents cite R2-branch hashes, and R2-specific tools assume the R2 install (`r2gz_resolve.py` requires an installed `executor_mode: single`; `r2_default_replay.py` would build MT(3) on this install) | integration record §2 | S4 | P3 | high | yes | — | run R2 tools only from the R2 branch and install; the integration record maps the hashes | F-8-61 |
 
-Total: 189 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
+Total: 191 findings (B.6 repeats F-4-9 only as a pointer). `tools/stage7_verification/check_docs.py`
 asserts that every ID of PROGRESS §4 has exactly one row here.
 
 ---
