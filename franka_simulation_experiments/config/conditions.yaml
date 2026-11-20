@@ -106,7 +106,11 @@ conditions:
     perception: {tracking: {enabled: true, imm_enabled: false, prediction: {enabled: false}}}
     cbf_params:
       enable_go_around: false
-      executor_mode: multi
+      # == fr3_control.yaml executor_mode (the shipped default, single since
+      # R2; test_conditions pins the equality). Keep the key: --set can
+      # override only keys already present, and the multi arm of an A/B needs
+      # --set executor_mode=multi.
+      executor_mode: single
       # EXPERIMENTAL CONTROL, identical in both arms. At the shipped target of
       # 300 Hz neither arm reaches it in this container and they do not miss it
       # by the same amount: full achieved 110 Hz and minimal 196 Hz on the same
