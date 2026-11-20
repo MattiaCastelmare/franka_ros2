@@ -55,3 +55,5 @@ The `m3_*` protocol (with Addendum 01), sealed scripts (`scripts/`, `scripts_a01
 The `m3b_*` protocol, sealed scripts, pre-flight, smoke run, runs and analysis are in `~/franka_baseline_evidence/refactor_r1_m3b/`; report: [R2_READINESS_M3B_AND_TEST_TRIAGE.md](../../refactoring/R2_READINESS_M3B_AND_TEST_TRIAGE.md).
 
 The R2 offline tests (suites, smoke, sequential identity, F-8-44) and the `r2_*` protocol, sealed scripts, pre-flight, smoke run, runs and analysis are in `~/franka_baseline_evidence/refactor_r2/`; report: [R2_SINGLE_EXECUTOR_DEFAULT.md](../../refactoring/R2_SINGLE_EXECUTOR_DEFAULT.md).
+
+The R2 Gazebo static validation (`r2gz_*`) and the F-8-41 moving-obstacle harness correction (`scripts_h3`) are in [`../gz_validation/`](../gz_validation/README.md) and [`../f841/`](../f841/README.md); evidence `~/franka_baseline_evidence/refactor_r2/05_gz_static/`, `05b_gz_static_posthoc/`, `06_f841/`; report: [R2_GAZEBO_STATIC_AND_F841.md](../../refactoring/R2_GAZEBO_STATIC_AND_F841.md).
