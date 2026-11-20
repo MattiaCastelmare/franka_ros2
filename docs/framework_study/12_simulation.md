@@ -84,12 +84,13 @@ quantity, but it measures time inside d_safe, not time in contact (§8.2). The "
 | `gz_fr3_plant.launch.py` | franka_simulation | the plant itself, included by the two above |
 | `run_gz_scenarios` | franka_simulation_experiments (program) | batch: one `gz_cbf_stack` per cell (§8.1) |
 
-The arguments of `gz_cbf_stack` (`_ARGS`, L36–61) are:
+The arguments of `gz_cbf_stack` (`_ARGS`, L36–67; L36–61 at B-1) are:
 - `condition` (required; its description still lists only residual/kf/imm/imm+pred, not the 23
   conditions);
 - `set`, `motion` (pentagon | scenario | rl), `scenario`, `seed`;
 - `perception` (true | emulated | false), `emulated_fps` (90), `scene`;
-- `gui`, `duration_s`, `run_dir`, `record_bag` (true), `filter_cpu`, `rl_onnx_model`.
+- `gui`, `duration_s`, `run_dir`, `record_bag` (true), `filter_cpu`, `rl_onnx_model`;
+- `episode_start` (`legacy` | `phase`), `start_phase`, `start_timeout_s` (H2, B-2; §2.5).
 
 ### 2.2 The resolution step — `gz_cbf_stack.launch.py::_launch` (Verified)
 
@@ -132,7 +133,7 @@ The arguments of `gz_cbf_stack` (`_ARGS`, L36–61) are:
 
    The actions are deliberately **not** wrapped in a scoped `GroupAction`: the stack starts its
    nodes from `TimerAction`s that fire after a group scope has been popped, and they would lose
-   `use_sim_time` and `FRANKA_LOGS_DIR` (comment at L266–269; Runtime (recorded) per that comment).
+   `use_sim_time` and `FRANKA_LOGS_DIR` (comment at L285–288, L266–269 at B-1; Runtime (recorded) per that comment).
 
 ### 2.3 Files a run writes (Verified)
 
@@ -147,7 +148,7 @@ The arguments of `gz_cbf_stack` (`_ARGS`, L36–61) are:
 | `logger/<stamp>/…` | `experiment_logger` (+ the commander CSV) | the run CSV, affected by F-5-21 (§8.6) |
 | `truth.npz` | `ground_truth_node` | §7.1 |
 | `reflex_trips.csv`, `reflex_summary.json` | `reflex_monitor` | §7.3 |
-| `bag/` | `ros2 bag record --use-sim-time` | the 19 `BAG_TOPICS` (L65–70); no images, no `/rosout`, no `/NS_1/iso_safety` |
+| `bag/` | `ros2 bag record --use-sim-time` | the 19 `BAG_TOPICS` (L71–76; L65–70 at B-1); no images, no `/rosout`, no `/NS_1/iso_safety` |
 | `launch.log`, `ros_log/` | `simexp.runner` (batch only) | the CBFDIAG / START / DONE lines the scorer parses |
 | `cell_result.json`, `digest.json`, `compare_vobs_sim.npz` | `batch` / `runner` / `estimator_metrics` | scores (§8) |
 
@@ -184,10 +185,10 @@ not of the code. It is the first thing the validation protocol checks (Phase 1).
 | 0 → | `torque_control_stack` with its own timers (02 §4: commander, filter, `qddot_to_torque`, `real_time_distance`, logger, the `rt_torque_controller` spawner at `control_spawner_delay_s`) | stack |
 | 2 | `ros_gz_sim create -file fr3_gazebo.urdf -name fr3` (`spawn_delay_s`) | `gz_fr3_plant` L132 |
 | 3 | `joint_state_broadcaster` spawner (timeout 60 s) | L136 |
-| 3 | `reflex_monitor`, `episode_supervisor`, `ground_truth_node` (with a scenario), `scenario_commander` (motion `scenario`), `emulated_perception` (mode `emulated`) | `gz_cbf_stack` L222–251 |
-| 4 | extra spawners (`gz_plant` with `spawn_rt_controller`), `pin_filter` (`filter_cpu`), the sim bag | L168, L254–263 |
+| 3 | `reflex_monitor`, `episode_supervisor`, `ground_truth_node` (with a scenario), `scenario_commander` (motion `scenario`), `emulated_perception` (mode `emulated`) | `gz_cbf_stack` L241–270 (L222–251 at B-1) |
+| 4 | extra spawners (`gz_plant` with `spawn_rt_controller`), `pin_filter` (`filter_cpu`), the sim bag | `gz_fr3_plant` L168; `gz_cbf_stack` L273–282 (L254–263 at B-1) |
 | ≥ ready | **episode start** (12.20) | supervisor |
-| t_start + T | supervisor finalises and exits → `Shutdown` | `OnProcessExit` L248–251 |
+| t_start + T | supervisor finalises and exits → `Shutdown` | `OnProcessExit` L267–270 (L248–251 at B-1) |
 
 **The episode start (Verified, `episode_supervisor._ready/_tick`).** The supervisor declares the
 loop *ready* when all of these hold:
@@ -201,7 +202,20 @@ After `warmup_s` = 2 s of continuous readiness it announces
 
 It publishes t_start 50 times on `/sim/episode_start`. The C++ obstacle system latches the first
 value it receives (§5.3). It also publishes `/sim/episode = [state, t_start, t_now]` at 50 Hz
-(0 waiting, 1 running, 2 done). A lost readiness resets the warm-up. The lead exists so that the
+(0 waiting, 1 running, 2 done). A lost readiness resets the warm-up.
+
+**`start_mode: phase` (H2, opt-in; *(B-2 review, 2026-11-20)*).** (12.20) is the `legacy` start and remains
+the default. With `episode_start:=phase` (launch) / `--episode-start phase` (runner), `motion:=pentagon`
+only, `episode_supervisor` additionally waits until the arm has tracked `start_settle_cycles` full
+cycles with the controller active and every |ee_desired − ee_actual| ≤ `start_track_err_max`; the
+phase is recovered geometrically from `/NS_1/ee_desired` against the commander's own curve
+(`simexp/phase_start.py`). t_start is then the predicted sim time at which the curve phase reaches
+`start_phase`, announced 0.25–0.5 s ahead; `start_offset_s` is recorded, not applied. If this does not
+happen within `start_timeout_s` of sim time from the supervisor's first tick, the obstacle is never
+born, the episode ends as `start_failed` and the node exits with code 3. The state at the birth is
+written to `run_manifest_sim.json` under `episode.start`. Verified from `episode_supervisor.py`
+(module docstring, `_init_phase_start`, `_phase_tick`); unit tests `test_phase_start.py`; used by E3-05…10
+and the R2 static runs. The lead exists so that the
 obstacles, the scenario commander and the supervisor all switch at the same sim instant. The pentagon
 commander does not listen (F-6-12).
 
@@ -442,7 +456,9 @@ The only **combined** (static + moving) scenarios are `pentagon_multi_mixed` and
 - **`motion: pentagon` → the shipped `pentagon_qddot_commander`** (06).
   - **It has no subscription to `/sim/episode`** (no match in `franka_experiments`). It starts its
     path when its own node starts, so at the episode start it is at a boot-timing-dependent phase.
-    The obstacles, by contrast, start exactly at t_start.
+    The obstacles, by contrast, start exactly at t_start. *B-2:* `start_mode: phase` (§2.5) removes
+    this dependence by choosing t_start from the commander's measured phase; the commander itself
+    is unchanged.
   - The scorer measures its tracking error from t_start (`pentagon_tracking(t_from)`).
 - **`motion: rl`.** The RL policy commander (10), with `rl_onnx_model`.
 
@@ -910,6 +926,9 @@ cannot support a "no contact" claim.
 
   A rename in `franka_experiments/scripts` breaks the sim scorers silently, at import time of a
   rescore.
+- **`start_mode` (H2, B-2).** `phase` changes only WHEN the obstacle is born (and can refuse to start,
+  exit code 3); `legacy` is unchanged. Comparisons across the two modes compare different birth
+  phases (F-8-20, F-8-30).
 
 ---
 

@@ -422,6 +422,17 @@ stops after its first message triggers the brake (row 7).
    `_brake_authority_fault` is diagnostic only.
 8. **Fallback** (§5.2) replaces 6–7 on failure.
 
+**What is and is not in the snapshot (*(B-2 review, 2026-11-20)*; F-8-44, F-8-45).** Steps 4–7 read the rows
+from one `ConstraintSnap`, so a tick never mixes the rows of two rebuilds (`_solve` uses the
+snapshot's own rows). Two pieces of state are **not** carried in the snapshot:
+- the governor's σ: the singularity term reads σ through `_sing_rows`, which a later or failed
+  rebuild may have updated, so σ and `d_sc_min` can come from different rebuilds (F-8-44; reproduced
+  by `tools/f844/`; in `single` too, through the exception path);
+- the `diag_*` fields that `build` resets and the tick writes (F-8-45, diagnostics only).
+
+These are the shared-state seams that the refactoring of `cbf_state_rows` / `cbf_safety_filter`
+must make explicit ([refactoring/INTEGRATION_HUMBLE_MATTIA_20261120.md](refactoring/INTEGRATION_HUMBLE_MATTIA_20261120.md) §7).
+
 **Rate scaling** (`utils/rate_scaling.py`): the evidence gates are counts derived from durations at
 the measured input rate (07 §4), and the slew window scales with the tick gap (8.8). The k-tick
 EMA factors use a^(Δt/0.01 s) (06 §6).
@@ -473,6 +484,8 @@ obstacle. The previous command equals the nominal.
 | `qp_row_block` | rebuild frequency vs problem size. |
 | OSQP settings (eps, polish, time_limit) | the accuracy of every relaxed row (F-4-10) and the worst-case tick time. |
 | Adding torque rows | would need M(q) in the QP (rows τ_min ≤ Mq̈ + Cq̇ ≤ τ_max); none exist today (F-4-11). |
+| Moving state into or out of `ConstraintSnap` (e.g. σ, F-8-44) | changes which rebuild a tick's governor and diagnostics describe; under `multi` also when. Must be checked against the rows the tick solves (B-2). |
+| `executor_mode` (R1) | scheduling only: the same callbacks; a tick may run before or after a rebuild, which changes input ages, not the formulas (02 §9). |
 | Tests pinning this | `test_cbf_qp_fallback`, `test_cbf_row_l1_slack`, `test_cbf_row_padding`, `test_cbf_hard_constraints`, `test_cbf_multi_cp_qp`, `test_brake_slew_limited`, `test_accel_box_decoupling`, `test_cbf_risk_weighted_slack`, `test_safety_failure_policy`, `test_cbf_singularity`, `test_ssb_qp_rows`, `test_state_governor`, `test_rate_scaling`, `test_retreat_excess_speed`, `test_shipped_smoothness_config` (names; contents not read in this stage). |
 
 ## 9. Findings from this chapter
@@ -500,7 +513,7 @@ obstacle. The previous command equals the nominal.
   last reported rate and at least 300 frames after the previous report.
 - Users: `real_time_distance` (`self._rate`, L236, nominal = the camera profile rate) and
   `cbf_safety_filter` (`self._in_rate`, L225, nominal = `obstacle_input_rate_hz` = 90.0,
-  `fr3_control.yaml` L1537). In the filter it sizes the two evidence gates of ch. 07 (the 24-frame
+  `fr3_control.yaml` L1550; L1537 at B-1). In the filter it sizes the two evidence gates of ch. 07 (the 24-frame
   span gate and the 8-measurement margin gate, F-3-6) from the rate that actually arrives.
 - Consequence: for the first 120 distance messages (≈ 1.3 s at 90 Hz), and whenever the true rate
   drifts by less than 20 %, the gates are sized from the nominal 90 Hz. A stream that runs at

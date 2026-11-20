@@ -109,7 +109,7 @@ behind the latency example in chapter 01 §7, and it explains why the framework 
 ### 2.4 Executors and callback groups
 
 `cbf_safety_filter` is the only node on the control path with an explicit multithreaded design.
-It is verified in `cbf_safety_filter.py::__init__` (L421–528) and `main` (L2075):
+It is verified in `cbf_safety_filter.py::__init__` (L421–528), `make_executor` (L2074) and `main` (L2115):
 
 | Callback group (`MutuallyExclusiveCallbackGroup`) | Callbacks |
 |---|---|
@@ -117,13 +117,17 @@ It is verified in `cbf_safety_filter.py::__init__` (L421–528) and `main` (L207
 | `grp_perc` | `_update_constraints`, the 50 Hz rebuild of the constraint geometry |
 | `grp_ctrl` | `_qp_tick`, the QP at `qp_rate_hz` |
 
-The executor is a `MultiThreadedExecutor(num_threads=3)`.
+The executor is chosen by `executor_mode` (R1). The shipped default, `multi`, is a
+`MultiThreadedExecutor(num_threads=3)`; `single` is a `SingleThreadedExecutor` (refused with
+`qp_thread_fifo_prio` > 0).
 
-> **Note 2026-11-12 (R1, branch `refactor/cbf-executor-scheduling`, uncommitted; the documented
-> baseline is unchanged).** The executor is now chosen by the parameter `executor_mode`
-> (`fr3_control.yaml`, `CBF_PARAM_SPEC`). `multi` is the default and is the executor above;
-> `single` is a `SingleThreadedExecutor` (`cbf_safety_filter.py::make_executor`, `main`).
-> The callback groups are unchanged. [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md).
+> **Note 2026-11-12 (R1), updated in the B-2 review (2026-11-20).** R1 is part of the documented
+> baseline B-2 (`humble-mattia`, C-080). The parameter `executor_mode` (`fr3_control.yaml`,
+> `CBF_PARAM_SPEC`) selects the executor; the callback groups and callbacks are unchanged. The
+> default stays `multi`. Making `single` the default (R2) is **not** in this baseline: its offline
+> criterion is NOT_REPRODUCED and its Gazebo Q1 failed (F-8-60, F-8-61).
+> [refactoring/R1_EXECUTOR_CONFIGURATION.md](refactoring/R1_EXECUTOR_CONFIGURATION.md),
+> [refactoring/INTEGRATION_HUMBLE_MATTIA_20261120.md](refactoring/INTEGRATION_HUMBLE_MATTIA_20261120.md).
 
 These run in one Python interpreter, so they share the GIL. The QP thread's optional SCHED_FIFO
 elevation (`qp_thread_fifo_prio`) has defaulted to **off since 2026-11-07**, with a comment

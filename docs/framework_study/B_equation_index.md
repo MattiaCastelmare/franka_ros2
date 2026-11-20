@@ -136,28 +136,28 @@
 
 | Eq. | Line | Statement (from the chapter) | Code (chapter pointers) | Also cited in |
 |---|---:|---|---|---|
-| (12.21) | 517 | δ = (d_safe − gap_min + 0.001 m) · unit(spawn − cp_nearest) | `fr3_control.yaml`, `enforce_start_clearance`, `motion`, `pentagon`, `scenario` | — |
-| (12.20) | 200 | t_start = t_now + start_lead_s + start_offset_s,  start_lead_s = 0.25 s, start_offset_s from the seed. | `gz_plant`, `spawn_rt_controller`, `pin_filter`, `filter_cpu`, `Shutdown` | — |
-| (12.19) | 214 | , not imposed. A slow run keeps the stack's timing in sim seconds, but the stack's | `reflex_trips`, `rate_clips`, `rtf`, `rtf_p10`, `qdd_projection.frac` | — |
-| (12.15) | 268 | m = Σ m_i,  c = Σ m_i c_i / m,  I = Σ [I_i + m_i(‖c_i − c‖² 𝟙 − (c_i − c)(c_i − c)ᵀ)] | `_rigid_open_fingers`, `fr3_hand`, `_drop_finger_control`, `_set_initial_q`, `initial_value` | — |
-| (12.16) | 274 | ΔM_jj − I_a,j = Σ_{k>j} I_a,k (1 + (ẑ_j·ẑ_k)²)/2 ∈ [Σ_{k>j} I_a,k / 2, Σ_{k>j} I_a,k] | `franka_simulation gz_robot_description._add_armature` | — |
-| (12.1) | 312 | R_link = R_opt · R_LINK_FROM_OPTICAL^T,  t_link = t_opt | — | — |
-| (12.2) | 314 | hfov = 2·atan(W / 2f_x) | — | — |
-| (12.10) | 345 | σ_z(z) = z² σ_d / (f_px b),  b = 0.095 m, σ_d = 0.20 px | `sensor_range_uncertainty`, `wait_for_tf` | — |
-| (12.11) | 703 | over CPs and obstacles at sample k, and Q_m the q̈_safe messages received at bag times τ_m: | `min_gap`, `min_h`, `contact` | — |
-| (12.7) | 453 | t = max(0, t_sim − t_start) | `franka_simulation scenario_obstacles_system.cpp PreUpdate`, `simTime`, `PreUpdate` | — |
-| (12.3) | 458 | static:  p = p0, v = 0;  linear: p = p0 + v0 t, v = v0 | `simexp.obstacle_laws.position`, `simexp.obstacle_laws.velocity` | — |
-| (12.4) | 460 | ballistic:  p = p0 + v0 t + ½ g t²,  v = v0 + g t   (exact) | `simexp.obstacle_laws.position`, `simexp.obstacle_laws.velocity` | — |
-| (12.5) | 462 | oscillate:  p = p0 + â A sin(ωt + φ),  v = â A ω cos(ωt + φ),  ω = 2π/T_p | `simexp.obstacle_laws.position`, `simexp.obstacle_laws.velocity` | — |
-| (12.6) | 464 | wander:  p_i = p0_i + B_i sin(ω₀ r_i t + φ_i),  r = (1, φ_golden, 1 + √2),  ω₀ = 2π/T_p | `simexp.obstacle_laws._wander` | — |
-| (12.8) | 466 | pursuit:  v_k = s · unit(x_target − p_k),  p_{k+1} = p_k + v_k · min(Δt, t) | `simexp.obstacle_laws.pursue`, `fr3_link7` | — |
-| (12.9) | 492 | v0 = (x_fl − p0)/T_f − ½ g T_f   ⇒   p(T_f) = x_fl | — | — |
-| (12.12) | 705 | min_h = min_{k∈W} g_k − d_safe | `min_gap`, `min_h`, `contact`, `neg_duration_s` | — |
-| (12.13) | 707 | neg_duration_s = #{k∈W : g_k − d_safe < 0} · median_{k∈W}(t_{k+1} − t_k) | `contact`, `neg_duration_s`, `min_h_cp`, `t_min_h`, `task_final_err` | — |
-| (12.14) | 709 | contact = ∃ k∈W : g_k < 0 | `min_h`, `contact`, `neg_duration_s`, `min_h_cp`, `t_min_h` | protocol |
-| (12.17) | 711 | jerk_m = ‖Q_{m+1} − Q_m‖ / median(τ_{m+1} − τ_m),  jerk_p99 = P99(jerk) | `pentagon.p95_m`, `jerk_p99`, `qp_rate_hz`, `qp_rate_ok`, `condition.cbf_params.qp_rate_hz` | protocol |
-| (12.18) | 713 | qp_rate_hz = #{/cbf_status messages with τ ∈ W} / (t_end − t_start),  ok ⇔ \|qp_rate_hz/target − 1\| ≤ 0.05 | `jerk_p99`, `qp_rate_hz`, `qp_rate_ok`, `condition.cbf_params.qp_rate_hz`, `slack_max_any` | — |
-| (12.22) | 715 | frac = (q̈_real · q̈_cmd) / ‖q̈_cmd‖²,  q̈_real = box₁₀ₘₛ(d q̇/dt), counted when ‖q̈_cmd‖ ≥ 0.5 rad/s² | `rtf`, `rtf_p10`, `qdd_projection.frac`, `runner.digest_cell`, `lag/bias/rms` | protocol |
+| (12.21) | 533 | δ = (d_safe − gap_min + 0.001 m) · unit(spawn − cp_nearest) | `fr3_control.yaml`, `enforce_start_clearance`, `motion`, `pentagon`, `scenario` | — |
+| (12.20) | 201 | t_start = t_now + start_lead_s + start_offset_s,  start_lead_s = 0.25 s, start_offset_s from the seed. | `gz_plant`, `spawn_rt_controller`, `pin_filter`, `filter_cpu`, `gz_fr3_plant` | — |
+| (12.19) | 228 | , not imposed. A slow run keeps the stack's timing in sim seconds, but the stack's | `reflex_trips`, `rate_clips`, `rtf`, `rtf_p10`, `qdd_projection.frac` | — |
+| (12.15) | 282 | m = Σ m_i,  c = Σ m_i c_i / m,  I = Σ [I_i + m_i(‖c_i − c‖² 𝟙 − (c_i − c)(c_i − c)ᵀ)] | `_rigid_open_fingers`, `fr3_hand`, `_drop_finger_control`, `_set_initial_q`, `initial_value` | — |
+| (12.16) | 288 | ΔM_jj − I_a,j = Σ_{k>j} I_a,k (1 + (ẑ_j·ẑ_k)²)/2 ∈ [Σ_{k>j} I_a,k / 2, Σ_{k>j} I_a,k] | `franka_simulation gz_robot_description._add_armature` | — |
+| (12.1) | 326 | R_link = R_opt · R_LINK_FROM_OPTICAL^T,  t_link = t_opt | — | — |
+| (12.2) | 328 | hfov = 2·atan(W / 2f_x) | — | — |
+| (12.10) | 359 | σ_z(z) = z² σ_d / (f_px b),  b = 0.095 m, σ_d = 0.20 px | `sensor_range_uncertainty`, `wait_for_tf` | — |
+| (12.11) | 719 | over CPs and obstacles at sample k, and Q_m the q̈_safe messages received at bag times τ_m: | `min_gap`, `min_h`, `contact` | — |
+| (12.7) | 469 | t = max(0, t_sim − t_start) | `franka_simulation scenario_obstacles_system.cpp PreUpdate`, `simTime`, `PreUpdate` | — |
+| (12.3) | 474 | static:  p = p0, v = 0;  linear: p = p0 + v0 t, v = v0 | `simexp.obstacle_laws.position`, `simexp.obstacle_laws.velocity` | — |
+| (12.4) | 476 | ballistic:  p = p0 + v0 t + ½ g t²,  v = v0 + g t   (exact) | `simexp.obstacle_laws.position`, `simexp.obstacle_laws.velocity` | — |
+| (12.5) | 478 | oscillate:  p = p0 + â A sin(ωt + φ),  v = â A ω cos(ωt + φ),  ω = 2π/T_p | `simexp.obstacle_laws.position`, `simexp.obstacle_laws.velocity` | — |
+| (12.6) | 480 | wander:  p_i = p0_i + B_i sin(ω₀ r_i t + φ_i),  r = (1, φ_golden, 1 + √2),  ω₀ = 2π/T_p | `simexp.obstacle_laws._wander` | — |
+| (12.8) | 482 | pursuit:  v_k = s · unit(x_target − p_k),  p_{k+1} = p_k + v_k · min(Δt, t) | `simexp.obstacle_laws.pursue`, `fr3_link7` | — |
+| (12.9) | 508 | v0 = (x_fl − p0)/T_f − ½ g T_f   ⇒   p(T_f) = x_fl | — | — |
+| (12.12) | 721 | min_h = min_{k∈W} g_k − d_safe | `min_gap`, `min_h`, `contact`, `neg_duration_s` | — |
+| (12.13) | 723 | neg_duration_s = #{k∈W : g_k − d_safe < 0} · median_{k∈W}(t_{k+1} − t_k) | `contact`, `neg_duration_s`, `min_h_cp`, `t_min_h`, `task_final_err` | — |
+| (12.14) | 725 | contact = ∃ k∈W : g_k < 0 | `min_h`, `contact`, `neg_duration_s`, `min_h_cp`, `t_min_h` | protocol |
+| (12.17) | 727 | jerk_m = ‖Q_{m+1} − Q_m‖ / median(τ_{m+1} − τ_m),  jerk_p99 = P99(jerk) | `pentagon.p95_m`, `jerk_p99`, `qp_rate_hz`, `qp_rate_ok`, `condition.cbf_params.qp_rate_hz` | protocol |
+| (12.18) | 729 | qp_rate_hz = #{/cbf_status messages with τ ∈ W} / (t_end − t_start),  ok ⇔ \|qp_rate_hz/target − 1\| ≤ 0.05 | `jerk_p99`, `qp_rate_hz`, `qp_rate_ok`, `condition.cbf_params.qp_rate_hz`, `slack_max_any` | — |
+| (12.22) | 731 | frac = (q̈_real · q̈_cmd) / ‖q̈_cmd‖²,  q̈_real = box₁₀ₘₛ(d q̇/dt), counted when ‖q̈_cmd‖ ≥ 0.5 rad/s² | `rtf`, `rtf_p10`, `qdd_projection.frac`, `runner.digest_cell`, `lag/bias/rms` | protocol |
 ## [13_observability_and_tools.md](13_observability_and_tools.md)
 
 | Eq. | Line | Statement (from the chapter) | Code (chapter pointers) | Also cited in |
@@ -182,8 +182,8 @@ Each is either a derivation step, an assumption or a definition used by a neighb
 - (10.9) — [10_alternative_controllers.md](10_alternative_controllers.md) line 193: q̈ = M⁻¹(τ − Cq̇)   (the τ published excludes g; something downstream must add it).
 - (10.7) — [10_alternative_controllers.md](10_alternative_controllers.md) line 162: ẍ = [K_p(p_d − p) + K_d(v_d − J_v q̇) ;  K_pR e_R − K_dR J_ω q̇],
 - (10.8) — [10_alternative_controllers.md](10_alternative_controllers.md) line 180: min ½‖w_j M⁻¹Nᵀ(τ − τ_n)‖² + ½‖w_o J M⁻¹(τ − τ_n)‖² + ½ρs²  (w_j = w_o = 1, ρ = 1000).
-- (12.1) — [12_simulation.md](12_simulation.md) line 312: R_link = R_opt · R_LINK_FROM_OPTICAL^T,  t_link = t_opt
-- (12.2) — [12_simulation.md](12_simulation.md) line 314: hfov = 2·atan(W / 2f_x)
-- (12.9) — [12_simulation.md](12_simulation.md) line 492: v0 = (x_fl − p0)/T_f − ½ g T_f   ⇒   p(T_f) = x_fl
+- (12.1) — [12_simulation.md](12_simulation.md) line 326: R_link = R_opt · R_LINK_FROM_OPTICAL^T,  t_link = t_opt
+- (12.2) — [12_simulation.md](12_simulation.md) line 328: hfov = 2·atan(W / 2f_x)
+- (12.9) — [12_simulation.md](12_simulation.md) line 508: v0 = (x_fl − p0)/T_f − ½ g T_f   ⇒   p(T_f) = x_fl
 - (13.3) — [13_observability_and_tools.md](13_observability_and_tools.md) line 191: f = q̈_realᵀ q̈_cmd / ‖q̈_cmd‖²,  judged only when ‖q̈_cmd‖ > 0.5 rad/s²,
 - (13.4) — [13_observability_and_tools.md](13_observability_and_tools.md) line 299: event → consumption:   wait ~ U[0, T_c],  E = T_c/2,  max = T_c;

@@ -139,7 +139,7 @@
   },
   {
    "path": "franka_experiments/config/fr3_control.yaml",
-   "lines": 2672,
+   "lines": 2685,
    "role": "config (parameters)",
    "ch": "03",
    "note": "",
@@ -350,7 +350,7 @@
   },
   {
    "path": "franka_experiments/franka_experiments/nodes/cbf_safety_filter.py",
-   "lines": 2085,
+   "lines": 2137,
    "role": "ROS node",
    "ch": "08",
    "note": "",
@@ -749,7 +749,7 @@
   },
   {
    "path": "franka_experiments/franka_experiments/utils/config.py",
-   "lines": 806,
+   "lines": 810,
    "role": "util module",
    "ch": "03",
    "note": "",
@@ -1602,6 +1602,17 @@
    "stage": 7
   },
   {
+   "path": "franka_experiments/test/_cbf_characterisation.py",
+   "lines": 677,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
    "path": "franka_experiments/test/_launch_snapshot.py",
    "lines": 138,
    "role": "test",
@@ -1635,6 +1646,248 @@
    "stage": 7
   },
   {
+   "path": "franka_experiments/test/data/cbf_characterisation/faults.json",
+   "lines": 7697,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/faults.npz",
+   "lines": 3601,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/faults_box_only.json",
+   "lines": 1523,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/faults_box_only.npz",
+   "lines": 1018,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/free_space.json",
+   "lines": 1616,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/free_space.npz",
+   "lines": 752,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/input_edge_cases.json",
+   "lines": 2278,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/input_edge_cases.npz",
+   "lines": 1197,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/iso_speed_rows.json",
+   "lines": 3357,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/iso_speed_rows.npz",
+   "lines": 1700,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/joint_limit.json",
+   "lines": 2016,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/joint_limit.npz",
+   "lines": 980,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/obstacle_approach.json",
+   "lines": 4820,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/obstacle_approach.npz",
+   "lines": 2317,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/obstacle_static_close.json",
+   "lines": 2409,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/obstacle_static_close.npz",
+   "lines": 1317,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/optional_families.json",
+   "lines": 4275,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/optional_families.npz",
+   "lines": 2631,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/self_collision.json",
+   "lines": 2172,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/self_collision.npz",
+   "lines": 1315,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/singularity.json",
+   "lines": 2649,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
+   "path": "franka_experiments/test/data/cbf_characterisation/singularity.npz",
+   "lines": 996,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
    "path": "franka_experiments/test/data/experiment_log_header_94cd7b0.json",
    "lines": 341,
    "role": "test",
@@ -1665,6 +1918,17 @@
    "ext": false,
    "status": "partial",
    "stage": 7
+  },
+  {
+   "path": "franka_experiments/test/gen_cbf_characterisation_goldens.py",
+   "lines": 62,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
   },
   {
    "path": "franka_experiments/test/launch/test_rl_fake.launch.py",
@@ -1798,6 +2062,17 @@
    "stage": 7
   },
   {
+   "path": "franka_experiments/test/test_cbf_characterisation.py",
+   "lines": 287,
+   "role": "test",
+   "ch": "14",
+   "note": "C-082 characterisation suite (refactoring/CBF_MONOLITHS_ANALYSIS.md \u00a710)",
+   "reach": "",
+   "ext": false,
+   "status": "documented",
+   "stage": 8
+  },
+  {
    "path": "franka_experiments/test/test_cbf_curvature_term.py",
    "lines": 346,
    "role": "test",
@@ -1829,6 +2104,17 @@
    "ext": false,
    "status": "partial",
    "stage": 7
+  },
+  {
+   "path": "franka_experiments/test/test_cbf_executor_mode.py",
+   "lines": 216,
+   "role": "test",
+   "ch": "08",
+   "note": "added by R1/H2 (B-2 review)",
+   "reach": "",
+   "ext": false,
+   "status": "partial",
+   "stage": 8
   },
   {
    "path": "franka_experiments/test/test_cbf_fast_track.py",
@@ -2823,7 +3109,7 @@
   },
   {
    "path": "franka_simulation_experiments/config/conditions.yaml",
-   "lines": 1516,
+   "lines": 1517,
    "role": "config (sim experiment axes)",
    "ch": "12",
    "note": "",
@@ -2854,7 +3140,7 @@
   },
   {
    "path": "franka_simulation_experiments/launch/gz_cbf_stack.launch.py",
-   "lines": 273,
+   "lines": 292,
    "role": "launch file",
    "ch": "12",
    "note": "",
@@ -2935,13 +3221,13 @@
   },
   {
    "path": "franka_simulation_experiments/scripts/episode_supervisor.py",
-   "lines": 224,
+   "lines": 566,
    "role": "sim node / tool",
    "ch": "12",
    "note": "",
    "reach": "sim-exec",
    "ext": false,
-   "status": "documented"
+   "status": "partial"
   },
   {
    "path": "franka_simulation_experiments/scripts/ground_truth_node.py",
@@ -2995,7 +3281,7 @@
   },
   {
    "path": "franka_simulation_experiments/scripts/run_gz_scenarios.py",
-   "lines": 94,
+   "lines": 109,
    "role": "sim node / tool",
    "ch": "12",
    "note": "",
@@ -3045,7 +3331,7 @@
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/batch.py",
-   "lines": 305,
+   "lines": 312,
    "role": "sim library (simexp)",
    "ch": "12",
    "note": "",
@@ -3132,6 +3418,17 @@
    "reach": "sim-exec,test",
    "ext": false,
    "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/scripts/simexp/phase_start.py",
+   "lines": 313,
+   "role": "sim library (simexp)",
+   "ch": "12",
+   "note": "added by R1/H2 (B-2 review)",
+   "reach": "sim-exec,test",
+   "ext": false,
+   "status": "partial",
+   "stage": 8
   },
   {
    "path": "franka_simulation_experiments/scripts/simexp/procs.py",
@@ -3402,6 +3699,17 @@
    "reach": "",
    "ext": false,
    "status": "partial"
+  },
+  {
+   "path": "franka_simulation_experiments/test/test_phase_start.py",
+   "lines": 956,
+   "role": "test",
+   "ch": "12",
+   "note": "added by R1/H2 (B-2 review)",
+   "reach": "",
+   "ext": false,
+   "status": "partial",
+   "stage": 8
   },
   {
    "path": "franka_simulation_experiments/test/test_reflex_checks.py",

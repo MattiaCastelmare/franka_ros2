@@ -72,7 +72,7 @@ the node die at startup until then. The error message in `declare_from_spec` say
 
 | File | Size | Read by (Verified) | Role |
 |---|---:|---|---|
-| `fr3_control.yaml` | 2,672 lines | `cbf_safety_filter` (via `load_cbf_config`), `qddot_to_torque`, `pentagon_qddot_commander`, `rl_policy_commander`, `cbf_velocity_filter`, `cbf_OSCBF_filter`, `trajectory_*_node`, `iso_*`, `real_time_distance` (`perception:` only), offline scripts and `simexp` | **Topics**, the **CBF parameter block** (280 keys under `params:`), `perception:` (2 keys), `joint_limits:` (7 rows) |
+| `fr3_control.yaml` | 2,685 lines (B-2; 2,672 at B-1) | `cbf_safety_filter` (via `load_cbf_config`), `qddot_to_torque`, `pentagon_qddot_commander`, `rl_policy_commander`, `cbf_velocity_filter`, `cbf_OSCBF_filter`, `trajectory_*_node`, `iso_*`, `real_time_distance` (`perception:` only), offline scripts and `simexp` | **Topics**, the **CBF parameter block** (280 keys under `params:`), `perception:` (2 keys), `joint_limits:` (7 rows) |
 | `fr3_complete.yaml` | 930 lines | `real_time_distance` (`robot_config_path`), `utils/kinematics.py`, simulation truth geometry, scripts | Perception: robot segments, meshes, depth topics, distance thresholds, mask, zones, tracking, `sim_obstacle` |
 | `launch_defaults.yaml` | 332 lines | `utils/config.py::load_launch_defaults` → every hardware launch file; also `scripts/cbf_scenarios.py` and `simexp/sim_config.py` | **Defaults of the launch arguments**: 89 keys |
 | `fr3_distance.yaml` | 23 lines | `cbf_velocity_filter` only (`load_robot_config('distance')`) | joint and segment names, `multi_distance` topic |
@@ -105,7 +105,8 @@ on the module it is imported from:
 
 ### 3.3 The CBF parameter block, as data
 
-- `utils/config.py::CBF_PARAM_SPEC` (L385–766) maps **260 keys** to `(kind, bounds)`. The values
+- `utils/config.py::CBF_PARAM_SPEC` (L385–767) maps **261 keys** to `(kind, bounds)` (B-2: R1 added
+  `executor_mode`, choices `multi` / `single`; at B-1 it was L385–763, 260 keys). The values
   live in `fr3_control.yaml → params:`, which has **280** keys.
   > **Note 2026-11-12 (R1, uncommitted; baseline unchanged).** R1 adds one key to both,
   > `executor_mode` (`str`, choices `multi`/`single`, YAML value `multi`): 261 spec keys, 281 YAML

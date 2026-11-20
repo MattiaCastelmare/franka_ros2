@@ -2639,3 +2639,60 @@ This entry was reconstructed afterwards, at C-002, from PROGRESS.md and the chap
    keep `refactor/r2-single-executor-default`, which holds unmerged R2 code.
 6. **Exact next action:** wait for the user. The next phase is the B-2 baseline review, then the
    incremental refactoring (record §7), each with its own approval.
+
+## C-081 — 2026-11-20 — Refactoring preparation (message 19), STEP 1–2: branch and B-2 baseline review
+
+- User approval: message 19 (preparation of the `cbf_state_rows.py` / `cbf_safety_filter.py`
+  refactoring; no production code change, no CBF / ROS-interface / controller / executor-default
+  change, no novelty; stop for review at the end). Stashes 3, unchanged.
+1. **Branch:** `refactor/cbf-monoliths` created from `humble-mattia` `34d8daa`; tree clean at start;
+   `humble-mattia` and R2 branch untouched.
+2. **B-2 review (§8 procedure):** every chapter scanned for line references into the 8 changed
+   files (difflib map B-1 → B-2), for executor and `main` statements and for H2 behaviour.
+   - Updated: 02 (executor_mode, `make_executor` L2074 / `main` L2115, R1 note), 03 (2,685 lines;
+     `CBF_PARAM_SPEC` L385–767, 261 keys, measured with `ast`), 08 (YAML L1550; snapshot scope
+     F-8-44 / F-8-45; two consequence rows), 12 (H2 `start_mode` in §2.5 and §5.2, launch args,
+     6 `gz_cbf_stack` line references, §13 bullet), 14 (B-2 test counts), 15 and 16 Part E (YAML lines).
+   - No dependent statement in 01, 05, 06, 07, 09, 10, 11. No new code finding.
+   - Ledger: 349 files (3 added as partial; `episode_supervisor.py` documented → partial; 8 line counts
+     refreshed); appendix A and B regenerated.
+   - §8 row B-2 = `34d8daa4138528a38a4cc1bcece2c134d614fda7`. check_state: consistent (rc 0);
+     check_docs 14/14.
+3. **Exact next action:** STEP 3 (analysis document), then STEP 4–6.
+
+## C-082 — 2026-11-20 — Refactoring preparation (message 19), STEPs 3–6: analysis, characterisation tests, commit; stopped
+
+- User approval: message 19 (no production change; stop for architecture review). Author identity
+  Mattia Castelmare from `git config`; no AI co-author. Stashes 3, unchanged (fingerprint recorded in
+  the evidence directory). No Gazebo, no robot, no build (the install already equals the source:
+  `installed_vs_source()` empty).
+1. **STEP 3, analysis:** `refactoring/CBF_MONOLITHS_ANALYSIS.md`.
+   - `build` partitioned into R0–R11, with state reads and writes and cross-region locals (`ast`).
+   - `_qp_tick` STEP map; shared-state table; exception map.
+   - Performance-sensitive operations (C-062 magnitudes); problems A1–A8.
+   - Proposed modules (façade kept; no new ROS node); extraction sequence E1–E14 with gates; risks.
+2. **STEP 4, tests** (commit `f3d9841`, test files only):
+   - harness `_cbf_characterisation.py`;
+   - generator `gen_cbf_characterisation_goldens.py`;
+   - 11 golden scenarios (3,900 ticks, 650 rebuilds, 5.1 MB, recorded at `34d8daa`);
+   - `test_cbf_characterisation.py` (29 tests).
+
+   Exact equality throughout. The only test-only deviation is the fixed OSQP `adaptive_rho_interval`
+   (F-8-56).
+3. **STEP 5, runs** (Runtime (recorded), `~/franka_baseline_evidence/cbf_monoliths_prep_20261120/`,
+   `SHA256SUMS`):
+   - `--check` twice in fresh processes (different `PYTHONHASHSEED`): 11/11 IDENTICAL;
+   - mutation check: 1e-6 changes in 9 parameters detected; `zone_k0_priority` was not (priority band
+     not reached; §11);
+   - new tests 29/29;
+   - suite 1: 1434 / 35 / 9 — test by test, the 29 added pass and no existing outcome changed
+     (`comparison_with_C080.txt`);
+   - suites 2 and 3: 179 / 0 / 0 and 39 / 0 / 0; smoke ×3 PASSED;
+   - check_docs 14/14; check_state consistent.
+4. **Finding F-8-67** (S3 / P2): unguarded exceptions in `build`, `_update_constraints` and `_qp_tick`
+   propagate through rclpy `spin()`, so the node is destroyed (fail-stop). It is pinned as current
+   behaviour, as is F-8-44.
+5. **Baseline B-3** = `f3d9841` (tests only; production = `34d8daa`). The ledger has 374 files (25
+   added, documented, ch. 14 §7.2a); appendix A regenerated.
+6. **Exact next action:** stop. Wait for the user's review of the architecture before E1.
+

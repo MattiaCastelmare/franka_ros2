@@ -9,11 +9,11 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 
 | Status | Files |
 |---|---:|
-| documented | 100 |
+| documented | 124 |
 | read | 3 |
-| partial | 225 |
+| partial | 229 |
 | pending | 18 |
-| **total** | **346** |
+| **total** | **374** |
 
 ## 01 — Architecture → [01_architecture.md](01_architecture.md)
 
@@ -38,19 +38,19 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 
 ## 03 — Configuration → [03_configuration.md](03_configuration.md)
 
-13 files, 6137 lines; documented 3, read 2, partial 8.
+13 files, 6154 lines; documented 3, read 2, partial 8.
 
 | File | Role | Lines | Status | Class | Prod | Launch | Tests | Cited in |
 |---|---|---:|---|---|---:|---:|---:|---|
 | `franka_experiments/config/fake_hw_controller_params.yaml` | config (parameters) | 7 | partial | UNUSED CANDIDATE | 0 | 0 | 0 | 03, 15, 16 |
 | `franka_experiments/config/fr3_complete.yaml` | config (parameters) | 930 | partial | CURRENT | 0 | 0 | 0 | 01, 02, 03, 04, 05, 12, 15, 16 |
-| `franka_experiments/config/fr3_control.yaml` | config (parameters) | 2672 | partial | CURRENT | 0 | 0 | 0 | 01, 02, 03, 05, 06, 08, 10, 11, 12, 14, 15, 16 |
+| `franka_experiments/config/fr3_control.yaml` | config (parameters) | 2685 | partial | CURRENT | 0 | 0 | 0 | 01, 02, 03, 05, 06, 08, 10, 11, 12, 14, 15, 16 |
 | `franka_experiments/config/fr3_distance.yaml` | config (parameters) | 23 | documented | ALTERNATIVE | 0 | 0 | 0 | 02, 03, 15, 16 |
 | `franka_experiments/config/launch_defaults.yaml` | config (parameters) | 333 | documented | CURRENT | 0 | 0 | 0 | 01, 02, 03, 05, 10, 14, 15, 16 |
 | `franka_experiments/config/oscbf_params.yaml` | config (parameters) | 63 | partial | UNUSED CANDIDATE | 0 | 0 | 0 | 01, 03, 15, 16 |
 | `franka_experiments/franka_experiments/__init__.py` | package init | 0 | read | CURRENT | 1 | 0 | 19 | 14, 15 |
 | `franka_experiments/franka_experiments/utils/__init__.py` | util module | 6 | read | CURRENT | 3 | 0 | 2 | 14, 15 |
-| `franka_experiments/franka_experiments/utils/config.py` | util module | 806 | partial | CURRENT | 24 | 0 | 2 | 01, 02, 03, 05, 09, 12, 14, 15, 16 |
+| `franka_experiments/franka_experiments/utils/config.py` | util module | 810 | partial | CURRENT | 24 | 0 | 2 | 01, 02, 03, 05, 09, 12, 14, 15, 16 |
 | `franka_experiments/franka_experiments/utils/launch_support.py` | util module | 589 | partial | CURRENT | 4 | 0 | 0 | 01, 02, 09, 15 |
 | `franka_experiments/franka_experiments/utils/node_runtime.py` | util module | 170 | partial | CURRENT | 8 | 0 | 0 | 15 |
 | `franka_experiments/franka_experiments/utils/params.py` | util module | 293 | documented | CURRENT | 8 | 0 | 0 | 03, 06, 07, 08, 15, 16 |
@@ -211,11 +211,11 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 
 ## 08 — Constraints and QP → [08_constraints_and_qp.md](08_constraints_and_qp.md)
 
-27 files, 8175 lines; documented 8, partial 19.
+28 files, 8443 lines; documented 8, partial 20.
 
 | File | Role | Lines | Status | Class | Prod | Launch | Tests | Cited in |
 |---|---|---:|---|---|---:|---:|---:|---|
-| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | ROS node | 2085 | documented | CURRENT | 1 | 2 | 13 | 01, 02, 06, 07, 08, 14, 15, 16 |
+| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | ROS node | 2137 | documented | CURRENT | 1 | 2 | 13 | 01, 02, 06, 07, 08, 14, 15, 16 |
 | `franka_experiments/franka_experiments/utils/cbf_hard_limits.py` | util module | 456 | documented | CURRENT | 7 | 0 | 10 | 08, 15, 16 |
 | `franka_experiments/franka_experiments/utils/cbf_qp.py` | util module | 114 | documented | LEGACY | 0 | 0 | 0 | 08, 15 |
 | `franka_experiments/franka_experiments/utils/cbf_qp_assembly.py` | util module | 598 | documented | CURRENT | 4 | 0 | 16 | 07, 08, 15, 16 |
@@ -228,6 +228,7 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 | `franka_experiments/test/smoke_cbf_safety_filter.py` | test | 180 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/test_accel_box_decoupling.py` | test | 67 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/test_brake_slew_limited.py` | test | 100 | partial | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/test_cbf_executor_mode.py` | test | 216 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/test_cbf_hard_constraints.py` | test | 405 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/test_cbf_multi_cp_qp.py` | test | 303 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/test_cbf_qp_fallback.py` | test | 199 | partial | — | 0 | 0 | 0 |  |
@@ -298,32 +299,32 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 
 ## 12 — Simulation → [12_simulation.md](12_simulation.md)
 
-63 files, 10429 lines; documented 23, read 1, partial 39.
+65 files, 12082 lines; documented 22, read 1, partial 42.
 
 | File | Role | Lines | Status | Class | Prod | Launch | Tests | Cited in |
 |---|---|---:|---|---|---:|---:|---:|---|
 | `franka_simulation/launch/gz_fr3_plant.launch.py` | launch file (external, executed) | 180 | documented | — | 0 | 2 | 0 | 00, 01, 02, 12, 14 |
 | `franka_simulation_experiments/config/conditions.d/mppi_it08.yaml` | config (sim experiment axes) | 57 | partial | CURRENT | 0 | 0 | 0 | 03, 15, 16 |
-| `franka_simulation_experiments/config/conditions.yaml` | config (sim experiment axes) | 1516 | partial | CURRENT | 0 | 0 | 0 | 01, 03, 12, 14, 15 |
+| `franka_simulation_experiments/config/conditions.yaml` | config (sim experiment axes) | 1517 | partial | CURRENT | 0 | 0 | 0 | 01, 03, 12, 14, 15 |
 | `franka_simulation_experiments/config/control_regression_scenarios.yaml` | config (sim experiment axes) | 29 | read | UNUSED CANDIDATE | 0 | 0 | 0 | 03, 15 |
 | `franka_simulation_experiments/config/scenarios.yaml` | config (sim experiment axes) | 629 | partial | CURRENT | 0 | 0 | 0 | 01, 03, 12, 14, 15 |
-| `franka_simulation_experiments/launch/gz_cbf_stack.launch.py` | launch file | 273 | documented | CURRENT | 0 | 1 | 1 | 01, 02, 03, 12, 14, 15 |
+| `franka_simulation_experiments/launch/gz_cbf_stack.launch.py` | launch file | 292 | documented | CURRENT | 0 | 1 | 1 | 01, 02, 03, 12, 14, 15 |
 | `franka_simulation_experiments/launch/gz_circle_demo.launch.py` | launch file | 145 | partial | CURRENT | 0 | 0 | 0 | 01, 12, 14, 15 |
 | `franka_simulation_experiments/launch/gz_plant.launch.py` | launch file | 66 | partial | CURRENT | 0 | 1 | 1 | 12, 14, 15 |
 | `franka_simulation_experiments/scripts/check_self_occlusion.py` | sim node / tool | 107 | partial | CURRENT | 0 | 0 | 0 | 15 |
 | `franka_simulation_experiments/scripts/emulated_perception.py` | sim node / tool | 149 | documented | — | 0 | 1 | 0 | 02 |
-| `franka_simulation_experiments/scripts/episode_supervisor.py` | sim node / tool | 224 | documented | — | 0 | 1 | 1 | 02 |
+| `franka_simulation_experiments/scripts/episode_supervisor.py` | sim node / tool | 566 | partial | — | 0 | 1 | 1 | 02 |
 | `franka_simulation_experiments/scripts/ground_truth_node.py` | sim node / tool | 141 | documented | — | 0 | 1 | 0 | 02 |
 | `franka_simulation_experiments/scripts/gz_trajectory_markers.py` | sim node / tool | 256 | partial | CURRENT | 0 | 1 | 1 | 12, 15 |
 | `franka_simulation_experiments/scripts/pin_process.py` | sim node / tool | 72 | partial | — | 0 | 1 | 0 | 14 |
 | `franka_simulation_experiments/scripts/plot_control_regression.py` | sim node / tool | 70 | partial | CURRENT | 0 | 0 | 0 | 15 |
 | `franka_simulation_experiments/scripts/reflex_monitor.py` | sim node / tool | 155 | documented | — | 0 | 1 | 0 | 02 |
-| `franka_simulation_experiments/scripts/run_gz_scenarios.py` | sim node / tool | 94 | documented | CURRENT | 0 | 0 | 0 | 15 |
+| `franka_simulation_experiments/scripts/run_gz_scenarios.py` | sim node / tool | 109 | documented | CURRENT | 0 | 0 | 0 | 15 |
 | `franka_simulation_experiments/scripts/scenario_commander.py` | sim node / tool | 95 | documented | — | 0 | 1 | 0 | 02 |
 | `franka_simulation_experiments/scripts/simexp/__init__.py` | sim library (simexp) | 1 | documented | CURRENT | 14 | 0 | 20 | 14, 15 |
 | `franka_simulation_experiments/scripts/simexp/analysis.py` | sim library (simexp) | 217 | documented | — | 7 | 0 | 4 | 12 |
 | `franka_simulation_experiments/scripts/simexp/attribution.py` | sim library (simexp) | 132 | partial | — | 1 | 0 | 1 | 12 |
-| `franka_simulation_experiments/scripts/simexp/batch.py` | sim library (simexp) | 305 | documented | — | 1 | 0 | 2 | 12 |
+| `franka_simulation_experiments/scripts/simexp/batch.py` | sim library (simexp) | 312 | documented | — | 1 | 0 | 2 | 12 |
 | `franka_simulation_experiments/scripts/simexp/closed_loop.py` | sim library (simexp) | 292 | documented | — | 2 | 0 | 1 | 12, 13, 15 |
 | `franka_simulation_experiments/scripts/simexp/conditions.py` | sim library (simexp) | 135 | documented | — | 3 | 0 | 2 | 03, 12, 16 |
 | `franka_simulation_experiments/scripts/simexp/control_regression.py` | sim library (simexp) | 131 | partial | CURRENT | 0 | 0 | 1 | 03, 12, 15 |
@@ -332,6 +333,7 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 | `franka_simulation_experiments/scripts/simexp/graph_contract.py` | sim library (simexp) | 165 | partial | CURRENT | 0 | 0 | 1 | 12, 14, 15 |
 | `franka_simulation_experiments/scripts/simexp/obstacle_laws.py` | sim library (simexp) | 114 | documented | — | 1 | 0 | 2 | 12, 16 |
 | `franka_simulation_experiments/scripts/simexp/offline.py` | sim library (simexp) | 66 | partial | — | 2 | 0 | 1 |  |
+| `franka_simulation_experiments/scripts/simexp/phase_start.py` | sim library (simexp) | 313 | partial | — | 0 | 0 | 0 |  |
 | `franka_simulation_experiments/scripts/simexp/procs.py` | sim library (simexp) | 105 | documented | — | 1 | 0 | 2 |  |
 | `franka_simulation_experiments/scripts/simexp/provenance.py` | sim library (simexp) | 49 | documented | UNUSED CANDIDATE | 0 | 0 | 1 | 12, 14, 15, 16 |
 | `franka_simulation_experiments/scripts/simexp/reflex_checks.py` | sim library (simexp) | 149 | documented | — | 2 | 0 | 1 | 12 |
@@ -359,6 +361,7 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 | `franka_simulation_experiments/test/test_gz_trajectory_markers.py` | test | 143 | partial | — | 0 | 0 | 0 | 12 |
 | `franka_simulation_experiments/test/test_obstacle_law_wander.py` | test | 143 | partial | — | 0 | 0 | 0 | 12 |
 | `franka_simulation_experiments/test/test_offline_and_attribution.py` | test | 102 | partial | — | 0 | 0 | 0 | 12 |
+| `franka_simulation_experiments/test/test_phase_start.py` | test | 956 | partial | — | 0 | 0 | 0 |  |
 | `franka_simulation_experiments/test/test_reflex_checks.py` | test | 76 | partial | — | 0 | 0 | 0 | 12 |
 | `franka_simulation_experiments/test/test_run_provenance.py` | test | 28 | partial | — | 0 | 0 | 0 | 12 |
 | `franka_simulation_experiments/test/test_scenario_catalog.py` | test | 193 | partial | — | 0 | 0 | 0 | 12 |
@@ -418,7 +421,7 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 
 ## 14 — Build, launch and test → [14_build_launch_test.md](14_build_launch_test.md)
 
-23 files, 4487 lines; documented 11, partial 12.
+48 files, 58149 lines; documented 36, partial 12.
 
 | File | Role | Lines | Status | Class | Prod | Launch | Tests | Cited in |
 |---|---|---:|---|---|---:|---:|---:|---|
@@ -430,15 +433,40 @@ Each in-scope file appears once, under its **primary** chapter. Columns:
 | `franka_experiments/setup.cfg` | build metadata | 8 | documented | — | 0 | 0 | 0 | 14 |
 | `franka_experiments/setup.py` | build metadata | 69 | documented | — | 0 | 0 | 0 | 01, 03, 13, 14, 15 |
 | `franka_experiments/test/README.md` | test | 401 | partial | — | 0 | 0 | 0 | 00, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13 |
+| `franka_experiments/test/_cbf_characterisation.py` | test | 677 | documented | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/_launch_snapshot.py` | test | 138 | partial | — | 0 | 0 | 0 | 14 |
 | `franka_experiments/test/config/test_defaults.yaml` | test | 38 | partial | — | 0 | 0 | 0 | 14 |
 | `franka_experiments/test/data/README_snapshot.md` | test | 32 | partial | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/faults.json` | test | 7697 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/faults.npz` | test | 3601 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/faults_box_only.json` | test | 1523 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/faults_box_only.npz` | test | 1018 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/free_space.json` | test | 1616 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/free_space.npz` | test | 752 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/input_edge_cases.json` | test | 2278 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/input_edge_cases.npz` | test | 1197 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/iso_speed_rows.json` | test | 3357 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/iso_speed_rows.npz` | test | 1700 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/joint_limit.json` | test | 2016 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/joint_limit.npz` | test | 980 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_approach.json` | test | 4820 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_approach.npz` | test | 2317 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_static_close.json` | test | 2409 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_static_close.npz` | test | 1317 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/optional_families.json` | test | 4275 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/optional_families.npz` | test | 2631 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/self_collision.json` | test | 2172 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/self_collision.npz` | test | 1315 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/singularity.json` | test | 2649 | documented | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/data/cbf_characterisation/singularity.npz` | test | 996 | documented | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/data/torque_control_stack_94cd7b0_snapshot.json` | test | 2756 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/e2e_pentagon_moveit.sh` | test | 48 | partial | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/gen_cbf_characterisation_goldens.py` | test | 62 | documented | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/launch/test_rl_fake.launch.py` | test | 78 | partial | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/launch/test_torque_fake.launch.py` | test | 108 | partial | — | 0 | 0 | 0 | 01, 06, 09, 10, 14, 15 |
 | `franka_experiments/test/launch/test_velocity_fake.launch.py` | test | 99 | partial | — | 0 | 0 | 0 | 01 |
 | `franka_experiments/test/scripts/check_topics.sh` | test | 229 | partial | — | 0 | 0 | 0 |  |
+| `franka_experiments/test/test_cbf_characterisation.py` | test | 287 | documented | — | 0 | 0 | 0 |  |
 | `franka_experiments/test/test_node_self_references.py` | test | 219 | partial | — | 0 | 0 | 0 | 14 |
 | `franka_experiments/test/test_run_metadata.py` | test | 30 | partial | — | 0 | 0 | 0 | 15 |
 | `franka_simulation_experiments/.gitignore` | build metadata | 2 | documented | — | 0 | 0 | 0 |  |

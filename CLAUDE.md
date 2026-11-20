@@ -60,6 +60,10 @@ truth: do not rely on conversation history or on account-specific memory.
     R2 (default `single`, `cadaf62` / `359dd7c`) is **not** approved for merging and stays on
     `refactor/r2-single-executor-default`. Merging into `humble-mattia` always needs the user's
     explicit request.
+    **Monolith refactoring (message 19, 2026-11-20):** branch `refactor/cbf-monoliths`. The
+    preparation is approved and done (C-082): analysis, characterisation tests, no production change.
+    Each extraction step E1…E14 of `docs/framework_study/refactoring/CBF_MONOLITHS_ANALYSIS.md` §9
+    needs its own approval. Never regenerate the characterisation goldens to make a step pass.
 - **Git.**
   - Do not commit unless asked.
   - Never switch branches, reset, check out files, or apply, drop or modify stashes.

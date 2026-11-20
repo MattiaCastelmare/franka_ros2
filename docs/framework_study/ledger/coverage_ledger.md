@@ -5,14 +5,14 @@
 **Reach** column (static import closure, see [import_graph.md](import_graph.md)): `entry` = imported (transitively) by a `setup.py` console-script node; `sim-exec` = by a `franka_simulation_experiments/scripts/*.py` executable; `launch` = by a launch file (launch-time import); `script` = by a `franka_experiments/scripts/*.py` tool; `test` = by a test. Empty reach on a library module = candidate for "unused" (to be confirmed in Stage 7).
 
 
-## franka_experiments — nodes (24 files, 17483 lines)
+## franka_experiments — nodes (24 files, 17535 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
 | `franka_experiments/franka_experiments/nodes/__init__.py` | 0 | package init | 13 | 5 |  | documented |
 | `franka_experiments/franka_experiments/nodes/capsule_overlay_node.py` | 796 | ROS node | 13 | 5 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/cbf_OSCBF_filter.py` | 971 | ROS node | 10 | 5 | entry | documented |
-| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | 2085 | ROS node | 08 | 7 | entry,script,test | documented |
+| `franka_experiments/franka_experiments/nodes/cbf_safety_filter.py` | 2137 | ROS node | 08 | 7 | entry,script,test | documented |
 | `franka_experiments/franka_experiments/nodes/cbf_velocity_filter.py` | 623 | ROS node | 10 | 5 | entry | documented |
 | `franka_experiments/franka_experiments/nodes/distance_visualization_node.py` | 402 | ROS node | 13 | 5 |  | partial |
 | `franka_experiments/franka_experiments/nodes/ee_circle_velocity_commander.py` | 472 | ROS node | 06 | 3 | entry | partial |
@@ -34,7 +34,7 @@
 | `franka_experiments/franka_experiments/nodes/trajectory_overlay_node.py` | 449 | ROS node | 13 | 5 | entry | partial |
 | `franka_experiments/franka_experiments/nodes/trajectory_visualization_node.py` | 171 | ROS node | 13 | 5 | entry | partial |
 
-## franka_experiments — utils (59 files, 23083 lines)
+## franka_experiments — utils (59 files, 23087 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
@@ -56,7 +56,7 @@
 | `franka_experiments/franka_experiments/utils/cbf_state_rows.py` | 4354 | util module | 07 | 7 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/cbf_utils.py` | 46 | util module | 07 | 7 | entry,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/cbf_zones.py` | 356 | util module | 07 | 3 | entry,sim-exec,script,launch,test | documented |
-| `franka_experiments/franka_experiments/utils/config.py` | 806 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
+| `franka_experiments/franka_experiments/utils/config.py` | 810 | util module | 03 | 1 | entry,sim-exec,script,launch,test | partial |
 | `franka_experiments/franka_experiments/utils/constants.py` | 18 | util module | 04 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/distance_engine.py` | 1014 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
 | `franka_experiments/franka_experiments/utils/distance_utils.py` | 307 | util module | 05 | 2 | entry,sim-exec,script,launch,test | documented |
@@ -111,7 +111,7 @@
 | `franka_experiments/launch/torque_control_stack.launch.py` | 1527 | launch file | 01 | 1 |  | documented |
 | `franka_experiments/launch/velocity_cbf_control_stack.launch.py` | 441 | launch file | 01 | 1 |  | documented |
 
-## franka_experiments — config (18 files, 5138 lines)
+## franka_experiments — config (18 files, 5151 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
@@ -124,7 +124,7 @@
 | `franka_experiments/config/ee_tag_extrinsics.yaml` | 11 | config (calibration) | 05 | 2 |  | pending |
 | `franka_experiments/config/fake_hw_controller_params.yaml` | 7 | config (parameters) | 03 | 1 |  | partial |
 | `franka_experiments/config/fr3_complete.yaml` | 930 | config (parameters) | 03 | 1 |  | partial |
-| `franka_experiments/config/fr3_control.yaml` | 2672 | config (parameters) | 03 | 1 |  | partial |
+| `franka_experiments/config/fr3_control.yaml` | 2685 | config (parameters) | 03 | 1 |  | partial |
 | `franka_experiments/config/fr3_distance.yaml` | 23 | config (parameters) | 03 | 1 |  | documented |
 | `franka_experiments/config/handeye_eye_in_hand_rviz.rviz` | 120 | config (calibration) | 05 | 2 |  | pending |
 | `franka_experiments/config/handeye_rviz.rviz` | 150 | config (calibration) | 05 | 2 |  | pending |
@@ -167,18 +167,42 @@
 | `franka_experiments/scripts/throw_lead.py` | 46 | offline/aux script | 13 | 5 |  | partial |
 | `franka_experiments/scripts/watch_obstacle_tracks.py` | 153 | offline/aux script | 13 | 5 |  | partial |
 
-## franka_experiments — tests (111 files, 27182 lines)
+## franka_experiments — tests (137 files, 81060 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
 | `franka_experiments/test/README.md` | 401 | test | 14 | 7 |  | partial |
 | `franka_experiments/test/_cbf_builder_harness.py` | 390 | test | 08 | 7 |  | partial |
+| `franka_experiments/test/_cbf_characterisation.py` | 677 | test | 14 | 8 |  | documented |
 | `franka_experiments/test/_launch_snapshot.py` | 138 | test | 14 | 7 |  | partial |
 | `franka_experiments/test/config/test_defaults.yaml` | 38 | test | 14 | 7 |  | partial |
 | `franka_experiments/test/data/README_snapshot.md` | 32 | test | 14 | 7 |  | partial |
+| `franka_experiments/test/data/cbf_characterisation/faults.json` | 7697 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/faults.npz` | 3601 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/faults_box_only.json` | 1523 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/faults_box_only.npz` | 1018 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/free_space.json` | 1616 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/free_space.npz` | 752 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/input_edge_cases.json` | 2278 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/input_edge_cases.npz` | 1197 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/iso_speed_rows.json` | 3357 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/iso_speed_rows.npz` | 1700 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/joint_limit.json` | 2016 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/joint_limit.npz` | 980 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_approach.json` | 4820 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_approach.npz` | 2317 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_static_close.json` | 2409 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/obstacle_static_close.npz` | 1317 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/optional_families.json` | 4275 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/optional_families.npz` | 2631 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/self_collision.json` | 2172 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/self_collision.npz` | 1315 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/singularity.json` | 2649 | test | 14 | 8 |  | documented |
+| `franka_experiments/test/data/cbf_characterisation/singularity.npz` | 996 | test | 14 | 8 |  | documented |
 | `franka_experiments/test/data/experiment_log_header_94cd7b0.json` | 341 | test | 13 | 5 |  | partial |
 | `franka_experiments/test/data/torque_control_stack_94cd7b0_snapshot.json` | 2756 | test | 14 | 7 |  | partial |
 | `franka_experiments/test/e2e_pentagon_moveit.sh` | 48 | test | 14 | 7 |  | partial |
+| `franka_experiments/test/gen_cbf_characterisation_goldens.py` | 62 | test | 14 | 8 |  | documented |
 | `franka_experiments/test/launch/test_rl_fake.launch.py` | 78 | test | 14 | 7 |  | partial |
 | `franka_experiments/test/launch/test_torque_fake.launch.py` | 108 | test | 14 | 7 |  | partial |
 | `franka_experiments/test/launch/test_velocity_fake.launch.py` | 99 | test | 14 | 7 |  | partial |
@@ -191,9 +215,11 @@
 | `franka_experiments/test/test_ballistic_prediction.py` | 108 | test | 05 | 7 |  | partial |
 | `franka_experiments/test/test_brake_slew_limited.py` | 100 | test | 08 | 7 |  | partial |
 | `franka_experiments/test/test_calibration_check.py` | 186 | test | 05 | 7 |  | partial |
+| `franka_experiments/test/test_cbf_characterisation.py` | 287 | test | 14 | 8 |  | documented |
 | `franka_experiments/test/test_cbf_curvature_term.py` | 346 | test | 07 | 7 |  | partial |
 | `franka_experiments/test/test_cbf_diag_line.py` | 191 | test | 07 | 7 |  | partial |
 | `franka_experiments/test/test_cbf_evidence_trust.py` | 457 | test | 07 | 7 |  | partial |
+| `franka_experiments/test/test_cbf_executor_mode.py` | 216 | test | 08 | 8 |  | partial |
 | `franka_experiments/test/test_cbf_fast_track.py` | 81 | test | 07 | 7 |  | partial |
 | `franka_experiments/test/test_cbf_hard_constraints.py` | 405 | test | 08 | 7 |  | partial |
 | `franka_experiments/test/test_cbf_latency_compensation.py` | 174 | test | 07 | 7 |  | partial |
@@ -306,46 +332,46 @@
 | `franka_experiments/setup.cfg` | 8 | build metadata | 14 | 7 |  | documented |
 | `franka_experiments/setup.py` | 69 | build metadata | 14 | 7 |  | documented |
 
-## franka_simulation_experiments — launch (3 files, 484 lines)
+## franka_simulation_experiments — launch (3 files, 503 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
-| `franka_simulation_experiments/launch/gz_cbf_stack.launch.py` | 273 | launch file | 12 | 6 |  | documented |
+| `franka_simulation_experiments/launch/gz_cbf_stack.launch.py` | 292 | launch file | 12 | 6 |  | documented |
 | `franka_simulation_experiments/launch/gz_circle_demo.launch.py` | 145 | launch file | 12 | 6 |  | partial |
 | `franka_simulation_experiments/launch/gz_plant.launch.py` | 66 | launch file | 12 | 6 |  | partial |
 
-## franka_simulation_experiments — config (4 files, 2231 lines)
+## franka_simulation_experiments — config (4 files, 2232 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
 | `franka_simulation_experiments/config/conditions.d/mppi_it08.yaml` | 57 | config (sim experiment axes) | 12 | 6 |  | partial |
-| `franka_simulation_experiments/config/conditions.yaml` | 1516 | config (sim experiment axes) | 12 | 6 |  | partial |
+| `franka_simulation_experiments/config/conditions.yaml` | 1517 | config (sim experiment axes) | 12 | 6 |  | partial |
 | `franka_simulation_experiments/config/control_regression_scenarios.yaml` | 29 | config (sim experiment axes) | 12 | 7 |  | read |
 | `franka_simulation_experiments/config/scenarios.yaml` | 629 | config (sim experiment axes) | 12 | 6 |  | partial |
 
-## franka_simulation_experiments — sim nodes & tools (10 files, 1363 lines)
+## franka_simulation_experiments — sim nodes & tools (10 files, 1720 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
 | `franka_simulation_experiments/scripts/check_self_occlusion.py` | 107 | sim node / tool | 12 | 6 | sim-exec | partial |
 | `franka_simulation_experiments/scripts/emulated_perception.py` | 149 | sim node / tool | 12 | 6 | sim-exec | documented |
-| `franka_simulation_experiments/scripts/episode_supervisor.py` | 224 | sim node / tool | 12 | 6 | sim-exec | documented |
+| `franka_simulation_experiments/scripts/episode_supervisor.py` | 566 | sim node / tool | 12 | 6 | sim-exec | partial |
 | `franka_simulation_experiments/scripts/ground_truth_node.py` | 141 | sim node / tool | 12 | 6 | sim-exec | documented |
 | `franka_simulation_experiments/scripts/gz_trajectory_markers.py` | 256 | sim node / tool | 12 | 6 | sim-exec,test | partial |
 | `franka_simulation_experiments/scripts/pin_process.py` | 72 | sim node / tool | 12 | 6 | sim-exec | partial |
 | `franka_simulation_experiments/scripts/plot_control_regression.py` | 70 | sim node / tool | 12 | 6 | sim-exec | partial |
 | `franka_simulation_experiments/scripts/reflex_monitor.py` | 155 | sim node / tool | 12 | 6 | sim-exec | documented |
-| `franka_simulation_experiments/scripts/run_gz_scenarios.py` | 94 | sim node / tool | 12 | 6 | sim-exec | documented |
+| `franka_simulation_experiments/scripts/run_gz_scenarios.py` | 109 | sim node / tool | 12 | 6 | sim-exec | documented |
 | `franka_simulation_experiments/scripts/scenario_commander.py` | 95 | sim node / tool | 12 | 6 | sim-exec | documented |
 
-## franka_simulation_experiments — simexp library (21 files, 3402 lines)
+## franka_simulation_experiments — simexp library (22 files, 3722 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
 | `franka_simulation_experiments/scripts/simexp/__init__.py` | 1 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
 | `franka_simulation_experiments/scripts/simexp/analysis.py` | 217 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
 | `franka_simulation_experiments/scripts/simexp/attribution.py` | 132 | sim library (simexp) | 12 | 6 | sim-exec,test | partial |
-| `franka_simulation_experiments/scripts/simexp/batch.py` | 305 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
+| `franka_simulation_experiments/scripts/simexp/batch.py` | 312 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
 | `franka_simulation_experiments/scripts/simexp/closed_loop.py` | 292 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
 | `franka_simulation_experiments/scripts/simexp/conditions.py` | 135 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
 | `franka_simulation_experiments/scripts/simexp/control_regression.py` | 131 | sim library (simexp) | 12 | 6 | test | partial |
@@ -354,6 +380,7 @@
 | `franka_simulation_experiments/scripts/simexp/graph_contract.py` | 165 | sim library (simexp) | 12 | 6 | test | partial |
 | `franka_simulation_experiments/scripts/simexp/obstacle_laws.py` | 114 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
 | `franka_simulation_experiments/scripts/simexp/offline.py` | 66 | sim library (simexp) | 12 | 6 | sim-exec,test | partial |
+| `franka_simulation_experiments/scripts/simexp/phase_start.py` | 313 | sim library (simexp) | 12 | 8 | sim-exec,test | partial |
 | `franka_simulation_experiments/scripts/simexp/procs.py` | 105 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
 | `franka_simulation_experiments/scripts/simexp/provenance.py` | 49 | sim library (simexp) | 12 | 6 | test | documented |
 | `franka_simulation_experiments/scripts/simexp/reflex_checks.py` | 149 | sim library (simexp) | 12 | 6 | sim-exec,test | documented |
@@ -364,7 +391,7 @@
 | `franka_simulation_experiments/scripts/simexp/sim_config.py` | 217 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
 | `franka_simulation_experiments/scripts/simexp/truth_geometry.py` | 87 | sim library (simexp) | 12 | 6 | sim-exec,launch,test | documented |
 
-## franka_simulation_experiments — tests (24 files, 2769 lines)
+## franka_simulation_experiments — tests (25 files, 3725 lines)
 
 | File | Lines | Role | Ch. | Stage | Reach | Status |
 |---|---:|---|---|---|---|---|
@@ -386,6 +413,7 @@
 | `franka_simulation_experiments/test/test_gz_trajectory_markers.py` | 143 | test | 12 | 6 |  | partial |
 | `franka_simulation_experiments/test/test_obstacle_law_wander.py` | 143 | test | 12 | 6 |  | partial |
 | `franka_simulation_experiments/test/test_offline_and_attribution.py` | 102 | test | 12 | 6 |  | partial |
+| `franka_simulation_experiments/test/test_phase_start.py` | 956 | test | 12 | 8 |  | partial |
 | `franka_simulation_experiments/test/test_reflex_checks.py` | 76 | test | 12 | 6 |  | partial |
 | `franka_simulation_experiments/test/test_run_provenance.py` | 28 | test | 12 | 6 |  | partial |
 | `franka_simulation_experiments/test/test_scenario_catalog.py` | 193 | test | 12 | 6 |  | partial |
@@ -435,8 +463,8 @@ Documented in full because they run inside the pipeline; the rest of these packa
 
 ## Totals
 
-- In-scope files: **346** (109898 lines), of which 12 are executed-path dependency files.
-- Status: pending 18 · partial 225 · read 3 · documented 100.
+- In-scope files: **374** (165498 lines), of which 12 are executed-path dependency files.
+- Status: pending 18 · partial 229 · read 3 · documented 124.
 - Unassigned by the rules: 0
 
 | Chapter | Files |

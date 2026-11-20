@@ -344,7 +344,10 @@ Two images built on different days can therefore differ (Inferred).
 
 ### 7.2 Inventory (static; `tools/stage7_verification/test_traceability.py` [EXECUTED 2026-11-11])
 
-128 test-tree Python files hold 1487 test functions. The tags below are derived from imports and
+128 test-tree Python files hold 1487 test functions (B-1). *B-2 (2026-11-20): R1 added
+`franka_experiments/test/test_cbf_executor_mode.py` (15 test functions; 97 `test_*.py` files) and H2
+added `franka_simulation_experiments/test/test_phase_start.py` (47; 17 files). The integrated run of
+C-080 collected 1449 / 179 / 39 tests in the three suites (1405 / 179 / 39 pass; 35 known failures).* The tags below are derived from imports and
 string patterns, and a file can carry several:
 
 | Tag | Files | Meaning | Runs without |
@@ -362,6 +365,23 @@ string patterns, and a file can carry several:
 module's top level at the baseline. So no test is *uncollectable* at `ba68077` (Verified,
 static). That says nothing about whether the tests **pass**: no test was executed in Stage 7, and no
 recorded test result at the baseline exists (Unverified).
+
+### 7.2a Characterisation suite of the CBF filter (B-3, C-082)
+
+`franka_experiments/test/test_cbf_characterisation.py` (29 tests), its harness
+`_cbf_characterisation.py`, the generator `gen_cbf_characterisation_goldens.py` and 22 golden files
+in `test/data/cbf_characterisation/` pin the behaviour of `cbf_safety_filter` and `ConstraintBuilder`
+at `34d8daa`, before the refactoring of the two monoliths.
+- **What it runs:** the real node and config. The callbacks are called sequentially under a fake
+  clock, on a closed loop with a double-integrator plant.
+- **What it compares:** every snapshot field, every OSQP input and output, q̈_safe and `/cbf_status`,
+  all bit-exact.
+- **Preconditions:** the run refuses a stale install. Under a different library fingerprint the
+  golden tests skip.
+- **Results:** 29/29 pass. Suite 1 gives 1434 / 35 / 9, against C-080's 1405 / 35 / 9 plus these 29
+  (Runtime (recorded), C-082).
+
+Details, coverage and limits: [refactoring/CBF_MONOLITHS_ANALYSIS.md](refactoring/CBF_MONOLITHS_ANALYSIS.md) §10–11.
 
 ### 7.3 Which code a test run exercises (F-7-5)
 
@@ -443,6 +463,10 @@ Take `d_safe`, the obstacle-clearance margin of every barrier (ch. 07):
 
 ## 10. Consequences of modification
 
+- **Any change to `cbf_safety_filter.py`, `cbf_state_rows.py` or what they call** (B-3) must keep
+  `test_cbf_characterisation.py` green **without** regenerating its goldens, after a rebuild. A golden
+  difference means a behaviour change, which needs its own approval. A change of `fr3_control.yaml`
+  fails the config-hash check by design.
 - **Adding, renaming or deleting a file** in either target package changes the install only after a
   rebuild (a re-configure for `franka_simulation_experiments` scripts). A deletion **never**
   propagates to an existing copy-mode install: the old module stays importable, so a test that still

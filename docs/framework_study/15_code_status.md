@@ -185,7 +185,7 @@ The table is in [14 §6](14_build_launch_test.md#6-launch-files), with the class
 
 | File | Reader (Verified) | Class | Conf. |
 |---|---|---|---|
-| `fr3_control.yaml` | every Pipeline A node, ISO nodes, `simexp` | CURRENT: the main parameter file (2672 lines; ch. 03) | high |
+| `fr3_control.yaml` | every Pipeline A node, ISO nodes, `simexp` | CURRENT: the main parameter file (2685 lines at B-2, 2672 at B-1; ch. 03) | high |
 | `fr3_complete.yaml` | `real_time_distance`, the stacks, `kinematics`, `distance_utils` | CURRENT: perception and robot geometry | high |
 | `launch_defaults.yaml` | every stack launch and the hand-eye launches | CURRENT | high |
 | `camera_extrinsics.yaml`, `camera_link_extrinsics.yaml` | stacks' TF; `real_time_distance`, `self_detection`, `trajectory_overlay`; `torque_control_stack` | CURRENT (calibration output) | high |
@@ -233,7 +233,7 @@ Shipped values in the hardware-default launch (Verified in the cited chapters):
 | zone ladder, standoff margin h_std, `enable_vobs_in_hdot` | ON | 07 §3–5 |
 | go-around, livelock escape, lateral evasion, singularity recovery | ON | 06 §4–6 |
 | curvature term κ, sensor-range margin h_rng, evidence margin h_ev, feedforward h_brake | OFF | 07 §3.5–3.6 |
-| memory rows, weighted slack (`enable_weighted_slack`, `fr3_control.yaml` L2475, read in Stage 7), outrun evasion | OFF | 07 §6, 06 §6.6 |
+| memory rows, weighted slack (`enable_weighted_slack`, `fr3_control.yaml` L2488 (L2475 at B-1), read in Stage 7), outrun evasion | OFF | 07 §6, 06 §6.6 |
 | self-shadow barrier (G_SSB), ballistic prediction | OFF | 05 §7.5, §8.2; 08 |
 | ISO layer (`iso_enabled`), SSM speed rows | OFF | 11 |
 | OSCBF obstacle/velocity/workspace rows | OFF | 10 §3 |
