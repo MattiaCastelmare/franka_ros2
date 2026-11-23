@@ -30,161 +30,155 @@
 \newpage
 
 % =====================================================================
-\section{Purpose and Evidence}
-This study discusses the circular and perpendicular baseline controllers and their
-full-online optimized corresponding counterparts, including the real hierarchical
-quadratic programming (HQP) implementation. It evaluates saved simulation data,
-explains the gain parameters, and illustrates why smooth ramps are utilized to reduce
-observer transients.
+\section{Scope and Data Sources}
+This report compares the baseline and full-online controllers on circular and
+perpendicular trajectories. It describes the implementation of hierarchical quadratic
+programming (HQP), explains how the gains were chosen, and uses the saved simulations
+to examine the effect of smooth ramps on observer transients. The figures reproduce
+the standard plots saved with each run, with the baseline shown first in each pair.
 
-Figures represent the standard plots that were saved with the chosen runs. Controller
-comparisons are presented consecutively, with the baseline initially presented and the
-full-online controller second.
+The selected runs use a 1000\,Hz controller and a real-time factor (RTF) of 0.20.
+The circular runs span 20 simulated seconds. The perpendicular runs finish their
+scheduled approach and endpoint hold after about 0.57\,s, within the 2\,s launch limit.
 
-The selected log data require a 1000\,Hz controller and a real-time factor (RTF) of
-0.20. The circular combination reaches 20 simulated seconds. The perpendicular pairing
-completes its scheduled approach and endpoint hold after roughly 0.57\,s; the
-programmed 2\,s launch duration is an upper bound, not an incomplete trial.
-
-The first-impact findings reveal \textbf{35.69 percent less entry mass} in the circular
-case and \textbf{32.02 percent less} in the perpendicular case. Entry speeds are roughly
-matched. These measurements compare entire controller configurations: they do not
-differentiate mass minimization from changes in redundancy resolution, damping and
-limitations. Section~\ref{sec:elastic} states the reduction expected from a
+At first impact, the full-online controller reduced the entry mass by
+\textbf{35.69 percent} for the circular trajectory and \textbf{32.02 percent} for the
+perpendicular trajectory. Entry speeds were similar within each pair. The comparison
+captures the combined effect of mass minimization, redundancy resolution, damping and
+constraints. Section~\ref{sec:elastic} derives the reduction predicted by a
 one-dimensional elastic impact model, and Section~\ref{sec:elastic-compare} compares
-that prediction with the measured first impacts.
+that prediction with the measurements.
 
-There are two important source constraints. The circular optimized run includes a
-corresponding return to the initial posture after each revolution, whereas its baseline
-runs constantly. The perpendicular pair comes from the same stored tuning research, with
-the active 4/12 secondary gains, but neither log data records the newer first-RUN-sample
-time-origin protocol. The report utilizes parameters kept inside each NPZ, rather than
-replacing past settings with today's YAML files.
+The circular full-online controller returns to the initial posture after each
+revolution. Its baseline follows the circle continuously. Both perpendicular runs come
+from the same tuning study, which used the current 4/12 secondary gains for the
+full-online controller. Both logs predate the convention of using the first RUN
+sample as the time origin. The analysis uses the parameters recorded in each NPZ file.
 
 % =====================================================================
-\section{Experimental Setup and Metric Definitions}
+\section{Experimental Setup and Metrics}
 \label{sec:setup}
-Both experiments use the seven-joint FR3 model, starting at
+Both experiments use the seven-joint FR3 model with initial configuration
 \begin{equation}
   q_0 = [0,\ -0.1517,\ 0,\ -2.6105,\ 0,\ 4.0295,\ 0.785]^{\mathsf T}\ \text{rad}.
 \end{equation}
 
-The controlled fingertip starts near $(0.56, 0, 0.50)$\,m. The wall is the plane
+The fingertip starts near $(0.56, 0, 0.50)$\,m. The wall lies in the plane
 $x = 0.62$\,m, with outward normal $n = [-1, 0, 0]^{\mathsf T}$, stiffness
-$20\,000$\,N/m and damping $15$\,N\,s/m. The measured normal velocity is positive into
-the wall. The selected runs use a nominal dynamics without measurement noise, mass
-inaccuracy or joint friction.
+$20\,000$\,N/m and damping $15$\,N\,s/m. Normal velocity is positive toward the wall.
+The selected runs use nominal dynamics without measurement noise, mass errors or
+joint friction.
 
-The circular reference is a vertical $x$--$z$ circle of radius 0.04\,m and cruise period
-2\,s, with a 1\,s angular startup ramp. One revolution from rest takes 2.5\,s because
-of that ramp. The perpendicular reference approaches at 0.20\,m/s after a 0.10\,s speed
-ramp, requests 10\,mm final overlap, stops over the final 4\,mm and holds the endpoint
-for 0.15\,s. The reference overlap is not measured wall penetration.
+The circular reference follows a vertical circle in the $x$--$z$ plane with a radius of
+0.04\,m and a cruise period of 2\,s. With the 1\,s angular startup ramp, one
+revolution from rest takes 2.5\,s. The perpendicular reference reaches
+0.20\,m/s after a 0.10\,s speed ramp. It calls for a final overlap of 10\,mm with the
+wall, brakes over the last 4\,mm and holds the endpoint for 0.15\,s. The overlap
+specifies the reference endpoint. Wall penetration is measured separately.
 
-The comparison procedure reuses \texttt{first\_impact} from the analysis code. A contact
-begins at the first sample with $F_n > 0$. Its first compression-release cycle
-terminates at detachment or at the simulated start of recompression, whichever occurs
-first. Later bounces do not add to that cycle's force, impulse or penetration measures.
+The analysis uses \texttt{first\_impact} to identify the first sample with $F_n > 0$
+as the start of contact. The first compression-release cycle ends at detachment or
+when recompression begins in the simulation, whichever occurs first. The force,
+impulse and penetration reported for that cycle cover this interval.
 
-Entry mass and velocity come from the sample specifically before contact. Entry normal
-kinetic energy and normal impulse are
+Entry mass and velocity come from the sample immediately before contact. The normal
+kinetic energy at entry and the normal impulse over the first cycle are given by
 \begin{equation}
   E_n^- = \frac{1}{2}\, \ms \left(\vs\right)^2, \qquad
   I_n = \int_{t_c}^{t_e} F_n(t)\, dt .
 \end{equation}
 
-Impulse employs trapezoids at the actual saved timestamps. Tracking RMS is
-time-weighted; the tables use the precontact interval. Missing data are not replaced
-with a current-contact sample. All limit checks refer to saved samples, not to a
-continuous-time certificate.
+The impulse is integrated with the trapezoidal rule at the saved timestamps. The
+tables report time-weighted RMS tracking error over the precontact interval. The
+entry metrics remain unavailable when the precontact sample is missing. Limit checks
+cover the saved samples.
 
 % =====================================================================
 \section{Controller Formulation}
 
 \subsection{Shared Cartesian tracking law}
 Let $J = \partial p/\partial q$, $e = p_d - p$ and $\dot e = v_d - J\dot q$. All four
-controllers request the same Cartesian acceleration feedback:
+controllers use the same Cartesian acceleration law
 \begin{equation}
   a_{\mathrm{trk}} = a_d + 100\, e + 20\, \dot e, \qquad
   b = a_{\mathrm{trk}} - \dot J \dot q .
 \end{equation}
-The major request is acceleration feedback with trajectory feedforward. No
-posture-dependent Cartesian inertia amplifies the 100/20 gains. Only the fingertip
-position is controlled; its orientation remains free.
+The law adds the reference acceleration to feedback on position and velocity.
+The 100/20 gains act directly on those errors, independently of Cartesian inertia.
+The controllers track fingertip position and leave its orientation free.
 
 \subsection{Baseline controllers}
-The baseline uses the Euclidean pseudoinverse and its null-space projector:
+The baseline uses the Euclidean pseudoinverse and its null-space projector to compute
+the joint acceleration and actuator command.
 \begin{gather}
   J^\dagger = \pinv(J), \qquad N_E = I - J^\dagger J, \\
   u_B = J^\dagger b + N_E \bigl( 25 (q_0 - q) - 10\, \dot q \bigr), \qquad
   \tau_{\mathrm{cmd}} = M(q)\, u_B + c(q, \dot q).
 \end{gather}
-Here $c = C(q,\dot q)\dot q$. The postural attraction and damping stay active throughout
-mobility. They regulate redundancy without directly substituting an external contact
-force. The baseline captures directional mass but does not diminish it. Its torque is
-trimmed by the runner, which also enforces its current stop conditions; the baseline
-does not solve an HQP.
+Here $c = C(q,\dot q)\dot q$. Posture feedback and damping govern the null-space
+motion throughout the run. Directional effective mass is evaluated for reporting.
+The runner clips the commanded torque and enforces the stop conditions. Contact force
+acts as an external disturbance.
 
-\texttt{baseline\_perp.py} inherits this law and replaces the circular reference with
-the perpendicular method. In this simulator gravity compensation is supplied
-independently, therefore the returned actuator instruction does not add the gravity
-vector $g$.
+\texttt{baseline\_perp.py} uses the same law with the perpendicular reference. The simulator
+supplies gravity compensation $g$ separately from the actuator command.
 
 \subsection{Full-online optimized controllers}
-The optimized controllers construct a dynamically consistent inverse and
-projector~\cite{khatib1987}:
+The optimized controllers use the dynamically consistent inverse and its
+null-space projector~\cite{khatib1987}.
 \begin{equation}
   \bar J = M^{-1} J^{\mathsf T} \left( J M^{-1} J^{\mathsf T} \right)^{-1}, \qquad
   N = I - \bar J J .
 \end{equation}
-Directional effective mass~\cite{haddadin2017} and the online mass-gradient torque
-preference are
+The secondary torque preference follows the gradient of the directional effective
+mass~\cite{haddadin2017}.
 \begin{equation}
   m_n(q) = \frac{1}{n^{\mathsf T} J M^{-1} J^{\mathsf T} n}, \qquad
   \tau_m = -\rho(t)\, k_m\, N^{\mathsf T} \nabla_q m_n(q).
 \end{equation}
-The gradient is determined analytically at the measured configuration, using model
-derivatives. It is neither normalized nor trimmed. In the nominal model with full task
-rank, the projected torque satisfies $J M^{-1} \tau_m = 0$. The HQP selects the final
-feasible command.
+The controller computes the gradient analytically from model derivatives at the
+measured configuration and uses it at its original scale. In the nominal model with
+full task rank, the projected torque satisfies $J M^{-1} \tau_m = 0$. The HQP selects
+the final feasible command.
 
-We also tested hybrid HQP variants for both trajectories. They combined the online
-mass gradient with a fixed posture $q^*$ computed offline at the nominal
-contact point. We selected the full-online variants for this study because they yielded
-slightly lower first-impact masses in the available trials and simplified setup by
-eliminating the task-specific posture search.
+We also tested hybrid HQP variants on both trajectories. They combined the online
+mass gradient with a fixed posture $q^*$ computed offline at the nominal contact
+point. We selected the full-online variants because they produced slightly lower
+first-impact masses in the available trials and eliminated the task-specific posture
+search.
 
-During ordinary tracking the secondary acceleration preference is
+During tracking, the secondary acceleration preference is
 \begin{equation}
   u_{\mathrm{pref}} = \bar J b - k_d N \dot q + M^{-1} \tau_m .
 \end{equation}
 
-The perpendicular full-online controller employs this strategy during its approach and
-contact, with $k_m = 4$ and $k_d = 12$. It has no initial-posture attraction and no
-collision-triggered retreat. The observer impacts disturbance-aware constraint
-predictions; its residual value is not immediately deducted from the prescribed torque.
+The perpendicular full-online controller uses this preference during both approach and
+contact, with $k_m = 4$ and $k_d = 12$. Its null-space terms are damping and mass
+reduction. Contact detection leaves the tracking reference in place. The observer
+residual enters the disturbance-aware constraint prediction, and the commanded torque
+comes from the HQP solution.
 
-The circular full-online controller employs $k_m = 2$ and $k_d = 24$ while tracking.
-After each revolution it enters RETURN: a 0.20\,s braking reference hits the original
-Cartesian point at rest, the mass term disappears out, and a null-space attraction
-towards $q_0$ goes in. Return gains are 25 and 10. It restarts only when every joint
-error is at most 0.001\,rad and every joint speed is at most 0.005\,rad/s. A return
-surpassing 5\,s ends the trial. There is no constant $q_0$ attraction during the
-tracking period.
+The circular full-online controller uses $k_m = 2$ and $k_d = 24$ during tracking.
+After each revolution it enters RETURN. A 0.20\,s braking reference ends at rest
+at the original Cartesian point. Over the same interval, the mass term fades and
+the null-space attraction to $q_0$ ramps up. The return gains are 25 and 10. The next
+revolution starts when every joint error is at most 0.001\,rad and every joint speed
+is at most 0.005\,rad/s. A return that exceeds 5\,s ends the trial. Attraction to
+$q_0$ is confined to RETURN.
 
 % =====================================================================
-\section{How the HQP Is Used and Solved}
+\section{Hierarchical Quadratic Program}
 
 \subsection{Decision variable and constraints}
-The optimization variable is actuator-induced joint acceleration,
+The HQP optimizes the joint acceleration induced by the actuator command.
 \begin{equation}
   u = M^{-1} (\tau_{\mathrm{cmd}} - c) \in \mathbb{R}^7 .
 \end{equation}
-The hard interval $[\ell_h,r_h]$ comes from predicting joint position and velocity
-one step ahead under constant acceleration. The prediction starts from the state
-propagated through a 3\,ms command delay using the previously applied torque. The
-observer residual $r$ gives the estimated plant acceleration $u+M^{-1}r$, and an
-empirical uncertainty reserve tightens the bounds on $u$.
+To obtain the hard interval $[\ell_h,r_h]$, the controller predicts joint position
+and velocity one step ahead under constant acceleration. It first propagates the
+measured state through a 3\,ms command delay using the previously applied torque.
+The observer residual $r$ gives the estimated plant acceleration $u+M^{-1}r$.
+An empirical uncertainty reserve tightens the bounds on $u$.
 
 The hard feasible set is
 \begin{gather}
@@ -193,23 +187,23 @@ The hard feasible set is
   c_{\mathrm{eff}} = c + \tfrac{1}{2} g, \qquad
   T_{\mathrm{eff}} = T - \tfrac{1}{2} |g| .
 \end{gather}
-This torque intersection limits both the gravity-compensated actuator command and the
+The torque bounds cover both the gravity-compensated actuator command and the
 nominal motor torque including gravity. Torque limits are 87\,N\,m for joints 1--4
 and 12\,N\,m for joints 5--7. The hard position margin of 0.06\,rad leaves a
 0.01\,rad buffer before the runner's 0.05\,rad stop band. The hard joint speed
 limit is 2.62\,rad/s for joints 1--4, 4.18\,rad/s for joint 6, and 5.26\,rad/s
 for joints 5 and 7.
 
-The soft position and velocity barriers encourage braking before the hard limits
-are reached. The position barrier uses a preferred margin of 0.15\,rad. Their rates
-are 12 and 10\,s$^{-1}$, respectively. The third soft group uses a 30\,rad/s$^2$
-acceleration preference to limit aggressive joint motion. During impact, braking
-requests can conflict with this preference. The first QP can relax the soft bounds
-while still enforcing the hard limits.
+The soft position and velocity barriers encourage braking as the joints approach
+their hard limits. The position barrier uses a preferred margin of 0.15\,rad.
+The position and velocity barrier rates are 12 and 10\,s$^{-1}$, respectively.
+The third group sets a preferred acceleration limit of 30\,rad/s$^2$. Braking
+during an impact can require an acceleration outside that range. The first QP
+can relax the soft bounds while enforcing the hard limits.
 
-\subsection{Level 1: minimize soft-constraint relaxation}
-With nonnegative physical slacks $s_L, s_U \in \mathbb{R}^{3\times 7}$ and positive
-normalization scales $S_{gi}$, solve
+\subsection{Level 1. Minimum soft-constraint relaxation}
+The first QP uses nonnegative slacks $s_L, s_U \in \mathbb{R}^{3\times 7}$ in
+physical units and positive normalization scales $S_{gi}$.
 \begin{equation}
 \begin{aligned}
   \min_{u,\, s_L,\, s_U}\ & \frac{1}{2} \sum_{g,i}
@@ -219,85 +213,89 @@ normalization scales $S_{gi}$, solve
      L_{gi} - s_{L,gi} \le u_i \le U_{gi} + s_{U,gi} .
 \end{aligned}
 \end{equation}
-There is no acceleration penalty at this level: reducing relaxation has priority over
-tracking and redundancy. Numerically this QP has 49 variables: 7 scaled accelerations
-and 42 dimensionless lower/upper slacks. Torque rows have also been normalized.
+The objective penalizes only the slacks, giving their minimization priority over
+tracking and redundancy. The QP has 49 variables, of which 7 are scaled
+accelerations and 42 are dimensionless slacks for the lower and upper bounds.
+The solver also uses normalized torque rows.
 
-The verified optimal slacks are frozen for the next levels. Up to a numerical allowance
-$\delta = 2 \times 10^{-5}$ in the bound units, they define
+After validating the solution, the controller fixes the optimal slacks for the
+remaining levels. With a numerical allowance of $\delta = 2 \times 10^{-5}$ in
+the units of the bounds, the slacks define
 \begin{equation}
   \ell_F = \max\!\left( \ell_h,\ \max_g \bigl[ L_g - \hat s_{L,g} - \delta \bigr] \right),
   \qquad
   r_F = \min\!\left( r_h,\ \min_g \bigl[ U_g + \hat s_{U,g} + \delta \bigr] \right).
 \end{equation}
-Lower-priority jobs therefore cannot achieve better tracking by requesting arbitrarily
-larger soft-bound relaxing.
+The next two levels optimize tracking and redundant motion within this fixed
+interval.
 
-\subsection{Level 2: Cartesian tracking}
-Within the hard torque constraints and the frozen interval $\ell_F \le u \le r_F$, solve
+\subsection{Level 2. Cartesian tracking}
+The tracking QP minimizes the following objective subject to the hard torque
+constraints and the interval $\ell_F \le u \le r_F$.
 \begin{equation}
   u_2 = \arg\min_u \left[ \frac{1}{2} \| J u - b \|_2^2
         + \frac{\epsilon}{2} \| u \|_2^2 \right], \qquad \epsilon = 10^{-8} .
 \end{equation}
-The Hessian is $J^{\mathsf T} J + \epsilon I$. If constraints prevent exact tracking,
-the achieved task acceleration is $J u_2$, which does not need to be equal to $b$.
+The Hessian is $J^{\mathsf T} J + \epsilon I$. If the constraints prevent exact
+tracking, the solution achieves a task acceleration $J u_2$ that differs from $b$.
 
-\subsection{Level 3: online mass and redundant motion}
-Solve
+\subsection{Level 3. Online mass and redundant motion}
+The final QP adds an equality to the existing bounds and torque constraints.
 \begin{equation}
   u_3 = \arg\min_u \frac{1}{2} \| u - u_{\mathrm{pref}} \|_2^2, \qquad J u = J u_2 ,
 \end{equation}
-under the same bounds and torque constraints. The equality keeps the task acceleration
-actually accomplished at level 2. The secondary objective is Euclidean, with Hessian
-$I$; inertia is employed in the preference and torque mapping, but not as an extra
-weighting matrix in this QP. The selected acceleration generates
+The equality preserves the task acceleration achieved at level 2. The objective
+uses the Euclidean norm, with Hessian $I$. Inertia enters the
+acceleration preference and the conversion to commanded torque,
 $\tau_{\mathrm{cmd}} = M u_3 + c$.
 
-This is a lexicographic series of convex QPs at the present sample. It does not
-immediately optimize future impact mass or solve a predictive trajectory problem.
+At each sample, the controller solves the convex QPs in lexicographic order to
+select one acceleration command. The mass objective acts through the preference
+evaluated at the current configuration.
 
 \subsection{Numerical solution and fallback policy}
-Three persistent OSQP~\cite{osqp} situations maintain sparse matrix patterns and warm
-beginnings between updates. Current parameters are absolute/relative tolerance
-$10^{-6}$, at most 1000 iterations, termination checks every ten iterations, adaptive
-$\rho$ enabled and smoothing disabled. Matrix coefficients and limits are modified from
-the current state.
+The controller reuses three OSQP~\cite{osqp} solver instances with fixed sparsity
+patterns and warm starts between updates. It updates the matrix coefficients and
+bounds from the current state. The absolute and relative tolerances are $10^{-6}$.
+The solver runs at most 1000 iterations and checks termination every ten iterations.
+It adapts $\rho$ and runs with polishing disabled.
 
-An OSQP status of solved or solved-inaccurate is accepted only after independent
-finite-value and physical-unit verification checks. The feasibility tolerance is
-$2 \times 10^{-4}$ while the task-preservation tolerance is $2 \times 10^{-5}$. Solver
-status by itself is insufficient.
+For a status of solved or solved-inaccurate, the controller accepts the solution only
+after checking that its values are finite and that it satisfies the constraints in
+physical units. The feasibility tolerance is $2 \times 10^{-4}$ and the
+task-preservation tolerance is $2 \times 10^{-5}$.
 
-If the secondary QP fails, the fresh verified level-2 solution is used. If tracking
-fails after level 1 succeeds, the fresh verified level-1 command is used. If level 1
-cannot provide a validated hard-feasible command, the controller requests termination
-and applies bounded damping. No prior update's command is reused as a successful
-solution.
+If the secondary QP fails, the controller uses the verified level-2 solution
+from the current sample. If tracking fails after level 1 succeeds, it uses that
+sample's verified level-1 command. If level 1 yields no verified command that
+satisfies the hard constraints, the controller applies bounded damping and requests
+termination.
 
 % =====================================================================
 \section{Gain Choices and Ramps}
 
 \subsection{Analytical interpretation of tracking and posture gains}
-Under ideal model cancellation, full task rank and inactive constraints, neglecting the
-small QP regularizer, the shared tracking law yields
+With ideal model cancellation, full task rank and inactive constraints, the
+shared tracking law gives the following error dynamics when the small QP
+regularizer is neglected.
 \begin{equation}
   \ddot e + 20\, \dot e + 100\, e = 0 .
 \end{equation}
-Thus $K_p = 100$ and $K_d = 20$ give nominal critical damping with natural frequency
-$\omega_n = 10$\,rad/s. Using the same primary gains makes the requested tracking law
-comparable across families.
+The gains $K_p = 100$ and $K_d = 20$ give nominal critical damping at a natural
+frequency of $\omega_n = 10$\,rad/s. Sharing these gains makes the requested
+tracking law comparable across controller families.
 
-In addition, 25/10 corresponds to nominal critical damping at 5\,rad/s in a scalar
-posture based model. This inspires the baseline posture gains and the circular RETURN
-gains. The robot's time-varying projection and active limitations mean that these
-scalar interpretations are not global stability proofs.
+The 25/10 gains used for baseline posture control and during circular RETURN
+give nominal critical damping at 5\,rad/s in a scalar posture model. This
+interpretation is limited to the scalar approximation. The robot's null-space
+projector varies over time, and the constraints can become active.
 
 \subsection{Numerical choice of the online secondary gains}
-The mass weight and null-space damping balance position change against available
-preparation time. With zero posture stiffness, a critical-damping formula does not
-determine the online damping gain. The mass gain is in N\,m\,rad/kg and damping in 1/s.
-Table~\ref{tab:tuning} displays values measured from available perpendicular tuning
-logs at RTF 0.20.
+The mass gain and null-space damping determine how much the posture can change
+in the time available before impact. With zero postural stiffness, critical
+damping does not determine the online damping gain. The mass gain is in
+N\,m\,rad/kg and the damping gain is in 1/s. Table~\ref{tab:tuning} reports
+measurements from the perpendicular tuning runs at RTF 0.20.
 
 \begin{table}[htbp]
   \centering
@@ -316,49 +314,51 @@ logs at RTF 0.20.
   \label{tab:tuning}
 \end{table}
 
-The active 4/12 choice lowers entry mass while keeping the nominal 0.15\,rad preferred
-margin in this saved trial. Its advantage over 4/24 is minor, therefore the results
-support a local mass-priority option, not a universal optimum or a robustness
-guarantee. The 0.10\,s startup leaves about 0.25\,s at full stimulation before the
-approximately 0.35\,s perpendicular contact.
+In the selected trial, 4/12 reduced the entry mass while keeping the preferred
+0.15\,rad margin. The reduction relative to 4/24 was small. The comparison
+supports a local choice that prioritizes entry mass under the tested conditions.
+The 0.10\,s startup ramp leaves about 0.25\,s at full activation before
+perpendicular contact at approximately 0.35\,s.
 
-The round TRACK settings 2/24 are different starting settings, not the result of a
-complete circular tuning. Their 0.10\,s mass ramp completes around 1.07\,s before first
-contact. RETURN uses the analytically driven 25/10 posture gains rather than continuing
-mass decline when repositioning.
+The circular trials evaluate the initial TRACK settings of 2/24. The 0.10\,s mass ramp
+ends about 1.07\,s before first contact. During RETURN, the controller switches
+from mass reduction to posture control with the 25/10 gains derived above.
 
-\subsection{Why smooth ramps matter for the observer}
-The generalized momentum observer~\cite{deluca2005,haddadin2017} employs measured $q$,
-$\dot q$ and the aligned, delayed actuator command. It does not read genuine wall force.
-Its gain is 30\,s$^{-1}$ and a detection happens when any joint residual reaches
-0.1\,N\,m in magnitude. Under the ideal model it predicts filtered external torque;
-discrete integration, command synchronization, and model faults can potentially cause
-residuals during sharp input changes.
+\subsection{Smooth ramps and observer transients}
+The generalized momentum observer~\cite{deluca2005,haddadin2017} uses measured
+$q$, $\dot q$ and the time-aligned actuator command, accounting for the command
+delay. In the ideal model, it estimates filtered external torque from those
+signals. The observer gain is 30\,s$^{-1}$. The detector triggers when the
+magnitude of any joint residual reaches 0.1\,N\,m. Sharp input changes can
+produce residual transients because of discrete integration, command timing or
+model error.
 
-The secondary startup employs the cubic smoothstep $\rho(u) = 3u^2 - 2u^3$, clipped to
-$u \in [0, 1]$. It modifies objectives before the QPs, rather than scaling based on the
-final restricted torque. The perpendicular 0.10\,s speed ramp and circular 1\,s angular
-ramp are separate trajectory ramps.
+The secondary objectives ramp up with the cubic smoothstep
+$\rho(u) = 3u^2 - 2u^3$, clipped to $u \in [0, 1]$. This scaling acts on the
+objectives before the QPs compute a constrained command. The perpendicular
+0.10\,s speed ramp and the circular 1\,s angular ramp act on the trajectory
+reference.
 
-In the prior abrupt-return circular log, noncontact detections occurred at 6.694 and
-19.286\,s, 2\,ms after RETURN entry (Figure~\ref{fig:obs-before}). Force was zero and
-the fingertip was roughly 60\,mm outside the wall. Reference speed went from
-0.125\,66\,m/s to zero, the mass-torque norm from 15.39\,N\,m to zero, and the actuator
-command changed by roughly 6.96\,N\,m. No local schedule gap was identified at those
-two events.
+In the circular run with abrupt returns, the detector triggered without contact
+at 6.694 and 19.286\,s, 2\,ms after the start of RETURN
+(Figure~\ref{fig:obs-before}). The wall force was zero and the fingertip was
+about 60\,mm from the wall. The reference speed dropped from 0.125\,66\,m/s
+to zero, the mass-torque norm fell from 15.39\,N\,m to zero, and the actuator
+command changed by about 6.96\,N\,m. The logged schedule showed no local gap at
+either event.
 
-The current 0.20\,s linear braking reference matches location, velocity and
-acceleration at entry and approaches the original point at rest. A synchronous
-smoothstep fades mass down and mixes posture attraction and damping. Damping also blends
-on the succeeding 0.10\,s tracking restart. Observer history, thresholds and total time
-remain unchanged.
+The current 0.20\,s braking reference matches position, velocity and acceleration
+at the start of RETURN and brings the reference back to the starting point at rest.
+The smoothstep reduces the mass term over the same interval and blends the posture
+and damping terms. The damping gain blends again over the next 0.10\,s when tracking
+resumes. The observer keeps its history and thresholds, and the run duration is the
+same.
 
-The selected newer 20\,s circular log (Figure~\ref{fig:obs-after}) contains five
-detection onsets, all during positive wall force, and none during its RETURN
-transitions. This is evidence for the observed nominal run, not a guarantee against all
-future false detections. The older perpendicular pair still contains off-contact
-observer onsets; its timing provenance and detector transients must not be hidden by
-the ramp explanation.
+In the selected 20\,s nominal circular run, all five detection onsets occurred
+while the wall force was positive (Figure~\ref{fig:obs-after}). Every RETURN
+transition in this run passed without a detection. The earlier perpendicular logs
+include detections outside contact and predate the first-RUN-sample time-origin
+protocol.
 
 \begin{figure}[p]
   \centering
@@ -378,18 +378,20 @@ the ramp explanation.
 
 % =====================================================================
 \clearpage
-\section{Expected Impact Reduction: Elastic Reference}
+\section{Elastic Model of the First Impact}
 \label{sec:elastic}
 
-Before the measured results, we state what a reduction of effective mass should produce
-at the wall. The reference is a one-dimensional elastic impact: the robot has a constant mass $\ms$, equal to the directional effective mass at the last sample before contact, that strikes an undamped linear spring of stiffness $k_e = 20\,000$\,N/m with normal speed $\vs$. With penetration $\delta$, $\delta(0)=0$ and $\dot\delta(0)=\vs$,
+The elastic model describes a one-dimensional impact. A constant mass $\ms$, equal
+to the directional effective mass at the last sample before contact, strikes an undamped
+linear spring of stiffness $k_e = 20\,000$\,N/m at normal speed $\vs$. The penetration
+$\delta$ starts at $\delta(0)=0$ with $\dot\delta(0)=\vs$ and satisfies
 \begin{equation}
   \ms \ddot\delta + k_e \delta = 0, \qquad F_n = k_e\,\delta .
   \label{eq:elastic-model}
 \end{equation}
 The solution is $\delta(t) = (\vs/\omega)\sin\omega t$ with $\omega=\sqrt{k_e/\ms}$.
 Contact ends after half an oscillation, when the spring returns to zero compression.
-Hence
+The resulting contact duration, peak force and impulse are
 \begin{align}
   T_{\mathrm{el}} &= \frac{\pi}{\omega} = \pi\sqrt{\frac{\ms}{k_e}},
   \label{eq:elastic-T}\\
@@ -399,12 +401,12 @@ Hence
      = \ms \vs \int_0^{\pi} \sin s\, ds = 2\, \ms \vs .
   \label{eq:elastic-I}
 \end{align}
-The impulse \eqref{eq:elastic-I} is the change in momentum of a mass that leaves the spring with the reverse entry speed.
+The impulse in \eqref{eq:elastic-I} is the change in momentum when the mass rebounds
+at the same speed in the opposite direction.
 
-At fixed entry speed and wall stiffness, let the optimized controller reduce the entry
-mass by fraction $\Delta_m$, i.e., \
-$m_n^{-,\mathrm{opt}} = (1-\Delta_m)\, m_n^{-,\mathrm{base}}$. Then
-\eqref{eq:elastic-T}--\eqref{eq:elastic-I} give
+At fixed entry speed and wall stiffness, a fractional reduction $\Delta_m$ in entry
+mass gives $m_n^{-,\mathrm{opt}} = (1-\Delta_m)\, m_n^{-,\mathrm{base}}$.
+Equations~\eqref{eq:elastic-T}--\eqref{eq:elastic-I} then give
 \begin{equation}
   \frac{F^{\mathrm{opt}}_{\mathrm{peak}}}{F^{\mathrm{base}}_{\mathrm{peak}}}
   = \frac{T^{\mathrm{opt}}}{T^{\mathrm{base}}} = \sqrt{1-\Delta_m},
@@ -412,13 +414,19 @@ $m_n^{-,\mathrm{opt}} = (1-\Delta_m)\, m_n^{-,\mathrm{base}}$. Then
   \frac{I^{\mathrm{opt}}}{I^{\mathrm{base}}} = 1-\Delta_m .
   \label{eq:elastic-ratio}
 \end{equation}
-The peak force and the duration of contact therefore fall with the square root of the mass, while the impulse falls linearly. For the project target $\Delta_m = 30\%$, the expected reductions are $1-\sqrt{0.70} = 16.3\%$ in peak force and $30\%$ in impulse. Even a large mass reduction yields only a moderate force reduction.
+Peak force and contact duration scale with the square root of the entry mass, and
+impulse scales linearly. At the target $\Delta_m = 30\%$, the expected peak-force
+reduction is $1-\sqrt{0.70} = 16.3\%$ and the expected impulse reduction is $30\%$.
 
-The selected runs exceed the target: $\Delta_m = 35.69\%$ in the circular pair and
-$32.02\%$ in the perpendicular pair. For these values, \eqref{eq:elastic-ratio} predicts peak-force reductions of about $19.8\%$ and $17.6\%$, not $16.3\%$. The comparison in Section~\ref{sec:elastic-compare} uses the measured entry mass and speed of each run, not the nominal $30\%$.
+The selected runs exceed that target, with $\Delta_m = 35.69\%$ for the circular pair
+and $32.02\%$ for the perpendicular pair. Equation~\eqref{eq:elastic-ratio} predicts
+peak-force reductions of about $19.8\%$ and $17.6\%$, respectively, compared with
+$16.3\%$ at the nominal target. Section~\ref{sec:elastic-compare} evaluates each run
+using its measured entry mass and speed in place of the nominal $30\%$ reduction.
 
-The model neglects three features of the simulation: the wall damping 
-$c_e = 15$\,N\,s/m, the controller that remains active during contact, and the variation of $m_n(q)$ with posture while the wall is compressed. It is a reference for the expected scaling, not a prediction of the full closed-loop force history.
+This model gives a reference for scaling. The closed-loop force history also depends on
+the wall damping $c_e = 15$\,N\,s/m, the controller's action during contact and the
+variation of $m_n(q)$ as the arm changes posture while compressing the wall.
 
 % =====================================================================
 \section{Circular Experiment}
@@ -446,12 +454,12 @@ $c_e = 15$\,N\,s/m, the controller that remains active during contact, and the v
   \label{tab:circ}
 \end{table}
 
-The entry-speed variance is only 0.0026 percent, therefore the 35.69 percent
-entry-energy decrease closely matches the mass reduction. Peak force declines by 20.38
-percent, first-cycle impulse by 40.09 percent and penetration by 20.44 percent. As
-expected from \eqref{eq:elastic-ratio}, peak force does not fall in proportion to mass;
-Section~\ref{sec:elastic-compare} compares these reductions with the elastic
-prediction.
+Entry speed differs by 0.0026 percent, so the 35.69 percent drop in entry energy
+closely matches the reduction in entry mass. Peak force falls by 20.38 percent,
+first-cycle impulse by 40.09 percent and peak penetration by 20.44 percent. The
+smaller reduction in peak force than in mass is consistent with the square-root
+scaling in \eqref{eq:elastic-ratio}. Section~\ref{sec:elastic-compare} compares the
+measured reductions with the elastic prediction.
 
 \begin{figure}[p]
   \centering
@@ -470,13 +478,12 @@ prediction.
 \end{figure}
 
 \subsection{Repeated circles and return scheduling}
-The baseline records 10 primary wall approaches during continuous monitoring in the
-20\,s horizon, with 20 distinct positive-force contact episodes including recontacts
-(Figure~\ref{fig:circ-base-all}). The full-online run completes five rotations and
-records ten episodes (Figure~\ref{fig:circ-opt-all}). Four returns complete in
-approximately 1.799\,s each; the last return begins at 19.696\,s and is interrupted by
-the specified duration limit. All successful restarts fulfill the set joint-position and
-velocity tolerances.
+During the 20\,s run, the baseline completes 10 primary approaches to the wall and
+records 20 distinct positive-force contact episodes, including recontacts
+(Figure~\ref{fig:circ-base-all}). The full-online controller completes five revolutions
+and records ten episodes (Figure~\ref{fig:circ-opt-all}). Four returns take approximately
+1.799\,s each. The fifth starts at 19.696\,s and the run ends before it finishes. The arm
+meets the joint-position and velocity tolerances before each restart.
 
 \begin{figure}[p]
   \centering
@@ -493,12 +500,12 @@ velocity tolerances.
   \label{fig:circ-opt-all}
 \end{figure}
 
-Therefore, a total accumulated impulse would combine different amounts of encounters and
-distinct time frames. The first-impact comparison described above remains informative,
-but \texttt{compare\_runs} reports \texttt{full\_criterion\_met:false} because
-\texttt{same\_scenario} is false. This is the only missing check for this combination;
-the principal tracking legislation and gains match. The baseline also predates the
-explicit first-sample time-origin metadata, but the newer optimized run records it.
+The total impulse over each run would aggregate a different number of contact episodes
+with different timing. The first-impact metrics compare a single compression-release
+cycle. The two runs share the primary tracking law and gains, and
+\texttt{compare\_runs} reports \texttt{full\_criterion\_met:false} solely because
+\texttt{same\_scenario} is false. Only the newer full-online log records the explicit
+first-sample time origin.
 
 % =====================================================================
 \clearpage
@@ -525,13 +532,12 @@ explicit first-sample time-origin metadata, but the newer optimized run records 
   \label{tab:perp}
 \end{table}
 
-Entry speeds varied by 0.0332 percent. Relative to the specified baseline, the
-full-online run reduces entrance mass by 32.02 percent, peak force by 19.15 percent,
-impulse by 25.49 percent and penetration by 19.20 percent. The benefit is visible in
-this full-online comparison, but it is smaller in force than in mass, consistent with
-the square-root scaling of \eqref{eq:elastic-F} (Section~\ref{sec:elastic-compare}).
-This experiment is separate from past standard-optimized evaluations with an offline
-posture goal.
+Entry speeds differ by 0.0332 percent. Relative to the baseline, the full-online
+controller reduces entry mass by 32.02 percent, peak force by 19.15 percent, impulse by
+25.49 percent and peak penetration by 19.20 percent. The smaller change in peak force
+than in mass follows the pattern expected from \eqref{eq:elastic-F}
+(Section~\ref{sec:elastic-compare}). This comparison uses the full-online controller.
+Earlier tests used the standard optimized controller with an offline posture target.
 
 \begin{figure}[p]
   \centering
@@ -549,25 +555,25 @@ posture goal.
   \label{fig:perp-opt}
 \end{figure}
 
-Both trials finish their intended approximately 0.57\,s timeline, with complete first
-impacts. The current comparison tool returns \texttt{full\_criterion\_met:true} for
-this saved pair. The criterion requires successful safety and tracking QPs and reports
-secondary fallbacks separately. All 38 fallbacks occurred between 0.382 and 0.419\,s,
-after first contact at 0.350\,s, and used the tracking solution from the same update.
-This is a sampled acceptance result for these notional old logs, not a
-validation of every later runtime revision. Their time-origin metadata is lacking, and
-their initial saved samples are approximately 0.007\,s.
+Both trials ran for the intended period of about 0.57\,s and recorded complete first
+impacts. The current comparison tool reports \texttt{full\_criterion\_met:true} for
+this pair of saved runs. The criterion requires successful safety and tracking QPs.
+It reports secondary fallbacks separately. All 38 fallbacks occurred from 0.382 to
+0.419\,s, after first contact at 0.350\,s. In each case, the controller used the
+tracking solution from the same update. The result applies to the sampled data from
+this version of the runtime. The logs predate explicit time-origin metadata and begin
+at approximately 0.007\,s.
 
 % =====================================================================
 \clearpage
 \section{Measured vs.\ Predicted Impact Reductions}
 \label{sec:elastic-compare}
 
-For each run, \eqref{eq:elastic-T}--\eqref{eq:elastic-I} were evaluated with
-$k_e = 20\,000$\,N/m and the entry mass and normal speed of Tables~\ref{tab:circ}
-and~\ref{tab:perp}. The measured values are the first compression-release cycle metrics
-defined in Section~\ref{sec:setup}. Table~\ref{tab:elastic-compare} lists both,
-together with the relative change from baseline to full online.
+For each run, the predictions from \eqref{eq:elastic-T}--\eqref{eq:elastic-I} use
+$k_e = 20\,000$\,N/m and the entry mass and normal speed in Tables~\ref{tab:circ}
+and~\ref{tab:perp}. The simulation measurements cover the first compression-release
+cycle defined in Section~\ref{sec:setup}. Table~\ref{tab:elastic-compare} compares the
+predictions and measurements and gives the relative changes from baseline to full online.
 
 \begin{table}[htbp]
   \centering
@@ -598,34 +604,31 @@ together with the relative change from baseline to full online.
 \end{table}
 
 \paragraph{Peak force.}
-The elastic model underestimates the absolute peak force in all four runs, by about
-4--8\%. It captures the relative reduction closely: $19.81\%$ predicted against
-$20.38\%$ measured in the circular pair, and $17.58\%$ against $19.15\%$ in the
-perpendicular pair. In both cases the measured reduction is slightly larger than the
-square-root prediction. The expected square-root scaling is therefore confirmed: in
-both experiments the peak-force reduction is a little over half of the mass reduction.
+The elastic model underestimates the absolute peak force in all four runs by about
+4--8\%. For the circular pair, the model predicts a $19.81\%$ reduction and the
+simulation gives $20.38\%$. For the perpendicular pair, the corresponding reductions
+are $17.58\%$ and $19.15\%$. In both pairs, the measured reduction slightly exceeds
+the prediction and is a little over half the reduction in mass. This is consistent
+with the square-root scaling.
 
 \paragraph{Impulse and contact duration.}
-Impulse depends on the whole force history: it equals the mean contact force multiplied
-by the contact duration. Agreement is weaker here. In the circular pair the measured
-contact shortens by $29.76\%$ instead of the predicted $19.81\%$, and impulse falls by
-$40.09\%$ against a predicted $35.69\%$. In the perpendicular pair the measured contact
-shortens by only 4\,ms ($6.25\%$) instead of 10.7\,ms ($17.55\%$), and impulse falls by
-$25.49\%$ against a predicted $32.04\%$. These differences in contact duration explain
-why similar agreement on peak force leads to different agreement on impulse.
+Impulse is the mean contact force multiplied by the contact duration. In the circular
+pair, contact duration falls by $29.76\%$, compared with a predicted $19.81\%$, and
+impulse falls by $40.09\%$, compared with $35.69\%$. In the perpendicular pair,
+the contact shortens by 4\,ms ($6.25\%$), compared with the predicted 10.7\,ms
+($17.55\%$), and impulse falls by $25.49\%$, compared with $32.04\%$. Differences in
+contact duration help explain why the model agrees more closely with the peak-force
+reductions than with the impulse reductions.
 
-The measured impulses are also 16--34\% larger than $2\,\ms \vs$. With
+The measured impulses are 16--34\% larger than $2\,\ms \vs$. With
 $c_e = 15$\,N\,s/m, the wall damping ratio is
-$\zeta = c_e/(2\sqrt{k_e \ms}) \approx 0.02$ for the entry masses above, so damping
-alone cannot account for this excess. This suggests that the dominant contribution
-comes from the controller, which keeps tracking a reference during contact and so
-continues to apply force through the fingertip, together with the posture-dependent
-mass. The measured force history reflects the combined effect of these mechanisms,
-which the constant-mass elastic model does not represent.
-
-In summary, the elastic model is a reliable guide to the \emph{relative} peak-force
-reduction obtained by minimizing $m_n$, but not to the absolute force or to the
-impulse, which depend on the closed-loop contact phase.
+$\zeta = c_e/(2\sqrt{k_e \ms}) \approx 0.02$ for the entry masses above. The low
+damping ratio makes it unlikely that wall damping alone accounts for the excess.
+Continued tracking during contact lets the controller apply force through the
+fingertip, and the effective mass changes with posture. These effects are likely the
+main contributors to the higher observed impulse. The elastic model captures the
+relative peak-force reduction associated with lower $m_n$, while the absolute force
+and impulse depend on the closed-loop contact phase.
 
 % =====================================================================
 \section{Constraints, Fallbacks and Execution Timing}
@@ -646,24 +649,25 @@ impulse, which depend on the closed-loop contact phase.
   \label{tab:qp}
 \end{table}
 
-The circular optimized run has no failed QP level. The perpendicular optimized run
-includes 38 secondary failures; safety and primary tracking remain approved. On those
-updates the implementation uses the fresh primary solution, thus the run can proceed
-without uninterrupted bulk optimization. Baseline rows have no QP status since no QP is
-solved.
+All QP levels succeed in the circular optimized run. In the perpendicular
+optimized run, the safety and primary tracking levels succeed throughout, and
+the secondary level fails on 38 updates. The controller uses the primary
+solution from the same update to continue the run on each of those occasions.
+The table reports QP status for the optimized controllers.
 
-The logged normalized maximum slack surpasses $10^{-6}$ in roughly 1.95 percent of
-circular optimized updates and 17.73 percent of perpendicular optimized updates.
-Estimated acceleration reaches roughly 30.04\,rad/s$^2$ in the circular optimized run
-and 49.55\,rad/s$^2$ in the perpendicular optimized run; the corresponding baseline
-maxima are 23.82 and 43.91\,rad/s$^2$. These are finite differences of logged
-velocities, not exact plant accelerations. The 30\,rad/s$^2$ preference is therefore
-not always respected.
+The maximum normalized slack exceeds $10^{-6}$ on about 1.95 percent of
+circular optimized updates and 17.73 percent of perpendicular optimized
+updates. Acceleration estimates from finite differences of the logged
+velocities reach about 30.04\,rad/s$^2$ in the circular optimized run and
+49.55\,rad/s$^2$ in the perpendicular optimized run. The corresponding
+baseline maxima are 23.82 and 43.91\,rad/s$^2$. These estimates sometimes
+exceed the preferred 30\,rad/s$^2$ limit.
 
-The circular minimum physical margin, 0.148\,85\,rad, momentarily lies inside the
-desirable 0.15\,rad band while remaining outside the 0.06\,rad hard margin. The
-perpendicular optimal minimum is 0.151\,15\,rad. Both selected optimized logs obey
-sampled hard position/velocity limitations and report no actuator clipping.
+The minimum physical margin in the circular optimized run is 0.148\,85\,rad.
+It briefly falls below the preferred 0.15\,rad margin and stays above the
+0.06\,rad hard margin. The perpendicular optimized run has a minimum margin
+of 0.151\,15\,rad. Every recorded sample in both optimized runs satisfies the
+hard position and velocity limits, with no actuator clipping.
 
 \begin{table}[htbp]
   \centering
@@ -684,36 +688,63 @@ sampled hard position/velocity limitations and report no actuator clipping.
   \label{tab:timing}
 \end{table}
 
-At requested RTF 0.20, a simulated 1\,ms control interval equates to a 5\,ms wall-clock
-budget. Matching RTF does not reduce missed samples or schedule outliers. The optimized
-timing distributions include calls above 1\,ms, therefore these simulations do not
-establish deadline-compliant 1\,kHz execution on a physical robot.
+At a requested RTF of 0.20, a 1\,ms interval in simulation gives the controller
+a 5\,ms wall-clock budget. The runs share this budget, and the timing records
+still show missed samples and scheduling outliers. Some optimized updates take
+more than 1\,ms, so deadline-compliant 1\,kHz execution on physical hardware
+remains to be established.
 
-The virtual wall applies force solely at the fingertip. Its exhibited Gazebo wall has no
-full-body collision geometry. The hand-depth diagnostic reaches roughly 5.36\,mm in the
-circular optimized log and 9.25\,mm in the perpendicular optimized log; it is a
-geometric proxy, not a force on the hand. Position-only tracking, joint restrictions and
-between-lap returns do not guarantee orientation or body clearance.
+The virtual wall applies force only at the fingertip. The wall shown in Gazebo
+has no full-body collision geometry. The hand-depth diagnostic measures
+geometric overlap, reaching about 5.36\,mm in the circular optimized run and
+9.25\,mm in the perpendicular optimized run. With position-only tracking,
+joint limits and between-lap returns, tool orientation and body clearance
+remain outside the controller's guarantees.
 
 % =====================================================================
 \section{Conclusions}
-Both saved full-online comparisons exceed the 30 percent first-contact mass-reduction
-aim at practically unchanged entry speed. Their impact reductions are directly reported
-rather than inferred from mass alone. Peak-force reductions of $20.38\%$ (circular) and
-$19.15\%$ (perpendicular) agree with the elastic square-root prediction of $19.81\%$ and
-$17.58\%$, confirming that force falls a little over half as much as effective mass.
-Impulse agrees less closely ($-40.09\%$ against $-35.69\%$, and $-25.49\%$ against
-$-32.04\%$) because the measured contact duration does not follow the elastic scaling.
-The major tracking request is shared, however the HQP and secondary approach remain
-material variations from baseline.
+In both saved full-online comparisons, the reduction in first-contact mass
+exceeds the 30 percent target at nearly unchanged entry speed. The measured
+peak-force reductions of $20.38\%$ (circular) and $19.15\%$ (perpendicular) are
+close to the elastic square-root predictions of $19.81\%$ and $17.58\%$. The
+percentage reduction in peak force is a little over half that in effective
+mass. The measured impulse changes depart further from the predictions
+($-40.09\%$ against $-35.69\%$, and $-25.49\%$ against $-32.04\%$) because the
+measured contact durations deviate from the elastic scaling. Both controller
+families share the primary tracking request.
+The HQP and the secondary control law differ between the full-online and baseline
+controllers.
 
-The current circular return policy contains accumulated postural drift and its seamless
-transition removes the off-contact onsets noticed at abrupt RETURN entries in the
-selected before/after logs. It also affects the overall trajectory timetable. The
-perpendicular 4/12 result is a useful same-study measurement, with specific legacy
-timing provenance and postcontact secondary fallbacks.
+The circular return policy limits the buildup of postural drift and changes the
+timing of successive impacts. In the selected logs, off-contact detections occurred
+at abrupt RETURN entries and disappeared with the smooth transition. The perpendicular
+4/12 comparison comes from the same tuning study and includes postcontact secondary
+fallbacks. Its logs predate the convention of using the first RUN sample as the time origin.
 
 % =====================================================================
 
+\begin{thebibliography}{9}
+\phantomsection
+\addcontentsline{toc}{section}{References}
+\bibitem{khatib1987}
+O.~Khatib, ``A unified approach for motion and force control of robot manipulators:
+The operational space formulation,'' \emph{IEEE Journal on Robotics and Automation},
+vol.~3, no.~1, pp.~43--53, 1987.
+
+\bibitem{haddadin2017}
+S.~Haddadin, A.~De~Luca, and A.~Albu-Sch\"affer, ``Robot collisions: A survey on
+detection, isolation, and identification,'' \emph{IEEE Transactions on Robotics},
+vol.~33, no.~6, pp.~1292--1312, 2017.
+
+\bibitem{deluca2005}
+A.~De~Luca and R.~Mattone, ``Sensorless robot collision detection and hybrid
+force/motion control,'' in \emph{Proc. IEEE Int. Conf. on Robotics and Automation
+(ICRA)}, 2005, pp.~999--1004.
+
+\bibitem{osqp}
+B.~Stellato, G.~Banjac, P.~Goulart, A.~Bemporad, and S.~Boyd, ``OSQP: An operator
+splitting solver for quadratic programs,'' \emph{Mathematical Programming
+Computation}, vol.~12, pp.~637--672, 2020.
+\end{thebibliography}
 
 \end{document}
