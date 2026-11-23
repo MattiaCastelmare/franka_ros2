@@ -144,9 +144,15 @@ preference are
   \tau_m = -\rho(t)\, k_m\, N^{\mathsf T} \nabla_q m_n(q).
 \end{equation}
 The gradient is determined analytically at the measured configuration, using model
-derivatives. It is neither normalized nor trimmed. No offline low-mass posture is
-requisite. The projected torque fulfills $J M^{-1} \tau_m = 0$ in the nominal full-rank
-model; the final feasible command is picked by the HQP.
+derivatives. It is neither normalized nor trimmed. In the nominal model with full task
+rank, the projected torque satisfies $J M^{-1} \tau_m = 0$. The HQP selects the final
+feasible command.
+
+We also tested hybrid HQP variants for both trajectories. They combined the online
+mass gradient with a fixed posture $q^*$ computed offline at the nominal
+contact point. We selected the full-online variants for this study because they yielded
+slightly lower first-impact masses in the available trials and simplified setup by
+eliminating the task-specific posture search.
 
 During ordinary tracking the secondary acceleration preference is
 \begin{equation}
@@ -174,10 +180,11 @@ The optimization variable is actuator-induced joint acceleration,
 \begin{equation}
   u = M^{-1} (\tau_{\mathrm{cmd}} - c) \in \mathbb{R}^7 .
 \end{equation}
-The external perturbation estimate and its uncertainty enter the acceleration limits.
-They do not redefine $u$ as accurate system acceleration. The implementation
-anticipates via the configured 3\,ms command allowance and enforces the boundaries using
-the observer estimate and an empirical uncertainty reserve.
+The hard interval $[\ell_h,r_h]$ comes from predicting joint position and velocity
+one step ahead under constant acceleration. The prediction starts from the state
+propagated through a 3\,ms command delay using the previously applied torque. The
+observer residual $r$ gives the estimated plant acceleration $u+M^{-1}r$, and an
+empirical uncertainty reserve tightens the bounds on $u$.
 
 The hard feasible set is
 \begin{gather}
@@ -187,14 +194,18 @@ The hard feasible set is
   T_{\mathrm{eff}} = T - \tfrac{1}{2} |g| .
 \end{gather}
 This torque intersection limits both the gravity-compensated actuator command and the
-nominal motor torque including gravity. The necessary position margin is 0.06\,rad.
-Configured velocity and torque limitations remain hard; torque limits are 87\,N\,m for
-joints 1--4 and 12\,N\,m for joints 5--7.
+nominal motor torque including gravity. Torque limits are 87\,N\,m for joints 1--4
+and 12\,N\,m for joints 5--7. The hard position margin of 0.06\,rad leaves a
+0.01\,rad buffer before the runner's 0.05\,rad stop band. The hard joint speed
+limit is 2.62\,rad/s for joints 1--4, 4.18\,rad/s for joint 6, and 5.26\,rad/s
+for joints 5 and 7.
 
-Three types of soft acceleration limits are also supplied: the 30\,rad/s$^2$
-acceleration preference, the preventative 0.15\,rad position barrier and the
-velocity-rate barrier. They may be relaxed to preserve hard feasibility. In particular,
-30\,rad/s$^2$ is not a guaranteed acceleration threshold during impact.
+The soft position and velocity barriers encourage braking before the hard limits
+are reached. The position barrier uses a preferred margin of 0.15\,rad. Their rates
+are 12 and 10\,s$^{-1}$, respectively. The third soft group uses a 30\,rad/s$^2$
+acceleration preference to limit aggressive joint motion. During impact, braking
+requests can conflict with this preference. The first QP can relax the soft bounds
+while still enforcing the hard limits.
 
 \subsection{Level 1: minimize soft-constraint relaxation}
 With nonnegative physical slacks $s_L, s_U \in \mathbb{R}^{3\times 7}$ and positive
@@ -540,7 +551,10 @@ posture goal.
 
 Both trials finish their intended approximately 0.57\,s timeline, with complete first
 impacts. The current comparison tool returns \texttt{full\_criterion\_met:true} for
-this saved pair. This is a sampled acceptance result for these notional old logs, not a
+this saved pair. The criterion requires successful safety and tracking QPs and reports
+secondary fallbacks separately. All 38 fallbacks occurred between 0.382 and 0.419\,s,
+after first contact at 0.350\,s, and used the tracking solution from the same update.
+This is a sampled acceptance result for these notional old logs, not a
 validation of every later runtime revision. Their time-origin metadata is lacking, and
 their initial saved samples are approximately 0.007\,s.
 
@@ -618,15 +632,14 @@ impulse, which depend on the closed-loop contact phase.
 
 \begin{table}[htbp]
   \centering
-  \begin{tabular}{lccc}
+  \begin{tabular}{lccccc}
     \toprule
-    Optimized run
-      & \begin{tabular}[c]{@{}c@{}}Failures\\(safety / tracking / secondary)\end{tabular}
-      & \begin{tabular}[c]{@{}c@{}}Min margin\\(rad)\end{tabular}
-      & \begin{tabular}[c]{@{}c@{}}Clipped\\samples\end{tabular} \\
+    Optimized run & \multicolumn{3}{c}{QP failures} & Min margin & Clipped \\
+    \cmidrule(lr){2-4}
+                  & Safety & Tracking & Secondary & (rad) & samples \\
     \midrule
-    Circular      & 0 / 0 / 0  & 0.148845 & 0 \\
-    Perpendicular & 0 / 0 / 38 & 0.151151 & 0 \\
+    Circular      & 0 & 0 & 0  & 0.148845 & 0 \\
+    Perpendicular & 0 & 0 & 38 & 0.151151 & 0 \\
     \bottomrule
   \end{tabular}
   \caption{QP failures, margins and clipping for the optimized runs.}
@@ -654,16 +667,17 @@ sampled hard position/velocity limitations and report no actuator clipping.
 
 \begin{table}[htbp]
   \centering
-  \begin{tabular}{lccc}
+  \begin{tabular}{lcccc}
     \toprule
-    Run & \begin{tabular}[c]{@{}c@{}}Update mean / p95\\(ms)\end{tabular}
+    Run & \begin{tabular}[c]{@{}c@{}}Update mean\\(ms)\end{tabular}
+        & \begin{tabular}[c]{@{}c@{}}p95\\(ms)\end{tabular}
         & \begin{tabular}[c]{@{}c@{}}Update max\\(ms)\end{tabular}
         & \begin{tabular}[c]{@{}c@{}}Missed samples\\(\%)\end{tabular} \\
     \midrule
-    Circular baseline      & 0.508 / 0.847 & 22.227 & 26 (0.130) \\
-    Circular online        & 0.958 / 1.342 & 27.782 & 10 (0.050) \\
-    Perpendicular baseline & 0.416 / 0.618 & 9.761  & 1 (0.177) \\
-    Perpendicular online   & 0.994 / 1.610 & 2.709  & 0 (0.000) \\
+    Circular baseline      & 0.508 & 0.847 & 22.227 & 26 (0.130) \\
+    Circular online        & 0.958 & 1.342 & 27.782 & 10 (0.050) \\
+    Perpendicular baseline & 0.416 & 0.618 & 9.761  & 1 (0.177) \\
+    Perpendicular online   & 0.994 & 1.610 & 2.709  & 0 (0.000) \\
     \bottomrule
   \end{tabular}
   \caption{Controller update timing.}
@@ -682,7 +696,7 @@ geometric proxy, not a force on the hand. Position-only tracking, joint restrict
 between-lap returns do not guarantee orientation or body clearance.
 
 % =====================================================================
-\section{Conclusions and Reproducibility}
+\section{Conclusions}
 Both saved full-online comparisons exceed the 30 percent first-contact mass-reduction
 aim at practically unchanged entry speed. Their impact reductions are directly reported
 rather than inferred from mass alone. Peak-force reductions of $20.38\%$ (circular) and
@@ -699,60 +713,7 @@ selected before/after logs. It also affects the overall trajectory timetable. Th
 perpendicular 4/12 result is a useful same-study measurement, with specific legacy
 timing provenance and postcontact secondary fallbacks.
 
-No new simulations were required for this report. Measurements are recomputed from the
-following NPZ files using the repository's analysis helpers:
-\begin{itemize}
-  \item Circular baseline: \path{runs/circle_baseline_20261116_095341.npz}
-  \item Circular online: \path{runs/optimized_full_online_circular_20261117_192815.npz}
-  \item Perpendicular baseline:
-        \path{runs/full_online_tuning_20261116/baseline_reference_20261116_151231.npz}
-  \item Perpendicular online:
-        \path{runs/full_online_tuning_20261116/m4_d12_r010_20261116_151407.npz}
-  \item Perpendicular gain comparison 1:
-        \path{runs/full_online_tuning_20261116/original_m2_d24_r010_20261116_151310.npz}
-  \item Perpendicular gain comparison 2:
-        \path{runs/full_online_tuning_20261116/m4_d24_r010_20261116_151348.npz}
-  \item Perpendicular gain comparison 3:
-        \path{runs/full_online_tuning_20261116/m4_d12_r010_20261116_151407.npz}
-\end{itemize}
-
-The abrupt-transition evidence comes from
-\path{runs/optimized_full_online_circular_20261117_174953.npz}. Implementation sources
-are \path{fr3_sim/controllers/baseline.py}, \path{baseline_perp.py},
-\path{optimized_hqp.py}, \path{optimized_hqp_full_online.py},
-\path{optimized_full_online_circular.py}, and the methods
-\path{cartesian_tracking.py}, \path{mass_objective.py}, \path{joint_constraints.py} and
-\path{hierarchical_qp.py}.
-
-The primary report source is \path{docs/report.md}; original per-run plots and
-machine-readable measurement summaries are kept beside it in
-\path{docs/report_assets/}. \path{plot_sources.json} records the source plot and
-checksum for each copied image. The two perpendicular collision plots were generated
-from their selected NPZ files using the standard plotter.
-
 % =====================================================================
-\begin{thebibliography}{9}
-\phantomsection
-\addcontentsline{toc}{section}{References}
-\bibitem{khatib1987}
-O.~Khatib, ``A unified approach for motion and force control of robot manipulators:
-The operational space formulation,'' \emph{IEEE Journal on Robotics and Automation},
-vol.~3, no.~1, pp.~43--53, 1987.
 
-\bibitem{haddadin2017}
-S.~Haddadin, A.~De~Luca, and A.~Albu-Sch\"affer, ``Robot collisions: A survey on
-detection, isolation, and identification,'' \emph{IEEE Transactions on Robotics},
-vol.~33, no.~6, pp.~1292--1312, 2017.
-
-\bibitem{deluca2005}
-A.~De~Luca and R.~Mattone, ``Sensorless robot collision detection and hybrid
-force/motion control,'' in \emph{Proc. IEEE Int. Conf. on Robotics and Automation
-(ICRA)}, 2005, pp.~999--1004.
-
-\bibitem{osqp}
-B.~Stellato, G.~Banjac, P.~Goulart, A.~Bemporad, and S.~Boyd, ``OSQP: An operator
-splitting solver for quadratic programs,'' \emph{Mathematical Programming
-Computation}, vol.~12, pp.~637--672, 2020.
-\end{thebibliography}
 
 \end{document}
