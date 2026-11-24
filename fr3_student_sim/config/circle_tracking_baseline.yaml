@@ -8,6 +8,13 @@ circle:
   radius: 0.04  # [m] vertical x-z circle, starting at its -x extreme
   period: 2.0   # [s] period at cruise angular speed
   ramp: 1.0     # [s] smooth startup
+  lap_return:
+    transition_duration: 0.2  # [s] quintic braking to the start point
+    posture_gain: 25.0        # [1/s^2] shared return setting, matching kp_nullspace
+    position_tolerance: 0.001 # [rad]
+    velocity_tolerance: 0.005 # [rad/s]
+    timeout: 5.0             # [s] adaptive-return timeout
+    duration: 2.0            # [s] fixed restart schedule shared with full online
 
 tracking:
   kp_position: 100.0  # [1/s^2] Cartesian position-error gain

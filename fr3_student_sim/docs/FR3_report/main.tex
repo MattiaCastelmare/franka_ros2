@@ -49,11 +49,10 @@ constraints. Section~\ref{sec:elastic} derives the reduction predicted by a
 one-dimensional elastic impact model, and Section~\ref{sec:elastic-compare} compares
 that prediction with the measurements.
 
-The circular full-online controller returns to the initial posture after each
-revolution. Its baseline follows the circle continuously. Both perpendicular runs come
-from the same tuning study, which used the current 4/12 secondary gains for the
-full-online controller. Both logs predate the convention of using the first RUN
-sample as the time origin. The analysis uses the parameters recorded in each NPZ file.
+Both perpendicular runs come from the same tuning study, which used the current
+4/12 secondary gains for the full-online controller. Both logs predate the
+convention of using the first RUN sample as the time origin. The analysis uses
+the parameters recorded in each NPZ file.
 
 % =====================================================================
 \section{Experimental Setup and Metrics}
@@ -142,10 +141,42 @@ full task rank, the projected torque satisfies $J M^{-1} \tau_m = 0$. The HQP se
 the final feasible command.
 
 We also tested hybrid HQP variants on both trajectories. They combined the online
-mass gradient with a fixed posture $q^*$ computed offline at the nominal contact
-point. We selected the full-online variants because they produced slightly lower
-first-impact masses in the available trials and eliminated the task-specific posture
+mass gradient with a fixed posture $q^*$ computed offline with SLSQP at the nominal
+contact point. The controller used this posture as an additional null-space preference.
+Table~\ref{tab:hybrid} compares the recorded first impacts at closely matched entry
+speeds.
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{5pt}
+  \begin{tabular}{llrrrr}
+    \toprule
+    Trajectory & Variant & \shortstack{Entry speed\\(m/s)}
+               & \shortstack{Entry mass\\(kg)} & \shortstack{Peak force\\(N)}
+               & \shortstack{Impulse\\(N\,s)} \\
+    \midrule
+    Circular      & Hybrid HQP  & 0.108929 & 4.654 & 34.47 & 1.2674 \\
+                  & Full online & 0.108931 & 4.623 & 34.35 & 1.2581 \\
+    Perpendicular & Hybrid HQP  & 0.200156 & 5.196 & 69.15 & 2.6612 \\
+                  & Full online & 0.199964 & 5.182 & 68.91 & 2.6406 \\
+    \bottomrule
+  \end{tabular}
+  \caption{First-impact results for the hybrid and full-online runs at RTF 0.20.}
+  \label{tab:hybrid}
+\end{table}
+
+\begin{samepage}
+The secondary gains differ between configurations, so the comparison evaluates
+the selected controllers as a whole. The full-online variants achieved slightly
+lower entry masses and simplified setup by eliminating the task-specific posture
 search.
+\end{samepage}
+
+The perpendicular comparison comes
+from the same tuning study. At the initial mass and damping gains, the hybrid
+gave a lower entry mass than the online-only variant, so the final choice also
+reflects the effect of retuning.
 
 A separate perpendicular three-phase variant uses Cartesian tracking on approach,
 fades mass reduction and posture attraction during the transition, and holds
@@ -164,13 +195,16 @@ reduction. Contact detection leaves the tracking reference in place. The observe
 residual enters the disturbance-aware constraint prediction, and the commanded torque
 comes from the HQP solution.
 
+Both circular controllers now follow the same schedule. Each 2.5\,s revolution is
+followed by a fixed 2.0\,s RETURN to $q_0$, starting with a 0.20\,s braking reference
+that ends at rest at the initial Cartesian point. At the scheduled restart, the
+trial continues if every joint error is at most 0.001\,rad and every joint speed is at
+most 0.005\,rad/s. Otherwise the trial ends.
+
 The circular full-online controller uses $k_m = 2$ and $k_d = 24$ during tracking.
-After each revolution it enters RETURN. A 0.20\,s braking reference ends at rest
-at the original Cartesian point. Over the same interval, the mass term fades and
-the null-space attraction to $q_0$ ramps up. The return gains are 25 and 10. The next
-revolution starts when every joint error is at most 0.001\,rad and every joint speed
-is at most 0.005\,rad/s. A return that exceeds 5\,s ends the trial. Attraction to
-$q_0$ is confined to RETURN.
+Its null-space attraction to $q_0$ is active only during RETURN, ramping up as the
+mass term fades over the braking transition. The return posture and damping
+gains are 25 and 10, respectively.
 
 % =====================================================================
 \section{Hierarchical Quadratic Program}
@@ -473,30 +507,25 @@ reduction in impulse. Entry speeds remain closely matched within the pair.
 \end{figure}
 
 \subsection{Repeated circles and return scheduling}
-Figures~\ref{fig:circ-base-all} and~\ref{fig:circ-opt-all} show how the return phase
-spaces the approaches farther apart. Total impulse over 20\,s therefore combines
-the loading per impact with the number of impacts. Comparing the first cycle
-removes the effect of that difference in frequency.
+Figures~\ref{fig:circ-base-all} and~\ref{fig:circ-opt-all} show the archived runs used
+for the first-impact results. Separate 20\,s validation runs with the current shared
+RETURN schedule produced matching first-contact times on all five approaches, starting
+at 1.167\,s and recurring every 4.5\,s. For this synchronized pair,
+\texttt{compare\_runs} reports \texttt{full\_criterion\_met:true}.
 
 \begin{figure}[p]
   \centering
   \includegraphics[width=\textwidth]{fig05_circular_baseline_all_collisions}
-  \caption{Circular baseline: original all-collisions plot over the complete 20\,s run.}
+  \caption{Circular baseline: all contacts in the archived 20\,s run.}
   \label{fig:circ-base-all}
 \end{figure}
 
 \begin{figure}[p]
   \centering
   \includegraphics[width=\textwidth]{fig06_circular_online_all_collisions}
-  \caption{Circular full-online controller: original all-collisions plot. Returns
-  between laps produce a different impact schedule from the continuous baseline.}
+  \caption{Circular full-online controller: all contacts in the archived 20\,s run.}
   \label{fig:circ-opt-all}
 \end{figure}
-
-The two runs share the primary tracking law and gains, and
-\texttt{compare\_runs} reports \texttt{full\_criterion\_met:false} solely because
-\texttt{same\_scenario} is false. Only the newer full-online log records the explicit
-first-sample time origin.
 
 % =====================================================================
 \clearpage
@@ -664,21 +693,53 @@ The low number of missed samples at RTF 0.20 describes performance in slowed
 simulation. The 95th-percentile update time already exceeds the 1\,ms budget of
 a physical 1\,kHz loop for both optimized controllers.
 
-The virtual wall applies force only at the fingertip. The wall shown in Gazebo
-has no full-body collision geometry. The hand-depth diagnostic measures
-geometric overlap, reaching about 5.36\,mm in the circular optimized run and
-9.25\,mm in the perpendicular optimized run. With position-only tracking,
-joint limits and between-lap returns, tool orientation and body clearance
-remain outside the controller's guarantees.
+The virtual wall applies force only at the fingertip. The hand-depth diagnostic
+estimates overlap with the wall plane using bounding boxes around the hand and
+fingers. The proxy first becomes positive about 30\,ms before the first fingertip
+contact in the circular full-online run and 13\,ms before it in the perpendicular
+run. The maximum proxy overlaps over the complete runs are 5.36 and 9.25\,mm,
+respectively. These are geometric estimates from the sampled poses.
 
 % =====================================================================
+\clearpage
 \section{Conclusions}
 Both full-online comparisons exceed the 30\% entry-mass reduction target. Entry
 mass helps explain the reduction in peak force at comparable approach speeds,
 while impulse depends on the full contact history.
 
+\paragraph{First contact on hardware.}
+The hand and finger clearance is the main limitation for transfer to the real
+robot. The position-only task leaves the hand orientation free, and the early
+proxy overlaps indicate that the hand could reach the wall before the fingertip.
+An earlier hand contact would change the impact configuration and the contact-point
+Jacobian used to evaluate effective mass~\cite{haddadin2017}. The measured fingertip
+mass and loads would then describe a different contact. Before impact trials,
+the simulation should model possible contacts on the hand and links and check
+clearance against the measured wall pose throughout approach and return.
+An orientation task or explicit clearance
+constraints could keep the fingertip first, at the cost of some freedom for mass
+reduction. That trade-off should be evaluated in simulation and then checked with
+low-speed clearance trials on the robot.
+
+\paragraph{Real-time execution.}
+At the Franka Control Interface rate of 1\,kHz, the loop period is
+1\,ms~\cite{franka-fci}. The 95th-percentile controller update time already exceeds
+that period in both optimized simulations, before observer and communication costs
+are included. The next step is to profile the complete torque loop on the target
+computer and optimize its largest costs. The timing assessment should record
+worst observed latency and missed deadlines, particularly during contact.
+
+\paragraph{Robustness.}
+The reported runs use nominal dynamics. Measurement noise, model errors and
+friction can affect tracking and the residual that the observer supplies to the HQP.
+Repeat matched trials with these effects introduced separately and together. Check
+tracking, entry mass and speed, first-impact forces, constraint margins and false or
+missed detections. Measurements on the physical setup can guide the choice of
+perturbation levels and observer settings.
+
 % =====================================================================
 
+\clearpage
 \begin{thebibliography}{9}
 \phantomsection
 \addcontentsline{toc}{section}{References}
@@ -701,6 +762,10 @@ force/motion control,'' in \emph{Proc. IEEE Int. Conf. on Robotics and Automatio
 B.~Stellato, G.~Banjac, P.~Goulart, A.~Bemporad, and S.~Boyd, ``OSQP: An operator
 splitting solver for quadratic programs,'' \emph{Mathematical Programming
 Computation}, vol.~12, pp.~637--672, 2020.
+
+\bibitem{franka-fci}
+Franka Robotics, ``libfranka Overview,'' \emph{Franka Control Interface documentation}.
+\url{https://frankarobotics.github.io/docs/doc/libfranka/docs/overview.html}.
 \end{thebibliography}
 
 \end{document}

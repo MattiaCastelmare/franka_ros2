@@ -10,7 +10,7 @@ import numpy as np
 from fr3_sim.controllers.base import StudentController
 
 from fr3_sim.methods.cartesian_tracking import CartesianAccelerationTracking
-from fr3_sim.methods.circle_reference import CircleReference
+from fr3_sim.methods.circle_reference import CircleReference, CircularLapReference
 
 
 class PositionTrackingController(StudentController):
@@ -58,7 +58,7 @@ class PositionTrackingController(StudentController):
             'v_ref': v_ref.copy(),
             'a_ref': a_ref.copy(),
         }
-        if isinstance(self.reference, CircleReference):
+        if isinstance(self.reference, (CircleReference, CircularLapReference)):
             self.log['circle_center'] = self.reference.center.copy()
         self.log.update({
             'p_initial': self.p_initial.copy(),

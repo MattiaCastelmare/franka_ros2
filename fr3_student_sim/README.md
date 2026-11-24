@@ -6,7 +6,7 @@ position of `fr3_fingertip`; gripper orientation remains free.
 
 | Experiment                                                         | Controller in `fr3_sim/controllers/` | Configuration                                 |
 | ------------------------------------------------------------------ | -------------------------------------- | --------------------------------------------- |
-| Circular tracking with nullspace posture feedback                  | `baseline.py`                        | `config/circle_tracking_baseline.yaml`      |
+| Circular tracking with nullspace posture feedback and scheduled returns | `baseline.py`                        | `config/circle_tracking_baseline.yaml`      |
 | Circular acceleration tracking with HQP and mass minimization      | `optimized_hqp.py`                   | `config/circle_tracking_optimized_hqp.yaml` |
 | Circular HQP with online mass gradient and no offline posture      | `optimized_full_online_circular.py`  | `config/optimized_full_online_circular.yaml` |
 | Perpendicular approach with the baseline control law               | `baseline_perp.py`                   | `config/baseline_perp.yaml`                 |
@@ -299,7 +299,7 @@ The ten active YAML files are:
 
 | File                                          | Role                                                                                                                                 |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `config/circle_tracking_baseline.yaml`      | Baseline initial pose, circle, Cartesian and nullspace gains.                                                                        |
+| `config/circle_tracking_baseline.yaml`      | Baseline initial pose, circle, scheduled return, Cartesian and nullspace gains.                                                      |
 | `config/circle_tracking_optimized_hqp.yaml` | Cartesian acceleration feedback, optional posture, mass objective, joint constraints, residual validity/uncertainty and QP settings. |
 | `config/optimized_full_online_circular.yaml` | Online circular tracking, followed by a physical return to the initial pose between laps; no offline optimized target. |
 | `config/baseline_perp.yaml`                 | Perpendicular approach speed, ramp, final overlap, braking distance, hold and baseline gains.                                        |
@@ -761,16 +761,21 @@ revolution with online mass gain 2, nullspace damping 24 s^-1 and no posture
 attraction, even if a custom YAML supplies `tracking.posture_gain` or
 `q_posture_ref`. Cartesian gains remain 100/20. No offline optimizer is used.
 
-At the end of the revolution, a 0.20 s quintic braking reference joins the
-current position, velocity and acceleration to the starting point at rest.
-Over this `circle.lap_return.transition_duration`, the mass term fades to
-zero while return attraction and damping change smoothly. The reference
-then holds the starting point while the nullspace returns the joints
-physically towards `initial_q`. `circle.lap_return.posture_gain` is 25 s^-2, with damping
-`2*sqrt(posture_gain)` = 10 s^-1. The next lap starts only when every joint
-is within 0.001 rad of `initial_q` and every joint speed is at most
-0.005 rad/s. A return lasting 5 s stops the run with an explicit timeout.
-These tolerances and timeout are configured under `circle.lap_return`.
+The default circular baseline and full-online controllers share the same
+return reference. At the end of a revolution, a 0.20 s quintic transition
+joins the current position, velocity and acceleration to the starting point
+at rest. The reference then holds that point as the joints move towards
+`initial_q`. The baseline keeps its posture feedback and damping throughout.
+In the full-online controller the mass term fades out during the transition,
+and return attraction and damping blend to 25 s^-2 and 10 s^-1.
+
+Both default configurations set `circle.lap_return.duration` to 2.0 s,
+including braking. The 2.5 s revolution and 2.0 s return define a common
+4.5 s schedule on the simulation clock. At each scheduled restart, every
+joint must be within 0.001 rad of `initial_q` with speed at most 0.005 rad/s.
+If the arm is outside those tolerances at the scheduled restart, the trial
+ends with a recorded reason. For a custom `lap_return` without `duration`,
+the restart occurs once the joints settle, subject to `timeout`.
 
 Only the local reference clock restarts. The observer, torque history and
 HQP keep absolute RUN time and their existing state. The 1 s circle ramp
@@ -778,19 +783,13 @@ and 0.10 s mass/damping ramp restart on each lap. Return attraction ramps
 over the 0.20 s braking transition. No joint positions are assigned or teleported. The shared HQP
 and all joint/torque constraints remain active in both phases.
 
-With cruise period 2 s and reference ramp 1 s, one geometric revolution
-takes 2.5 s, followed by the variable return pause. All phases count towards
-the configured run duration, so a 20 s run has fewer laps than a continuous
-circle. `user_lap_index`, `user_lap_returning`, `user_lap_time`,
-`user_q0_error` and `user_q0_speed` record the schedule and return criteria.
-Comparison checks include `circle.lap_return` and the saved lap-phase
-diagnostics, so default return behavior in custom YAMLs is also recognized.
-This timing policy differs from the continuous circular baseline/optimized
-scenario, despite sharing the Cartesian tracking law and circle geometry.
-
-The perpendicular full-online and other controllers keep their existing
-behavior. A between-lap return limits accumulated postural drift; it does
-not impose an orientation or hand-wall clearance constraint within a lap.
+`user_lap_index`, `user_lap_returning`, `user_lap_time`, `user_q0_error` and
+`user_q0_speed` record the schedule and return criteria. The shared schedule
+aligns the approaches across laps. Actual contact times and recontacts depend
+on the measured motion and contact response. For a comparison against the
+continuous circular `optimized_hqp.py`, use a baseline task configuration
+without `circle.lap_return`. The comparison checks the recorded circle settings
+and lap-phase diagnostics, including when comparing older runs.
 
 ### Perpendicular optimized three-phase controller
 

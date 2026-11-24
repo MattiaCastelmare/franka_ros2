@@ -3229,3 +3229,20 @@ changes were made. Recompiled the Markdown report and checked the resulting
 PDF's image order, captions and numeric tables.
 The revised PDF has 19 A4 pages and eight separate original figures; all
 source/destination image hashes match and compilation has no layout warnings.
+
+### Synchronized circular returns (2026-11-24)
+
+The default circular baseline and full-online configurations share the
+quintic braking reference and a fixed 2 s return. A 2.5 s revolution gives
+a 4.5 s cycle on the simulation clock. Every restart still requires the
+configured joint position and speed tolerances. The baseline uses its
+original posture feedback and damping during both phases, and the
+full-online controller retains its HQP and smoothly blends its return gains.
+
+Both headless trials completed 20 simulated seconds at 1000 Hz and RTF 0.20.
+The five primary contacts occurred at 1.167, 5.667, 10.167, 14.667 and
+19.167 s in both logs. The full-online recontacts occurred 2 ms earlier
+than the baseline recontacts, and no contact started during a return.
+The comparison reports a matching scenario and all checks passed.
+The runs and timing summary are in `runs/circular_return_sync_20261124_163800/`.
+All 75 targeted regression checks passed.

@@ -13,6 +13,7 @@ circle:
     position_tolerance: 0.001        # [rad] maximum joint error before restarting
     velocity_tolerance: 0.005        # [rad/s] maximum joint speed before restarting
     timeout: 5.0                    # [s] stop if the return does not settle
+    duration: 2.0                   # [s] fixed restart schedule shared with the baseline
 
 tracking:
   kp_position: 100.0                # [1/s^2] same Cartesian gain as the baseline
