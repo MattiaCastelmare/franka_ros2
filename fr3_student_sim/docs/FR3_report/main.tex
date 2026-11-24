@@ -195,6 +195,10 @@ reduction. Contact detection leaves the tracking reference in place. The observe
 residual enters the disturbance-aware constraint prediction, and the commanded torque
 comes from the HQP solution.
 
+In earlier full-online runs with continuous tracking, null-space motion accumulated
+over successive laps, leading to large changes in joint posture and hand orientation.
+Returning to $q_0$ gives each lap a repeatable starting posture.
+
 Both circular controllers now follow the same schedule. Each 2.5\,s revolution is
 followed by a fixed 2.0\,s RETURN to $q_0$, starting with a 0.20\,s braking reference
 that ends at rest at the initial Cartesian point. At the scheduled restart, the
