@@ -412,6 +412,47 @@ return-related flags disappear in the selected run (Figure~\ref{fig:obs-after}).
   \label{fig:obs-after}
 \end{figure}
 
+\clearpage
+\subsection{Contact force estimation}
+Under nominal dynamics, the residual follows
+$\dot r = K_O(\tau_{\mathrm{ext}}-r)$~\cite{haddadin2017}.
+The gain of 30\,s$^{-1}$ gives a time constant of about 33\,ms. This
+attenuates fast disturbances in the detection signal and also suppresses
+short force peaks.
+
+For offline force estimation, we invert the observer's implicit Euler update
+at the logged sample interval $\Delta t_k = t_k - t_{k-1}$. For a single
+contact at the fingertip along the known wall normal $n$, we project the
+reconstructed joint torque onto $g_k=J_{\mathrm{tip}}(q_k)^{\mathsf T}n$.
+\begin{equation}
+  \widetilde{\tau}_{\mathrm{ext},k} =
+    r_k + K_O^{-1}\frac{r_k-r_{k-1}}{\Delta t_k},
+  \qquad
+  \widehat F_{n,k} =
+    \frac{g_k^{\mathsf T}\widetilde{\tau}_{\mathrm{ext},k}}{g_k^{\mathsf T}g_k}.
+\end{equation}
+The simulated force is the validation reference. The detector applies its
+threshold to the filtered residual.
+
+Figure~\ref{fig:force-estimation} uses the same full-online runs as the
+impact comparison. Direct projection of the filtered residual underestimates
+the first-impact peaks by 42--43\% and delays them by 20--21\,ms. Inversion
+brings both peaks within 0.05\,N of the simulated peaks, with a remaining
+delay of 2\,ms. The improvement indicates that the observer bandwidth
+accounts for most of the peak error in these nominal runs. Differencing
+amplifies measurement noise and makes the reconstruction sensitive to torque
+timing and model errors.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.94\linewidth]{fig09_force_estimation_circular}\par
+  \medskip
+  \includegraphics[width=0.94\linewidth]{fig10_force_estimation_perpendicular}
+  \caption{Simulated and estimated normal force at first contact in the
+  circular (top) and perpendicular (bottom) full-online runs.}
+  \label{fig:force-estimation}
+\end{figure}
+
 % =====================================================================
 \clearpage
 \section{Elastic Model of the First Impact}

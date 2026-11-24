@@ -8,6 +8,9 @@ metrics: peak force, normal impulse, maximum penetration, and the normal
 kinetic energy, mass and speed from the sample immediately before contact.
 Logs with a momentum observer also produce ``X_observer.png`` with the seven
 joint residuals, their detection thresholds, the residual norm and detection times.
+With the FR3 model and wall geometry available, it also compares the estimated
+and simulated normal force. The estimate inverts the observer filter when its
+gain was logged.
 ``X_collision.png`` contains six panels for the first compression-release cycle:
 directional mass, normal velocity, contact force, penetration, normal impulse
 and a pre-contact normal kinetic-energy summary. The interval ends at the first
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -97,13 +101,65 @@ def _mark_detections(axes, times):
                          label='detection onset' if index == 0 else None)
 
 
+def _invert_observer_filter(run: dict, residual: np.ndarray) -> np.ndarray | None:
+    """Undo the observer's implicit Euler filter on the saved joint residuals."""
+    observer = run['meta'].get('observer')
+    if not isinstance(observer, dict):
+        return None
+    gain = np.asarray(observer.get('gain'), dtype=float)
+    if gain.shape not in ((), (7,)) or not np.all(np.isfinite(gain) & (gain > 0)):
+        return None
+
+    dt = np.diff(run['t'])[:, None]
+    torque = np.full_like(residual, np.nan, dtype=float)
+    # The first residual comes from initialization and has no preceding sample.
+    np.divide(np.diff(residual, axis=0), dt * gain, out=torque[1:],
+              where=np.isfinite(dt) & (dt > 0))
+    torque[1:] += residual[1:]
+    return torque
+
+
+def _estimate_normal_force(run: dict, joint_torque: np.ndarray) -> np.ndarray | None:
+    """Fit joint_torque = (J_tip.T @ normal) * F_n for a fingertip contact."""
+    wall = run['meta'].get('wall', {})
+    if 'q' not in run or 'normal' not in wall or not wall.get('enabled', True):
+        return None
+    q = np.asarray(run['q'], dtype=float)
+    normal = np.asarray(wall['normal'], dtype=float)
+    if q.ndim != 2 or q.shape[1] != 7 or q.shape != joint_torque.shape or normal.shape != (3,):
+        return None
+    normal_length = np.linalg.norm(normal)
+    if not np.isfinite(normal_length) or normal_length == 0:
+        return None
+    normal = normal / normal_length
+
+    try:
+        from fr3_sim.simulation.fr3_model import FR3Model
+        robot = FR3Model()
+    except (ImportError, LookupError, OSError) as exc:
+        warnings.warn(f'Normal force estimate unavailable: {exc}', stacklevel=2)
+        return None
+
+    force = np.full(len(q), np.nan)
+    valid = np.all(np.isfinite(q) & np.isfinite(joint_torque), axis=1)
+    for i in np.flatnonzero(valid):
+        torque_per_newton = robot.jacobian_pos(q[i]).T @ normal
+        sensitivity_squared = torque_per_newton @ torque_per_newton
+        if sensitivity_squared > 1e-12:
+            force[i] = (torque_per_newton @ joint_torque[i]) / sensitivity_squared
+    return force
+
+
 def _observer_figure(run: dict, plt):
     """Keep observer diagnostics separate from the tracking/contact figure."""
     t = run['t']
     residual = np.asarray(run['residual'])
     thresholds = run.get('residual_threshold')
     events = detection_times(run)
-    fig, ax = plt.subplots(9, 1, figsize=(10, 18), sharex=True)
+    torque = _invert_observer_filter(run, residual)
+    normal_force = _estimate_normal_force(run, residual if torque is None else torque)
+    panels = 9 if normal_force is None else 10
+    fig, ax = plt.subplots(panels, 1, figsize=(10, 2 * panels), sharex=True)
     for joint, axis in enumerate(ax[:7]):
         axis.plot(t, residual[:, joint], label='residual', lw=1.0)
         if thresholds is not None:
@@ -114,12 +170,21 @@ def _observer_figure(run: dict, plt):
         axis.set_ylabel(f'r{joint + 1} [N m]')
     ax[7].plot(t, run.get('residual_norm', np.linalg.norm(residual, axis=1)), 'k')
     ax[7].set_ylabel('||r|| [N m]')
+    if normal_force is not None:
+        if 'F_n' in run:
+            ax[8].plot(t, run['F_n'], label='simulated wall force', color='0.35', lw=1.0)
+        label = ('estimate from filtered residual' if torque is None
+                 else 'estimate with observer filter inversion')
+        ax[8].plot(t, normal_force, label=label, color='tab:blue', ls='--', lw=1.2)
+        ax[8].set_ylabel('Normal force [N]')
+        ax[8].legend(loc='upper right', fontsize=8)
+
     detected = np.asarray(run.get('collision_detected', np.zeros(len(t))), dtype=bool)
-    ax[8].step(t, detected.astype(int), where='post', color='tab:red')
-    ax[8].set_yticks([0, 1], labels=['no', 'yes'])
-    ax[8].set_ylim(-0.1, 1.1)
-    ax[8].set_ylabel('detected')
-    ax[8].set_xlabel('t [s]')
+    ax[-1].step(t, detected.astype(int), where='post', color='tab:red')
+    ax[-1].set_yticks([0, 1], labels=['no', 'yes'])
+    ax[-1].set_ylim(-0.1, 1.1)
+    ax[-1].set_ylabel('detected')
+    ax[-1].set_xlabel('t [s]')
     _mark_detections(ax, events)
     ax[0].legend(loc='upper right', fontsize=8)
     for axis in ax:

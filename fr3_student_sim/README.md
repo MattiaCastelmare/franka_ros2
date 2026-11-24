@@ -1105,7 +1105,17 @@ time. `user_tracking_acceleration` stores the primary acceleration
 reference. Extra QP and disturbance diagnostics remain in the NPZ.
 
 The observer figure shows the seven residuals, thresholds, residual norm
-and detection times. The collision figure has six panels: directional mass,
+and detection times. With the FR3 model and wall normal available, it also
+compares the normal force estimated from the residual with the simulated
+wall force. For a single fingertip contact along the known unit normal `n`,
+it first reconstructs the joint torque as `r[k] + (r[k] - r[k-1]) / (dt * K_O)`
+using the recorded observer gain and sample interval. It projects that torque
+onto `g = J_tip(q).T @ n` with `F_hat = (g @ torque) / (g @ g)`.
+The first sample has no estimate. Logs without an observer gain use the
+filtered residual directly. Filter inversion can amplify measurement noise
+and is intended here for nominal simulations.
+
+The collision figure has six panels: directional mass,
 normal speed, force, penetration, normal impulse and pre-contact normal
 kinetic energy. Metrics cover only the first compression-release cycle,
 ending at detachment or the start of recompression, whichever occurs first.
