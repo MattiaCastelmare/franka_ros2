@@ -518,13 +518,13 @@ variation of $m_n(q)$ as the arm changes posture while compressing the wall.
     \midrule
     Contact onset (s)            & 1.167   & 1.167   & -- \\
     Entry mass (kg)              & 7.189   & 4.623   & $-35.69$ \\
-    Entry speed (m/s)            & 0.10893 & 0.10893 & $-0.0026$ \\
+    Entry speed (m/s)            & 0.10893 & 0.10893 & $-0.0027$ \\
     Entry energy (mJ)            & 42.656  & 27.430  & $-35.69$ \\
     Peak force (N)               & 43.147  & 34.354  & $-20.38$ \\
-    First-cycle impulse (N\,s)   & 2.1002  & 1.2581  & $-40.09$ \\
+    First-cycle impulse (N\,s)   & 2.1017  & 1.2581  & $-40.14$ \\
     Peak penetration (mm)        & 2.155   & 1.714   & $-20.44$ \\
     First-cycle duration (ms)    & 84.0    & 59.0    & $-29.76$ \\
-    Precontact RMS error (mm)    & 0.0190  & 0.0231  & $+21.40$ \\
+    Precontact RMS error (mm)    & 0.0190  & 0.0231  & $+21.60$ \\
     \bottomrule
   \end{tabular}
   \caption{Circular experiment: first compression-release cycle.}
@@ -537,37 +537,37 @@ reduction in impulse. Entry speeds remain closely matched within the pair.
 \begin{figure}[p]
   \centering
   \includegraphics[width=\textwidth]{fig03_circular_baseline_first_impact}
-  \caption{Circular baseline: original first-collision plot, including precontact mass
-  and speed, force, penetration, impulse and energy.}
+  \caption{Circular baseline: first impact in the run with the shared RETURN schedule.}
   \label{fig:circ-base-first}
 \end{figure}
 
 \begin{figure}[p]
   \centering
   \includegraphics[width=\textwidth]{fig04_circular_online_first_impact}
-  \caption{Circular full-online controller: original first-collision plot for the
-  selected optimized run.}
+  \caption{Circular full-online controller: first impact in the run with the shared
+  RETURN schedule.}
   \label{fig:circ-opt-first}
 \end{figure}
 
 \subsection{Repeated circles and return scheduling}
-Figures~\ref{fig:circ-base-all} and~\ref{fig:circ-opt-all} show the archived runs used
-for the first-impact results. Separate 20\,s validation runs with the current shared
-RETURN schedule produced matching first-contact times on all five approaches, starting
-at 1.167\,s and recurring every 4.5\,s. For this synchronized pair,
-\texttt{compare\_runs} reports \texttt{full\_criterion\_met:true}.
+Figures~\ref{fig:circ-base-all} and~\ref{fig:circ-opt-all} show all contacts in the
+same 20\,s runs used for the first-impact comparison. With the shared RETURN schedule,
+the first contacts match on all five approaches, starting at 1.167\,s and recurring
+every 4.5\,s. The full-online recontacts occur 2\,ms earlier than the corresponding
+baseline recontacts. No contacts occur during RETURN.
 
 \begin{figure}[p]
   \centering
   \includegraphics[width=\textwidth]{fig05_circular_baseline_all_collisions}
-  \caption{Circular baseline: all contacts in the archived 20\,s run.}
+  \caption{Circular baseline: all contacts over 20\,s with the shared RETURN schedule.}
   \label{fig:circ-base-all}
 \end{figure}
 
 \begin{figure}[p]
   \centering
   \includegraphics[width=\textwidth]{fig06_circular_online_all_collisions}
-  \caption{Circular full-online controller: all contacts in the archived 20\,s run.}
+  \caption{Circular full-online controller: all contacts over 20\,s with the shared
+  RETURN schedule.}
   \label{fig:circ-opt-all}
 \end{figure}
 
@@ -643,7 +643,7 @@ predictions and measurements and gives the relative changes from baseline to ful
     \midrule
     \multicolumn{7}{l}{\emph{Circular} ($\Delta_m = 35.69\%$)} \\
     Peak force (N)     & 41.31 & 33.12 & $-19.81$ & 43.15 & 34.35 & $-20.38$ \\
-    Impulse (N\,s)     & 1.566 & 1.007 & $-35.69$ & 2.100 & 1.258 & $-40.09$ \\
+    Impulse (N\,s)     & 1.566 & 1.007 & $-35.69$ & 2.102 & 1.258 & $-40.14$ \\
     Duration (ms)      & 59.6  & 47.8  & $-19.81$ & 84.0  & 59.0  & $-29.76$ \\
     \midrule
     \multicolumn{7}{l}{\emph{Perpendicular} ($\Delta_m = 32.02\%$)} \\
@@ -687,7 +687,7 @@ and impulse depend on the closed-loop contact phase.
     \cmidrule(lr){2-4}
                   & Safety & Tracking & Secondary & (rad) & samples \\
     \midrule
-    Circular      & 0 & 0 & 0  & 0.148845 & 0 \\
+    Circular      & 0 & 0 & 0  & 0.148855 & 0 \\
     Perpendicular & 0 & 0 & 38 & 0.151151 & 0 \\
     \bottomrule
   \end{tabular}
@@ -700,13 +700,13 @@ the controller uses the verified tracking solution from the same update. Entry
 mass reflects precontact control, while the measured force history includes the
 controller's fallback behavior.
 
-The maximum normalized slack exceeds $10^{-6}$ on about 1.95\% of
+The maximum normalized slack exceeds $10^{-6}$ on about 1.84\% of
 circular optimized updates and 17.73\% of perpendicular optimized
 updates. Acceleration estimates from finite differences of the logged
-velocities reach about 30.04\,rad/s$^2$ in the circular optimized run and
+velocities reach about 29.93\,rad/s$^2$ in the circular optimized run and
 49.55\,rad/s$^2$ in the perpendicular optimized run. The corresponding
-baseline maxima are 23.82 and 43.91\,rad/s$^2$. These estimates sometimes
-exceed the preferred 30\,rad/s$^2$ limit.
+baseline maxima are 23.80 and 43.91\,rad/s$^2$. The perpendicular optimized
+run exceeds the soft acceleration preference of 30\,rad/s$^2$ during contact.
 
 The minimum physical margin in the circular optimized run is 0.148\,85\,rad.
 It briefly falls below the preferred 0.15\,rad margin and stays above the
@@ -723,8 +723,8 @@ hard position and velocity limits, with no actuator clipping.
         & \begin{tabular}[c]{@{}c@{}}Update max\\(ms)\end{tabular}
         & \begin{tabular}[c]{@{}c@{}}Missed samples\\(\%)\end{tabular} \\
     \midrule
-    Circular baseline      & 0.508 & 0.847 & 22.227 & 26 (0.130) \\
-    Circular online        & 0.958 & 1.342 & 27.782 & 10 (0.050) \\
+    Circular baseline      & 0.352 & 0.516 &  4.783 & 5 (0.025) \\
+    Circular online        & 0.815 & 1.107 & 29.892 & 7 (0.035) \\
     Perpendicular baseline & 0.416 & 0.618 & 9.761  & 1 (0.177) \\
     Perpendicular online   & 0.994 & 1.610 & 2.709  & 0 (0.000) \\
     \bottomrule
@@ -739,9 +739,9 @@ a physical 1\,kHz loop for both optimized controllers.
 
 The virtual wall applies force only at the fingertip. The hand-depth diagnostic
 estimates overlap with the wall plane using bounding boxes around the hand and
-fingers. The proxy first becomes positive about 30\,ms before the first fingertip
+fingers. The proxy first becomes positive about 32\,ms before the first fingertip
 contact in the circular full-online run and 13\,ms before it in the perpendicular
-run. The maximum proxy overlaps over the complete runs are 5.36 and 9.25\,mm,
+run. The maximum proxy overlaps over the complete runs are 5.34 and 9.25\,mm,
 respectively. These are geometric estimates from the sampled poses.
 
 % =====================================================================
