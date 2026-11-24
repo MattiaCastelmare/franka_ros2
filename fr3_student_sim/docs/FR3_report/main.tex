@@ -42,7 +42,7 @@ The circular runs span 20 simulated seconds. The perpendicular runs finish their
 scheduled approach and endpoint hold after about 0.57\,s, within the 2\,s launch limit.
 
 At first impact, the full-online controller reduced the entry mass by
-\textbf{35.69 percent} for the circular trajectory and \textbf{32.02 percent} for the
+\textbf{35.69\%} for the circular trajectory and \textbf{32.02\%} for the
 perpendicular trajectory. Entry speeds were similar within each pair. The comparison
 captures the combined effect of mass minimization, redundancy resolution, damping and
 constraints. Section~\ref{sec:elastic} derives the reduction predicted by a
@@ -146,6 +146,12 @@ mass gradient with a fixed posture $q^*$ computed offline at the nominal contact
 point. We selected the full-online variants because they produced slightly lower
 first-impact masses in the available trials and eliminated the task-specific posture
 search.
+
+A separate perpendicular three-phase variant uses Cartesian tracking on approach,
+fades mass reduction and posture attraction during the transition, and holds
+compliant contact after observer confirmation. Its transition to contact impedance
+changes the primary law, so it tests a different contact strategy from the
+shared-tracking comparison presented here.
 
 During tracking, the secondary acceleration preference is
 \begin{equation}
@@ -314,9 +320,9 @@ measurements from the perpendicular tuning runs at RTF 0.20.
   \label{tab:tuning}
 \end{table}
 
-In the selected trial, 4/12 reduced the entry mass while keeping the preferred
-0.15\,rad margin. The reduction relative to 4/24 was small. The comparison
-supports a local choice that prioritizes entry mass under the tested conditions.
+Increasing the mass gain accounts for most of the improvement and brings the
+joints closer to the preferred position margin. Halving the damping saves only
+another 18\,g and leaves little clearance above that margin.
 The 0.10\,s startup ramp leaves about 0.25\,s at full activation before
 perpendicular contact at approximately 0.35\,s.
 
@@ -339,13 +345,9 @@ objectives before the QPs compute a constrained command. The perpendicular
 0.10\,s speed ramp and the circular 1\,s angular ramp act on the trajectory
 reference.
 
-In the circular run with abrupt returns, the detector triggered without contact
-at 6.694 and 19.286\,s, 2\,ms after the start of RETURN
-(Figure~\ref{fig:obs-before}). The wall force was zero and the fingertip was
-about 60\,mm from the wall. The reference speed dropped from 0.125\,66\,m/s
-to zero, the mass-torque norm fell from 15.39\,N\,m to zero, and the actuator
-command changed by about 6.96\,N\,m. The logged schedule showed no local gap at
-either event.
+The off-contact detections in Figure~\ref{fig:obs-before} occur 2\,ms after abrupt
+RETURN commands. The timing and the jumps in reference speed and actuator command
+point to the transition as a plausible source of the residual spikes.
 
 The current 0.20\,s braking reference matches position, velocity and acceleration
 at the start of RETURN and brings the reference back to the starting point at rest.
@@ -354,11 +356,8 @@ and damping terms. The damping gain blends again over the next 0.10\,s when trac
 resumes. The observer keeps its history and thresholds, and the run duration is the
 same.
 
-In the selected 20\,s nominal circular run, all five detection onsets occurred
-while the wall force was positive (Figure~\ref{fig:obs-after}). Every RETURN
-transition in this run passed without a detection. The earlier perpendicular logs
-include detections outside contact and predate the first-RUN-sample time-origin
-protocol.
+With the smooth transition, the detector still responds during contact and the
+return-related flags disappear in the selected run (Figure~\ref{fig:obs-after}).
 
 \begin{figure}[p]
   \centering
@@ -454,12 +453,8 @@ variation of $m_n(q)$ as the arm changes posture while compressing the wall.
   \label{tab:circ}
 \end{table}
 
-Entry speed differs by 0.0026 percent, so the 35.69 percent drop in entry energy
-closely matches the reduction in entry mass. Peak force falls by 20.38 percent,
-first-cycle impulse by 40.09 percent and peak penetration by 20.44 percent. The
-smaller reduction in peak force than in mass is consistent with the square-root
-scaling in \eqref{eq:elastic-ratio}. Section~\ref{sec:elastic-compare} compares the
-measured reductions with the elastic prediction.
+In the circular test, lower mean force and earlier release both contribute to the
+reduction in impulse. Entry speeds remain closely matched within the pair.
 
 \begin{figure}[p]
   \centering
@@ -478,12 +473,10 @@ measured reductions with the elastic prediction.
 \end{figure}
 
 \subsection{Repeated circles and return scheduling}
-During the 20\,s run, the baseline completes 10 primary approaches to the wall and
-records 20 distinct positive-force contact episodes, including recontacts
-(Figure~\ref{fig:circ-base-all}). The full-online controller completes five revolutions
-and records ten episodes (Figure~\ref{fig:circ-opt-all}). Four returns take approximately
-1.799\,s each. The fifth starts at 19.696\,s and the run ends before it finishes. The arm
-meets the joint-position and velocity tolerances before each restart.
+Figures~\ref{fig:circ-base-all} and~\ref{fig:circ-opt-all} show how the return phase
+spaces the approaches farther apart. Total impulse over 20\,s therefore combines
+the loading per impact with the number of impacts. Comparing the first cycle
+removes the effect of that difference in frequency.
 
 \begin{figure}[p]
   \centering
@@ -500,9 +493,7 @@ meets the joint-position and velocity tolerances before each restart.
   \label{fig:circ-opt-all}
 \end{figure}
 
-The total impulse over each run would aggregate a different number of contact episodes
-with different timing. The first-impact metrics compare a single compression-release
-cycle. The two runs share the primary tracking law and gains, and
+The two runs share the primary tracking law and gains, and
 \texttt{compare\_runs} reports \texttt{full\_criterion\_met:false} solely because
 \texttt{same\_scenario} is false. Only the newer full-online log records the explicit
 first-sample time origin.
@@ -532,12 +523,9 @@ first-sample time origin.
   \label{tab:perp}
 \end{table}
 
-Entry speeds differ by 0.0332 percent. Relative to the baseline, the full-online
-controller reduces entry mass by 32.02 percent, peak force by 19.15 percent, impulse by
-25.49 percent and peak penetration by 19.20 percent. The smaller change in peak force
-than in mass follows the pattern expected from \eqref{eq:elastic-F}
-(Section~\ref{sec:elastic-compare}). This comparison uses the full-online controller.
-Earlier tests used the standard optimized controller with an offline posture target.
+In the perpendicular test, the impulse reduction comes mainly from lower mean force
+because contact duration changes little. The two controllers reach the wall at
+closely matched speeds.
 
 \begin{figure}[p]
   \centering
@@ -555,14 +543,7 @@ Earlier tests used the standard optimized controller with an offline posture tar
   \label{fig:perp-opt}
 \end{figure}
 
-Both trials ran for the intended period of about 0.57\,s and recorded complete first
-impacts. The current comparison tool reports \texttt{full\_criterion\_met:true} for
-this pair of saved runs. The criterion requires successful safety and tracking QPs.
-It reports secondary fallbacks separately. All 38 fallbacks occurred from 0.382 to
-0.419\,s, after first contact at 0.350\,s. In each case, the controller used the
-tracking solution from the same update. The result applies to the sampled data from
-this version of the runtime. The logs predate explicit time-origin metadata and begin
-at approximately 0.007\,s.
+Both trials completed the scheduled 0.57 s and recorded a complete first impact.
 
 % =====================================================================
 \clearpage
@@ -604,21 +585,13 @@ predictions and measurements and gives the relative changes from baseline to ful
 \end{table}
 
 \paragraph{Peak force.}
-The elastic model underestimates the absolute peak force in all four runs by about
-4--8\%. For the circular pair, the model predicts a $19.81\%$ reduction and the
-simulation gives $20.38\%$. For the perpendicular pair, the corresponding reductions
-are $17.58\%$ and $19.15\%$. In both pairs, the measured reduction slightly exceeds
-the prediction and is a little over half the reduction in mass. This is consistent
-with the square-root scaling.
+The elastic model estimates the peak-force reduction within 1.6 percentage points
+in both comparisons.
 
 \paragraph{Impulse and contact duration.}
-Impulse is the mean contact force multiplied by the contact duration. In the circular
-pair, contact duration falls by $29.76\%$, compared with a predicted $19.81\%$, and
-impulse falls by $40.09\%$, compared with $35.69\%$. In the perpendicular pair,
-the contact shortens by 4\,ms ($6.25\%$), compared with the predicted 10.7\,ms
-($17.55\%$), and impulse falls by $25.49\%$, compared with $32.04\%$. Differences in
-contact duration help explain why the model agrees more closely with the peak-force
-reductions than with the impulse reductions.
+The impulse estimates diverge because the measured contact durations depart from
+elastic scaling in different directions. The circular contact shortens more than
+predicted, while the perpendicular contact shortens less.
 
 The measured impulses are 16--34\% larger than $2\,\ms \vs$. With
 $c_e = 15$\,N\,s/m, the wall damping ratio is
@@ -649,14 +622,13 @@ and impulse depend on the closed-loop contact phase.
   \label{tab:qp}
 \end{table}
 
-All QP levels succeed in the circular optimized run. In the perpendicular
-optimized run, the safety and primary tracking levels succeed throughout, and
-the secondary level fails on 38 updates. The controller uses the primary
-solution from the same update to continue the run on each of those occasions.
-The table reports QP status for the optimized controllers.
+The perpendicular secondary fallbacks begin after contact onset. In each case,
+the controller uses the verified tracking solution from the same update. Entry
+mass reflects precontact control, while the measured force history includes the
+controller's fallback behavior.
 
-The maximum normalized slack exceeds $10^{-6}$ on about 1.95 percent of
-circular optimized updates and 17.73 percent of perpendicular optimized
+The maximum normalized slack exceeds $10^{-6}$ on about 1.95\% of
+circular optimized updates and 17.73\% of perpendicular optimized
 updates. Acceleration estimates from finite differences of the logged
 velocities reach about 30.04\,rad/s$^2$ in the circular optimized run and
 49.55\,rad/s$^2$ in the perpendicular optimized run. The corresponding
@@ -688,11 +660,9 @@ hard position and velocity limits, with no actuator clipping.
   \label{tab:timing}
 \end{table}
 
-At a requested RTF of 0.20, a 1\,ms interval in simulation gives the controller
-a 5\,ms wall-clock budget. The runs share this budget, and the timing records
-still show missed samples and scheduling outliers. Some optimized updates take
-more than 1\,ms, so deadline-compliant 1\,kHz execution on physical hardware
-remains to be established.
+The low number of missed samples at RTF 0.20 describes performance in slowed
+simulation. The 95th-percentile update time already exceeds the 1\,ms budget of
+a physical 1\,kHz loop for both optimized controllers.
 
 The virtual wall applies force only at the fingertip. The wall shown in Gazebo
 has no full-body collision geometry. The hand-depth diagnostic measures
@@ -703,23 +673,9 @@ remain outside the controller's guarantees.
 
 % =====================================================================
 \section{Conclusions}
-In both saved full-online comparisons, the reduction in first-contact mass
-exceeds the 30 percent target at nearly unchanged entry speed. The measured
-peak-force reductions of $20.38\%$ (circular) and $19.15\%$ (perpendicular) are
-close to the elastic square-root predictions of $19.81\%$ and $17.58\%$. The
-percentage reduction in peak force is a little over half that in effective
-mass. The measured impulse changes depart further from the predictions
-($-40.09\%$ against $-35.69\%$, and $-25.49\%$ against $-32.04\%$) because the
-measured contact durations deviate from the elastic scaling. Both controller
-families share the primary tracking request.
-The HQP and the secondary control law differ between the full-online and baseline
-controllers.
-
-The circular return policy limits the buildup of postural drift and changes the
-timing of successive impacts. In the selected logs, off-contact detections occurred
-at abrupt RETURN entries and disappeared with the smooth transition. The perpendicular
-4/12 comparison comes from the same tuning study and includes postcontact secondary
-fallbacks. Its logs predate the convention of using the first RUN sample as the time origin.
+Both full-online comparisons exceed the 30\% entry-mass reduction target. Entry
+mass helps explain the reduction in peak force at comparable approach speeds,
+while impulse depends on the full contact history.
 
 % =====================================================================
 
