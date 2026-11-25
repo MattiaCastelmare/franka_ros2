@@ -298,7 +298,7 @@ select one acceleration command. The mass objective acts through the preference
 evaluated at the current configuration.
 
 \subsection{Numerical solution and fallback policy}
-The controller reuses three OSQP~\cite{osqp} solver instances with fixed sparsity
+The controller reuses three OSQP solver instances with fixed sparsity
 patterns and warm starts between updates. It updates the matrix coefficients and
 bounds from the current state. The absolute and relative tolerances are $10^{-6}$.
 The solver runs at most 1000 iterations and checks termination every ten iterations.
@@ -802,11 +802,6 @@ vol.~33, no.~6, pp.~1292--1312, 2017.
 A.~De~Luca and R.~Mattone, ``Sensorless robot collision detection and hybrid
 force/motion control,'' in \emph{Proc. IEEE Int. Conf. on Robotics and Automation
 (ICRA)}, 2005, pp.~999--1004.
-
-\bibitem{osqp}
-B.~Stellato, G.~Banjac, P.~Goulart, A.~Bemporad, and S.~Boyd, ``OSQP: An operator
-splitting solver for quadratic programs,'' \emph{Mathematical Programming
-Computation}, vol.~12, pp.~637--672, 2020.
 
 \bibitem{franka-fci}
 Franka Robotics, ``libfranka Overview,'' \emph{Franka Control Interface documentation}.
