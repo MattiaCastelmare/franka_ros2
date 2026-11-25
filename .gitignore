@@ -33,3 +33,4 @@ franka_experiments/models/
 
 # Claude Code local settings
 .claude/
+.build_logs/

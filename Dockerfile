@@ -285,6 +285,7 @@ print('hands23 OK: detectron2', detectron2.__version__, 'torchvision', torchvisi
 # ============================================================================
 RUN python3 -m pip uninstall -y onnxruntime \
  && python3 -m pip install --user --no-cache-dir --no-deps \
+        --extra-index-url https://pypi.nvidia.com \
         onnxruntime-gpu==1.23.2 \
         rtmlib==0.0.16 \
         nvidia-cublas-cu12==12.9.2.10 \
@@ -303,7 +304,41 @@ print('onnxruntime', ort.__version__, '| tensorrt', tensorrt.__version__, '| RTM
 # ============================================================================
 # Entrypoint script (root-owned, executable)
 # ============================================================================
+# ============================================================================
+# 25/11/2026: what the kuka-thales image has and this one lacked, so the KUKA
+# perception and scripts (YOLO grasp/object nodes, CycloneDDS, the twin and
+# replay tools) run here too: ultralytics (same pins as kuka-thales) with the
+# torchvision of torch 2.13, CycloneDDS, scipy, pytest.
+# ============================================================================
+RUN python3 -m pip install --user --no-cache-dir \
+        torchvision==0.28.0 numpy==1.26.4 \
+ && python3 -m pip install --user --no-cache-dir --no-deps \
+        ultralytics==8.4.192 \
+        ultralytics-thop==2.2.3 \
+ && python3 -m pip install --user --no-cache-dir \
+        "protobuf>=4.25.3,<5" \
+        numpy==1.26.4 \
+        pandas \
+        matplotlib \
+        scipy \
+        pillow \
+        psutil \
+        pyyaml \
+        requests \
+ && python3 -c "\
+import torch, torchvision, ultralytics, mediapipe, rtmlib, google.protobuf as pb; \
+print('torch', torch.__version__, '| torchvision', torchvision.__version__, '| ultralytics', ultralytics.__version__, '| protobuf', pb.__version__)"
+
 USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ros-humble-rmw-cyclonedds-cpp \
+        ros-humble-ros2-controllers \
+        python3-scipy \
+        python3-pytest \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY ./franka_entrypoint.sh /franka_entrypoint.sh
 RUN chmod +x /franka_entrypoint.sh
 
