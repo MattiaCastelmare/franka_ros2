@@ -166,8 +166,9 @@ speeds.
 \end{table}
 
 \begin{samepage}
-The secondary gains differ between configurations, so the comparison evaluates
-the selected controllers as a whole. The full-online variants achieved slightly
+The hybrid and full-online variants used different secondary gains, so the
+differences in first-impact results may come from the fixed posture target, the
+gain settings, or both. The full-online variants achieved slightly
 lower entry masses and simplified setup by eliminating the task-specific posture
 search.
 \end{samepage}
@@ -501,9 +502,9 @@ peak-force reductions of about $19.8\%$ and $17.6\%$, respectively, compared wit
 $16.3\%$ at the nominal target. Section~\ref{sec:elastic-compare} evaluates each run
 using its measured entry mass and speed in place of the nominal $30\%$ reduction.
 
-This model gives a reference for scaling. The closed-loop force history also depends on
-the wall damping $c_e = 15$\,N\,s/m, the controller's action during contact and the
-variation of $m_n(q)$ as the arm changes posture while compressing the wall.
+In the simulations, the contact force also depends on wall damping
+($c_e = 15$\,N\,s/m), the controller's response during contact, and changes in
+effective mass $m_n(q)$ as the arm changes posture.
 
 % =====================================================================
 \section{Circular Experiment}
@@ -670,9 +671,9 @@ The measured impulses are 16--34\% larger than $2\,\ms \vs$. With
 $c_e = 15$\,N\,s/m, the wall damping ratio is
 $\zeta = c_e/(2\sqrt{k_e \ms}) \approx 0.02$ for the entry masses above. The low
 damping ratio makes it unlikely that wall damping alone accounts for the excess.
-Continued tracking during contact lets the controller apply force through the
-fingertip, and the effective mass changes with posture. These effects are likely the
-main contributors to the higher observed impulse. The elastic model captures the
+The controller continues to track the reference during contact, and the effective
+mass varies as the arm changes posture. Both effects could help explain why the
+measured impulse exceeds the elastic prediction. The elastic model captures the
 relative peak-force reduction associated with lower $m_n$, while the absolute force
 and impulse depend on the closed-loop contact phase.
 
