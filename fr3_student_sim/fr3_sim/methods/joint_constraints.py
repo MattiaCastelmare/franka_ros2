@@ -40,7 +40,41 @@ class AccelerationBounds:
     soft_scale: np.ndarray | None = None
 
 
-class JointConstraints:
+class JointLimits:
+    """Position, velocity and torque limits and their braking rates."""
+
+    def __init__(self, params):
+        self.margin = vector(params.get('position_margin', 0.15), 7,
+                             'safety.position_margin', positive=True)
+        if np.any(self.margin <= 0.05) or np.any(2 * self.margin >= Q_MAX - Q_MIN):
+            raise ValueError('position_margin must exceed runner margin 0.05 rad and fit joints')
+        self.q_lower, self.q_upper = Q_MIN + self.margin, Q_MAX - self.margin
+        self.velocity = vector(params.get('velocity_max', DQ_MAX), 7,
+                               'safety.velocity_max', positive=True)
+        self.torque = vector(params.get('torque_max', TAU_MAX), 7,
+                             'safety.torque_max', positive=True)
+        if np.any(self.velocity > DQ_MAX) or np.any(self.torque > TAU_MAX):
+            raise ValueError('velocity/torque limits cannot exceed simulator limits')
+        self.position_rate = float(params.get('position_barrier_rate', 8.0))
+        self.velocity_rate = float(params.get('velocity_barrier_rate', 10.0))
+        for name, value in (('position_barrier_rate', self.position_rate),
+                            ('velocity_barrier_rate', self.velocity_rate)):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f'safety.{name} must be positive and finite')
+
+    def braking_bounds(self, q, dq):
+        """Bound nominal acceleration using only current position and speed."""
+        rate, velocity_rate = self.position_rate, self.velocity_rate
+        # Position barriers first limit outward speed in proportion to distance.
+        # The velocity rate then sets how strongly acceleration corrects that speed.
+        position_lower = -(rate + velocity_rate) * dq - rate * velocity_rate * (q - self.q_lower)
+        position_upper = -(rate + velocity_rate) * dq + rate * velocity_rate * (self.q_upper - q)
+        velocity_lower = -velocity_rate * (dq + self.velocity)
+        velocity_upper = velocity_rate * (self.velocity - dq)
+        return np.maximum(position_lower, velocity_lower), np.minimum(position_upper, velocity_upper)
+
+
+class JointConstraints(JointLimits):
     """Combine position/velocity barriers, step prediction and acceleration caps.
 
     The QP variable is u = M^-1 (tau - c), whereas actual acceleration is
@@ -60,26 +94,10 @@ class JointConstraints:
     """
 
     def __init__(self, params):
-        self.margin = vector(params.get('position_margin', 0.15), 7,
-                             'safety.position_margin', positive=True)
-        if np.any(self.margin <= 0.05) or np.any(2 * self.margin >= Q_MAX - Q_MIN):
-            raise ValueError('position_margin must exceed runner margin 0.05 rad and fit joints')
-        self.q_lower, self.q_upper = Q_MIN + self.margin, Q_MAX - self.margin
-        self.velocity = vector(params.get('velocity_max', DQ_MAX), 7,
-                               'safety.velocity_max', positive=True)
+        super().__init__(params)
         self.acceleration = vector(params.get('acceleration_max', 30.0), 7,
                                    'safety.acceleration_max', positive=True)
-        self.torque = vector(params.get('torque_max', TAU_MAX), 7,
-                             'safety.torque_max', positive=True)
-        if np.any(self.velocity > DQ_MAX) or np.any(self.torque > TAU_MAX):
-            raise ValueError('velocity/torque limits cannot exceed simulator limits')
-        self.position_rate = float(params.get('position_barrier_rate', 8.0))
-        self.velocity_rate = float(params.get('velocity_barrier_rate', 10.0))
         self.delay = float(params.get('command_delay_s', 0.003))
-        for name, value in (('position_barrier_rate', self.position_rate),
-                            ('velocity_barrier_rate', self.velocity_rate)):
-            if not np.isfinite(value) or value <= 0:
-                raise ValueError(f'safety.{name} must be positive and finite')
         if not np.isfinite(self.delay) or self.delay < 0:
             raise ValueError('safety.command_delay_s must be finite and nonnegative')
         soft = params.get('soft_constraints', {})

@@ -23,11 +23,11 @@ from fr3_sim.analysis.timing import timing_metrics
 # Include removed controller names only to keep historical logs readable.
 _PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
                      'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
-                     'optimized_hqp_full_online.py',
+                     'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',
                      'optimized_perp_full_online.py')
 _HQP_TRACKING_CONTROLLERS = ('optimized_hqp.py', 'optimized_hqp_perp.py',
                              'optimized_3phases_perp.py',
-                             'optimized_hqp_full_online.py',
+                             'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',
                              'optimized_full_online_circular.py',
                              'optimized_perp_full_online.py', 'impedance_hqp.py',
                              'controller_impedance_hqp.py')
@@ -131,8 +131,9 @@ def summarize_run(run):
         margin_value = params.get('joint_release', {}).get('margin')
     protected_margin = _vector_setting(margin_value)
     protected = margins - protected_margin if margins is not None and protected_margin is not None else None
-    hard_margin = (_vector_setting(soft_settings.get('hard_position_margin'))
-                   if soft_enabled else None)
+    hard_margin = _vector_setting(soft_settings.get('hard_position_margin')) if soft_enabled else None
+    if 'user_qp_status' in run:
+        hard_margin = protected_margin
     hard_protected = margins - hard_margin if margins is not None and hard_margin is not None else None
     configured_velocity = _vector_setting(safety.get('velocity_max'))
     configured_acceleration = _vector_setting(safety.get('acceleration_max'))
@@ -216,6 +217,8 @@ def summarize_run(run):
           'primary': _qp_status(run, 'user_qp_primary_status', updates),
           'secondary': _qp_status(run, 'user_qp_secondary_status', updates),
           'safety': _qp_status(run, 'user_qp_safety_status', updates)}
+    if 'user_qp_status' in run:
+        qp['single'] = _qp_status(run, 'user_qp_status', updates)
     violation = _array(run, 'user_qp_constraint_violation')
     qp['max_logged_hard_constraint_violation'] = _finite_max(violation[updates]) if violation is not None else None
     hard_lower, hard_upper = _array(run, 'user_qdd_lower', 7), _array(run, 'user_qdd_upper', 7)
@@ -516,7 +519,9 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
     candidate_summary = summaries['candidate']
     candidate_limits = candidate_summary['limits']
     elastic = candidate_limits['soft_constraints_enabled']
-    if elastic:
+    qp = candidate_summary['qp']
+    single_qp = 'single' in qp
+    if elastic or single_qp:
         checks['candidate_hard_position_margin_respected'] = (
             candidate_limits['configured_hard_position_margin_rad'] is not None
             and candidate_limits['hard_position_margin_violation_samples'] == 0)
@@ -540,35 +545,38 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
     motor_ratio = candidate_summary['torque']['max_nominal_motor_limit_ratio']
     if motor_ratio is not None:
         checks['candidate_nominal_motor_torque_limit_respected'] = motor_ratio <= 1.0 + 1e-5
-    qp = candidate_summary['qp']
     if elastic:
         checks['candidate_safety_qp_updates_solved'] = (
             qp['safety']['available'] and qp['safety']['failed_updates'] == 0)
+        checks['candidate_soft_constraint_diagnostics_available'] = (
+            qp['soft_constraints']['finite_diagnostics_available'])
+    if elastic or single_qp:
         feasibility = float(pb.get('qp', {}).get('feasibility_tolerance', 2e-4))
         bound_violation = qp['max_logged_hard_acceleration_bound_violation']
         checks['candidate_logged_hard_bounds_accepted'] = (
             qp['hard_bound_diagnostics_available'] and qp['hard_bound_diagnostics_finite']
             and bound_violation is not None and bound_violation <= feasibility + 1e-9)
-        checks['candidate_soft_constraint_diagnostics_available'] = (
-            qp['soft_constraints']['finite_diagnostics_available'])
         # Missing command/motor telemetry cannot establish hard torque compliance.
         checks['candidate_command_torque_limit_respected'] = (
             command_ratio is not None and command_ratio <= 1.0 + 1e-5)
         checks['candidate_nominal_motor_torque_limit_respected'] = (
             motor_ratio is not None and motor_ratio <= 1.0 + 1e-5)
-    if qp['primary']['available']:
-        checks['candidate_primary_qp_updates_solved'] = qp['primary']['failed_updates'] == 0
+    level = 'single' if single_qp else 'primary'
+    if qp[level]['available']:
+        checks[f'candidate_{level}_qp_updates_solved'] = qp[level]['failed_updates'] == 0
         feasibility = float(pb.get('qp', {}).get('feasibility_tolerance', 2e-4))
         violation = qp['max_logged_hard_constraint_violation']
         checks['candidate_logged_qp_hard_constraints_accepted'] = (
             violation is not None and violation <= feasibility + 1e-9)
     elif str(b.get('controller', '')).endswith(
             ('optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
-             'optimized_hqp_full_online.py',
+             'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',
              'optimized_full_online_circular.py',
              'optimized_perp_full_online.py',
              'impedance_hqp.py', 'controller_impedance_hqp.py')):
         checks['candidate_primary_qp_updates_solved'] = False
+    optimization_scope = ('the single QP trades off tracking and the mass/damping preference under active limits'
+                          if single_qp else 'HQP, constraints and secondary posture/damping can also differ')
     comparison = {'baseline_identity_reason': identity_reason, 'scenario': scenario,
                   'primary_tracking': primary_tracking,
                   'measured_mass_reduction_fraction': reduction,
@@ -582,13 +590,14 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
                       'configured_bound_respected': (
                           candidate_limits['acceleration_estimate_violation_samples'] == 0
                           if candidate_limits['acceleration_estimate_violation_samples'] is not None else None),
-                      'included_in_full_criterion': not elastic,
-                      'reason': ('soft acceleration preference; exceedances are reported separately from hard safety compliance'
+                      'included_in_full_criterion': not (elastic or single_qp),
+                      'reason': ('no separate acceleration cap is configured in the single QP'
+                                 if single_qp else 'soft acceleration preference; exceedances are reported separately from hard safety compliance'
                                  if elastic else 'sampled finite-difference check; observed excess rejects success, absence of excess is not a continuous-time certificate'),
                   },
-                  'interpretation': primary_tracking['reason'] + '; overall controller comparison: '
-                      'HQP, constraints and secondary posture/damping can also differ, '
-                      'so this does not isolate the causal effect of mass minimization'}
+                  'interpretation': (primary_tracking['reason'] + '; overall controller comparison: '
+                                     + optimization_scope
+                                     + ', so this does not isolate the causal effect of mass minimization')}
     return _json_safe({'definition': 'first compression-release cycle; precontact mass/speed from preceding sample',
                        'constraint_scope': 'saved samples only, not a continuous-time safety certificate',
                        'baseline': summaries['baseline'], 'candidate': summaries['candidate'],

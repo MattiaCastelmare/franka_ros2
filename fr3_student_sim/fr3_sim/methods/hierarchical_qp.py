@@ -25,6 +25,17 @@ class QPInfeasibleError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class AccelerationQPResult:
+    """Verified command and diagnostics from the single weighted solve."""
+
+    acceleration: np.ndarray
+    status: int
+    iterations: int
+    max_violation: float
+    milliseconds: float
+
+
+@dataclass(frozen=True)
 class HierarchicalQPResult:
     """Verified command and scalar diagnostics for one controller update."""
 
@@ -71,36 +82,13 @@ def _array(value, shape, name):
     return array
 
 
-class HierarchicalAccelerationQP:
-    """Prioritize Cartesian action, then redundant posture/mass/damping.
-
-    Primary problem::
-
-        min 0.5 ||J u - task_target||^2 + 0.5 regularization ||u||^2
-
-    Secondary problem::
-
-        min 0.5 ||u - secondary_target||^2
-        s.t. J u = J u_primary
-
-    Both levels impose ``lower <= u <= upper`` and
-    ``-torque_limits <= M u + c <= torque_limits`` without slack variables.
-    The small primary regularizer makes its unconstrained Hessian positive
-    definite; hierarchy is enforced relative to the primary solution attained
-    with that regularizer, not an unregularized ideal solution.
-
-    The Cartesian row count is fixed on the first call. A failed secondary
-    solve returns that call's verified primary solution. A failed primary
-    solve raises :class:`QPInfeasibleError`, leaving fail-stop policy to the
-    controller/runner. Neither case returns an earlier call's acceleration.
-    """
+class _ConstrainedAccelerationQP:
+    """Shared OSQP setup, updates and validation of joint/torque limits."""
 
     def __init__(self, n=7, settings=None):
         self.n = _positive_integer(n, 'n')
         values = {
-            'primary_regularization': 1e-8,
             'feasibility_tolerance': 2e-4,
-            'equality_tolerance': 2e-5,
             'eps_abs': 1e-6,
             'eps_rel': 1e-6,
             'max_iter': 1000,
@@ -114,12 +102,8 @@ class HierarchicalAccelerationQP:
         if unknown:
             raise ValueError(f'unknown QP settings: {sorted(unknown)}')
         values.update(incoming)
-        self.regularization = _positive(values.pop('primary_regularization'),
-                                        'primary_regularization')
         self.feasibility_tolerance = _positive(values.pop('feasibility_tolerance'),
                                               'feasibility_tolerance')
-        self.equality_tolerance = _positive(values.pop('equality_tolerance'),
-                                           'equality_tolerance')
         for key in ('eps_abs', 'eps_rel', 'rho'):
             values[key] = _positive(values[key], key)
         for key in ('max_iter', 'check_termination'):
@@ -135,8 +119,6 @@ class HierarchicalAccelerationQP:
         values['verbose'] = False
         self.settings = values
         self._primary = None
-        self._secondary = None
-        self._task_rows = None
         self._P_pattern = sparse.triu(np.ones((self.n, self.n)), format='csc')
         self._P_rows = self._P_pattern.indices
         self._P_columns = np.repeat(np.arange(self.n), np.diff(self._P_pattern.indptr))
@@ -177,6 +159,72 @@ class HierarchicalAccelerationQP:
                          np.max(acceleration - upper),
                          np.max(np.abs(torque) - torque_limits)))
 
+    def _solve_primary(self, P, linear, M, c, lower, upper, torque_limits, A, l, u):
+        try:
+            result, milliseconds = self._run('primary', P, linear, A, l, u)
+        except Exception as exc:
+            raise QPInfeasibleError(f'primary QP solver failed: {exc}') from exc
+        violation = self._violation(result.x, M, c, lower, upper, torque_limits)
+        if result.info.status_val not in (1, 2) or violation > self.feasibility_tolerance:
+            raise QPInfeasibleError(
+                f'primary QP has no verified solution: {result.info.status} '
+                f'(status={result.info.status_val}, iterations={result.info.iter}, '
+                f'hard violation={violation:.6g})')
+        return AccelerationQPResult(np.asarray(result.x, dtype=float).copy(),
+                                    int(result.info.status_val), int(result.info.iter),
+                                    violation, milliseconds)
+
+    def _joint_torque_rows(self, M, c, lower, upper, torque_limits):
+        M = _array(M, (self.n, self.n), 'M')
+        c = _array(c, (self.n,), 'c')
+        lower = _array(lower, (self.n,), 'lower')
+        upper = _array(upper, (self.n,), 'upper')
+        torque_limits = _array(torque_limits, (self.n,), 'torque_limits')
+        if np.any(torque_limits <= 0.0):
+            raise ValueError('torque_limits must be positive')
+        if np.any(lower > upper):
+            joint = int(np.argmax(lower - upper))
+            raise QPInfeasibleError(
+                f'contradictory acceleration bounds for joint {joint + 1}: '
+                f'lower={lower[joint]:.6g} > upper={upper[joint]:.6g}')
+        return (np.vstack((np.eye(self.n), M)), np.r_[lower, -torque_limits - c],
+                np.r_[upper, torque_limits - c])
+
+
+class WeightedAccelerationQP(_ConstrainedAccelerationQP):
+    """One solve penalizes tracking error and deviation from the preference."""
+
+    def __init__(self, n=7, settings=None, *, tracking_weight):
+        super().__init__(n, settings)
+        self.tracking_weight = _positive(tracking_weight, 'tracking.qp_weight')
+
+    def solve(self, J, task_target, preference, M, c, lower, upper, torque_limits):
+        A, l, u = self._joint_torque_rows(M, c, lower, upper, torque_limits)
+        weighted_J_T = self.tracking_weight * J.T
+        P = weighted_J_T @ J + np.eye(self.n)
+        linear = -weighted_J_T @ task_target - preference
+        return self._solve_primary(P, linear, M, c, lower, upper, torque_limits, A, l, u)
+
+
+class HierarchicalAccelerationQP(_ConstrainedAccelerationQP):
+    """Prioritize Cartesian action, then redundant posture/mass/damping.
+
+    The primary QP minimizes task error with a small acceleration penalty.
+    The secondary QP approaches its acceleration target subject to
+    ``J u = J u_primary``. Both enforce joint and torque limits. If the
+    secondary solve fails, return the verified primary command from this call.
+    """
+
+    def __init__(self, n=7, settings=None):
+        values = dict(settings or {})
+        self.regularization = _positive(values.pop('primary_regularization', 1e-8),
+                                        'primary_regularization')
+        self.equality_tolerance = _positive(values.pop('equality_tolerance', 2e-5),
+                                            'equality_tolerance')
+        super().__init__(n, values)
+        self._secondary = None
+        self._task_rows = None
+
     def solve(self, J, task_target, secondary_target, M, c,
               lower, upper, torque_limits):
         """Return this update's verified hierarchical acceleration.
@@ -197,42 +245,22 @@ class HierarchicalAccelerationQP:
             raise ValueError('task Jacobian row count cannot change after the first solve')
         task_target = _array(task_target, (rows,), 'task_target')
         secondary_target = _array(secondary_target, (self.n,), 'secondary_target')
-        M = _array(M, (self.n, self.n), 'M')
-        c = _array(c, (self.n,), 'c')
-        lower = _array(lower, (self.n,), 'lower')
-        upper = _array(upper, (self.n,), 'upper')
-        torque_limits = _array(torque_limits, (self.n,), 'torque_limits')
-        if np.any(torque_limits <= 0.0):
-            raise ValueError('torque_limits must be positive')
-        if np.any(lower > upper):
-            joint = int(np.argmax(lower - upper))
-            raise QPInfeasibleError(
-                f'contradictory acceleration bounds for joint {joint + 1}: '
-                f'lower={lower[joint]:.6g} > upper={upper[joint]:.6g}')
-
-        common_A = np.vstack((np.eye(self.n), M))
-        common_lower = np.r_[lower, -torque_limits - c]
-        common_upper = np.r_[upper, torque_limits - c]
+        M = np.asarray(M, dtype=float)
+        c = np.asarray(c, dtype=float)
+        lower = np.asarray(lower, dtype=float)
+        upper = np.asarray(upper, dtype=float)
+        torque_limits = np.asarray(torque_limits, dtype=float)
+        common_A, common_lower, common_upper = self._joint_torque_rows(
+            M, c, lower, upper, torque_limits)
         primary_P = J.T @ J + self.regularization * np.eye(self.n)
-        try:
-            primary, primary_ms = self._run(
-                'primary', primary_P, -J.T @ task_target,
-                common_A, common_lower, common_upper)
-        except Exception as exc:
-            raise QPInfeasibleError(f'primary QP solver failed: {exc}') from exc
-        primary_violation = self._violation(primary.x, M, c, lower, upper, torque_limits)
-        if (primary.info.status_val not in (1, 2)
-                or primary_violation > self.feasibility_tolerance):
-            raise QPInfeasibleError(
-                f'primary QP has no verified solution: {primary.info.status} '
-                f'(status={primary.info.status_val}, iterations={primary.info.iter}, '
-                f'hard violation={primary_violation:.6g})')
-        first = np.asarray(primary.x, dtype=float).copy()
+        primary = self._solve_primary(primary_P, -J.T @ task_target, M, c, lower,
+                                      upper, torque_limits, common_A, common_lower, common_upper)
+        first = primary.acceleration
         attained = J @ first
         secondary_A = np.vstack((common_A, J))
         secondary_status, secondary_iterations = -1, 0
         selected = first
-        violation = primary_violation
+        violation = primary.max_violation
         secondary_started = perf_counter()
         try:
             secondary, secondary_ms = self._run(
@@ -261,11 +289,11 @@ class HierarchicalAccelerationQP:
 
         return HierarchicalQPResult(
             acceleration=selected.copy(), primary_acceleration=first,
-            primary_status=int(primary.info.status_val),
+            primary_status=primary.status,
             secondary_status=secondary_status,
-            primary_iterations=int(primary.info.iter),
+            primary_iterations=primary.iterations,
             secondary_iterations=secondary_iterations,
-            max_violation=float(violation), primary_ms=primary_ms,
+            max_violation=float(violation), primary_ms=primary.milliseconds,
             secondary_ms=secondary_ms)
 
 

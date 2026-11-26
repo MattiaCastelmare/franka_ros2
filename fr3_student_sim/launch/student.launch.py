@@ -5,7 +5,7 @@
     ros2 launch fr3_student_sim student.launch.py wall:=false duration:=10 gui:=false
 
 ``controller`` selects baseline.py, baseline_perp.py, optimized_hqp.py,
-optimized_hqp_perp.py, optimized_hqp_full_online.py,
+optimized_hqp_perp.py, optimized_hqp_full_online.py, optimized_hqp_full_online_perp.py,
 optimized_full_online_circular.py, optimized_3phases_perp.py
 or an absolute custom Python file. Legacy controller
 selectors remain aliases. When a run ends (duration, ``done``, safety
@@ -31,14 +31,17 @@ PKG = 'fr3_student_sim'
 QUIET = {'stdout': 'log', 'stderr': 'log'}     # helper processes: ~/.ros/log only
 
 ARGS = {
-    'controller': ('baseline.py', 'baseline.py, baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py, optimized_hqp_full_online.py, optimized_full_online_circular.py, optimized_3phases_perp.py, a legacy selector or an absolute Python file; '
-                                       '"none" = only the robot, commanded from the terminal'),
+    'controller': ('baseline.py', 'baseline.py, baseline_perp.py, optimized_hqp.py, '
+                                  'optimized_hqp_perp.py, optimized_hqp_full_online.py, '
+                                  'optimized_hqp_full_online_perp.py, optimized_full_online_circular.py, '
+                                  'optimized_3phases_perp.py, a legacy selector or an absolute Python file; '
+                                  '"none" = only the robot, commanded from the terminal'),
     'task_config': ('', 'Task YAML passed to the controller as self.params '
                         '(empty = matching controller YAML)'),
     'wall_config': ('', 'Wall YAML (empty = config/wall.yaml)'),
     'wall': ('true', 'Enable the virtual wall'),
     'observer': ('true', 'Enable momentum observer and collision detection '
-                          '(required by the optimized HQP controllers)'),
+                          '(required by observer-based HQP controllers)'),
     'observer_config': ('', 'Observer gain and residual thresholds YAML '
                             '(empty = config/observer.yaml)'),
     'stop_at_detachment': ('false', 'End the run when the tool first leaves the wall'),

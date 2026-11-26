@@ -40,9 +40,14 @@ def impedance_figure(run, plt):
         axes[7].axhline(float(np.min(soft['hard_position_margin'])), color='tab:orange',
                         ls='-.', label='hard QP margin')
     axes[7].axhline(0.05, color='r', ls=':', label='runner stop')
-    axes[8].plot(t, run['user_qp_primary_status'], label='tracking status' if elastic else 'primary status')
-    axes[8].plot(t, run['user_qp_secondary_status'], '--', label='redundancy status' if elastic else 'secondary status')
-    axes[8].plot(t, run['user_observer_valid'], ':', label='observer valid')
+    single_qp = 'user_qp_status' in run
+    if single_qp:
+        axes[8].plot(t, run['user_qp_status'], label='QP status')
+    else:
+        axes[8].plot(t, run['user_qp_primary_status'], label='tracking status' if elastic else 'primary status')
+        axes[8].plot(t, run['user_qp_secondary_status'], '--', label='redundancy status' if elastic else 'secondary status')
+    if 'user_observer_valid' in run:
+        axes[8].plot(t, run['user_observer_valid'], ':', label='observer valid')
     if 'user_qp_safety_status' in run:
         axes[8].plot(t, run['user_qp_safety_status'], '-.', label='safety status')
     if 'user_soft_slack_normalized_max' in run:
@@ -67,19 +72,25 @@ def impedance_figure(run, plt):
         axes[8].plot(t, run['user_contact_latched'], ':', color='tab:pink',
                      label='observer contact confirmed')
     axes[9].plot(t, run['ctrl_ms'], label='Controller.update')
+    if single_qp:
+        axes[9].plot(t, run['user_qp_ms'], lw=0.8, alpha=0.7, label='QP solve')
     if 'user_qp_safety_ms' in run:
         axes[9].plot(t, run['user_qp_safety_ms'], lw=0.8, alpha=0.7, label='safety QP')
     period = 1000 / run['meta']['control_rate']
     axes[9].axhline(period, color='r', ls='--', label='period at RTF=1')
+    status_label = 'status / valid' if 'user_observer_valid' in run else 'status'
+    if elastic:
+        status_label += ' / slack'
     labels = ('tool p [m]', 'position error [mm]', 'torque [N m]', 'dq [rad/s]',
               'contact force [N]', 'mass [kg]', 'normal speed [m/s]',
-              'physical joint margin [rad]', 'status / valid / slack' if elastic else 'status / valid', 'compute [ms]')
+              'physical joint margin [rad]', status_label, 'compute [ms]')
     for axis, label in zip(axes, labels):
         axis.set_ylabel(label)
         axis.grid(alpha=0.3)
         axis.legend(loc='upper right', fontsize=7, ncol=4)
     axes[-1].set_xlabel('simulation time [s]')
-    title = ('Three-phase approach / transition / contact with HQP' if 'user_phase' in run
+    title = ('Cartesian tracking and mass reduction with a single QP' if single_qp
+             else 'Three-phase approach / transition / contact with HQP' if 'user_phase' in run
              else 'Cartesian tracking and hierarchical QP' if 'user_tracking_acceleration' in run
              else 'Cartesian impedance and hierarchical QP')
     fig.suptitle(title)

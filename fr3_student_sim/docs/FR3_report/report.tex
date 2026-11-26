@@ -12,8 +12,8 @@
 \graphicspath{{images/}}
 \pdfminorversion=7
 
-\newcommand{\reporttitle}{Directional Effective Mass Reduction\\at Impact with the Franka Emika R3}
-\newcommand{\reportdegree}{Robotics II\\Course Project Report}
+\newcommand{\reporttitle}{Optimizing effective inertia at collision point\\to minimize energy transfer -- Franka Emika}
+\newcommand{\reportdegree}{Robotics II}
 \newcommand{\academicyear}{2025/2026}
 \newcommand{\Jm}{J_M^{\#}}
 \newcommand{\ms}{m_n^-}
@@ -37,8 +37,7 @@ We compare two control laws. The baseline uses inverse dynamics and a
 Jacobian pseudoinverse for Cartesian tracking, together with posture feedback.
 The optimized law introduces effective mass reduction as a secondary objective
 in a hierarchical quadratic program (HQP). Both laws are applied to a circular
-trajectory and to an approach perpendicular to the wall. These are two
-controllers evaluated in two experiments.
+trajectory and to an approach perpendicular to the wall. 
 
 The quantitative target is at least a 30\% reduction in effective mass
 immediately before the first impact, relative to the corresponding baseline.
