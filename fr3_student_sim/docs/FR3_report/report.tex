@@ -561,8 +561,7 @@ The perpendicular reference accelerates to 0.20\,m/s over 0.10\,s, follows
 the wall normal, and brakes over its final 4\,mm. Its endpoint is 10\,mm
 beyond the wall plane and is held for 0.15\,s. That endpoint specifies
 desired position. Actual penetration follows equation~\eqref{eq:wall}
-and the controlled robot dynamics. Both selected trials complete at about
-0.57\,s, within the 2\,s launch limit.
+and the controlled robot dynamics. The launch duration limit is 2\,s.
 
 \subsection{Gains and constraint parameters}
 \begin{center}
@@ -588,9 +587,8 @@ and active constraints limit that interpretation. With no tracking
 postural stiffness in the online law, critical damping alone does not
 determine $k_{\mathrm{ns}}$.
 
-The mass-gradient startup ramp lasts 0.10\,s. It reaches full activation
-about 1.07\,s before circular contact and 0.25\,s before perpendicular
-contact. The online gains were chosen empirically. The perpendicular
+The mass-gradient startup ramp lasts 0.10\,s.
+The online gains were chosen empirically. The perpendicular
 choice of $4/12$ comes from a separate nominal tuning study at RTF 0.10.
 The comparisons below evaluate those gains at RTF 0.20.
 
@@ -690,6 +688,9 @@ Pre-impact RMS error (mm) & 0.0190 & 0.0231 & $+21.60$\\
 \label{tab:circular}
 \end{table}
 
+The mass-gradient startup ramp reaches full activation about 1.07\,s
+before the first circular contact.
+
 The online controller reaches a substantially lower effective mass at the
 same normal velocity (Table~\ref{tab:circular}). Its peak contact force
 drops by about one fifth. The reduction in impulse is larger because
@@ -753,6 +754,10 @@ Pre-impact RMS error (mm) & 0.1011 & 0.0861 & $-14.81$\\
 \caption{First perpendicular compression--release cycle.}
 \label{tab:perpendicular}
 \end{table}
+
+Both selected trials complete at about 0.57\,s, within the 2\,s launch
+limit. The mass-gradient startup ramp reaches full activation about
+0.25\,s before perpendicular contact.
 
 The perpendicular approach tests the higher normal velocity of approximately
 0.20\,m/s. The effective mass falls by 32.02\%, while the peak force
@@ -899,13 +904,6 @@ The full-online effective masses are lower by approximately 31\,g and
 needed retuning to achieve that result. We retained the online formulation
 because the task-specific offline posture search added setup complexity
 for a small difference in the recorded nominal results.
-
-A three-phase perpendicular variant was also implemented. Proximity to the
-wall introduces tangential impedance while fading the effective mass and
-posture terms. Measured crossing of the wall plane starts a normal
-impedance transition, and the observer separately confirms contact.
-This changes the primary law during contact, so it is excluded from the
-shared-tracking quantitative comparison.
 
 \subsection{Detection transients and reconstructed force}
 The 17 November circular trials isolate a practical problem at the
