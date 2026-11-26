@@ -62,6 +62,8 @@ Coriolis and centrifugal terms, $g$ is the gravity torque, $\tau_a$ is the
 motor torque, and $\tau_{\mathrm{ext}}$ is the torque caused by external contact.
 We use $c(q,\dot q)=C(q,\dot q)\dot q$ below.
 
+On the real robot, gravity is also compensated when user torque commands
+are supplied through the Franka Control Interface (FCI)~\cite{franka-fci}.
 The simulator adds gravity compensation to the actuator command. If
 $\tau_c$ is the additional torque applied after command clipping and transport,
 then $\tau_a=g(q)+\tau_c$. The resulting dynamics are
@@ -540,10 +542,20 @@ before the next sample.
 The circular reference lies in the $x$--$z$ plane, has radius 0.04\,m, and
 starts at the leftmost point of the circle. Its centre is
 $p(q_0)+(0.04,0,0)$\,m. The cruise period is 2\,s, with a 1\,s smooth ramp
-in angular velocity. Integrating the ramp makes the first revolution last
-2.5\,s. Every lap restarts the ramp. RETURN lasts 2.0\,s, including the
-initial 0.20\,s braking transition. Restart tolerances are 0.001\,rad in
-every joint and 0.005\,rad/s in every joint speed. Each run lasts 20\,s.
+in angular velocity. Integrating the ramp makes each revolution last
+2.5\,s. Every lap restarts the ramp. Each cycle follows
+\[
+ \underbrace{\mathrm{TRACK}}_{2.5\,\mathrm{s}}
+ \longrightarrow
+ \underbrace{\mathrm{BRAKING}}_{0.20\,\mathrm{s}}
+ \longrightarrow
+ \underbrace{\text{hold }p(q_0)\text{ and return to }q_0}_{1.80\,\mathrm{s}}
+ \longrightarrow
+ \text{restart check}.
+\]
+BRAKING and the subsequent hold make up the 2.0\,s RETURN phase.
+The restart check requires every joint error to be at most 0.001\,rad
+and every joint speed to be at most 0.005\,rad/s. Each run lasts 20\,s.
 
 The perpendicular reference accelerates to 0.20\,m/s over 0.10\,s, follows
 the wall normal, and brakes over its final 4\,mm. Its endpoint is 10\,mm
@@ -629,17 +641,23 @@ frozen-bound allowance use $2\times10^{-5}$.
 \subsection{Metrics and recorded runs}
 The first contact time $t_c$ is the first sample with $F_n>0$.
 The first compression--release cycle ends at $t_e$, the first detachment
-or the start of recompression, whichever occurs first. Pre-impact
-effective mass and velocity are taken strictly from the preceding sample.
+or the start of recompression, whichever occurs first. Recompression
+begins at the zero crossing obtained by linearly interpolating the
+first change of $v_n$ from outward to inward motion after release.
+Pre-impact effective mass and velocity are taken strictly from the
+sample preceding $t_c$.
 The normal impulse and pre-impact root mean square (RMS) tracking error are
 \begin{equation}
  I_n=\int_{t_c}^{t_e}F_n(t)\,dt,\qquad
  e_{\mathrm{RMS}}=
- \sqrt{\frac{1}{t_--t_0}\int_{t_0}^{t_-}\|p_d(t)-p(t)\|^2\,dt},
+ \sqrt{\frac{1}{t_--t_s}\int_{t_s}^{t_-}\|p_d(t)-p(t)\|^2\,dt},
  \label{eq:metrics}
 \end{equation}
-where $t_-$ is the last sample before contact. Integrals use trapezoids
-at actual sample times. Constraint checks cover recorded samples.
+where $t_s$ is the first recorded sample used in the tracking-error
+integral and $t_-$ is the last sample before contact. In the selected
+runs, $t_s=0$ for the circular pair and $t_s=0.007$\,s for the
+perpendicular pair. Integrals use trapezoids at actual sample times.
+Constraint checks cover recorded samples.
 
 The circular pair uses the synchronized runs recorded on 24 November.
 The perpendicular pair comes from the 16 November gain study and begins
@@ -658,7 +676,7 @@ baseline, using full-precision values before rounding.
 Metric & Baseline & Full online & Change (\%)\\
 \midrule
 Contact onset (s) & 1.167 & 1.167 & --\\
-Effective mass at impact (kg) & 7.189 & 4.623 & $-35.69$\\
+Pre-impact effective mass (kg) & 7.189 & 4.623 & $-35.69$\\
 Pre-impact normal velocity (m/s) & 0.10893 & 0.10893 & $-0.0027$\\
 Pre-impact normal energy (mJ) & 42.656 & 27.430 & $-35.69$\\
 Peak force (N) & 43.147 & 34.354 & $-20.38$\\
@@ -722,7 +740,7 @@ schedule. Recontacts are included in the labelled contact metrics.}
 Metric & Baseline & Full online & Change (\%)\\
 \midrule
 Contact onset (s) & 0.350 & 0.350 & --\\
-Effective mass at impact (kg) & 7.622 & 5.182 & $-32.02$\\
+Pre-impact effective mass (kg) & 7.622 & 5.182 & $-32.02$\\
 Pre-impact normal velocity (m/s) & 0.20003 & 0.19996 & $-0.0332$\\
 Pre-impact normal energy (mJ) & 152.484 & 103.596 & $-32.06$\\
 Peak force (N) & 85.235 & 68.909 & $-19.15$\\
@@ -1057,7 +1075,7 @@ Nominal sampled-limit compliance does not establish robustness against
 measurement noise, friction, inertial errors or missed updates.
 The same effects influence the momentum residual and its role in the
 HQP. Force reconstruction is particularly sensitive because it
-differentates that residual.
+differentiates that residual.
 
 \section{Conclusions}
 Two torque-control laws were evaluated on circular and perpendicular
