@@ -27,11 +27,12 @@
 \clearpage
 
 \section{Project objective}
+\label{sec:objective}
 The project studies how the seven-joint Franka Emika R3 can change its posture
 to reduce the directional effective mass at a known point of collision.
-The robot follows a Cartesian position trajectory toward a compliant wall.
-Its redundant motion provides freedom to change the inertia reflected at
-the fingertip while preserving the requested tracking task.
+As the robot follows a Cartesian position trajectory toward a compliant
+wall, its redundant motion provides freedom to change the inertia
+reflected at the fingertip while preserving the requested tracking task.
 
 We compare two control laws. The baseline uses inverse dynamics and a
 Jacobian pseudoinverse for Cartesian tracking, together with posture feedback.
@@ -39,7 +40,7 @@ The optimized law uses a single quadratic program (QP) that balances Cartesian
 tracking with a joint acceleration preference for lower effective mass. Both
 laws are applied to a circular trajectory and to a perpendicular approach.
 
-The quantitative target is at least a 30\% reduction in effective mass
+The target is at least a 30\% reduction in effective mass
 immediately before the first impact, relative to the corresponding baseline.
 The comparisons keep the reference trajectory, contact model and Cartesian
 feedback gains equal within each pair. Normal velocity, contact loads and
@@ -47,7 +48,7 @@ tracking error are evaluated together to assess the effect of the changed
 posture. The momentum observer estimates the external joint torques, from which the normal contact force is reconstructed.
 
 \section{Robot dynamics, contact and effective mass}
-\subsection{Rigid-body model and torque convention}
+\subsection{Joint dynamics and fingertip kinematics}
 Let $q,\dot q,\ddot q\in\mathbb R^7$ be the joint position, velocity and
 acceleration. The nominal rigid-body dynamics are
 \begin{equation}
@@ -60,16 +61,16 @@ Coriolis and centrifugal terms, $g$ is the gravity torque, $\tau_a$ is the
 motor torque, and $\tau_{\mathrm{ext}}$ is the torque caused by external contact.
 We use $c(q,\dot q)=C(q,\dot q)\dot q$ below.
 
-In the Gazebo setup used in this project, gravity compensation is automatically provided by the Franka simulation plugin. If
-$\tau_c$ is the additional torque applied after command clipping and transport,
-then $\tau_a=g(q)+\tau_c$. The resulting dynamics are
+In Gazebo, the Franka plugin compensates gravity. The controller computes
+$\tau_{\mathrm{cmd}}=\tau_a^{\mathrm{des}}-g$ from the desired motor torque
+$\tau_a^{\mathrm{des}}$. The applied command $\tau_c$ is the value after
+clipping and transport, giving $\tau_a=g(q)+\tau_c$ and
 \begin{equation}
  M\ddot q+c=\tau_c+\tau_{\mathrm{ext}}.
  \label{eq:compensated}
 \end{equation}
-The gravity term $g$ is included in the formulation of the full
-motor-torque control laws, while only the gravity-compensated component
-is passed to the software.
+On the real robot, the Franka Control Interface also adds gravity
+compensation to user torque commands~\cite{franka-fci}.
 
 The fingertip position is $p(q)\in\mathbb R^3$, expressed in the fixed robot
 base frame. Its translational Jacobian is
@@ -80,9 +81,9 @@ base frame. Its translational Jacobian is
  \label{eq:kinematics}
 \end{equation}
 The position task has four redundant degrees of freedom when $J$ has full
-row rank. The formulations below assume that rank condition.
+row rank. The following equations assume this condition.
 
-\subsection{Virtual wall and force direction}
+\subsection{Virtual wall contact model}
 The wall is a plane through $p_w$, with unit outward normal $n$. The signed
 penetration and the normal velocity toward the wall are
 \begin{equation}
@@ -99,10 +100,10 @@ Positive $\delta$ places the fingertip inside the wall. The virtual contact law 
  \label{eq:wall}
 \end{equation}
 Here $k_e$ is wall stiffness and $b_e$ is damping, active during compression.
-The force acts only at the fingertip. The simulator records $F_n$ as a
+The force acts only at the fingertip, and the simulator records $F_n$ as a
 reference for evaluating the impact and the observer.
 
-\subsection{Directional effective mass}
+\subsection{Directional effective mass and pre-impact kinetic energy}
 The Cartesian inertia and effective mass along $n$ are
 \begin{equation}
  \Lambda(q)=\bigl(JM^{-1}J^{\mathsf T}\bigr)^{-1},\qquad
@@ -110,8 +111,8 @@ The Cartesian inertia and effective mass along $n$ are
  \label{eq:mass}
 \end{equation}
 The scalar $m_n$ describes the instantaneous inertial response at the
-fingertip in the chosen direction. Redundancy changes $m_n$ through $q$.
-The physical mass of the robot is constant.
+fingertip in the chosen direction. Redundancy lets $m_n$ vary with $q$
+while the robot's physical mass stays constant.
 For a force $F_n n$ at a fixed configuration, its contribution to normal
 Cartesian acceleration is
 $n^{\mathsf T}JM^{-1}J^{\mathsf T}nF_n=F_n/m_n$.
@@ -124,17 +125,18 @@ The normal equivalent kinetic energy is
 \end{equation}
 At a given normal velocity, a smaller $\ms$ reduces this inertial contribution
 to impact. Equation~\eqref{eq:entry-energy} is a pre-impact metric.
-The energy transferred to the environment also depends on the subsequent
-force and motion, including the work of the actuators during contact.
+The energy transferred to the environment also depends on the force and
+motion during contact, including the work done by the actuators.
 
-\section{Momentum observer and collision detection}
+\section{Momentum observer, detection and force reconstruction}
 \subsection{External joint-torque estimate}
 The generalized momentum is $\pi=M(q)\dot q$. With the convention
 $\dot M=C+C^{\mathsf T}$, equation~\eqref{eq:dynamics} gives
 \begin{equation}
  \dot\pi=\tau_a-g+C^{\mathsf T}\dot q+\tau_{\mathrm{ext}}.
 \end{equation}
-The momentum observer~\cite{deluca2005,haddadin2017} integrates
+The momentum observer~\cite{deluca2005,haddadin2017} uses the diagonal gain
+$K_O$ to update the momentum estimate $\widehat\pi$ and compute the residual $r$.
 \begin{equation}
  \dot{\widehat\pi}=\tau_a-g+C^{\mathsf T}\dot q+r,
  \qquad r=K_O(\pi-\widehat\pi),\qquad K_O>0\text{ diagonal}.
@@ -153,9 +155,9 @@ Under the nominal model, the residual obeys
  \label{eq:residual-filter}
 \end{equation}
 Thus $r$ is a filtered estimate of the external joint torque, measured in
-N\,m. The time constant of component $i$ is $1/K_{O,ii}$. A faster observer
-can detect rapid changes sooner but is more sensitive
-to measurement errors, model inaccuracies and torque delays.
+N\,m. The time constant of component $i$ is $1/K_{O,ii}$, so increasing the
+gain can speed up detection of rapid changes and make the observer more
+sensitive to measurement errors, model inaccuracies and torque delays.
 
 \subsection{Collision detection}
 Contact is detected when at least one component of the residual exceeds
@@ -169,10 +171,10 @@ of the residual components that exceed their thresholds indicate which
 joints triggered the detection. However, they are not used to locate
 the contact, which is assumed to occur at the fingertip.
 
-The runner uses the observer for collision monitoring and records the
-residual for offline force reconstruction. Both controllers compute their
-commands from the measured joint state and the reference. The detection
-flag and reconstructed force are used for analysis.
+The runner executes the control loop and logs the observer residual for
+offline force reconstruction. Both controllers use the measured joint
+state and reference to compute their commands. The detection flag and
+reconstructed force are used for analysis.
 
 \subsection{Offline contact-force reconstruction}
 The reconstruction assumes one active contact point at a time, located
@@ -199,10 +201,10 @@ $h_k^{\mathsf T}h_k>0$, meaning that a force in the assumed direction
 produces a measurable effect on the joints. The correction starts at
 the second sample because it uses two consecutive residuals.
 
-Using $r_k$ directly retains the smoothing and delay introduced by the
+Using $r_k$ directly keeps the smoothing and delay introduced by the
 observer. Filter inversion compensates for these effects by including
-the rate of change of the residual. This improves the reconstruction
-of short force peaks under nominal conditions, while increasing
+the rate of change of the residual, which improves the reconstruction
+of short force peaks under nominal conditions and increases
 sensitivity to noise and timing errors.
 
 The force is reconstructed offline from the recorded residuals and
@@ -225,7 +227,7 @@ feedforward acceleration.
 
 For the baseline, the Euclidean pseudoinverse and null-space projector are
 $J^\dagger=J^{\mathsf T}(JJ^{\mathsf T})^{-1}$ and $N_E=I-J^\dagger J$.
-The complete requested motor-torque law is
+The nominal joint acceleration $u_B$ and desired motor torque are
 \begin{equation}
  \boxed{\begin{aligned}
  u_B&=J^\dagger b+
@@ -238,33 +240,31 @@ Here $q_0$ is the initial joint configuration, $k_{q,B}>0$ is a posture gain,
 and $k_{\mathrm{ns},B}>0$ damps redundant joint motion. The initial posture attraction discourages accumulated motion away from the starting posture.
 
 Since gravity compensation is handled separately by the simulator,
-the software computes the actuator command as
-$\tau_{a,B}^{\mathrm{des}}-g=Mu_B+c$. Before the command is sent to
-the actuators, each torque component is checked against its permitted
-range and saturated if necessary.
+the software computes the actuator command
+$\tau_{\mathrm{cmd}}=\tau_{a,B}^{\mathrm{des}}-g=Mu_B+c$.
+Before the command is sent to the actuators, each torque component is
+checked against its permitted range and saturated if necessary.
 
-Under nominal conditions, assuming an exact model, negligible delays
-and no torque saturation, the controller achieves the desired Cartesian
-error dynamics
+Under nominal conditions, with an exact model, delays small enough to
+ignore and no torque saturation, the Cartesian tracking error follows
 \begin{equation}
  \ddot e+K_d\dot e+K_p e=0.
  \label{eq:nominal-error}
 \end{equation}
-The convergence of the position and velocity errors is therefore
-governed by the feedback gains $K_p$ and $K_d$. When contact occurs,
+The gains $K_p$ and $K_d$ determine how quickly the position and velocity
+errors approach zero. When contact occurs,
 however, the external torque introduces an additional acceleration
 term $M^{-1}\tau_{\mathrm{ext}}$ at the joint level, causing the robot
 to deviate from its nominal tracking behavior.
 
-\subsection{Online effective mass reduction}
+\subsection{Optimized tracking with online mass reduction}
 
 The optimized controller follows the same Cartesian tracking target $b$
-introduced in equation~\eqref{eq:tracking-target}, while exploiting the
-kinematic redundancy of the robot to reduce its effective mass.
-To this end, a preferred joint acceleration is computed by combining
-Cartesian tracking, null-space damping and effective mass optimization.
-The QP uses this preference alongside the Cartesian tracking target
-when selecting an actuator command subject to joint braking and torque bounds.
+introduced in equation~\eqref{eq:tracking-target}, using the robot's
+kinematic redundancy to reduce its effective mass. The preferred joint
+acceleration combines Cartesian tracking, null-space damping and effective
+mass optimization. The QP uses this preference and the Cartesian tracking
+target to choose a command within the joint braking and torque bounds.
 
 To introduce secondary objectives without interfering with Cartesian
 tracking, the controller uses the mass-weighted pseudoinverse and the
@@ -274,9 +274,9 @@ associated null-space projector, defined as
  \qquad N_M=I-\Jm J .
  \label{eq:weighted-inverse}
 \end{equation}
-Among all joint accelerations satisfying $Ju=b$, the solution
+Among all nominal joint accelerations $u$ satisfying $Ju=b$, the solution
 $\Jm b$ minimizes the mass-weighted quadratic cost
-$\tfrac12u^{\mathsf T}Mu$. Moreover, the properties $JN_M=0$ and
+$\tfrac12u^{\mathsf T}Mu$. The properties $JN_M=0$ and
 $JM^{-1}N_M^{\mathsf T}=0$ allow additional acceleration and torque
 contributions to be introduced in the null space without affecting
 the nominal Cartesian tracking task~\cite{khatib1987}.
@@ -297,13 +297,12 @@ be expressed as
  \label{eq:mass-gradient}
 \end{equation}
 
-The idea is to guide the robot toward configurations characterized
-by a lower effective mass by introducing a torque contribution
-along the negative direction of the gradient. This torque is
-projected into the dynamic null space, giving no nominal Cartesian
-acceleration at the current configuration. The resulting
-torque $\tau_m$ and preferred joint acceleration $u_{\mathrm{pref}}$
-are given by
+The controller uses the negative mass gradient to build a torque term
+that guides the robot towards configurations with lower effective mass.
+This term is projected into the dynamic null space, so its contribution
+to nominal Cartesian acceleration is zero at the current configuration.
+The resulting torque $\tau_m$ and preferred joint acceleration
+$u_{\mathrm{pref}}$ are
 \begin{equation}
  \boxed{\begin{aligned}
  \tau_m&=-\alpha(t)k_m N_M^{\mathsf T}\nabla_qm_n(q),\\
@@ -314,17 +313,16 @@ are given by
 \end{equation}
 The gain $k_m>0$ determines the contribution of the effective mass
 gradient, while $k_{\mathrm{ns}}>0$ provides damping for redundant
-joint motion. Since the optimization is formulated as a torque
-contribution, multiplication by $M^{-1}$ is required to express it
-in terms of joint acceleration.
+joint motion. Multiplying the mass-gradient torque by $M^{-1}$ gives
+its contribution to joint acceleration.
 
 The coefficients $\alpha(t)$ and $\beta(t)$ allow the controller
 to smoothly change its secondary objective during the different
 phases of motion. During tracking, $\beta=0$, while $\alpha\in[0,1]$
 gradually activates effective mass optimization. During the circular
-return, the effective mass contribution is progressively reduced
-through $\alpha$, while $\beta\in[0,1]$ gradually activates posture
-feedback toward the initial configuration $q_0$, with gain $k_{q,R}$.
+return to $q_0$ (RETURN, Section~\ref{sec:return}), $\alpha$ reduces the
+mass contribution and $\beta\in[0,1]$ activates posture feedback towards
+$q_0$, with gain $k_{q,R}$.
 
 
 The approach is referred to as \emph{full online} effective mass
@@ -350,14 +348,15 @@ obtained through inverse dynamics as
 At each update the controller evaluates the robot model at the measured
 $(q,\dot q)$. The decision variable is the actuator-induced acceleration
 \begin{equation}
- u=M^{-1}(\tau_{\mathrm{cmd}}-c)\in\mathbb R^7,
+ u=M^{-1}(\tau_{\mathrm{cmd}}-c)\in\mathbb R^7.
  \label{eq:qp-variable}
 \end{equation}
-where $\tau_{\mathrm{cmd}}$ is the gravity-compensated command. With that
-command applied and the nominal dynamics, the actual acceleration is
-$\ddot q=u+M^{-1}\tau_{\mathrm{ext}}$.
+With $\tau_c=\tau_{\mathrm{cmd}}$, equation~\eqref{eq:compensated} gives the
+actual acceleration $\ddot q=u+M^{-1}\tau_{\mathrm{ext}}$.
 
-The controller selects $u_{\mathrm{sel}}$ by solving
+Let $w>0$ be the Cartesian tracking weight, $\underline u$ and
+$\overline u$ the joint acceleration bounds, and $T$ the joint torque
+limits. The controller selects $u_{\mathrm{sel}}$ by solving
 \begin{equation}
  \boxed{\begin{aligned}
  \underset{u}{\operatorname{minimize}}\quad&
@@ -368,20 +367,28 @@ The controller selects $u_{\mathrm{sel}}$ by solving
  \end{aligned}}
  \label{eq:single-qp}
 \end{equation}
-The first term penalizes Cartesian tracking error at the acceleration
-level. The second favors the joint acceleration from
-equation~\eqref{eq:preference}, which contains damping, the mass gradient
-and, during circular RETURN, posture feedback. The weight $w$ favors
-tracking when limits are active. If $u_{\mathrm{pref}}$ is feasible, then
-$Ju_{\mathrm{pref}}=b$ and both costs attain their minimum at that
-preference. When the bounds are active, the finite weight allows a
-trade-off between tracking and the joint preference.
+The residual $Ju-b$ measures the difference between the nominal Cartesian
+acceleration produced by $u$ and the acceleration requested by the PD law
+in equation~\eqref{eq:tracking-target}. The Cartesian term assigns the same
+cost to commands that differ only in the four null-space directions. The
+second term selects a preferred motion in those directions by keeping
+$u$ close to $u_{\mathrm{pref}}$ from equation~\eqref{eq:preference}.
+Since the posture is fixed during each solve, the mass gradient guides
+the next motion through this acceleration preference, together with
+null-space damping and, during circular RETURN, posture feedback.
+Each residual is linear in $u$ plus a constant, so the cost is quadratic.
+
+By construction $Ju_{\mathrm{pref}}=b$, so both residuals vanish when
+$u_{\mathrm{pref}}$ satisfies the limits. Otherwise, the QP seeks a nearby
+feasible command. The finite weight $w$ adds a penalty for deviations that
+change the Cartesian acceleration, favouring tracking while allowing a
+trade-off with the joint preference under the hard constraints.
 
 \subsection{Joint braking bounds and torque limits}
-Let $Q_{\min},Q_{\max}$ be the physical joint position limits, $V$ the
-joint speed limits and $T$ the actuator torque limits. The braking
-interval is inset by a position margin $m_h$ and an additional buffer
-$m_b$. Its lower and upper distances from the current state are
+Let $Q_{\min},Q_{\max}$ be the physical joint position limits and $V$ the
+joint speed limits. A position margin $m_h$ and an extra buffer $m_b$
+move the braking interval inside the physical limits. Its distances from
+the current state are
 \begin{equation}
  d_\ell=q-(Q_{\min}+m_h+m_b),\qquad
  d_u=(Q_{\max}-m_h-m_b)-q .
@@ -409,55 +416,76 @@ using the current measurements. Wall force can change the actual
 joint acceleration and carry a joint into the buffer.
 
 The torque inequality in equation~\eqref{eq:single-qp} represents the
-intersection of the published command limit $|\tau_{\mathrm{cmd}}|\le T$
+intersection of the command limit $|\tau_{\mathrm{cmd}}|\le T$
 and the nominal motor limit $|\tau_{\mathrm{cmd}}+g|\le T$, where
 $\tau_{\mathrm{cmd}}=Mu+c$. The QP enforces all these inequalities as hard
 constraints.
 
-\subsection{Numerical implementation and command selection}
-The Hessian is $wJ^{\mathsf T}J+I$ and the linear term is
-$-wJ^{\mathsf T}b-u_{\mathrm{pref}}$. The Hessian is positive definite,
-giving a unique optimum when the constraints are feasible. The
-operator-splitting solver OSQP retains the matrix sparsity pattern and
-warm-starts from its previous solution. The controller verifies the available
-solution against the original inequalities before publishing the
-command. A solve with no accepted solution ends the trial with bounded
-joint damping, provided the two torque ranges still intersect.
+\subsection{QP solver and solution checks}
+OSQP (Operator Splitting Quadratic Program) is a numerical solver for
+convex quadratic programs with linear constraints. At each update, the
+controller calls OSQP through its Python interface to solve
+equation~\eqref{eq:single-qp}, and the solver starts from the previous
+solution when available.
+The controller checks the solver status and verifies that the returned
+acceleration satisfies the constraints within the numerical tolerance
+before converting it into the torque command
+$\tau_{\mathrm{cmd}}=Mu_{\mathrm{sel}}+c$.
+If the solver returns no acceptable solution, the trial ends with a
+joint damping command bounded by the common torque interval, provided
+that interval has positive width.
 
-\section{Repeated motion and reference transitions}
+\section{Trajectory execution and reference transitions}
 \label{sec:return}
-The perpendicular reference completes one approach and an endpoint hold.
-For both control laws, collision detection leaves this reference active.
-The online secondary preference continues during contact.
 
-Repeated circular motion requires an additional posture policy. Early
-full-online runs accumulated changes in joint posture and hand orientation
-from lap to lap. We therefore return physically to $q_0$ after each revolution.
-The baseline uses the same schedule so that later approaches occur at
-matching times.
+\subsection{Circular tracking and return}
+Preliminary runs with the full-online controller showed that joint posture
+and hand orientation gradually changed from one revolution to the next,
+so the robot returns to its initial configuration $q_0$ after each
+revolution. The baseline uses the same timing schedule to keep later
+approaches aligned in time.
 
-Each circular cycle has a tracking phase followed by RETURN. A quintic
-Cartesian braking reference starts from the position, velocity and
-acceleration at the lap boundary and ends at $p(q_0)$ with zero velocity
-and acceleration. The reference then holds that point while the redundant
-joints approach $q_0$.
+Each circular cycle consists of a tracking phase (TRACK) followed by
+RETURN. During the initial braking phase (BRAKING) of RETURN, a
+quintic Cartesian reference brings the robot back to $p(q_0)$,
+starting from the position, velocity and acceleration at the end of
+the revolution and reaching the target with zero velocity and
+acceleration. The Cartesian reference then remains constant while
+the redundant joints move towards the initial configuration $q_0$.
 
-The smoothstep $\sigma(s)=3s^2-2s^3$, with $s$ clipped to $[0,1]$, controls
-the online preferences. At the start of each tracking phase, $\alpha$ rises
-from zero to one and $\beta=0$ in equation~\eqref{eq:preference}.
-During the braking transition, $\alpha$ falls from one to zero, $\beta$
-rises from zero to one, and damping blends to
-$k_{\mathrm{ns}}=2\sqrt{k_{q,R}}$. On later restarts it blends back to
-the tracking value. The baseline retains its own posture and damping terms.
+In an earlier circular trial, sudden changes in reference speed and
+commanded torque at the start of RETURN were followed by detections with
+zero simulated wall force. Gradual braking and gain transitions were
+introduced to reduce the residual peaks that triggered these detections.
 
-RETURN has a fixed duration shared by the two laws. A new lap begins at
-the scheduled time only if the maximum joint position error and speed
-are within the restart tolerances. Otherwise the trial terminates.
-The observer continues using absolute run time through every transition.
+The online gain transitions use the smoothstep function
+$\sigma(s)=3s^2-2s^3$. Here $s$ is the elapsed time since the phase
+began divided by the ramp duration, clipped to $[0,1]$.
+During TRACK, the weights in equation~\eqref{eq:preference} are
+$\alpha=\sigma(s)$ and $\beta=0$. During RETURN, the ramp lasts for
+the braking phase and gives $\alpha=1-\sigma(s)$ and $\beta=\sigma(s)$.
+With the same smoothstep, damping moves from its tracking value to
+$2\sqrt{k_{q,R}}$ during braking and back after each restart. The first
+lap uses the tracking damping throughout. The baseline uses the same
+phase schedule with its own posture and damping terms.
+
+The duration of the RETURN phase is fixed and identical for both
+control laws. A new revolution begins at the scheduled time only
+if the maximum joint position error and joint speed satisfy the
+restart tolerances. If these conditions are not met, the trial is
+terminated. The observer uses the time since the start of the run through
+all phases and reference changes.
+
+\subsection{Perpendicular approach and hold}
+The perpendicular reference consists of a single approach followed by
+a hold at the endpoint. In the optimized controller, $\beta=0$ for the
+whole trial and $\alpha=\sigma(s)$ ramps up the mass-gradient term from
+the start of the run. For both control laws, the reference remains active
+after collision detection, and the online preference continues during contact.
 
 \clearpage
 \section{Simulation setup and evaluation}
-\subsection{Plant, contact and timing}
+\subsection{Robot model, virtual wall and timing}
 Gazebo simulates the robot and receives torque commands. The Pinocchio
 library provides the kinematic and dynamic model from the same robot
 description, including reflected rotor inertia. All reported comparisons
@@ -474,19 +502,19 @@ $p_w=(0.62,0,0.50)$\,m, $n=(-1,0,0)^{\mathsf T}$,
 $k_e=20\,000$\,N/m and $b_e=15$\,N\,s/m.
 
 The control rate is 1000\,Hz in simulation time. The real-time factor (RTF)
-is simulated elapsed time divided by wall-clock elapsed time. At the
-requested RTF of 0.20, one simulated second takes approximately five
-wall-clock seconds, giving about 5\,ms for each simulated 1\,ms step.
-Slowing the simulation allows a computation longer than 1\,ms to finish
-before the next sample.
+is simulated elapsed time divided by wall-clock elapsed time, so at the
+requested RTF of 0.20 one simulated second takes approximately five
+wall-clock seconds. This gives about 5\,ms for each simulated 1\,ms step,
+allowing computations longer than 1\,ms to finish before the next sample.
 The observer is enabled in all four reported trials for collision monitoring
 and offline force reconstruction.
 
-The circular reference lies in the $x$--$z$ plane, has radius 0.04\,m, and
-starts at the leftmost point of the circle. Its centre is
-$p(q_0)+(0.04,0,0)$\,m. The cruise period is 2\,s, with a 1\,s smooth ramp
-in angular velocity. Integrating the ramp makes each revolution last
-2.5\,s. Every lap restarts the ramp. Each cycle follows
+\subsection{Reference trajectories}
+\paragraph{Circular trajectory.}
+The circle lies in the $x$--$z$ plane, has radius 0.04\,m and is centred at
+$p(q_0)+(0.04,0,0)$\,m. Each lap starts at $p(q_0)$ with a 1\,s smooth
+angular-speed ramp to the speed corresponding to a 2\,s period. The phase
+durations are
 \[
  \underbrace{\mathrm{TRACK}}_{2.5\,\mathrm{s}}
  \longrightarrow
@@ -496,18 +524,17 @@ in angular velocity. Integrating the ramp makes each revolution last
  \longrightarrow
  \text{restart check}.
 \]
-BRAKING and the subsequent hold make up the 2.0\,s RETURN phase.
-The restart check requires every joint error to be at most 0.001\,rad
-and every joint speed to be at most 0.005\,rad/s. Each run lasts 20\,s.
+The 2.0\,s RETURN includes BRAKING and the hold. The restart tolerances
+are 0.001\,rad for joint position error and 0.005\,rad/s for joint speed,
+applied to each joint. Each run lasts 20\,s.
 
-The perpendicular reference accelerates to 0.20\,m/s over 0.10\,s, follows
-the wall normal, and brakes over its final 4\,mm. Its endpoint is 10\,mm
-beyond the wall plane and is held for 0.15\,s. That endpoint specifies
-desired position. Actual penetration follows equation~\eqref{eq:wall}
-and the controlled robot dynamics. Both selected trials complete at about
+\paragraph{Perpendicular approach.}
+The reference moves along $-n$ towards the wall, ramping to 0.20\,m/s in
+0.10\,s and braking over the final 4\,mm before holding a Cartesian target
+10\,mm beyond the wall plane for 0.15\,s. Both trials complete at about
 0.57\,s, within the 2\,s launch limit.
 
-\subsection{Gains and constraint parameters}
+\subsection{Gains, joint limits and solver settings}
 \begin{center}
 \begin{tabular}{lll}
 \toprule
@@ -518,7 +545,7 @@ $k_{q,B},\ k_{\mathrm{ns},B}$ & $25,\ 10$ & Baseline posture and damping\\
 $k_m,\ k_{\mathrm{ns}}$ circular & $2,\ 24$ & Online gradient and damping\\
 $k_m,\ k_{\mathrm{ns}}$ perpendicular & $4,\ 12$ & Online gradient and damping\\
 $k_{q,R},\ k_{\mathrm{ns}}$ in RETURN & $25,\ 10$ & Online return posture and damping\\
-$w$ & $1000$ & Cartesian tracking weight in the QP\\
+$w$ & $1000$ & Favours tracking when limits are active\\
 $\kappa_q,\ \kappa_v$ & $6,\ 60$ & Joint braking rates, s$^{-1}$\\
 $K_O,\ \theta_i$ & $30I_7,\ 0.1$ & Observer gain s$^{-1}$ and threshold N\,m\\
 \bottomrule
@@ -529,23 +556,35 @@ and N\,m\,rad/kg, respectively. The Cartesian gains give critical damping
 at 10\,rad/s in equation~\eqref{eq:nominal-error}. The posture gains give
 critical damping at 5\,rad/s in a scalar approximation.
 
-The online gains are based on earlier nominal trials. The perpendicular
-pair $k_m=4$, $k_{\mathrm{ns}}=12$ was selected to reduce the effective
-mass within the short approach time while retaining joint clearance. The
-circular pair uses more damping and a smaller mass gain during repeated
-tracking. The 0.10\,s mass ramp reaches full activation before the first
-impact in both experiments. The QP weight emphasizes Cartesian tracking
-when braking bounds or torque limits become active.
+The 0.10\,s mass ramp reaches full activation before the first impact in
+both experiments.
+The circular controller uses the same ramp to restore its tracking
+damping at each restart.
 
 The position margin $m_h$ is 0.06\,rad, leaving 0.01\,rad before the
-simulation's 0.05\,rad joint-limit stop band. The circular configuration
-adds $m_b=0.09$\,rad to the braking distances in
-equation~\eqref{eq:braking-bounds}, giving 0.15\,rad of preventive clearance.
-The perpendicular configuration uses $m_b=0$. During impact, the measured
-motion can enter the circular braking buffer while remaining outside the
-hard margin.
-The physical position, velocity and torque limits are given in
-Table~\ref{tab:joint-limits}.
+simulation's 0.05\,rad joint-limit stop band. The physical position,
+velocity and torque limits are given in Table~\ref{tab:joint-limits}.
+
+\paragraph{Circular settings.}
+The tuning for repeated laps favours stronger null-space damping and a
+smaller mass-gradient contribution. The buffer $m_b=0.09$\,rad gives a
+total braking margin of 0.15\,rad so that braking starts earlier near
+the joint limits. In a nominal comparison, the trial with $m_b=0$
+reached the stop band of joint~6, and the trial with the buffer completed
+the scheduled 20\,s.
+
+\paragraph{Perpendicular settings.}
+Earlier nominal tests at RTF 0.10 compared 13 combinations of mass gain,
+null-space damping and ramp duration with the reference, Cartesian gains
+and limits held fixed. We selected the lowest pre-impact mass among
+settings that completed the trials and first impacts, kept entry speed
+within 5\% of the baseline and pre-impact RMS within 1\,mm, and kept
+at least 0.15\,rad of joint clearance. Raising $k_m$ from 2 to 4 and
+reducing $k_{\mathrm{ns}}$ from 24 to 12 gave the mass term more influence
+during the short approach. With a 0.10\,s ramp, three confirmation trials
+gave about 5.181\,kg and a minimum clearance of 0.151\,rad. A 0.05\,s ramp
+reached 5.130\,kg with 0.147\,rad of clearance, below the 0.15\,rad tuning
+target. The current QP uses the selected gains and ramp with $m_b=0$.
 
 \begin{table}[htbp]
 \centering
@@ -569,33 +608,19 @@ Joint & $Q_{\min}$ (rad) & $Q_{\max}$ (rad) & $V$ (rad/s) & $T$ (N\,m)\\
 OSQP uses absolute and relative tolerances of $10^{-6}$, at most 1000
 iterations per solve, termination checks every ten iterations, adaptive
 penalty updates and polishing disabled. The independent inequality check
-allows a maximum error of $2\times10^{-4}$ in the units of the corresponding
-acceleration or torque constraint.
+allows a maximum error of $2\times10^{-4}$ for each acceleration or
+torque constraint, in the units of that constraint.
 
-\subsection{Metrics and recorded runs}
-The first contact time $t_c$ is the first sample with $F_n>0$.
-The first compression--release cycle ends at $t_e$, the first detachment
-or the start of recompression, whichever occurs first. Recompression
-begins at the zero crossing obtained by linearly interpolating the
-first change of $v_n$ from outward to inward motion after release.
-Pre-impact effective mass and velocity are taken strictly from the
-sample preceding $t_c$.
-The normal impulse and pre-impact root mean square (RMS) tracking error are
-\begin{equation}
- I_n=\int_{t_c}^{t_e}F_n(t)\,dt,\qquad
- e_{\mathrm{RMS}}=
- \sqrt{\frac{1}{t_--t_s}\int_{t_s}^{t_-}\|p_d(t)-p(t)\|^2\,dt},
- \label{eq:metrics}
-\end{equation}
-where $t_s$ is the first recorded sample used in the tracking-error
-integral and $t_-$ is the last sample before contact. All four runs start
-at recorded time $t_s=0$. Integrals use trapezoids at actual sample times.
-Constraint checks cover recorded samples.
-
-The two pairs use the single-QP controller runs and their corresponding
-baselines recorded on 27 November 2026. Appendix~\ref{app:sources} identifies
-the logs. Reported changes are relative to each experiment's baseline, using
-full-precision values before rounding.
+\subsection{Metrics and comparison}
+Let $F_n$ be the simulated normal contact force and $t_c$ the time of its
+first positive sample. The pre-impact effective mass $\ms$ and normal
+velocity $\vs$ are taken from the preceding sample, with velocity counted
+as positive towards the wall. The root mean square (RMS) Cartesian tracking
+error covers the run from its first sample up to that pre-impact sample.
+The normal impulse $I_n$ is the integral of $F_n$ from $t_c$ to $t_e$,
+when the first impact cycle ends at detachment or the start of
+recompression, whichever comes first. Entry speeds are comparable when
+both are positive and the optimized speed is within 5\% of the baseline.
 
 \clearpage
 \section{Simulation results}
@@ -621,21 +646,21 @@ Pre-impact RMS error (mm) & 0.0190 & 0.2998 & --\\
 \label{tab:circular}
 \end{table}
 
-The online controller reaches a substantially lower effective mass at the
-same normal velocity (Table~\ref{tab:circular}). Its peak contact force
-drops by about one fifth. The reduction in impulse is larger because
-the mean force over the first cycle falls from 25.0 to 21.4\,N and the
-cycle is 25\,ms shorter. The RMS tracking error grows by 0.281\,mm.
-The nearly equal entry speeds keep the first-impact comparison relevant
-despite the change in tracking accuracy.
+The nearly equal normal entry speeds make the circular runs comparable
+despite their different pre-impact tracking errors. The lower contact
+loads in the online run come with a 0.281\,mm increase in pre-impact RMS
+tracking error (Table~\ref{tab:circular}).
 
 Figures~\ref{fig:circular-baseline-first} and~\ref{fig:circular-online-first}
 show each first impact separately. Both trials complete 20\,s with four
-scheduled returns. Successive approaches are 4.5\,s apart in both runs.
+scheduled returns and 4.5\,s between successive approaches.
 The online first contacts occur 2\,ms earlier than their baseline
 counterparts, and the recontacts occur 5\,ms earlier. Each run records
 ten episodes, all during tracking, as shown in
 Figures~\ref{fig:circular-baseline-all} and~\ref{fig:circular-online-all}.
+The first impact on each of the five online approaches has a pre-impact
+effective mass of about 4.607\,kg and a peak force of about 34.39\,N,
+showing little variation across laps in this nominal run.
 
 \begin{figure}[p]
 \centering
@@ -688,10 +713,9 @@ Pre-impact RMS error (mm) & 0.0656 & 0.3425 & --\\
 \end{table}
 
 At approximately 0.20\,m/s, the perpendicular approach tests contact at
-almost twice the circular entry speed. Both a lower mean force (44.7\,N
-instead of 55.4\,N) and a 9\,ms shorter cycle contribute to the lower
-impulse. Peak force and penetration fall by about one fifth, with a
-slightly higher entry speed in the online run.
+almost twice the circular entry speed. The reductions in contact load
+carry over to this faster approach, even though the online run reaches
+the wall at a slightly higher speed than its baseline.
 
 The pre-impact Cartesian RMS error increases by 0.277\,mm. Its absolute
 value stays below 0.35\,mm in all four trials, but the increase shows that
@@ -713,17 +737,16 @@ and~\ref{fig:perpendicular-online} show the separate force histories.
 \end{figure}
 \clearpage
 
-\subsection{Interpretation using an elastic impact model}
-To relate the measured mass reduction to the contact loads, consider a
-constant mass $\ms$ approaching an undamped spring with stiffness $k_e$.
-With no actuation during contact, the compression satisfies
+\subsection{Elastic impact predictions and simulation}
+With no actuator input, a constant mass $\ms$ meets an undamped spring of
+stiffness $k_e$ at $t=0$. Its compression $\delta$ satisfies
 \begin{equation}
  \ms\ddot\delta+k_e\delta=0,\qquad
  \delta(0)=0,\quad\dot\delta(0)=\vs .
 \end{equation}
-Writing $\omega=\sqrt{k_e/\ms}$ gives
-$\delta(t)=(\vs/\omega)\sin(\omega t)$. The first release occurs at
-$T_{\mathrm{el}}=\pi/\omega$. The peak force and impulse are
+The solution $\delta(t)=(\vs/\omega)\sin(\omega t)$ with
+$\omega=\sqrt{k_e/\ms}$ returns to zero at detachment, at time $T_{\mathrm{el}}$.
+The peak force and impulse follow from this solution.
 \begin{equation}
  F_{\mathrm{peak,el}}=\vs\sqrt{k_e\ms},\qquad
  I_{\mathrm{el}}=2\ms\vs,\qquad
@@ -761,27 +784,37 @@ Duration (ms) & 61.3 & 49.2 & $-19.75$ & 64.0 & 55.0 & $-14.06$\\
 \end{table}
 
 The peak-force reduction agrees with the elastic prediction within 1.8
-percentage points in both experiments. The circular duration decreases more
-than predicted (29.76\% versus 19.95\%), while the perpendicular duration
-decreases less (14.06\% versus 19.75\%). This partly explains the differences
-between the predicted and simulated impulse reductions.
+percentage points in both experiments. The impulse depends on both the
+mean normal force $\overline{F}_n$ and the duration of the first cycle,
+with $I_n=(t_e-t_c)\overline{F}_n$. The circular run shows a larger
+impulse reduction even though its mean force decreases less (14.5\%
+versus 19.4\%). Its contact cycle shortens by about 30\%, roughly twice
+the relative shortening in the perpendicular run. The elastic model
+predicts about 20\% shorter cycles in both cases, which helps explain why
+it underestimates the reduction in circular impulse and overestimates the
+reduction in perpendicular impulse (Table~\ref{tab:elastic}).
 
 The measured impulses are 16.6--34.2\% higher than $2\ms\vs$.
 The model omits wall damping, continued control action and changes in
 $m_n(q)$ during contact. The wall damping ratio
-$b_e/(2\sqrt{k_e\ms})$ is about 0.02. Continued actuation can push the
-fingertip toward the wall and may prolong loading. These effects prevent
-the passive model from reproducing the complete force history.
+$b_e/(2\sqrt{k_e\ms})$ is about 0.02. The controller can keep pushing the
+fingertip toward the wall, which may extend the time under load. These
+effects prevent the passive model from reproducing the complete force history.
 
 \subsection{Collision detection and reconstructed force}
-The circular baseline and online runs each produce five rising detection
-events, with no off-contact onset. The threshold is crossed 5\,ms after
-fingertip contact. Ten force episodes produce five detection events
+\paragraph{Circular detection.}
+The baseline and online runs each produce five rising detection events,
+all during contact, with the threshold crossed 5\,ms after fingertip
+contact. Ten force episodes produce five detection events
 because the filtered residual can stay above threshold between an impact
-and a recontact. In the perpendicular trials, the baseline and online
-detections each occur 4\,ms after first contact. These observations describe
-the four selected runs. Smooth reference and torque transitions reduce
-the abrupt changes that can excite observer transients.
+and a recontact.
+
+\paragraph{Perpendicular detection.}
+The baseline and online detections each occur 4\,ms after first contact.
+
+These observations describe the four selected runs. Smooth reference and
+torque transitions reduce sudden changes that can cause short peaks in
+the observer residual.
 
 Figures~\ref{fig:observer-circular} and~\ref{fig:observer-perpendicular}
 show the detection signals for the online runs.
@@ -800,6 +833,7 @@ show the detection signals for the online runs.
 \end{figure}
 \clearpage
 
+\paragraph{Force reconstruction.}
 At $K_O=30I_7$\,s$^{-1}$, the observer time constant is about 33\,ms.
 The online simulated forces peak 25--26\,ms after first contact.
 Direct projection of the filtered residual underestimates the peaks
@@ -821,7 +855,7 @@ circular (top) and perpendicular (bottom) online impacts.}
 \end{figure}
 \clearpage
 
-\subsection{Constraint checks and computation}
+\subsection{Constraint checks and computation time}
 \begin{table}[htbp]
 \centering
 \small
@@ -839,15 +873,17 @@ nominal motor torque as a percentage of its configured limit.}
 \end{table}
 
 Both online trials complete with every QP solution accepted. The
-maximum recorded inequality errors are $2.91\times10^{-5}$ and
+maximum recorded inequality errors of $2.91\times10^{-5}$ and
 $4.40\times10^{-5}$ for the circular and perpendicular trials,
-respectively. Both are within the numerical acceptance tolerance.
+respectively, are within the numerical acceptance tolerance.
 No samples exceed the configured hard position, velocity or torque
 limits, and there is no actuator clipping. The circular motion enters
 the braking buffer. The perpendicular trial approaches within
 0.009\,rad of its hard position margin, leaving less clearance for
-perturbations. Both pairs pass the comparison tool's first-impact
-and sampled-limit criteria.
+disturbances. Both pairs pass the \texttt{compare\_runs} checks. The tool
+checks the first-impact metrics and whether the trials and first cycles
+completed, the recorded samples stayed within the limits and the QP
+solutions were accepted.
 
 \begin{table}[htbp]
 \centering
@@ -866,7 +902,9 @@ Perpendicular online & 0.508 & 0.876 & 10.105 & 1.601 & 2 (0.350)\\
 \bottomrule
 \end{tabular}
 \caption{Wall-clock timing for controller updates and simulator callbacks.
-p95 denotes the 95th percentile.}
+p95 denotes the 95th percentile. Missed samples are counted against the
+number expected at 1\,kHz over the recorded time span. The percentage
+uses that expected count as its denominator.}
 \label{tab:timing}
 \end{table}
 
@@ -874,59 +912,73 @@ The online update p95 values are below the 1\,ms period of a 1\,kHz
 loop. The full simulator callback includes controller execution,
 monitoring and publication, and its p95 exceeds 1\,ms in both trials.
 The update maxima exceed even the 5\,ms budget at RTF 0.20. These
-measurements characterize the simulator and show why a separate
-end-to-end timing test is needed for real-time operation.
+measurements describe performance in simulation and show why real-time
+operation needs a timing test of the full control loop.
 
 \section{Discussion and limits}
-Both experiments meet the effective mass target with pre-impact speeds
-within 1\% of their baselines. The QP controller achieves lower contact
-loads with larger pre-impact position errors. The two implementations
-also differ in their pseudoinverse, redundant-motion damping and constraint
-handling. An ablation study with matched redundancy and constraints would
-help isolate the contribution of the mass gradient.
+At pre-impact normal speeds within 1\% of the baselines, the QP
+controller met the effective mass target in both experiments and reduced
+contact loads, with a larger position error before impact. The designs also
+differ in the Jacobian pseudoinverse they use, how they damp redundant
+joint motion and how they handle limits.
 
-Earlier variants explored attraction to a fixed low-mass posture computed
-offline and a separate contact phase with impedance feedback. The first
-required an additional posture optimization for each task, while the
-second changed the Cartesian law during contact. The current optimization
-uses the online mass gradient and one tracking law throughout each approach.
+One earlier controller guided the robot towards a fixed posture chosen for
+its low effective mass, which required a separate optimization for each
+task, and another switched to Cartesian impedance feedback during contact.
+The current controller calculates the mass gradient during motion and uses
+the same tracking law throughout the approach and contact.
 
-The main geometric limitation is the fingertip contact assumption. In the
-online runs, the hand bounding-box diagnostic first overlaps the wall plane
-29\,ms before circular fingertip contact and 15\,ms before perpendicular
-contact. Its maximum overlap is 5.40 and 7.08\,mm, respectively. The virtual
-wall applies force at the fingertip.
+The simulation checks clearance with a box around the hand and applies
+the wall force at the fingertip. In the circular online run, the box first
+overlaps the wall plane 29\,ms before fingertip contact and reaches a
+maximum overlap of 5.40\,mm. In the perpendicular online run, the overlap
+starts 15\,ms before contact and reaches 7.08\,mm.
 
-On hardware the hand could touch first, changing the contact Jacobian and
-the effective mass relevant to the collision. A simulation with hand and link
-contacts would help determine whether the low-mass postures leave enough
-clearance. Adding orientation or clearance constraints would reduce the set
-of available postures.
+If the hand touches the wall first on the real robot, both the Jacobian at
+the contact point and the effective mass for that collision could change.
+Simulating contact on the hand and arm links would help determine whether
+the low-mass postures leave enough clearance. Requirements on tool
+orientation or clearance would limit the choice of postures.
 
-The braking bounds use nominal accelerations from the actuator command.
-An external force can change the joint motion during impact. Sampled-limit
-compliance in the two trials leaves open the effect of model errors, friction,
-sensor noise and missed updates. Those perturbations also affect the observer.
-In particular, the derivative used for force reconstruction amplifies changes
-in the residual.
+The braking bounds use the acceleration predicted from the actuator
+command, and the forces during contact can change the actual joint motion.
+Both online trials respected the limits at the recorded samples, and
+further tests would show how model errors, friction, sensor noise and
+missed updates affect joint motion and the observer. Force estimation
+uses the rate of change of the residual, so small variations in that
+signal can be amplified in the estimated force.
 
-\section{Conclusions}
-A single weighted QP reduced pre-impact effective mass by 35.92\% on the
-circular trajectory and by 35.60\% in the perpendicular approach. At nearly
-equal entry speeds, peak forces fell by 20.30\% and 20.81\%, and first-cycle
-impulses fell by 39.93\% and 30.73\%, respectively. The pre-impact tracking
-error increased in both experiments while remaining below 0.35\,mm RMS.
+\section{Conclusions and future work}
+With a single weighted QP, the effective mass before impact fell by
+35.92\% in the circular trial and 35.60\% in the perpendicular trial, at
+entry speeds close to the baselines. Peak force fell by
+20.30\% and 20.81\%, respectively, and first-cycle impulse by 39.93\% and
+30.73\%. The pre-impact RMS tracking error increased in both experiments
+and stayed below 0.35\,mm.
 
-A passive elastic model explains the approximate scaling of the peak force.
-The measured duration and impulse reflect the force history during controlled
-contact. A shared physical return to the initial posture aligns successive
-circular approaches and prevents joint posture from accumulating across laps.
+The passive elastic model gives a good estimate of the change in peak
+force, and the way the force changes throughout contact with the controller
+active helps explain the measured duration and impulse. Returning to the
+initial joint posture between laps keeps successive circular approaches
+aligned in time and prevents posture drift in both controllers.
 
-The next steps toward the Franka Emika R3 are to check potential hand
-contact, test the joint braking and force reconstruction under realistic
-perturbations, and measure end-to-end execution at 1\,kHz. The observed
-callback timing and joint clearances make those checks relevant even though
-the four nominal trials completed.
+A first step towards testing robustness in simulation is to repeat the
+perpendicular trials with noise in the measured joint positions and
+velocities. The two runs in each pair would share the same noise levels
+and random seed, with several seeds tested to see how much the results vary.
+Further tests should change the simulated link masses and inertias while
+keeping the controller model the same,
+and enable joint friction and damping. Testing each change separately
+before combining them would help identify which has the largest effect.
+
+At comparable entry speeds, the comparison should check whether the
+reductions in effective mass and contact loads still hold. It should
+also check the recorded samples for limit violations, count false
+detections and measure detection delay and normal-force estimation error.
+
+Before testing on the real Franka Emika R3, it is also important to check
+whether the hand can touch the wall before the fingertip and to measure
+how long the full control loop takes at 1\,kHz.
 
 \clearpage
 \appendix
@@ -945,7 +997,7 @@ runs use a requested RTF of 0.20 with the observer enabled.
 \item Perpendicular online:
   \path{runs/report_qp_20261127/optimized_full_online_qp_perp_report_20261127_100638.npz}
 \end{itemize}
-The perpendicular online source is the dedicated run with collision
+The perpendicular online log comes from the run with collision
 monitoring enabled. All plots were generated by the project's
 \texttt{plot\_run} executable using the listed files. The force-reconstruction
 figures use the two online logs. All first-impact and timing tables use the
