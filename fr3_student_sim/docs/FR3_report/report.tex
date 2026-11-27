@@ -437,10 +437,9 @@ approaches aligned in time.
 
 Each circular cycle consists of a tracking phase (TRACK) followed by
 RETURN. During the initial braking phase (BRAKING) of RETURN, a
-quintic Cartesian reference brings the robot back to $p(q_0)$,
-starting from the position, velocity and acceleration at the end of
-the revolution and reaching the target with zero velocity and
-acceleration. The Cartesian reference then remains constant while
+quintic Cartesian reference starts from the position, velocity and
+acceleration of the circular reference at the end of TRACK. It reaches
+$p(q_0)$ with zero velocity and acceleration, then remains constant while
 the redundant joints move towards the initial configuration $q_0$.
 
 In an earlier circular trial, sudden changes in reference speed and
@@ -454,10 +453,10 @@ began divided by the ramp duration, clipped to $[0,1]$.
 During TRACK, the weights in equation~\eqref{eq:preference} are
 $\alpha=\sigma(s)$ and $\beta=0$. During RETURN, the ramp lasts for
 the braking phase and gives $\alpha=1-\sigma(s)$ and $\beta=\sigma(s)$.
-With the same smoothstep, damping moves from its tracking value to
-$2\sqrt{k_{q,R}}$ during braking and back after each restart. The first
-lap uses the tracking damping throughout. The baseline keeps its posture
-and damping terms across phases.
+Damping stays at its tracking value throughout the first TRACK phase.
+The same smoothstep blends it to $2\sqrt{k_{q,R}}$ during each BRAKING
+phase, including the first, and back to its tracking value after each
+restart. The baseline keeps its posture and damping terms across phases.
 
 A new revolution begins at the scheduled end of RETURN only if the
 maximum joint position error and joint speed satisfy the restart
