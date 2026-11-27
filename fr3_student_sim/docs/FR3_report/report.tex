@@ -124,7 +124,7 @@ The normal equivalent kinetic energy is
  \label{eq:entry-energy}
 \end{equation}
 At a given normal velocity, a smaller $\ms$ reduces this inertial contribution
-to impact. Equation~\eqref{eq:entry-energy} is a pre-impact metric.
+to impact.
 The energy transferred to the environment also depends on the force and
 motion during contact, including the work done by the actuators.
 
@@ -179,8 +179,8 @@ reconstructed force are used for analysis.
 \subsection{Offline contact-force reconstruction}
 The reconstruction assumes one active contact point at a time, located
 at the fingertip, with force acting along the known wall normal $n$.
-It is evaluated throughout the recorded run and applies to all
-successive impacts and recontacts.
+It uses the recorded residuals and joint positions throughout the run,
+including all impacts and recontacts.
 
 The observer is integrated using implicit Euler. We invert its discrete
 filter using the recorded gain and sample interval
@@ -207,10 +207,6 @@ the rate of change of the residual, which improves the reconstruction
 of short force peaks under nominal conditions and increases
 sensitivity to noise and timing errors.
 
-The force is reconstructed offline from the recorded residuals and
-joint positions. Collision detection uses the filtered residual from
-equation~\eqref{eq:observer}.
-
 \section{Control laws}
 \subsection{Baseline Cartesian tracking}
 Let $p_d(t)$, $v_d(t)$ and $a_d(t)$ be the desired Cartesian position, velocity
@@ -222,8 +218,10 @@ and acceleration. Define
 \end{equation}
 with diagonal position and derivative feedback gains
 $K_p,K_d\in\mathbb R^{3\times3}$ having positive entries.
-This is proportional--derivative (PD) feedback at acceleration level with
-feedforward acceleration.
+The Cartesian acceleration request $a_d+K_p e+K_d\dot e$ combines
+proportional--derivative (PD) feedback with feedforward acceleration.
+By equation~\eqref{eq:kinematics}, subtracting $\dot J\dot q$ gives $b$,
+the target for $Ju$, where $u$ is the nominal joint acceleration.
 
 For the baseline, the Euclidean pseudoinverse and null-space projector are
 $J^\dagger=J^{\mathsf T}(JJ^{\mathsf T})^{-1}$ and $N_E=I-J^\dagger J$.
@@ -239,11 +237,8 @@ The nominal joint acceleration $u_B$ and desired motor torque are
 Here $q_0$ is the initial joint configuration, $k_{q,B}>0$ is a posture gain,
 and $k_{\mathrm{ns},B}>0$ damps redundant joint motion. The initial posture attraction discourages accumulated motion away from the starting posture.
 
-Since gravity compensation is handled separately by the simulator,
-the software computes the actuator command
-$\tau_{\mathrm{cmd}}=\tau_{a,B}^{\mathrm{des}}-g=Mu_B+c$.
-Before the command is sent to the actuators, each torque component is
-checked against its permitted range and saturated if necessary.
+The baseline returns $\tau_{\mathrm{cmd}}=\tau_{a,B}^{\mathrm{des}}-g=Mu_B+c$,
+which the runner clips to the allowed torque range when needed.
 
 Under nominal conditions, with an exact model, delays small enough to
 ignore and no torque saturation, the Cartesian tracking error follows
@@ -261,10 +256,7 @@ to deviate from its nominal tracking behavior.
 
 The optimized controller follows the same Cartesian tracking target $b$
 introduced in equation~\eqref{eq:tracking-target}, using the robot's
-kinematic redundancy to reduce its effective mass. The preferred joint
-acceleration combines Cartesian tracking, null-space damping and effective
-mass optimization. The QP uses this preference and the Cartesian tracking
-target to choose a command within the joint braking and torque bounds.
+kinematic redundancy to reduce its effective mass.
 
 To introduce secondary objectives without interfering with Cartesian
 tracking, the controller uses the mass-weighted pseudoinverse and the
@@ -332,10 +324,8 @@ an offline optimization procedure. In this way, the controller
 can adapt the robot configuration as the Cartesian trajectory
 is followed.
 
-The QP selects $u_{\mathrm{sel}}$ by weighing the Cartesian error and
-the deviation from $u_{\mathrm{pref}}$ under the constraints in
-Section~\ref{sec:qp}. The corresponding desired motor torque is
-obtained through inverse dynamics as
+The QP in Section~\ref{sec:qp} selects $u_{\mathrm{sel}}$. The desired
+motor torque follows from inverse dynamics as
 \begin{equation}
  \boxed{\tau_{a,Q}^{\mathrm{des}}
  =M(q)u_{\mathrm{sel}}+c(q,\dot q)+g(q).}
@@ -466,13 +456,12 @@ $\alpha=\sigma(s)$ and $\beta=0$. During RETURN, the ramp lasts for
 the braking phase and gives $\alpha=1-\sigma(s)$ and $\beta=\sigma(s)$.
 With the same smoothstep, damping moves from its tracking value to
 $2\sqrt{k_{q,R}}$ during braking and back after each restart. The first
-lap uses the tracking damping throughout. The baseline uses the same
-phase schedule with its own posture and damping terms.
+lap uses the tracking damping throughout. The baseline keeps its posture
+and damping terms across phases.
 
-The duration of the RETURN phase is fixed and identical for both
-control laws. A new revolution begins at the scheduled time only
-if the maximum joint position error and joint speed satisfy the
-restart tolerances. If these conditions are not met, the trial is
+A new revolution begins at the scheduled end of RETURN only if the
+maximum joint position error and joint speed satisfy the restart
+tolerances. If these conditions are not met, the trial is
 terminated. The observer uses the time since the start of the run through
 all phases and reference changes.
 
@@ -812,10 +801,6 @@ and a recontact.
 \paragraph{Perpendicular detection.}
 The baseline and online detections each occur 4\,ms after first contact.
 
-These observations describe the four selected runs. Smooth reference and
-torque transitions reduce sudden changes that can cause short peaks in
-the observer residual.
-
 Figures~\ref{fig:observer-circular} and~\ref{fig:observer-perpendicular}
 show the detection signals for the online runs.
 
@@ -872,18 +857,14 @@ nominal motor torque as a percentage of its configured limit.}
 \label{tab:qp}
 \end{table}
 
-Both online trials complete with every QP solution accepted. The
-maximum recorded inequality errors of $2.91\times10^{-5}$ and
-$4.40\times10^{-5}$ for the circular and perpendicular trials,
-respectively, are within the numerical acceptance tolerance.
-No samples exceed the configured hard position, velocity or torque
-limits, and there is no actuator clipping. The circular motion enters
-the braking buffer. The perpendicular trial approaches within
-0.009\,rad of its hard position margin, leaving less clearance for
-disturbances. Both pairs pass the \texttt{compare\_runs} checks. The tool
-checks the first-impact metrics and whether the trials and first cycles
-completed, the recorded samples stayed within the limits and the QP
-solutions were accepted.
+Both pairs pass \texttt{compare\_runs}, including its checks on trial
+and first-cycle completion, first-impact metrics and sampled position,
+velocity and torque limits. Every QP solution is accepted, with maximum
+recorded inequality errors of $2.91\times10^{-5}$ and $4.40\times10^{-5}$
+for the circular and perpendicular trials, respectively, within the
+numerical tolerance. The logs show zero actuator clipping. The circular
+motion enters the braking buffer, and the perpendicular trial comes within
+0.009\,rad of its hard position margin, leaving less clearance for disturbances.
 
 \begin{table}[htbp]
 \centering
@@ -916,11 +897,9 @@ measurements describe performance in simulation and show why real-time
 operation needs a timing test of the full control loop.
 
 \section{Discussion and limits}
-At pre-impact normal speeds within 1\% of the baselines, the QP
-controller met the effective mass target in both experiments and reduced
-contact loads, with a larger position error before impact. The designs also
-differ in the Jacobian pseudoinverse they use, how they damp redundant
-joint motion and how they handle limits.
+The measured changes in contact loads and tracking reflect the behaviour
+of the two controllers as a whole, including differences in the Jacobian
+pseudoinverse, damping of redundant joint motion and handling of limits.
 
 One earlier controller guided the robot towards a fixed posture chosen for
 its low effective mass, which required a separate optimization for each
@@ -940,13 +919,8 @@ Simulating contact on the hand and arm links would help determine whether
 the low-mass postures leave enough clearance. Requirements on tool
 orientation or clearance would limit the choice of postures.
 
-The braking bounds use the acceleration predicted from the actuator
-command, and the forces during contact can change the actual joint motion.
-Both online trials respected the limits at the recorded samples, and
-further tests would show how model errors, friction, sensor noise and
-missed updates affect joint motion and the observer. Force estimation
-uses the rate of change of the residual, so small variations in that
-signal can be amplified in the estimated force.
+The braking bounds use the acceleration predicted from the torque
+command, and contact forces can change the actual motion.
 
 \section{Conclusions and future work}
 With a single weighted QP, the effective mass before impact fell by
@@ -970,6 +944,8 @@ Further tests should change the simulated link masses and inertias while
 keeping the controller model the same,
 and enable joint friction and damping. Testing each change separately
 before combining them would help identify which has the largest effect.
+Further tests should also check how missed updates affect joint motion
+and the observer.
 
 At comparable entry speeds, the comparison should check whether the
 reductions in effective mass and contact loads still hold. It should
@@ -997,8 +973,7 @@ runs use a requested RTF of 0.20 with the observer enabled.
 \item Perpendicular online:
   \path{runs/report_qp_20261127/optimized_full_online_qp_perp_report_20261127_100638.npz}
 \end{itemize}
-The perpendicular online log comes from the run with collision
-monitoring enabled. All plots were generated by the project's
+All plots were generated by the project's
 \texttt{plot\_run} executable using the listed files. The force-reconstruction
 figures use the two online logs. All first-impact and timing tables use the
 same recorded pairs.
