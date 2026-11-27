@@ -9,7 +9,8 @@ from fr3_sim.analysis.impact_metrics import all_impacts, first_impact
 def is_circular_run(run: dict) -> bool:
     """Restrict the extra figure to the three circular controller adapters."""
     name = str(run.get('meta', {}).get('controller', '')).replace('\\', '/').rsplit('/', 1)[-1]
-    return name in ('baseline.py', 'optimized_hqp.py', 'optimized_full_online_circular.py')
+    return name in ('baseline.py', 'optimized_hqp.py', 'optimized_full_online_circular.py',
+                    'optimized_full_online_qp_circular.py')
 
 
 def all_collisions_figure(run: dict, plt):

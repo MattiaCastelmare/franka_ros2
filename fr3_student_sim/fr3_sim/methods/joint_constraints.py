@@ -62,13 +62,13 @@ class JointLimits:
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f'safety.{name} must be positive and finite')
 
-    def braking_bounds(self, q, dq):
+    def braking_bounds(self, q, dq, *, position_buffer=0.0):
         """Bound nominal acceleration using only current position and speed."""
         rate, velocity_rate = self.position_rate, self.velocity_rate
         # Position barriers first limit outward speed in proportion to distance.
         # The velocity rate then sets how strongly acceleration corrects that speed.
-        position_lower = -(rate + velocity_rate) * dq - rate * velocity_rate * (q - self.q_lower)
-        position_upper = -(rate + velocity_rate) * dq + rate * velocity_rate * (self.q_upper - q)
+        position_lower = -(rate + velocity_rate) * dq - rate * velocity_rate * (q - self.q_lower - position_buffer)
+        position_upper = -(rate + velocity_rate) * dq + rate * velocity_rate * (self.q_upper - q - position_buffer)
         velocity_lower = -velocity_rate * (dq + self.velocity)
         velocity_upper = velocity_rate * (self.velocity - dq)
         return np.maximum(position_lower, velocity_lower), np.minimum(position_upper, velocity_upper)

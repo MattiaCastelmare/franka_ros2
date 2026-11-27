@@ -1,7 +1,7 @@
 """Plot a run log and print the contact metrics.
 
     ros2 run fr3_student_sim plot_run runs/circle_baseline_20261109_180000.npz
-    ros2 run fr3_student_sim plot_run runs/*.npz --no-show      # PNGs only, many runs
+    ros2 run fr3_student_sim plot_run runs/*.npz --no-show      # write figures for many runs
 
 For each log ``X.npz`` it writes ``X.png`` next to it and prints first-impact
 metrics: peak force, normal impulse, maximum penetration, and the normal
@@ -10,15 +10,16 @@ Logs with a momentum observer also produce ``X_observer.png`` with the seven
 joint residuals, their detection thresholds, the residual norm and detection times.
 With the FR3 model and wall geometry available, it also compares the estimated
 and simulated normal force. The estimate inverts the observer filter when its
-gain was logged.
+gain was logged. For a complete first impact with the required observer data,
+``X_force_estimation.png`` compares the simulated force with the two estimates
+from the filtered residual and its filter inversion.
 ``X_collision.png`` contains six panels for the first compression-release cycle:
 directional mass, normal velocity, contact force, penetration, normal impulse
 and a pre-contact normal kinetic-energy summary. The interval ends at the first
 detachment or the start of recompression, whichever occurs first.
-The three circular controllers also produce ``X_all_collisions.png`` with
-the same quantities over the full run, using one cycle per recorded contact.
-Impedance-HQP logs use ten main panels; all user diagnostics remain in the
-NPZ. Baseline and historical logs use the generic layout for their user signals.
+Circular runs also produce ``X_all_collisions.png`` with the same quantities
+over the full run, using one cycle per recorded contact. Optimized logs use
+ten main panels. Baseline logs use the generic layout for their user signals.
 Further analyses (detection delay, tracking error ...) can be computed from
 the log. In Python::
 
@@ -151,15 +152,20 @@ def _estimate_normal_force(run: dict, joint_torque: np.ndarray) -> np.ndarray | 
 
 
 def _observer_figure(run: dict, plt):
-    """Keep observer diagnostics separate from the tracking/contact figure."""
+    """Keep the nine/ten observer panels readable in a two-column figure."""
+    from matplotlib.ticker import MaxNLocator
+
     t = run['t']
     residual = np.asarray(run['residual'])
     thresholds = run.get('residual_threshold')
     events = detection_times(run)
     torque = _invert_observer_filter(run, residual)
     normal_force = _estimate_normal_force(run, residual if torque is None else torque)
-    panels = 9 if normal_force is None else 10
-    fig, ax = plt.subplots(panels, 1, figsize=(10, 2 * panels), sharex=True)
+    fig, grid = plt.subplots(5, 2, figsize=(6.27, 7.4), sharex=True)
+    # Read down each column: r1-r5, then r6/r7/norm/force/detection.
+    ax = grid.T.ravel()
+    if normal_force is None:
+        fig.delaxes(ax[8])
     for joint, axis in enumerate(ax[:7]):
         axis.plot(t, residual[:, joint], label='residual', lw=1.0)
         if thresholds is not None:
@@ -176,21 +182,38 @@ def _observer_figure(run: dict, plt):
         label = ('estimate from filtered residual' if torque is None
                  else 'estimate with observer filter inversion')
         ax[8].plot(t, normal_force, label=label, color='tab:blue', ls='--', lw=1.2)
-        ax[8].set_ylabel('Normal force [N]')
-        ax[8].legend(loc='upper right', fontsize=8)
+        ax[8].set_ylabel('Force [N]')
+        handles, _ = ax[8].get_legend_handles_labels()
+        labels = (['Simulated'] if 'F_n' in run else [])
+        labels.append('Filtered residual' if torque is None else 'Filter inversion')
+        ax[8].legend(handles, labels, loc='lower right', bbox_to_anchor=(1, 1.01),
+                     ncol=2, fontsize=7.5, frameon=False, columnspacing=0.7,
+                     handlelength=1.3, borderaxespad=0)
 
     detected = np.asarray(run.get('collision_detected', np.zeros(len(t))), dtype=bool)
     ax[-1].step(t, detected.astype(int), where='post', color='tab:red')
     ax[-1].set_yticks([0, 1], labels=['no', 'yes'])
     ax[-1].set_ylim(-0.1, 1.1)
     ax[-1].set_ylabel('detected')
-    ax[-1].set_xlabel('t [s]')
-    _mark_detections(ax, events)
-    ax[0].legend(loc='upper right', fontsize=8)
-    for axis in ax:
+    _mark_detections(fig.axes, events)
+    handles, labels = ax[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.55, 0.968),
+               ncol=3, fontsize=8.5, frameon=False, handlelength=1.5,
+               columnspacing=1.2)
+    for axis in fig.axes:
+        bottom = axis in (ax[4], ax[-1])
+        axis.yaxis.label.set_fontsize(10)
+        axis.tick_params(axis='both', labelsize=9, labelbottom=bottom, pad=2)
+        axis.xaxis.set_major_locator(MaxNLocator(nbins=3))
+        if axis is not ax[-1]:
+            axis.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=3))
+        if bottom:
+            axis.set_xlabel('t [s]', fontsize=10, labelpad=3)
         axis.grid(alpha=0.3)
-    fig.suptitle('Generalized momentum observer and collision detection')
-    fig.tight_layout(rect=(0, 0, 1, 0.985))
+    fig.suptitle('Generalized momentum observer and collision detection',
+                 fontsize=11, y=0.995)
+    fig.subplots_adjust(left=0.13, right=0.985, bottom=0.07, top=0.91,
+                        wspace=0.60, hspace=0.48)
     return fig
 
 
@@ -222,6 +245,54 @@ def _signal_legend(axis, secondary=None):
                     ncol=min(len(labels), 7), fontsize=8)
 
 
+def _first_impact_force_figure(run: dict, plt):
+    """Compare the two observer estimates with the logged force at first impact."""
+    if 'residual' not in run or 'q' not in run:
+        return None
+    impact = first_impact(run)
+    metrics = impact['metrics']
+    if not metrics['first_impact_complete']:
+        return None
+
+    residual = np.asarray(run['residual'])
+    corrected_torque = _invert_observer_filter(run, residual)
+    if corrected_torque is None:
+        return None
+
+    t = impact['t']
+    onset = metrics['t_contact_s']
+    window = (t >= onset - 0.05) & (t <= metrics['first_impact_end_s'])
+    # Invert before slicing so every displayed sample can use its predecessor.
+    samples = {'meta': run['meta'], 'q': np.asarray(run['q'])[window]}
+    filtered = _estimate_normal_force(samples, residual[window])
+    corrected = _estimate_normal_force(samples, corrected_torque[window])
+    during_impact = t[window] >= onset
+    if any(force is None or not np.any(np.isfinite(force[during_impact]))
+           for force in (filtered, corrected)):
+        return None
+
+    time_ms = 1000 * (t[window] - onset)
+    title = 'First-impact force reconstruction'
+    if is_circular_run(run):
+        title = 'Circular: ' + title.lower()
+    elif 'approach' in run['meta'].get('params', {}):
+        title = 'Perpendicular: ' + title.lower()
+    with plt.rc_context({'font.size': 11, 'axes.spines.top': False,
+                         'axes.spines.right': False}):
+        fig, axis = plt.subplots(figsize=(6.4, 3.05))
+        axis.plot(time_ms, impact['normal_force_N'][window], color='0.2', lw=1.7,
+                  label='Simulated force')
+        axis.plot(time_ms, filtered, color='#D55E00', ls='--', lw=1.5,
+                  label='Filtered residual')
+        axis.plot(time_ms, corrected, color='#0072B2', lw=1.4, label='Filter inversion')
+        axis.axvline(0, color='0.5', ls=':', lw=0.8)
+        axis.set(xlabel=r'$t-t_c$ [ms]', ylabel='Normal force [N]', title=title)
+        axis.grid(alpha=0.25)
+        axis.legend(loc='upper left', fontsize=9, frameon=False)
+        fig.tight_layout()
+    return fig
+
+
 def plot(run: dict, path_png: str, show: bool = True):
     import matplotlib
     if not show:
@@ -232,6 +303,7 @@ def plot(run: dict, path_png: str, show: bool = True):
             'optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
             'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',
             'optimized_full_online_circular.py',
+            'optimized_full_online_qp_circular.py', 'optimized_full_online_qp_perp.py',
             'optimized_perp_full_online.py',
             'impedance_hqp.py', 'controller_impedance_hqp.py'):
         from fr3_sim.analysis.plot_impedance import impedance_figure
@@ -274,18 +346,23 @@ def plot(run: dict, path_png: str, show: bool = True):
 
 
 def _save_figures(run, fig, path_png, show, plt):
-    """Save standard figures and the additional full-run circular contacts."""
+    """Save the tracking, contact and available observer figures for a run."""
+    path = Path(path_png)
     fig.savefig(path_png, dpi=110)
     print(f'  plot: {path_png}')
     observer_fig = None
+    force_fig = None
     if 'residual' in run:
         observer_fig = _observer_figure(run, plt)
-        path = Path(path_png)
         observer_path = path.with_name(path.stem + '_observer' + path.suffix)
-        observer_fig.savefig(observer_path, dpi=110)
+        observer_fig.savefig(observer_path, dpi=200)
         print(f'  observer plot: {observer_path}')
+        force_fig = _first_impact_force_figure(run, plt)
+        if force_fig is not None:
+            force_path = path.with_name(path.stem + '_force_estimation.png')
+            force_fig.savefig(force_path, dpi=200)
+            print(f'  force estimation plot: {force_path}')
     collision_fig = collision_figure(run, plt)
-    path = Path(path_png)
     collision_path = path.with_name(path.stem + '_collision' + path.suffix)
     collision_fig.savefig(collision_path, dpi=110)
     print(f'  collision plot: {collision_path}')
@@ -297,18 +374,15 @@ def _save_figures(run, fig, path_png, show, plt):
         print(f'  all collisions plot: {all_collisions_path}')
     if show:
         plt.show()
-    plt.close(fig)
-    if observer_fig is not None:
-        plt.close(observer_fig)
-    plt.close(collision_fig)
-    if all_collisions_fig is not None:
-        plt.close(all_collisions_fig)
+    for figure in (fig, observer_fig, force_fig, collision_fig, all_collisions_fig):
+        if figure is not None:
+            plt.close(figure)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('logs', nargs='+')
-    ap.add_argument('--no-show', action='store_true', help='only write the PNGs')
+    ap.add_argument('--no-show', action='store_true', help='write figures without opening windows')
     a = ap.parse_args()
     for path in a.logs:
         if not path:

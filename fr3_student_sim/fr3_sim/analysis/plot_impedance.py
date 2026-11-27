@@ -30,17 +30,22 @@ def impedance_figure(run, plt):
     axes[5].plot(t, run['user_mass_kg'], label='directional mass')
     axes[6].plot(t, run['v_n'], label='actual normal velocity')
     axes[6].plot(t, run['user_normal_speed_ref'], '--', label='reference')
-    safety = run['meta']['params']['safety']
-    configured_margin = safety['position_margin']
+    safety = run['meta']['params'].get('safety', {})
+    configured_margin = safety.get('position_margin', 0.15)
     soft = safety.get('soft_constraints', {})
-    elastic = bool(soft.get('enabled', False))
+    single_qp = 'user_qp_status' in run
+    configured_soft = bool(soft.get('enabled', False))
+    elastic = configured_soft and not single_qp
+    controller_name = str(run['meta'].get('controller', '')).replace('\\', '/').rsplit('/', 1)[-1]
+    if single_qp and configured_soft and controller_name in (
+            'optimized_full_online_circular.py', 'optimized_full_online_qp_circular.py'):
+        configured_margin = soft.get('hard_position_margin', 0.06)
     axes[7].axhline(float(np.min(configured_margin)), color='k', ls='--',
                     label='preferred margin (soft)' if elastic else 'QP margin')
     if elastic and 'hard_position_margin' in soft:
         axes[7].axhline(float(np.min(soft['hard_position_margin'])), color='tab:orange',
                         ls='-.', label='hard QP margin')
     axes[7].axhline(0.05, color='r', ls=':', label='runner stop')
-    single_qp = 'user_qp_status' in run
     if single_qp:
         axes[8].plot(t, run['user_qp_status'], label='QP status')
     else:

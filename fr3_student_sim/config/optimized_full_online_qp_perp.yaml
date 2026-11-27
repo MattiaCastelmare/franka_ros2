@@ -1,4 +1,4 @@
-# Controller: fr3_sim/controllers/optimized_hqp_full_online_perp.py
+# Controller: fr3_sim/controllers/optimized_full_online_qp_perp.py
 # Same Cartesian feedback and mass gradient in one QP with joint braking bounds.
 # Mass descent uses only the online analytical gradient: no offline q_posture_ref.
 initial_q: [0.0, -0.1517, 0.0, -2.6105, 0.0, 4.0295, 0.785]

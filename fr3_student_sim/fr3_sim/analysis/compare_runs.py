@@ -24,7 +24,8 @@ from fr3_sim.analysis.timing import timing_metrics
 _PERP_CONTROLLERS = ('baseline_perp.py', 'controller_baseline_perp.py',
                      'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
                      'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',
-                     'optimized_perp_full_online.py')
+                     'optimized_perp_full_online.py', 'optimized_full_online_qp_perp.py')
+_SINGLE_QP_CONTROLLERS = ('optimized_full_online_qp_circular.py', 'optimized_full_online_qp_perp.py')
 _HQP_TRACKING_CONTROLLERS = ('optimized_hqp.py', 'optimized_hqp_perp.py',
                              'optimized_3phases_perp.py',
                              'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',
@@ -34,7 +35,7 @@ _HQP_TRACKING_CONTROLLERS = ('optimized_hqp.py', 'optimized_hqp_perp.py',
 _ACCELERATION_TRACKING_CONTROLLERS = (
     'baseline.py', 'baseline_perp.py', 'controller_baseline.py',
     'controller_baseline_perp.py', 'controller_optimized.py',
-) + _HQP_TRACKING_CONTROLLERS
+) + _HQP_TRACKING_CONTROLLERS + _SINGLE_QP_CONTROLLERS
 
 
 def _controller_name(metadata):
@@ -125,18 +126,25 @@ def summarize_run(run):
 
     safety = params.get('safety', {})
     soft_settings = safety.get('soft_constraints', {})
-    soft_enabled = bool(soft_settings.get('enabled', False))
+    single_qp = 'user_qp_status' in run
+    configured_soft = bool(soft_settings.get('enabled', False))
+    soft_enabled = configured_soft and not single_qp
     margin_value = safety.get('joint_margin', safety.get('position_margin'))
+    if single_qp:
+        margin_value = safety.get('position_margin', 0.15)
+        if configured_soft and _controller_name(meta) in (
+                'optimized_full_online_circular.py', 'optimized_full_online_qp_circular.py'):
+            margin_value = soft_settings.get('hard_position_margin', 0.06)
     if margin_value is None:
         margin_value = params.get('joint_release', {}).get('margin')
     protected_margin = _vector_setting(margin_value)
     protected = margins - protected_margin if margins is not None and protected_margin is not None else None
     hard_margin = _vector_setting(soft_settings.get('hard_position_margin')) if soft_enabled else None
-    if 'user_qp_status' in run:
+    if single_qp:
         hard_margin = protected_margin
     hard_protected = margins - hard_margin if margins is not None and hard_margin is not None else None
     configured_velocity = _vector_setting(safety.get('velocity_max'))
-    configured_acceleration = _vector_setting(safety.get('acceleration_max'))
+    configured_acceleration = None if single_qp else _vector_setting(safety.get('acceleration_max'))
     configured_torque = _vector_setting(safety.get('torque_max'))
     limits = {
         'scope': 'saved samples only; no guarantee between samples',
@@ -217,7 +225,7 @@ def summarize_run(run):
           'primary': _qp_status(run, 'user_qp_primary_status', updates),
           'secondary': _qp_status(run, 'user_qp_secondary_status', updates),
           'safety': _qp_status(run, 'user_qp_safety_status', updates)}
-    if 'user_qp_status' in run:
+    if single_qp:
         qp['single'] = _qp_status(run, 'user_qp_status', updates)
     violation = _array(run, 'user_qp_constraint_violation')
     qp['max_logged_hard_constraint_violation'] = _finite_max(violation[updates]) if violation is not None else None
@@ -568,6 +576,8 @@ def compare_runs(baseline, candidate, *, entry_speed_tolerance=0.05, mass_reduct
         violation = qp['max_logged_hard_constraint_violation']
         checks['candidate_logged_qp_hard_constraints_accepted'] = (
             violation is not None and violation <= feasibility + 1e-9)
+    elif _controller_name(b) in _SINGLE_QP_CONTROLLERS:
+        checks['candidate_single_qp_updates_solved'] = False
     elif str(b.get('controller', '')).endswith(
             ('optimized_hqp.py', 'optimized_hqp_perp.py', 'optimized_3phases_perp.py',
              'optimized_hqp_full_online.py', 'optimized_hqp_full_online_perp.py',

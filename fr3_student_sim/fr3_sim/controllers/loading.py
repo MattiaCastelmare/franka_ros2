@@ -20,39 +20,24 @@ _ALIASES = {
     'baseline_perp': 'baseline_perp.py',
     'baseline_perp.py': 'baseline_perp.py',
     'controllers/baseline_perp.py': 'baseline_perp.py',
-    'optimized_hqp': 'optimized_hqp.py',
-    'optimized_hqp.py': 'optimized_hqp.py',
-    'controllers/optimized_hqp.py': 'optimized_hqp.py',
-    'optimized_hqp_perp': 'optimized_hqp_perp.py',
-    'optimized_hqp_perp.py': 'optimized_hqp_perp.py',
-    'controllers/optimized_hqp_perp.py': 'optimized_hqp_perp.py',
-    'optimized_hqp_full_online': 'optimized_hqp_full_online.py',
-    'optimized_hqp_full_online.py': 'optimized_hqp_full_online.py',
-    'controllers/optimized_hqp_full_online.py': 'optimized_hqp_full_online.py',
-    'optimized_hqp_full_online_perp': 'optimized_hqp_full_online_perp.py',
-    'optimized_hqp_full_online_perp.py': 'optimized_hqp_full_online_perp.py',
-    'controllers/optimized_hqp_full_online_perp.py': 'optimized_hqp_full_online_perp.py',
-    'optimized_full_online_circular': 'optimized_full_online_circular.py',
-    'optimized_full_online_circular.py': 'optimized_full_online_circular.py',
-    'controllers/optimized_full_online_circular.py': 'optimized_full_online_circular.py',
-    'optimized_3phases_perp': 'optimized_3phases_perp.py',
-    'optimized_3phases_perp.py': 'optimized_3phases_perp.py',
-    'controllers/optimized_3phases_perp.py': 'optimized_3phases_perp.py',
-    'impedance_hqp': 'optimized_hqp.py',
-    'impedance_hqp.py': 'optimized_hqp.py',
-    'controllers/impedance_hqp.py': 'optimized_hqp.py',
-    'controller_impedance_hqp.py': 'optimized_hqp.py',
-    'circle_tracking/controller_impedance_hqp.py': 'optimized_hqp.py',
+    'optimized_full_online_qp_perp': 'optimized_full_online_qp_perp.py',
+    'optimized_full_online_qp_perp.py': 'optimized_full_online_qp_perp.py',
+    'controllers/optimized_full_online_qp_perp.py': 'optimized_full_online_qp_perp.py',
+    'optimized_full_online_qp_circular': 'optimized_full_online_qp_circular.py',
+    'optimized_full_online_qp_circular.py': 'optimized_full_online_qp_circular.py',
+    'controllers/optimized_full_online_qp_circular.py': 'optimized_full_online_qp_circular.py',
+    'optimized_hqp_full_online_perp': 'optimized_full_online_qp_perp.py',
+    'optimized_hqp_full_online_perp.py': 'optimized_full_online_qp_perp.py',
+    'controllers/optimized_hqp_full_online_perp.py': 'optimized_full_online_qp_perp.py',
+    'optimized_full_online_circular': 'optimized_full_online_qp_circular.py',
+    'optimized_full_online_circular.py': 'optimized_full_online_qp_circular.py',
+    'controllers/optimized_full_online_circular.py': 'optimized_full_online_qp_circular.py',
 }
 _TASKS = {
     'baseline.py': 'circle_tracking_baseline.yaml',
     'baseline_perp.py': 'baseline_perp.yaml',
-    'optimized_hqp.py': 'circle_tracking_optimized_hqp.yaml',
-    'optimized_hqp_perp.py': 'optimized_hqp_perp.yaml',
-    'optimized_hqp_full_online.py': 'optimized_hqp_full_online.yaml',
-    'optimized_hqp_full_online_perp.py': 'optimized_hqp_full_online_perp.yaml',
-    'optimized_full_online_circular.py': 'optimized_full_online_circular.yaml',
-    'optimized_3phases_perp.py': 'optimized_3phases_perp.yaml',
+    'optimized_full_online_qp_perp.py': 'optimized_full_online_qp_perp.yaml',
+    'optimized_full_online_qp_circular.py': 'optimized_full_online_qp_circular.yaml',
 }
 
 
@@ -65,10 +50,8 @@ def resolve_controller_path(selector: str) -> str:
         if filename is None:
             raise FileNotFoundError(
                 f'Unknown controller {selector!r}; use baseline.py, '
-                'baseline_perp.py, optimized_hqp.py, optimized_hqp_perp.py, '
-                'optimized_hqp_full_online.py, optimized_hqp_full_online_perp.py, '
-                'optimized_full_online_circular.py, '
-                'optimized_3phases_perp.py '
+                'baseline_perp.py, optimized_full_online_qp_perp.py, '
+                'optimized_full_online_qp_circular.py '
                 'or an absolute Python file path')
         path = Path(__file__).resolve().parent / filename
     if not path.is_file():
